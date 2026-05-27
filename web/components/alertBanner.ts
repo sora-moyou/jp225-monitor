@@ -1,0 +1,62 @@
+import type { AlertEvent } from '../types.js';
+import { UI } from '../lib/i18n.js';
+
+interface BannerItem {
+  alert: AlertEvent;
+  el: HTMLElement;
+  explanationEl: HTMLElement;
+}
+
+const items = new Map<string, BannerItem>();
+const MAX_BANNERS = 5;
+const AUTO_DISMISS_MS = 5 * 60 * 1000;
+
+export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem {
+  const id = `${alert.symbol}-${alert.triggeredAt}`;
+  if (items.has(id)) return items.get(id)!;
+
+  const el = document.createElement('div');
+  el.className = `alert ${alert.direction}`;
+  const kindLabel = alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
+  const arrow = alert.direction === 'up' ? '▲' : '▼';
+  const main = document.createElement('div');
+  main.innerHTML =
+    `<strong>⚡ ${alert.symbolLabel}</strong> ` +
+    `${arrow} ${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒 ` +
+    `<span style="color:#8b949e">[${kindLabel}]</span> ` +
+    `| <span class="explanation">${UI.ja.explanationLoading}</span>`;
+  const close = document.createElement('button');
+  close.className = 'close';
+  close.textContent = '✕';
+  close.onclick = () => removeBanner(id);
+  el.appendChild(main);
+  el.appendChild(close);
+  container.prepend(el);
+
+  const item: BannerItem = {
+    alert,
+    el,
+    explanationEl: main.querySelector('.explanation') as HTMLElement,
+  };
+  items.set(id, item);
+
+  // 上限超え時は古いものを削除
+  if (items.size > MAX_BANNERS) {
+    const oldest = [...items.keys()][0];
+    if (oldest) removeBanner(oldest);
+  }
+
+  setTimeout(() => removeBanner(id), AUTO_DISMISS_MS);
+  return item;
+}
+
+export function setExplanation(item: BannerItem, text: string): void {
+  item.explanationEl.textContent = text;
+}
+
+function removeBanner(id: string): void {
+  const item = items.get(id);
+  if (!item) return;
+  item.el.remove();
+  items.delete(id);
+}
