@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Finance Monitor</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Finance Monitor</h1>
+    <div class="status">
+      <span id="clock"></span>
+      <span id="connection-status" class="badge offline">offline</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="alert-banner" class="alert-banner"></section>
+
+    <div class="main-grid">
+      <section id="price-grid" class="price-grid"></section>
+      <aside id="news-feed" class="news-feed">
+        <h2>News</h2>
+        <ul id="news-list"></ul>
+      </aside>
+    </div>
+  </main>
+
+  <button id="enable-sound" class="enable-sound">🔔 サウンドを有効化</button>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
