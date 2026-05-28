@@ -175,14 +175,20 @@ export async function explain(input: ExplainInput): Promise<string> {
   const range1hLine = input.range1h
     ? `【1時間レンジ】高値 ${fmt(input.range1h.high)} / 安値 ${fmt(input.range1h.low)}\n`
     : '';
+  const dirEmphasis = input.changePercent >= 0 ? '⬆ 上昇方向' : '⬇ 下落方向';
+  const magnitudeNote = Math.abs(input.changePercent) <= 0.15
+    ? '※ 急変幅が小さい (≤0.15%)。ノイズの可能性も考慮し、無理に材料を結びつけない。'
+    : '';
   const userPrompt =
-    `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa}しました。\n` +
+    `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n` +
+    (magnitudeNote ? magnitudeNote + '\n' : '') +
     ctx15Line + pa15Line + range1hLine +
     `\n【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
-    `上記の急変・価格アクション・ニュースを総合し、1〜2文で説明してください。\n` +
-    `- 必ずニュース1件を「○○分前のXXがYYのため」の形で引用する\n` +
-    `- 価格アクション（下髭/上髭/サポート反転/レンジブレイク等）が読み取れれば併記してよい\n` +
-    `- 古くても相場転換の引き金となる材料を優先\n\n` +
+    `[手順]\n` +
+    `1) 候補ニュースを上から見て、その材料なら相場が ${dirEmphasis} へ動くはずか判定。\n` +
+    `2) 方向が一致する材料を1件選んで「○○分前のXX、(方向の根拠)」形式で説明。\n` +
+    `3) 方向が一致するものが無ければ「整合する明確な材料なし、テクニカル/ノイズ可能性」と書く。地政学リスクなのに株が上がっている等の矛盾を引用しない。\n` +
+    `4) OHLCで下髭/上髭/サポート反転等が読めれば併記してよい。\n\n` +
     `出力は必ず200文字以内、1〜2文で。`;
 
   return callWithFallback(async (p) => {
