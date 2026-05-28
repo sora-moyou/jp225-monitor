@@ -2,6 +2,10 @@ import type { Request, Response } from 'express';
 import { explain } from '../llm/openai.js';
 import { getNews } from '../cache.js';
 
+interface PriceActionBody {
+  open: number; high: number; low: number; current: number;
+}
+
 interface ExplainBody {
   symbol?: string;
   symbolLabel?: string;
@@ -9,6 +13,8 @@ interface ExplainBody {
   windowSeconds?: number;
   detectionKind?: 'magnitude' | 'slope';
   change15min?: number | null;
+  pa15min?: PriceActionBody | null;
+  range1h?: { high: number; low: number } | null;
 }
 
 export async function explainHandler(req: Request, res: Response): Promise<void> {
@@ -29,6 +35,8 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       windowSeconds: body.windowSeconds,
       detectionKind: body.detectionKind,
       change15min: typeof body.change15min === 'number' ? body.change15min : null,
+      pa15min: body.pa15min ?? null,
+      range1h: body.range1h ?? null,
       news: getNews(),
     });
     res.json({ explanation: text });

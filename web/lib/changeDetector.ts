@@ -1,12 +1,13 @@
 import type { Price, Symbol, InstrumentMeta } from '../types.js';
-import type { AlertEvent, DetectionKind } from '../types.js';
+import type { AlertEvent, DetectionKind, PriceAction } from '../types.js';
 
 interface Sample { t: number; price: number; }
 
-const BUFFER_WINDOW_MS = 15 * 60 * 1000;   // バッファ保持期間（コンテキスト用）
+const BUFFER_WINDOW_MS = 60 * 60 * 1000;   // 1時間保持（PA1h用）
 const MAGNITUDE_WINDOW_MS = 5 * 60 * 1000; // 発火: 変動幅判定窓
 const SLOPE_WINDOW_MS = 30 * 1000;          // 発火: 傾き判定窓
-const CONTEXT_WINDOW_MS = 15 * 60 * 1000;   // バナー表示用コンテキスト
+const CONTEXT_WINDOW_MS = 15 * 60 * 1000;   // バナー表示用 + 15分OHLC窓
+const RANGE_1H_WINDOW_MS = 60 * 60 * 1000;  // 1時間レンジ
 const DEFAULT_COOLDOWN_MS = 60 * 1000;
 
 interface State {
@@ -75,13 +76,25 @@ export class ChangeDetector {
     state: State, price: Price, pct: number, windowSec: number, kind: DetectionKind
   ): AlertEvent {
     state.lastAlertAt = price.timestamp;
-    // 直近15分のコンテキスト変化を計算（発火窓と独立）
+    // 直近15分のOHLC（テクニカル分析用）
     const ctxCutoff = price.timestamp - CONTEXT_WINDOW_MS;
-    const ctxBase = state.buffer.find(s => s.t >= ctxCutoff);
-    const change15min =
-      ctxBase && ctxBase !== state.buffer[state.buffer.length - 1]
-        ? pctChange(ctxBase.price, price.price)
-        : null;
+    const ctx15 = state.buffer.filter(s => s.t >= ctxCutoff);
+    const pa15min: PriceAction | null = ctx15.length >= 2 ? {
+      open: ctx15[0]!.price,
+      high: Math.max(...ctx15.map(s => s.price)),
+      low: Math.min(...ctx15.map(s => s.price)),
+      current: price.price,
+    } : null;
+    const change15min = pa15min ? pctChange(pa15min.open, pa15min.current) : null;
+
+    // 直近1時間レンジ（サポレジ参考）
+    const range1hCutoff = price.timestamp - RANGE_1H_WINDOW_MS;
+    const range1hSamples = state.buffer.filter(s => s.t >= range1hCutoff);
+    const range1h = range1hSamples.length >= 2 ? {
+      high: Math.max(...range1hSamples.map(s => s.price)),
+      low: Math.min(...range1hSamples.map(s => s.price)),
+    } : null;
+
     return {
       symbol: state.meta.symbol,
       symbolLabel: state.meta.labelJa,
@@ -91,6 +104,8 @@ export class ChangeDetector {
       direction: pct >= 0 ? 'up' : 'down',
       triggeredAt: price.timestamp,
       change15min,
+      pa15min,
+      range1h,
     };
   }
 }

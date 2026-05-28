@@ -24,6 +24,8 @@ export interface ExplainInput {
   windowSeconds: number;
   detectionKind: 'magnitude' | 'slope';
   change15min: number | null;
+  pa15min: { open: number; high: number; low: number; current: number } | null;
+  range1h: { high: number; low: number } | null;
   news: NewsItem[];
 }
 
@@ -73,13 +75,25 @@ export async function explain(input: ExplainInput): Promise<string> {
   const dirJa = input.changePercent >= 0 ? '上昇' : '下落';
   const windowHours = Math.round(NEWS_RECENT_WINDOW_MS / 3600_000);
   const ctx15Line = input.change15min !== null
-    ? `【15分コンテキスト】直近15分の変化: ${input.change15min >= 0 ? '+' : ''}${input.change15min.toFixed(2)}%\n\n`
+    ? `【15分変化率】${input.change15min >= 0 ? '+' : ''}${input.change15min.toFixed(2)}%\n`
+    : '';
+  // 直近15分のOHLCを文字で表現 → LLMが「下髭」「サポート反転」等を読める
+  const pa15Line = input.pa15min
+    ? `【15分OHLC】始値 ${fmt(input.pa15min.open)} / 高値 ${fmt(input.pa15min.high)} / 安値 ${fmt(input.pa15min.low)} / 現値 ${fmt(input.pa15min.current)}\n`
+    : '';
+  const range1hLine = input.range1h
+    ? `【1時間レンジ】高値 ${fmt(input.range1h.high)} / 安値 ${fmt(input.range1h.low)}\n`
     : '';
   const userPrompt =
     `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa}しました。\n` +
     ctx15Line +
-    `【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
-    `上記の急変・コンテキスト・ニュースを総合し、最有力の材料を1つ選び、「○○分前のXXがYYのため」の形で1〜2文で説明してください。古くても相場転換の引き金となる材料（FOMC, 介入, 地政学, 重要指標）を優先してください。`;
+    pa15Line +
+    range1hLine +
+    `\n【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
+    `上記の急変・価格アクション・ニュースを総合し、1〜2文で説明してください。\n` +
+    `- 必ずニュース1件を「○○分前のXXがYYのため」の形で引用する\n` +
+    `- 価格アクション（下髭/上髭/サポート反転/レンジブレイク等）が読み取れれば併記してよい (例: 「ただし15分OHLCで安値64480→現値64720と大きな下髭、サポート反転の兆し」)\n` +
+    `- 古くても相場転換の引き金となる材料（FOMC, 介入, 地政学, 重要指標）を優先`;
 
   const completion = await client.chat.completions.create({
     model: LLM_MODEL,
@@ -91,4 +105,11 @@ export async function explain(input: ExplainInput): Promise<string> {
     ],
   });
   return completion.choices[0]?.message?.content?.trim() ?? '(no response)';
+}
+
+// 価格を読みやすい桁数で
+function fmt(n: number): string {
+  if (Math.abs(n) >= 1000) return n.toFixed(0);
+  if (Math.abs(n) >= 10) return n.toFixed(2);
+  return n.toFixed(3);
 }
