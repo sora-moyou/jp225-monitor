@@ -177,6 +177,98 @@ body {
 .news-feed li a { color: var(--text); text-decoration: none; }
 .news-feed li a:hover { text-decoration: underline; color: #58a6ff; }
 
+.chat-board {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 340px;
+  max-height: 480px;
+}
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.chat-header h2 {
+  font-size: 12px;
+  margin: 0;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.chat-clear {
+  font-size: 11px;
+  background: none;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.chat-clear:hover { color: var(--text); }
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+  min-height: 0;
+}
+.chat-hint { color: var(--muted); font-size: 12px; padding: 4px; }
+.chat-msg {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.chat-msg.user {
+  background: rgba(88, 166, 255, 0.15);
+  border-left: 3px solid #58a6ff;
+  align-self: flex-end;
+  max-width: 85%;
+}
+.chat-msg.assistant {
+  background: rgba(63, 185, 80, 0.10);
+  border-left: 3px solid var(--up);
+  align-self: flex-start;
+  max-width: 95%;
+}
+.chat-msg.thinking { opacity: 0.6; font-style: italic; }
+.chat-form {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+#chat-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: none;
+}
+#chat-input:focus { outline: none; border-color: #58a6ff; }
+#chat-send {
+  background: var(--up);
+  color: black;
+  border: none;
+  border-radius: 4px;
+  padding: 0 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#chat-send:disabled { opacity: 0.5; cursor: wait; }
+
 .enable-sound {
   position: fixed;
   bottom: 20px;

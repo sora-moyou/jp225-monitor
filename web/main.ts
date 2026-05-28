@@ -7,6 +7,7 @@ import { renderNews } from './components/newsFeed.js';
 import { addBanner, setExplanation } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
+import { initChat } from './components/chatBoard.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
@@ -15,6 +16,15 @@ const detector = new ChangeDetector(INSTRUMENTS);
 
 // TradingView チャートをマウント（非同期、失敗してもUIは継続）
 void mountChart('tradingview-chart');
+
+// AI チャットボードを初期化
+initChat(
+  document.getElementById('chat-messages')!,
+  document.getElementById('chat-form') as HTMLFormElement,
+  document.getElementById('chat-input') as HTMLTextAreaElement,
+  document.getElementById('chat-send') as HTMLButtonElement,
+  document.getElementById('chat-clear') as HTMLButtonElement,
+);
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;

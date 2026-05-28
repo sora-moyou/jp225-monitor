@@ -1,9 +1,10 @@
 import OpenAI from 'openai';
-import type { NewsItem } from '../types.js';
+import type { NewsItem, Price } from '../types.js';
 import {
   LLM_MODEL, LLM_BASE_URL, LLM_SYSTEM_PROMPT,
   NEWS_RECENT_WINDOW_MS, NEWS_RECENCY_DECAY_MIN,
   INSTRUMENT_KEYWORDS, HIGH_IMPACT_KEYWORDS,
+  INSTRUMENTS,
 } from '../config.js';
 
 const apiKey = process.env.OPENAI_API_KEY?.trim();
@@ -112,4 +113,66 @@ function fmt(n: number): string {
   if (Math.abs(n) >= 1000) return n.toFixed(0);
   if (Math.abs(n) >= 10) return n.toFixed(2);
   return n.toFixed(3);
+}
+
+// ─── チャット機能 ─────────────────────────────────────────
+
+export interface ChatMessage { role: 'user' | 'assistant'; content: string; }
+
+export interface ChatInput {
+  messages: ChatMessage[];
+  prices: Price[];
+  news: NewsItem[];
+}
+
+const LABEL_MAP = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
+
+function formatPricesForChat(prices: Price[]): string {
+  if (prices.length === 0) return '(価格未取得)';
+  return prices.map(p => {
+    const meta = LABEL_MAP.get(p.symbol);
+    const label = meta?.labelJa ?? p.symbol;
+    const sign = p.changePercent >= 0 ? '+' : '';
+    const staleMark = p.stale ? ' (stale)' : '';
+    return `- ${label} ${p.symbol}: ${fmt(p.price)} (${sign}${p.changePercent.toFixed(2)}%)${staleMark}`;
+  }).join('\n');
+}
+
+function formatNewsForChat(news: NewsItem[], now: number): string {
+  if (news.length === 0) return '(ニュースなし)';
+  return news.slice(0, 15).map(n => {
+    const ageMin = Math.max(0, Math.round((now - n.publishedAt) / 60000));
+    return `- [${ageMin}分前] [${n.source}] ${n.title}`;
+  }).join('\n');
+}
+
+const CHAT_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。
+ユーザーから現在の相場や銘柄について質問が来るので、以下の【市場の現状】を踏まえて日本語で簡潔に答えてください。
+
+- 日本語で、結論先出し、箇条書きや短い段落で読みやすく
+- 数字を出すときは現状データから具体的に引用する
+- 推測や仮説は「〜と推察される」「〜の可能性が高い」と明示
+- 不明な場合は素直に「データなし」と答える
+- 銘柄間の連動性、テクニカル要因（サポレジ・ボラ）、ファンダ材料を組み合わせて分析する`;
+
+export async function chat(input: ChatInput): Promise<string> {
+  if (!client) return '(LLM disabled — OPENAI_API_KEY 未設定)';
+
+  const now = Date.now();
+  const systemPrompt =
+    `${CHAT_SYSTEM_PROMPT}\n\n` +
+    `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
+    `■ 現在価格:\n${formatPricesForChat(input.prices)}\n\n` +
+    `■ 直近ニュース (上位15件):\n${formatNewsForChat(input.news, now)}`;
+
+  const completion = await client.chat.completions.create({
+    model: LLM_MODEL,
+    temperature: 0.5,
+    max_tokens: 500,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...input.messages,
+    ],
+  });
+  return completion.choices[0]?.message?.content?.trim() ?? '(no response)';
 }

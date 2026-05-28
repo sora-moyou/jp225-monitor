@@ -24,6 +24,19 @@
           <div id="tradingview-chart"></div>
         </section>
         <section id="price-grid" class="price-grid"></section>
+        <section class="chat-board">
+          <div class="chat-header">
+            <h2>AI チャット</h2>
+            <button id="chat-clear" type="button" class="chat-clear">クリア</button>
+          </div>
+          <div id="chat-messages" class="chat-messages">
+            <div class="chat-hint">市場の状況や銘柄について質問してください (例: 「日経が下げてる主な理由は？」「USD/JPYと日経の関係は？」)</div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <textarea id="chat-input" placeholder="質問を入力 (Enter送信, Shift+Enter改行)" rows="2"></textarea>
+            <button type="submit" id="chat-send">送信</button>
+          </form>
+        </section>
       </div>
       <aside id="news-feed" class="news-feed">
         <h2>News</h2>
