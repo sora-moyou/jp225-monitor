@@ -30,7 +30,26 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[explain] error:', msg);
-    // 開発用に実エラーをバナーへ返す（先頭120字）
-    res.status(500).json({ explanation: `(説明取得失敗: ${msg.slice(0, 120)})` });
+    const friendly = translateLLMError(msg);
+    res.status(500).json({ explanation: friendly });
   }
+}
+
+function translateLLMError(msg: string): string {
+  if (/insufficient[_ ]quota|exceeded.*quota/i.test(msg)) {
+    return '(LLMクレジット不足 — https://platform.openai.com/account/billing で残高補充)';
+  }
+  if (/401|invalid[_ ]api[_ ]key|incorrect api key/i.test(msg)) {
+    return '(APIキー無効 — .env の OPENAI_API_KEY を確認)';
+  }
+  if (/429/i.test(msg)) {
+    return '(LLMレート制限 — 少し待ってから再試行)';
+  }
+  if (/model.*not.*found|does not have access/i.test(msg)) {
+    return '(モデルアクセス不可 — gpt-4o-miniへのアクセス権を確認)';
+  }
+  if (/ECONNREFUSED|ENOTFOUND|network|timeout/i.test(msg)) {
+    return '(LLMネットワークエラー)';
+  }
+  return `(説明取得失敗: ${msg.slice(0, 100)})`;
 }
