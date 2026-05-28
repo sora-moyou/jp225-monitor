@@ -69,7 +69,7 @@ body {
 
 .main-grid {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 1fr 2fr;   /* 価格を半分、ニュースを倍 */
   gap: 16px;
   padding: 16px 20px;
   align-items: start;       /* 各列を縦伸ばししない */
