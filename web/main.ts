@@ -53,8 +53,9 @@ enableSoundBtn.onclick = () => {
 };
 
 // ─── LLM呼び出しスロットル ─────────────────────────
-// 5分以上の間隔を保証。バナーの🔄ボタンでクールダウン無視の即時更新可能。
-const LLM_AUTO_INTERVAL_MS = 5 * 60 * 1000;
+// 0 にすると節約モードOFF (全アラートで即LLM)。
+// レート制限が問題なら 5*60*1000 などへ戻す。
+const LLM_AUTO_INTERVAL_MS = 0;
 let lastLLMCallAt = -Infinity;
 
 function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {
