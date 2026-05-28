@@ -100,7 +100,7 @@ export async function explain(input: ExplainInput): Promise<string> {
   const completion = await client.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.3,
-    max_tokens: 180,
+    max_tokens: 500,   // Gemini 2.5 Flash は thinking分も使うので余裕を持たせる
     messages: [
       { role: 'system', content: LLM_SYSTEM_PROMPT },
       { role: 'user', content: userPrompt },
@@ -169,7 +169,7 @@ export async function chat(input: ChatInput): Promise<string> {
   const completion = await client.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.5,
-    max_tokens: 500,
+    max_tokens: 1000,   // Gemini 2.5 Flash: thinking分 + 長めの返答に余裕
     messages: [
       { role: 'system', content: systemPrompt },
       ...input.messages,
