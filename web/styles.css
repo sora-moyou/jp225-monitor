@@ -77,7 +77,7 @@ body {
 
 .price-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);   /* 4列 × 2行 = 8銘柄ちょうど */
+  grid-template-columns: repeat(2, 1fr);   /* 2列 × 4行 = 8銘柄 */
   grid-auto-rows: min-content;             /* 行は内容ぶんだけの高さ */
   gap: 10px;
   align-content: start;
