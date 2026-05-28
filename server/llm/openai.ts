@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import type { NewsItem, Price } from '../types.js';
 import {
-  LLM_MODEL, LLM_BASE_URL, LLM_SYSTEM_PROMPT,
+  LLM_MODEL, LLM_CHAT_MODEL, LLM_BASE_URL, LLM_SYSTEM_PROMPT,
   NEWS_RECENT_WINDOW_MS, NEWS_RECENCY_DECAY_MIN,
   INSTRUMENT_KEYWORDS, HIGH_IMPACT_KEYWORDS,
   INSTRUMENTS,
@@ -202,9 +202,9 @@ export async function chat(input: ChatInput): Promise<string> {
   let completion;
   try {
     completion = await client.chat.completions.create({
-      model: LLM_MODEL,
+      model: LLM_CHAT_MODEL,         // Thinking 有効モデル
       temperature: 0.5,
-      max_tokens: 1000,   // Gemini 2.5 Flash: thinking分 + 長めの返答に余裕
+      max_tokens: 4000,              // Thinking + 長めの回答に十分な余裕
       messages: [
         { role: 'system', content: systemPrompt },
         ...input.messages,
@@ -214,5 +214,11 @@ export async function chat(input: ChatInput): Promise<string> {
     tripCircuit(err);
     throw err;
   }
-  return completion.choices[0]?.message?.content?.trim() ?? '(no response)';
+  const choice = completion.choices[0];
+  const text = choice?.message?.content?.trim() ?? '(no response)';
+  if (choice?.finish_reason === 'length') {
+    console.warn(`[chat] TRUNCATED. usage=${JSON.stringify(completion.usage)}`);
+    return text + ' …(token切れ)';
+  }
+  return text;
 }
