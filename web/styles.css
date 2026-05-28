@@ -113,9 +113,32 @@ body {
 }
 
 /* 左列の3ブロックの高さ配分 */
-.left-col .price-grid { flex: 0 0 auto; }       /* 内容ぶん */
-.left-col .chart-panel { flex: 0 0 320px; }      /* 固定 320px */
-.left-col .chat-board { flex: 1 1 auto; min-height: 200px; }  /* 残り */
+.left-col .price-grid { flex: 0 0 auto; }                              /* 内容ぶん */
+.left-col .chart-panel { flex: 1 1 auto; min-height: 150px; }           /* 残り */
+.left-col .chat-board { flex: 0 0 auto; height: 280px; min-height: 120px; }  /* ユーザー指定 (D&D可) */
+
+/* リサイズハンドル: チャートとチャットの境界をドラッグ */
+.resize-handle {
+  flex: 0 0 6px;
+  cursor: row-resize;
+  position: relative;
+  margin: -2px 0;
+  z-index: 5;
+  border-radius: 3px;
+}
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 36px;
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+}
+.resize-handle:hover::before { background: #58a6ff; }
+.resize-handle.dragging::before { background: #58a6ff; }
 
 .chart-panel { padding: 0; }
 #tradingview-chart {

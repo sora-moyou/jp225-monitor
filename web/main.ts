@@ -26,6 +26,49 @@ initChat(
   document.getElementById('chat-clear') as HTMLButtonElement,
 );
 
+// ─── チャット高さの D&D リサイズ + 永続化 ──────────
+{
+  const handle = document.getElementById('chat-resize');
+  const chatBoard = document.querySelector<HTMLElement>('.chat-board');
+  if (handle && chatBoard) {
+    // localStorage から復元
+    const saved = localStorage.getItem('chat-height');
+    if (saved) chatBoard.style.height = saved;
+
+    let dragging = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+      dragging = true;
+      startY = e.clientY;
+      startHeight = chatBoard.offsetHeight;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'row-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const delta = e.clientY - startY;
+      // ハンドルを上に動かす = チャット拡大
+      const newH = Math.max(120, Math.min(window.innerHeight - 220, startHeight - delta));
+      chatBoard.style.height = `${newH}px`;
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // 永続化
+      localStorage.setItem('chat-height', chatBoard.style.height);
+    });
+  }
+}
+
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
 const bannerEl = document.getElementById('alert-banner')!;
