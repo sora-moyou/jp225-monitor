@@ -17,14 +17,21 @@ export const RSS_FEEDS = {
     { name: 'NHK ビジネス',   url: 'https://www3.nhk.or.jp/rss/news/cat5.xml' },
     { name: '東洋経済',       url: 'https://toyokeizai.net/list/feed/rss' },
     { name: '朝日',           url: 'https://www.asahi.com/rss/asahi/business.rdf' },
+    { name: 'ITmedia',        url: 'https://rss.itmedia.co.jp/rss/2.0/business.xml' },
+    { name: '毎日',           url: 'https://mainichi.jp/rss/etc/mainichi-flash.rss' },
+    { name: '共同',           url: 'https://www.kyodo.co.jp/feed/?cat=economy' },
   ],
   en: [
-    { name: 'CNBC',           url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
-    { name: 'Reuters',        url: 'https://feeds.reuters.com/reuters/businessNews' },
+    { name: 'CNBC Markets',   url: 'https://www.cnbc.com/id/15839135/device/rss/rss.html' },
+    { name: 'CNBC Economy',   url: 'https://www.cnbc.com/id/20910258/device/rss/rss.html' },
+    { name: 'Fed',            url: 'https://www.federalreserve.gov/feeds/press_all.xml' },
     { name: 'MarketWatch',    url: 'https://feeds.content.dowjones.io/public/rss/mw_topstories' },
     { name: 'Yahoo Finance',  url: 'https://finance.yahoo.com/news/rssindex' },
     { name: 'Investing.com',  url: 'https://www.investing.com/rss/news.rss' },
     { name: 'ZeroHedge',      url: 'https://feeds.feedburner.com/zerohedge/feed' },
+    { name: 'ForexLive',      url: 'https://www.forexlive.com/feed' },
+    { name: 'Benzinga',       url: 'https://www.benzinga.com/news/feed' },
+    { name: 'SeekingAlpha',   url: 'https://seekingalpha.com/market_currents.xml' },
   ],
 } as const;
 
