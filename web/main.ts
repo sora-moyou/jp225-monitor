@@ -111,6 +111,15 @@ setInterval(() => {
   clockEl.textContent = `JST ${d.toLocaleTimeString('ja-JP', { hour12: false })}`;
 }, 1000);
 
+// バージョン表示 (起動時に1回取得)
+const versionEl = document.getElementById('app-version');
+if (versionEl) {
+  fetch('/api/version')
+    .then(r => r.json())
+    .then((d: { version: string }) => { versionEl.textContent = `v${d.version}`; })
+    .catch(() => { versionEl.textContent = 'v?'; });
+}
+
 enableSoundBtn.onclick = () => {
   enableSound();
   enableSoundBtn.classList.add('hidden');
