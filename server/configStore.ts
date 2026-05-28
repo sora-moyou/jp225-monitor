@@ -42,10 +42,11 @@ export function loadConfig(): UserConfig {
 }
 
 export function saveConfig(config: UserConfig): void {
+  const file = CONFIG_FILE();
   mkdirSync(CONFIG_DIR(), { recursive: true });
-  writeFileSync(CONFIG_FILE(), JSON.stringify(config, null, 2), 'utf-8');
+  writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
   cached = config;
-  console.log(`[configStore] saved to ${CONFIG_FILE()}`);
+  console.log(`[configStore] saved to ${file}`);
 }
 
 // APIキー解決: config.json 優先 → 環境変数 fallback
@@ -79,13 +80,14 @@ export function resolvePort(): number {
   const v = loadConfig().port;
   if (typeof v === 'number') return v;
   const env = Number(process.env.PORT);
-  if (Number.isFinite(env) && env > 0) return env;
-  return PARAM_BOUNDS.port.default;
+  const b = PARAM_BOUNDS.port;
+  if (Number.isFinite(env) && env >= b.min && env <= b.max) return env;
+  return b.default;
 }
 
 // 範囲外なら理由を文字列で返す。OK なら null。
 export function validateParam(
-  name: 'pricePollMs' | 'newsPollMs' | 'port',
+  name: keyof typeof PARAM_BOUNDS,
   value: unknown,
 ): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {

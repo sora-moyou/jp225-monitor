@@ -49,6 +49,11 @@ describe('configStore resolvers', () => {
     expect(resolveNewsPollMs()).toBe(60_000);
   });
 
+  it('resolveNewsPollMs reads config.json when set', () => {
+    writeFileConfig({ newsPollMs: 30000 });
+    expect(resolveNewsPollMs()).toBe(30_000);
+  });
+
   it('resolvePort: env PORT overrides default but config overrides env', () => {
     process.env.PORT = '4000';
     resetConfigCache();
