@@ -50,8 +50,9 @@ export const RSS_FEEDS = {
 export const PRICE_POLL_INTERVAL_MS = 2000;
 export const NEWS_POLL_INTERVAL_MS = 60_000;
 export const PRICE_BACKOFF_MS = [5000, 10_000, 30_000, 60_000];
-export const NEWS_MAX_ITEMS = 100;
-export const NEWS_RECENT_WINDOW_MS = 30 * 60 * 1000;
+export const NEWS_MAX_ITEMS = 200;                        // 4時間ぶん保持できるよう拡大
+export const NEWS_RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;  // LLMに渡す上限 = 4時間
+export const NEWS_RECENCY_DECAY_MIN = 120;                // recency加点が0になる年齢 (分)
 
 // 全銘柄共通のマクロ高インパクト・キーワード（強ブースト）
 // 要人発言・地政学・指標・中央銀行など、銘柄横断で必ず注目すべき材料
@@ -99,20 +100,26 @@ export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
   '6367.T': ['ダイキン', 'daikin', '空調', 'air conditioner', 'hvac'],
 };
 
-export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。直近30分のニュース（関連性スコア順）から、相場急変の最有力材料を必ず1つ示してください。
+export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。直近4時間のニュース（関連性スコア順）から、相場急変の最有力材料を必ず1つ示してください。
 
 ルール:
 - 日本語で1〜2文、結論先出しで簡潔に。
 - 必ず「○○分前のXXがYYのため」のように、最も関連する1件の発生時刻と内容を引用する。
+- 直近30分の小さな記事よりも、数時間前でも「相場転換の引き金」になる重大材料を優先する。例:
+  • FOMC/日銀の政策決定
+  • 主要要人の踏み込み発言
+  • 大型経済指標の発表
+  • 地政学イベント（攻撃、停戦、制裁）
+  • 為替介入観測・発表
 - 最優先で注目すべきマクロ材料:
   (1) 米要人発言 (Trump, Powell, Yellen, Bessent 等)
   (2) 日本要人発言 (植田日銀総裁, 神田/加藤財務相, 首相, 介入観測)
   (3) 地政学 (イラン, イスラエル, ホルムズ海峡, 中東, 中国, 台湾, ロシア)
   (4) 米経済指標 (CPI, PCE, NFP, 雇用統計, GDP, ISM, PMI)
   (5) 関税・通商 (トランプ関税, 制裁)
-- 直接の引き金が薄くても、上記マクロ要因のうち時刻が近いものを必ず選ぶ。
+- 直接の引き金が薄くても、上記マクロ要因の時刻が遠くなければ必ず選ぶ。
 - 「明確な材料なし」「特に材料なし」とは絶対に答えない。最低でも仮説として1件は挙げる。
-- 銘柄間連動（例: USD/JPY → 日経、原油 → イラン情勢）にも触れて良い。`;
+- 銘柄間連動（例: USD/JPY → 日経、原油 → イラン情勢、米10年債 → リスクオフ）にも触れて良い。`;
 
 // LLM プロバイダ: Groq（無料、Llama 3.3 70B、OpenAI互換API）
 // OpenAI に戻すには LLM_BASE_URL を undefined、LLM_MODEL を 'gpt-4o-mini' などへ

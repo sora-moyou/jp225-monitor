@@ -7,9 +7,10 @@
 import type { Price } from '../types.js';
 import { INSTRUMENTS } from '../../server/config.js';
 
-const WINDOW_MS = 60 * 60 * 1000;     // 1時間のスナップショットを保持
+const WINDOW_MS = 4 * 60 * 60 * 1000; // 4時間のスナップショットを保持
 const REEVAL_MS = 5 * 60 * 1000;      // 5分ごとに再評価
-const MIN_SAMPLES = 60;               // 最低60サンプル (=約2分相当) で再評価開始
+const MIN_SAMPLES = 90;               // 最低90サンプル (=約3分相当) で再評価開始
+                                      // 履歴が増えるほど精度向上、最大で4時間ぶん使用
 const ANCHOR: string = 'NK=F';
 const INITIAL_LEADER = 'JPY=X';       // 履歴が足りない間の暫定リーダー
 
