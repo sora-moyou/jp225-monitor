@@ -19,9 +19,14 @@ const client = !isPlaceholder
 
 export function isLLMEnabled(): boolean { return client !== null; }
 
-// ─── サーキットブレーカー: 429を受けたらN秒は LLM 呼ばずに即フォールバック ───
-const CIRCUIT_PAUSE_MS = 60_000;
+// ─── サーキットブレーカー: 429時に指数バックオフ ───
+// 連続429 → だんだん長く待つ (per-min 制限なら短時間で復帰、per-day なら数時間待機)
+// 60s → 5min → 30min → 2hr → 8hr
+const PAUSE_LADDER_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3600_000, 8 * 3600_000];
+const CONSECUTIVE_WINDOW_MS = 10 * 60_000;   // 10分以内に再度429なら "連続" と判定
 let circuitOpenUntil = 0;
+let consecutiveFails = 0;
+let lastFailAt = 0;
 
 function checkCircuit(): void {
   if (Date.now() < circuitOpenUntil) {
@@ -31,9 +36,25 @@ function checkCircuit(): void {
 function tripCircuit(err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   if (/429|rate[_ ]limit|exhausted/i.test(msg)) {
-    circuitOpenUntil = Date.now() + CIRCUIT_PAUSE_MS;
-    const sec = Math.round(CIRCUIT_PAUSE_MS / 1000);
-    console.warn(`[LLM] 429 detected — circuit open for ${sec}s`);
+    const now = Date.now();
+    if (now - lastFailAt < CONSECUTIVE_WINDOW_MS) {
+      consecutiveFails = Math.min(consecutiveFails + 1, PAUSE_LADDER_MS.length - 1);
+    } else {
+      consecutiveFails = 0;
+    }
+    lastFailAt = now;
+    const pause = PAUSE_LADDER_MS[consecutiveFails]!;
+    circuitOpenUntil = now + pause;
+    const sec = Math.round(pause / 1000);
+    const min = Math.round(pause / 60_000);
+    const human = sec < 90 ? `${sec}s` : `${min}min`;
+    console.warn(`[LLM] 429 #${consecutiveFails + 1} — circuit open for ${human} (日次枯渇ならJST 9:00まで)`);
+  }
+}
+function recordSuccess(): void {
+  if (consecutiveFails > 0) {
+    console.log('[LLM] success — circuit reset');
+    consecutiveFails = 0;
   }
 }
 
@@ -131,6 +152,7 @@ export async function explain(input: ExplainInput): Promise<string> {
     tripCircuit(err);
     throw err;
   }
+  recordSuccess();
   const choice = completion.choices[0];
   const text = choice?.message?.content?.trim() ?? '(no response)';
   if (choice?.finish_reason === 'length') {
@@ -214,6 +236,7 @@ export async function chat(input: ChatInput): Promise<string> {
     tripCircuit(err);
     throw err;
   }
+  recordSuccess();
   const choice = completion.choices[0];
   const text = choice?.message?.content?.trim() ?? '(no response)';
   if (choice?.finish_reason === 'length') {
