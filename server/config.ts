@@ -47,8 +47,8 @@ export const RSS_FEEDS = {
   ],
 } as const;
 
-export const PRICE_POLL_INTERVAL_MS = 2000;
-export const NEWS_POLL_INTERVAL_MS = 60_000;
+// PRICE_POLL_INTERVAL_MS / NEWS_POLL_INTERVAL_MS は configStore に移動。
+// 直接定数を参照していた箇所は resolvePricePollMs() / resolveNewsPollMs() を使う。
 export const PRICE_BACKOFF_MS = [5000, 10_000, 30_000, 60_000];
 export const NEWS_MAX_ITEMS = 200;                        // 4時間ぶん保持できるよう拡大
 export const NEWS_RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;  // LLMに渡す上限 = 4時間
