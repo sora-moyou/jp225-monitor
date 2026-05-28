@@ -68,6 +68,18 @@ body {
   color: var(--muted);
 }
 .alert .explanation { display: block; margin-top: 4px; color: var(--text); }
+.alert .btn-group { display: flex; gap: 4px; align-items: center; }
+.alert .refresh-btn {
+  cursor: pointer;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 14px;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+.alert .refresh-btn:hover { color: var(--text); border-color: #58a6ff; }
 .alert .close {
   cursor: pointer;
   color: var(--muted);

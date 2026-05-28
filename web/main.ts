@@ -53,33 +53,31 @@ enableSoundBtn.onclick = () => {
 };
 
 // ─── LLM呼び出しスロットル ─────────────────────────
-// Groq無料枠 (6000 TPM, 30 RPM) 対策:
-//   - 同一銘柄の説明は60秒キャッシュ
-//   - 全体で6秒間隔以上を保証 (=最大10コール/分)
-const SYMBOL_CACHE_MS = 60_000;
-const GLOBAL_MIN_INTERVAL_MS = 6_000;
-const symbolCache = new Map<string, { at: number; text: string }>();
-let lastLLMCallAt = 0;
+// 5分以上の間隔を保証。バナーの🔄ボタンでクールダウン無視の即時更新可能。
+const LLM_AUTO_INTERVAL_MS = 5 * 60 * 1000;
+let lastLLMCallAt = -Infinity;
+
+function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {
+  lastLLMCallAt = Date.now();
+  setExplanation(banner, '(取得中...)');
+  fetchExplanation(alert)
+    .then(text => setExplanation(banner, text))
+    .catch(() => setExplanation(banner, UI.ja.explanationFailed));
+}
 
 function scheduleExplanation(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {
+  // 🔄ボタン: クールダウンを無視して即LLM
+  banner.refresh = () => callLLM(alert, banner);
+
   const now = Date.now();
-  const cached = symbolCache.get(alert.symbol);
-  if (cached && now - cached.at < SYMBOL_CACHE_MS) {
-    setExplanation(banner, `${cached.text} [60秒以内のキャッシュ]`);
-    return;
-  }
-  const waitMs = Math.max(0, GLOBAL_MIN_INTERVAL_MS - (now - lastLLMCallAt));
-  lastLLMCallAt = now + waitMs;
-  setTimeout(() => {
-    fetchExplanation(alert)
-      .then(text => {
-        symbolCache.set(alert.symbol, { at: Date.now(), text });
-        setExplanation(banner, text);
-      })
-      .catch(() => setExplanation(banner, UI.ja.explanationFailed));
-  }, waitMs);
-  if (waitMs > 0) {
-    setExplanation(banner, `(${Math.ceil(waitMs / 1000)}秒待機後にLLMへ問い合わせ...)`);
+  const elapsed = now - lastLLMCallAt;
+  if (elapsed >= LLM_AUTO_INTERVAL_MS) {
+    callLLM(alert, banner);
+  } else {
+    const waitMs = LLM_AUTO_INTERVAL_MS - elapsed;
+    const m = Math.floor(waitMs / 60_000);
+    const s = Math.floor((waitMs % 60_000) / 1000);
+    setExplanation(banner, `(API節約モード: 自動更新まで ${m}分${s.toString().padStart(2, '0')}秒。🔄ボタンで即更新)`);
   }
 }
 
