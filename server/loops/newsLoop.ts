@@ -1,9 +1,11 @@
 import { fetchAllNews } from '../sources/rssAggregator.js';
 import { broadcast } from '../sse/broker.js';
 import { setNews } from '../cache.js';
-import { NEWS_POLL_INTERVAL_MS } from '../config.js';
+import { resolveNewsPollMs } from '../configStore.js';
 
 let timer: NodeJS.Timeout | null = null;
+let running = false;
+let intervalMs = resolveNewsPollMs();
 
 async function tick(): Promise<void> {
   try {
@@ -15,14 +17,29 @@ async function tick(): Promise<void> {
   }
 }
 
-export function startNewsLoop(): void {
-  const schedule = async () => {
+function schedule(): void {
+  if (!running) return;
+  void (async () => {
     await tick();
-    timer = setTimeout(schedule, NEWS_POLL_INTERVAL_MS);
-  };
-  void schedule();
+    if (running) {
+      timer = setTimeout(schedule, intervalMs);
+    }
+  })();
+}
+
+export function startNewsLoop(): void {
+  if (running) return;
+  running = true;
+  intervalMs = resolveNewsPollMs();
+  schedule();
 }
 
 export function stopNewsLoop(): void {
+  running = false;
   if (timer) { clearTimeout(timer); timer = null; }
+}
+
+export function restartNewsLoop(): void {
+  stopNewsLoop();
+  startNewsLoop();
 }
