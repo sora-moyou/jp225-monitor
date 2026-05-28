@@ -9,6 +9,7 @@ import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
 import { initSettingsModal } from './components/settingsModal.js';
+import { initApiStatusPane } from './components/apiStatusPane.js';
 import { checkForUpdates } from './lib/updater.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
@@ -94,6 +95,9 @@ initSettingsModal({
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
 });
+
+const apiStatusEl = document.getElementById('api-status');
+if (apiStatusEl) initApiStatusPane(apiStatusEl);
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;

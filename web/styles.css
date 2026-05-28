@@ -474,3 +474,22 @@ body {
   margin-top: 8px;
   font-size: 12px;
 }
+
+.api-status {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.api-status .dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  cursor: help;
+}
+.api-status .dot .label { color: var(--muted); font-size: 11px; }
