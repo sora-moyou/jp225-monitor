@@ -8,6 +8,7 @@ import { addBanner, setExplanation } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
+import { initSettingsModal } from './components/settingsModal.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
@@ -75,6 +76,19 @@ function setupResize(handleId: string, targetSelector: string, storageKey: strin
 setupResize('chat-resize', '.chat-board', 'chat-height', 120);
 // アラート高さ: ハンドルはアラートの下にある (下ドラッグでアラート拡大)
 setupResize('alerts-resize', '.alerts-pane', 'alerts-height', 100);
+
+// 設定モーダル
+initSettingsModal(
+  document.getElementById('settings-btn') as HTMLButtonElement,
+  document.getElementById('settings-modal')!,
+  document.getElementById('settings-close') as HTMLButtonElement,
+  document.getElementById('settings-save') as HTMLButtonElement,
+  document.getElementById('key-gemini') as HTMLInputElement,
+  document.getElementById('key-groq') as HTMLInputElement,
+  document.getElementById('key-openai') as HTMLInputElement,
+  document.getElementById('settings-status-area')!,
+  document.getElementById('settings-backdrop')!,
+);
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;

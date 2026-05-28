@@ -7,8 +7,8 @@ import {
   INSTRUMENTS,
 } from '../config.js';
 import type { LLMProvider } from '../config.js';
+import { resolveApiKey } from '../configStore.js';
 
-// プロバイダ毎の状態 (キー有効性 + サーキットブレーカー)
 interface ProviderState {
   config: LLMProvider;
   client: OpenAI | null;
@@ -20,8 +20,9 @@ interface ProviderState {
 const PAUSE_LADDER_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3600_000, 8 * 3600_000];
 const CONSECUTIVE_WINDOW_MS = 10 * 60_000;
 
-const providers: ProviderState[] = LLM_PROVIDERS.map(config => {
-  const key = process.env[config.envVar]?.trim();
+function buildProvider(config: LLMProvider): ProviderState {
+  const name = config.name as 'gemini' | 'groq' | 'openai';
+  const key = resolveApiKey(name);
   const isPlaceholder = !key || key.includes('your-key');
   return {
     config,
@@ -30,12 +31,34 @@ const providers: ProviderState[] = LLM_PROVIDERS.map(config => {
     consecutiveFails: 0,
     lastFailAt: 0,
   };
-});
+}
 
-const enabledProviders = providers.filter(p => p.client !== null);
-console.log(`[LLM] enabled providers: ${enabledProviders.map(p => p.config.name).join(', ') || '(none)'}`);
+let providers: ProviderState[] = LLM_PROVIDERS.map(buildProvider);
+logEnabled();
 
-export function isLLMEnabled(): boolean { return enabledProviders.length > 0; }
+function logEnabled(): void {
+  const enabled = providers.filter(p => p.client !== null).map(p => p.config.name);
+  console.log(`[LLM] enabled providers: ${enabled.join(', ') || '(none)'}`);
+}
+
+// 設定保存後に呼んでクライアントを差し替える
+export function reloadProviders(): void {
+  providers = LLM_PROVIDERS.map(buildProvider);
+  logEnabled();
+}
+
+export function isLLMEnabled(): boolean {
+  return providers.some(p => p.client !== null);
+}
+
+export function getProviderStatus() {
+  return providers.map(p => ({
+    name: p.config.name,
+    enabled: p.client !== null,
+    paused: Date.now() < p.circuitOpenUntil,
+    pausedUntil: p.circuitOpenUntil,
+  }));
+}
 
 function isAvailable(p: ProviderState): boolean {
   return p.client !== null && Date.now() >= p.circuitOpenUntil;
@@ -70,12 +93,11 @@ async function callWithFallback(
   task: (p: ProviderState) => Promise<string>,
   label: string,
 ): Promise<string> {
-  if (enabledProviders.length === 0) return '(LLM disabled — APIキー未設定)';
-  const available = enabledProviders.filter(isAvailable);
+  const enabled = providers.filter(p => p.client !== null);
+  if (enabled.length === 0) return '(LLM disabled — APIキーが未設定です。右上⚙️から設定してください)';
+  const available = enabled.filter(isAvailable);
   if (available.length === 0) {
-    const next = enabledProviders
-      .map(p => p.circuitOpenUntil)
-      .sort((a, b) => a - b)[0]!;
+    const next = enabled.map(p => p.circuitOpenUntil).sort((a, b) => a - b)[0]!;
     const waitSec = Math.max(0, Math.round((next - Date.now()) / 1000));
     throw new Error(`429 (all providers paused, retry in ${waitSec}s)`);
   }

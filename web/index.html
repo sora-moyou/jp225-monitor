@@ -12,8 +12,54 @@
       <span id="leader-info" class="leader-info"></span>
       <span id="clock"></span>
       <span id="connection-status" class="badge offline">offline</span>
+      <button id="settings-btn" class="settings-btn" title="API設定">⚙️</button>
     </div>
   </header>
+
+  <!-- 設定モーダル -->
+  <div id="settings-modal" class="modal hidden">
+    <div id="settings-backdrop" class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>API キー設定</h2>
+      <p class="modal-hint">
+        最低1つ設定すれば動作。複数設定で 429 時に自動フォールバック。<br>
+        <strong>保存先:</strong> <code id="config-file-path">~/.jp225-monitor/config.json</code> (ローカルのみ、送信されません)
+      </p>
+
+      <div id="settings-status-area"></div>
+
+      <div class="setting-row">
+        <label>
+          Gemini <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span class="badge-free">無料 / 日次1500回</span>
+        </label>
+        <input type="password" id="key-gemini" autocomplete="off" />
+      </div>
+
+      <div class="setting-row">
+        <label>
+          Groq <a href="https://console.groq.com/keys" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span class="badge-free">無料 / 日次14400回</span>
+        </label>
+        <input type="password" id="key-groq" autocomplete="off" />
+      </div>
+
+      <div class="setting-row">
+        <label>
+          OpenAI <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span class="badge-paid">有料 ($5〜)</span>
+        </label>
+        <input type="password" id="key-openai" autocomplete="off" />
+      </div>
+
+      <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
+
+      <div class="modal-actions">
+        <button type="button" id="settings-close" class="btn-secondary">閉じる</button>
+        <button type="button" id="settings-save" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
 
   <main class="main-grid">
     <!-- 左 1/3: 価格カード → チャート → AIチャット -->
