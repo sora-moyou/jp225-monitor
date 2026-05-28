@@ -1,3 +1,5 @@
+import { apiUrl } from '../lib/apiBase.js';
+
 interface StatusResponse {
   yahoo: { fallback: boolean; skipUntil: number };
   llm: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
@@ -24,7 +26,7 @@ function renderDot(label: string, state: 'ok' | 'paused' | 'off', tooltip: strin
 export async function refreshApiStatus(container: HTMLElement): Promise<void> {
   let data: StatusResponse;
   try {
-    const res = await fetch('/api/status');
+    const res = await fetch(apiUrl('/api/status'));
     if (!res.ok) { container.textContent = ''; return; }
     data = await res.json() as StatusResponse;
   } catch {

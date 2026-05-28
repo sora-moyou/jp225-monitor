@@ -1,5 +1,7 @@
 // シンプルなAIチャット (セッション内のみ、ページリロードで消える)
 
+import { apiUrl } from '../lib/apiBase.js';
+
 interface Message { role: 'user' | 'assistant'; content: string; }
 
 const history: Message[] = [];
@@ -34,7 +36,7 @@ function renderMessages(messagesEl: HTMLElement, hintEl: HTMLElement | null): vo
 }
 
 async function sendToServer(messages: Message[]): Promise<string> {
-  const res = await fetch('/api/chat', {
+  const res = await fetch(apiUrl('/api/chat'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages }),

@@ -1,3 +1,5 @@
+import { apiUrl } from '../lib/apiBase.js';
+
 interface LogEntry { ts: number; level: 'log' | 'warn' | 'error'; msg: string; }
 interface LogsResponse { logs: LogEntry[]; }
 
@@ -39,7 +41,7 @@ export function initLogsModal(el: LogsModalElements): void {
 
   async function fetchAndAppend(initial: boolean): Promise<void> {
     try {
-      const url = initial ? '/api/logs' : `/api/logs?since=${lastTs}`;
+      const url = initial ? apiUrl('/api/logs') : apiUrl(`/api/logs?since=${lastTs}`);
       const res = await fetch(url);
       if (!res.ok) return;
       const data = await res.json() as LogsResponse;

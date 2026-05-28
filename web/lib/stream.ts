@@ -1,4 +1,5 @@
 import type { Price, NewsItem } from '../types.js';
+import { apiUrl } from './apiBase.js';
 
 interface StreamHandlers {
   onPrices: (prices: Price[]) => void;
@@ -13,7 +14,7 @@ export function connectStream(handlers: StreamHandlers): () => void {
   function open() {
     if (closed) return;
     handlers.onStatusChange('connecting');
-    es = new EventSource('/api/stream');
+    es = new EventSource(apiUrl('/api/stream'));
 
     es.addEventListener('open', () => handlers.onStatusChange('online'));
 

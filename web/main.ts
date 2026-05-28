@@ -15,6 +15,7 @@ import { maybeShowUpdateToast } from './components/updateToast.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
+import { apiUrl } from './lib/apiBase.js';
 
 const detector = new ChangeDetector(INSTRUMENTS);
 
@@ -137,7 +138,7 @@ setInterval(() => {
 // バージョン表示 (起動時に1回取得) + Tauri内なら更新チェック
 const versionEl = document.getElementById('app-version');
 if (versionEl) {
-  fetch('/api/version')
+  fetch(apiUrl('/api/version'))
     .then(r => r.json())
     .then((d: { version: string }) => { versionEl.textContent = `v${d.version}`; })
     .catch(() => { versionEl.textContent = 'v?'; });

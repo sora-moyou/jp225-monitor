@@ -1,3 +1,5 @@
+import { apiUrl } from '../lib/apiBase.js';
+
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
@@ -13,7 +15,7 @@ interface SaveResponse {
 
 async function fetchSettings(): Promise<SettingsResponse | null> {
   try {
-    const res = await fetch('/api/settings');
+    const res = await fetch(apiUrl('/api/settings'));
     if (!res.ok) return null;
     return await res.json() as SettingsResponse;
   } catch { return null; }
@@ -30,7 +32,7 @@ interface SavePayload {
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
   try {
-    const res = await fetch('/api/settings/keys', {
+    const res = await fetch(apiUrl('/api/settings/keys'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

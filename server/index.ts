@@ -31,6 +31,21 @@ const APP_VERSION: string = (typeof __APP_VERSION__ === 'string')
 console.log(`[server] JP225 Monitor v${APP_VERSION}`);
 
 const app = express();
+
+// CORS: Tauri 配布版では Webview origin (tauri://localhost or http://tauri.localhost)
+// が sidecar (localhost:3000) と異なるため、明示的に許可する。
+// サイドカーは localhost 専用 (loopback only) を想定しているので * で安全。
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 app.use(express.json({ limit: '256kb' }));
 app.get('/api/stream', streamHandler);
 app.post('/api/explain', explainHandler);

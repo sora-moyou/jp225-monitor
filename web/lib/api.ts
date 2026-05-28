@@ -1,7 +1,8 @@
 import type { AlertEvent } from '../types.js';
+import { apiUrl } from './apiBase.js';
 
 export async function fetchExplanation(alert: AlertEvent): Promise<string> {
-  const res = await fetch('/api/explain', {
+  const res = await fetch(apiUrl('/api/explain'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
