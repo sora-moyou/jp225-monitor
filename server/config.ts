@@ -1,14 +1,20 @@
 import type { InstrumentMeta } from './types.js';
 
 export const INSTRUMENTS: InstrumentMeta[] = [
-  { symbol: 'NK=F',  labelJa: '日経225先物',    labelEn: 'Nikkei 225 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent' },
-  { symbol: 'NQ=F',  labelJa: 'ナスダック100先物', labelEn: 'Nasdaq 100 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent' },
-  { symbol: 'YM=F',  labelJa: 'ダウ先物',        labelEn: 'Dow Fut',        magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent' },
-  { symbol: 'ES=F',  labelJa: 'S&P500先物',     labelEn: 'S&P500 Fut',     magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent' },
-  { symbol: 'JPY=X', labelJa: 'ドル円',          labelEn: 'USD/JPY',        magnitudeThreshold: 0.20, slopeThreshold: 0.07, unit: 'percent' },
-  { symbol: 'CL=F',  labelJa: 'WTI原油',        labelEn: 'WTI Crude',      magnitudeThreshold: 0.50, slopeThreshold: 0.20, unit: 'percent' },
-  { symbol: '^VIX',  labelJa: 'VIX',            labelEn: 'VIX',            magnitudeThreshold: 5.00, slopeThreshold: 2.00, unit: 'percent' },
-  { symbol: '^TNX',  labelJa: '米10年債利回り',   labelEn: 'US 10Y Yield',   magnitudeThreshold: 2.00, slopeThreshold: 1.00, unit: 'bp' },
+  { symbol: 'NK=F',  labelJa: '日経225先物',    labelEn: 'Nikkei 225 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
+  { symbol: 'NQ=F',  labelJa: 'ナスダック100先物', labelEn: 'Nasdaq 100 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
+  { symbol: 'YM=F',  labelJa: 'ダウ先物',        labelEn: 'Dow Fut',        magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
+  { symbol: 'ES=F',  labelJa: 'S&P500先物',     labelEn: 'S&P500 Fut',     magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
+  { symbol: 'JPY=X', labelJa: 'ドル円',          labelEn: 'USD/JPY',        magnitudeThreshold: 0.20, slopeThreshold: 0.07, unit: 'percent', category: 'main' },
+  { symbol: 'CL=F',  labelJa: 'WTI原油',        labelEn: 'WTI Crude',      magnitudeThreshold: 0.50, slopeThreshold: 0.20, unit: 'percent', category: 'main' },
+  { symbol: '^VIX',  labelJa: 'VIX',            labelEn: 'VIX',            magnitudeThreshold: 5.00, slopeThreshold: 2.00, unit: 'percent', category: 'main' },
+  { symbol: '^TNX',  labelJa: '米10年債利回り',   labelEn: 'US 10Y Yield',   magnitudeThreshold: 2.00, slopeThreshold: 1.00, unit: 'bp',      category: 'main' },
+  // 値がさ株（東証、日経寄与上位5）— アラートのみ、カード非表示
+  { symbol: '9983.T', labelJa: 'ファーストリテイリング', labelEn: 'Fast Retailing',    magnitudeThreshold: 1.50, slopeThreshold: 0.60, unit: 'percent', category: 'heavyweight' },
+  { symbol: '8035.T', labelJa: '東京エレクトロン',       labelEn: 'Tokyo Electron',    magnitudeThreshold: 1.50, slopeThreshold: 0.60, unit: 'percent', category: 'heavyweight' },
+  { symbol: '6857.T', labelJa: 'アドバンテスト',         labelEn: 'Advantest',         magnitudeThreshold: 1.50, slopeThreshold: 0.60, unit: 'percent', category: 'heavyweight' },
+  { symbol: '9984.T', labelJa: 'ソフトバンクG',          labelEn: 'SoftBank Group',    magnitudeThreshold: 1.50, slopeThreshold: 0.60, unit: 'percent', category: 'heavyweight' },
+  { symbol: '6367.T', labelJa: 'ダイキン',               labelEn: 'Daikin',            magnitudeThreshold: 1.50, slopeThreshold: 0.60, unit: 'percent', category: 'heavyweight' },
 ];
 
 export const RSS_FEEDS = {
@@ -85,6 +91,12 @@ export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
   'CL=F': ['原油', 'opec', 'ガソリン', '石油', 'oil', 'crude', 'wti', 'brent', 'gasoline', 'petroleum', 'iran', 'saudi', 'russia'],
   '^VIX': ['vix', '恐怖', 'パニック', '売り', '急落', 'リスクオフ', 'volatility', 'fear', 'panic', 'sell-off', 'selloff', 'hedge', 'risk off', 'crash'],
   '^TNX': ['米10年', '国債', '利回り', '利上げ', '利下げ', 'yield', 'treasury', '10-year', '10y', 't-note', 'bond', 'fed funds', 'powell', 'cpi'],
+  // 値がさ株（個別株、関連業界キーワードも）
+  '9983.T': ['ファーストリテイリング', 'ユニクロ', 'fast retailing', 'uniqlo', '小売', 'apparel'],
+  '8035.T': ['東京エレクトロン', 'tokyo electron', '半導体製造装置', 'semiconductor equipment', 'asml', 'tsmc'],
+  '6857.T': ['アドバンテスト', 'advantest', '半導体テスター', 'semiconductor test', 'memory test', 'nvidia', 'ai chip'],
+  '9984.T': ['ソフトバンク', 'softbank', 'arm', '孫正義', 'masa', 'vision fund', 'ai投資'],
+  '6367.T': ['ダイキン', 'daikin', '空調', 'air conditioner', 'hvac'],
 };
 
 export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。直近30分のニュース（関連性スコア順）から、相場急変の最有力材料を必ず1つ示してください。

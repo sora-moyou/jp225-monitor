@@ -1,6 +1,7 @@
 export type Symbol =
   | 'NK=F' | 'NQ=F' | 'YM=F' | 'ES=F'
-  | 'JPY=X' | 'CL=F' | '^VIX' | '^TNX';
+  | 'JPY=X' | 'CL=F' | '^VIX' | '^TNX'
+  | '9983.T' | '8035.T' | '6857.T' | '9984.T' | '6367.T';   // 値がさ株上位5
 
 export interface Price {
   symbol: Symbol;
@@ -26,6 +27,7 @@ export interface InstrumentMeta {
   magnitudeThreshold: number;
   slopeThreshold: number;
   unit: 'percent' | 'bp';
+  category?: 'main' | 'heavyweight';   // 値がさ株は 'heavyweight'
 }
 
 export type SSEEvent =

@@ -2,14 +2,22 @@
 // 高い銘柄を選び続ける。再評価は REEVAL_MS ごと。
 //
 // 起動直後で履歴が足りない間は INITIAL_LEADER を返す。
+// 値がさ株 (heavyweight) は NK の構成要素なので候補から除外。
 
 import type { Price } from '../types.js';
+import { INSTRUMENTS } from '../../server/config.js';
 
 const WINDOW_MS = 60 * 60 * 1000;     // 1時間のスナップショットを保持
 const REEVAL_MS = 5 * 60 * 1000;      // 5分ごとに再評価
 const MIN_SAMPLES = 60;               // 最低60サンプル (=約2分相当) で再評価開始
 const ANCHOR: string = 'NK=F';
 const INITIAL_LEADER = 'JPY=X';       // 履歴が足りない間の暫定リーダー
+
+const ELIGIBLE_CANDIDATES = new Set<string>(
+  INSTRUMENTS
+    .filter(i => i.category !== 'heavyweight' && i.symbol !== ANCHOR)
+    .map(i => i.symbol as string)
+);
 
 interface Snapshot { t: number; prices: Map<string, number>; }
 
@@ -51,14 +59,10 @@ function reevaluate(now: number): LeaderChange | null {
   const anchorReturns = returnsFor(ANCHOR);
   if (anchorReturns.length < MIN_SAMPLES - 1) return null;
 
-  // 候補銘柄ごとに相関を計算
-  const allSymbols = new Set<string>();
-  for (const s of snapshots) for (const sym of s.prices.keys()) allSymbols.add(sym);
-  allSymbols.delete(ANCHOR);
-
+  // 候補銘柄ごとに相関を計算（値がさ株は除外）
   let bestSym: string | null = null;
   let bestAbs = -1;
-  for (const sym of allSymbols) {
+  for (const sym of ELIGIBLE_CANDIDATES) {
     const r = returnsFor(sym);
     const minLen = Math.min(r.length, anchorReturns.length);
     if (minLen < MIN_SAMPLES - 1) continue;

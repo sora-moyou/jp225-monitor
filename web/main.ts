@@ -70,9 +70,12 @@ connectStream({
 
     for (const p of prices) {
       const alerts = detector.feed(p);
-      if (!displayed.has(p.symbol)) continue;        // 非表示銘柄はアラート抑制
+      const meta = INSTRUMENTS.find(i => i.symbol === p.symbol);
+      const isHeavyweight = meta?.category === 'heavyweight';
+      // 表示中銘柄 OR 値がさ株急変はアラート発火
+      if (!displayed.has(p.symbol) && !isHeavyweight) continue;
       for (const alert of alerts) {
-        flashCard(priceGridEl, alert);
+        flashCard(priceGridEl, alert);    // 値がさ株はカード無しなので無視される
         alertBeep(alert.direction);
         const banner = addBanner(bannerEl, alert);
         fetchExplanation(alert)

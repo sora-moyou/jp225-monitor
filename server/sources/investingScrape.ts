@@ -10,6 +10,12 @@ const INVESTING_URLS: Partial<Record<Symbol, string>> = {
   'CL=F':  'https://www.investing.com/commodities/crude-oil',
   '^VIX':  'https://www.investing.com/indices/volatility-s-p-500',
   '^TNX':  'https://www.investing.com/rates-bonds/u.s.-10-year-bond-yield',
+  // 値がさ株（best-effort URL — 失敗時はその銘柄のみ取得失敗）
+  '9983.T': 'https://www.investing.com/equities/fast-retailing-co-ltd',
+  '8035.T': 'https://www.investing.com/equities/tokyo-electron-ltd',
+  '6857.T': 'https://www.investing.com/equities/advantest-corp',
+  '9984.T': 'https://www.investing.com/equities/softbank-group-corp',
+  '6367.T': 'https://www.investing.com/equities/daikin-industries-ltd',
 };
 
 const HEADERS = {
