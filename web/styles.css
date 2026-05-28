@@ -67,23 +67,27 @@ body {
 .alert .close:hover { color: var(--text); }
 .alert .explanation { color: var(--text); }
 
-.chart-panel {
-  padding: 8px 20px 0;
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;   /* 左列に Chart+Prices、右列に News */
+  gap: 16px;
+  padding: 16px 20px;
+  align-items: start;
 }
+
+.left-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chart-panel { padding: 0; }
 #tradingview-chart {
-  height: 420px;
+  height: 380px;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   background: var(--panel);
-}
-
-.main-grid {
-  display: grid;
-  grid-template-columns: 1fr 2fr;   /* 価格を半分、ニュースを倍 */
-  gap: 16px;
-  padding: 16px 20px;
-  align-items: start;       /* 各列を縦伸ばししない */
 }
 
 .price-grid {
