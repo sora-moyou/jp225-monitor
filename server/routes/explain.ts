@@ -28,7 +28,9 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
     });
     res.json({ explanation: text });
   } catch (err) {
-    console.error('[explain] error:', err);
-    res.status(500).json({ explanation: '(説明取得失敗)' });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[explain] error:', msg);
+    // 開発用に実エラーをバナーへ返す（先頭120字）
+    res.status(500).json({ explanation: `(説明取得失敗: ${msg.slice(0, 120)})` });
   }
 }

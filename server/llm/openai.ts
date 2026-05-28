@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import type { NewsItem } from '../types.js';
 import { LLM_MODEL, LLM_SYSTEM_PROMPT, NEWS_RECENT_WINDOW_MS } from '../config.js';
 
-const apiKey = process.env.OPENAI_API_KEY;
+const apiKey = process.env.OPENAI_API_KEY?.trim();
 const isPlaceholder = !apiKey || apiKey === 'sk-your-key-here' || apiKey.includes('your-key');
 const client = !isPlaceholder ? new OpenAI({ apiKey }) : null;
 

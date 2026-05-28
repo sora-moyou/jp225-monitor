@@ -11,7 +11,8 @@ export async function fetchExplanation(alert: AlertEvent): Promise<string> {
       detectionKind: alert.detectionKind,
     }),
   });
-  if (!res.ok) throw new Error(`explain ${res.status}`);
-  const data = (await res.json()) as { explanation: string };
-  return data.explanation;
+  // 500でも body の explanation を採用（実エラーメッセージが入っている）
+  const data = (await res.json().catch(() => ({} as { explanation?: string }))) as { explanation?: string };
+  if (data.explanation) return data.explanation;
+  throw new Error(`explain ${res.status}`);
 }

@@ -143,6 +143,9 @@ Create `vite.config.ts`:
 ```ts
 import { defineConfig } from 'vite';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   root: 'web',
@@ -150,7 +153,7 @@ export default defineConfig({
     port: 5173,
     fs: {
       // server/ ディレクトリの共有型を web/ から import するため、ルートの一つ上を許可
-      allow: [path.resolve(__dirname)],
+      allow: [projectRoot],
     },
     proxy: {
       '/api': {

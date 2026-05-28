@@ -13,21 +13,19 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[]): void {
       const dir = p.changePercent >= 0 ? 'up' : 'down';
       card.classList.add(dir);
       if (p.stale) card.classList.add('stale');
-      const unit = meta.unit === 'bp' ? '' : '';
+      const sourceBadge = p.stale ? '<span class="source-badge">INV</span>' : '';
+      const decimals = meta.unit === 'bp' ? 3 : 2;
+      const sign = p.changePercent >= 0 ? '+' : '';
       card.innerHTML = `
-        <div class="label">${meta.labelJa}</div>
-        <div class="price">${p.price.toFixed(meta.unit === 'bp' ? 3 : 2)}${unit}</div>
-        <div class="change">${p.changePercent >= 0 ? '+' : ''}${p.changePercent.toFixed(2)}%</div>
+        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
+        <div class="price">${p.price.toFixed(decimals)}</div>
+        <div class="change">${sign}${p.changePercent.toFixed(2)}%</div>
       `;
     } else {
-      card.innerHTML = `<div class="label">${meta.labelJa}</div><div class="price">---</div>`;
+      card.innerHTML = `<div class="label"><span>${meta.labelJa}</span></div><div class="price">---</div>`;
     }
     container.appendChild(card);
   }
-  // 8銘柄で3×3、最後1枠空き
-  const filler = document.createElement('div');
-  filler.style.visibility = 'hidden';
-  container.appendChild(filler);
 }
 
 export function flashCard(container: HTMLElement, alert: AlertEvent): void {
