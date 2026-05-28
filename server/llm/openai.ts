@@ -11,6 +11,7 @@ const apiKey = process.env.OPENAI_API_KEY?.trim();
 const isPlaceholder = !apiKey
   || apiKey === 'sk-your-key-here'
   || apiKey === 'gsk_your-key-here'
+  || apiKey === 'AIza-your-key-here'
   || apiKey.includes('your-key');
 const client = !isPlaceholder
   ? new OpenAI({ apiKey, baseURL: LLM_BASE_URL })
