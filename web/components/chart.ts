@@ -44,10 +44,12 @@ export async function mountChart(containerId: string): Promise<void> {
       enable_publishing: false,
       hide_top_toolbar: false,
       hide_legend: false,
+      hide_volume: true,                           // 出来高ペインを非表示
       save_image: false,
       container_id: containerId,
       allow_symbol_change: true,
       withdateranges: true,
+      disabled_features: ['create_volume_indicator_by_default'],
     });
   } catch (err) {
     console.error('[chart] mount failed:', err);
