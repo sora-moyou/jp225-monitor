@@ -58,15 +58,15 @@
         <legend>定期 API ポーリング設定</legend>
         <label>
           Price polling (ms, 500–60000)
-          <input type="number" id="settings-price-poll" min="500" max="60000" step="500" />
+          <input type="number" id="settings-price-poll" min="500" max="60000" step="500" value="2000" />
         </label>
         <label>
           News polling (ms, 10000–600000)
-          <input type="number" id="settings-news-poll" min="10000" max="600000" step="1000" />
+          <input type="number" id="settings-news-poll" min="10000" max="600000" step="1000" value="60000" />
         </label>
         <label>
           Sidecar port (1024–65535)
-          <input type="number" id="settings-port" min="1024" max="65535" step="1" />
+          <input type="number" id="settings-port" min="1024" max="65535" step="1" value="3000" />
         </label>
         <div id="settings-port-warning" class="settings-warning hidden">
           ⚠ port を変更しました。サーバを再起動するまで反映されません。

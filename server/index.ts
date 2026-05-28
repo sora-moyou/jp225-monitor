@@ -13,7 +13,9 @@ import { logsHandler } from './routes/logs.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { isLLMEnabled } from './llm/openai.js';
-import { resolvePort } from './configStore.js';
+import { resolvePort, ensureDefaults } from './configStore.js';
+
+ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 
 declare const __APP_VERSION__: string | undefined;
 

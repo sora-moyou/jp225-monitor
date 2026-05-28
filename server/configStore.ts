@@ -102,6 +102,29 @@ export function validateParam(
 
 export function configFilePath(): string { return CONFIG_FILE(); }
 
+// 起動時に呼ぶ: pricePollMs / newsPollMs / port が未設定なら default を
+// config.json に書き込む。これで settings modal が常にデフォルト値を見せられる。
+export function ensureDefaults(): void {
+  const cfg = loadConfig();
+  let modified = false;
+  if (cfg.pricePollMs === undefined) {
+    cfg.pricePollMs = PARAM_BOUNDS.pricePollMs.default;
+    modified = true;
+  }
+  if (cfg.newsPollMs === undefined) {
+    cfg.newsPollMs = PARAM_BOUNDS.newsPollMs.default;
+    modified = true;
+  }
+  if (cfg.port === undefined) {
+    cfg.port = PARAM_BOUNDS.port.default;
+    modified = true;
+  }
+  if (modified) {
+    saveConfig(cfg);
+    console.log('[configStore] wrote default polling params');
+  }
+}
+
 // テスト用 / 設定変更後のキャッシュリセット
 export function resetConfigCache(): void {
   cached = null;
