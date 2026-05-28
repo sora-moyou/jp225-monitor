@@ -27,7 +27,7 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
         <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
         <div class="value">
           <span class="num">${formattedPrice}</span>
-          <span class="change">( ${sign}${p.changePercent.toFixed(2)}% )</span>
+          <span class="change">${sign}${p.changePercent.toFixed(2)}%</span>
         </div>
       `;
     } else {
