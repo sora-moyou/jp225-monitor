@@ -1,10 +1,13 @@
 import type { Price, AlertEvent } from '../types.js';
 import { INSTRUMENTS } from '../../server/config.js';
 
-export function renderPriceGrid(container: HTMLElement, prices: Price[]): void {
+export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnly?: Set<string>): void {
   const priceMap = new Map(prices.map(p => [p.symbol, p]));
   container.innerHTML = '';
-  for (const meta of INSTRUMENTS) {
+  const visible = showOnly
+    ? INSTRUMENTS.filter(i => showOnly.has(i.symbol))
+    : INSTRUMENTS;
+  for (const meta of visible) {
     const p = priceMap.get(meta.symbol);
     const card = document.createElement('div');
     card.className = 'price-card';

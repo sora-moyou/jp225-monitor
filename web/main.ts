@@ -7,6 +7,8 @@ import { renderNews } from './components/newsFeed.js';
 import { addBanner, setExplanation } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
+import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
+import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 
 const detector = new ChangeDetector(INSTRUMENTS);
@@ -20,6 +22,15 @@ const bannerEl = document.getElementById('alert-banner')!;
 const statusEl = document.getElementById('connection-status')!;
 const clockEl = document.getElementById('clock')!;
 const enableSoundBtn = document.getElementById('enable-sound') as HTMLButtonElement;
+const leaderInfoEl = document.getElementById('leader-info')!;
+
+function updateLeaderInfo() {
+  const leader = getLeader();
+  const corr = getLastCorrelation();
+  const corrText = corr > 0 ? ` (|r|=${corr.toFixed(2)})` : ' (暖機中)';
+  leaderInfoEl.innerHTML = `相関リーダー: <strong>${labelOf(leader as never)}</strong>${corrText}`;
+}
+updateLeaderInfo();
 
 setInterval(() => {
   const d = new Date();
@@ -45,9 +56,21 @@ function setStatus(status: 'connecting' | 'online' | 'offline') {
 connectStream({
   onStatusChange: setStatus,
   onPrices: (prices) => {
-    renderPriceGrid(priceGridEl, prices);
+    const change = feedSnapshot(prices);
+    if (change) {
+      console.log(`[correlation] leader ${change.prevLeader} → ${change.newLeader} (|r|=${change.absCorrelation.toFixed(2)})`);
+      updateLeaderInfo();
+    }
+    const leader = getLeader();
+    const displayed = new Set([ANCHOR_SYMBOL, leader]);
+    // 起動5分後の初回再評価でも更新（changeが返らない場合に備えて軽くポーリング表示）
+    if (!change && (Date.now() % 30000) < 2100) updateLeaderInfo();
+
+    renderPriceGrid(priceGridEl, prices, displayed);
+
     for (const p of prices) {
       const alerts = detector.feed(p);
+      if (!displayed.has(p.symbol)) continue;        // 非表示銘柄はアラート抑制
       for (const alert of alerts) {
         flashCard(priceGridEl, alert);
         alertBeep(alert.direction);
