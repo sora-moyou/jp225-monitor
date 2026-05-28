@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import type { NewsItem } from '../types.js';
 import {
   LLM_MODEL, LLM_BASE_URL, LLM_SYSTEM_PROMPT,
-  NEWS_RECENT_WINDOW_MS, INSTRUMENT_KEYWORDS,
+  NEWS_RECENT_WINDOW_MS, INSTRUMENT_KEYWORDS, HIGH_IMPACT_KEYWORDS,
 } from '../config.js';
 
 const apiKey = process.env.OPENAI_API_KEY?.trim();
@@ -32,10 +32,15 @@ function scoreNews(news: NewsItem, keywords: string[], now: number): number {
   for (const kw of keywords) {
     if (title.includes(kw.toLowerCase())) kwHits++;
   }
+  // マクロ高インパクト（要人・地政学・指標・中央銀行）の強ブースト
+  let highImpactHits = 0;
+  for (const kw of HIGH_IMPACT_KEYWORDS) {
+    if (title.includes(kw.toLowerCase())) highImpactHits++;
+  }
   const ageMin = (now - news.publishedAt) / 60000;
   // 新しいほど加点 (0〜30分線形)
   const recency = Math.max(0, 1 - ageMin / 30);
-  return kwHits * 2 + recency;
+  return kwHits * 2 + highImpactHits * 4 + recency;
 }
 
 // 関連順にトップNを返す（キーワード未ヒットでも入れる）
