@@ -13,10 +13,10 @@ export const INSTRUMENTS: InstrumentMeta[] = [
 
 export const RSS_FEEDS = {
   ja: [
-    { name: '日経',           url: 'https://www.nikkei.com/news/feed/' },
-    { name: 'Reuters JP',     url: 'https://jp.reuters.com/rssFeed/businessNews' },
-    { name: 'Bloomberg JP',   url: 'https://www.bloomberg.co.jp/feeds/bbiz/sitemap_news.xml' },
-    { name: 'みんかぶ',        url: 'https://minkabu.jp/news.rss' },
+    { name: 'Yahoo News',     url: 'https://news.yahoo.co.jp/rss/categories/business.xml' },
+    { name: 'NHK ビジネス',   url: 'https://www3.nhk.or.jp/rss/news/cat5.xml' },
+    { name: '東洋経済',       url: 'https://toyokeizai.net/list/feed/rss' },
+    { name: '朝日',           url: 'https://www.asahi.com/rss/asahi/business.rdf' },
   ],
   en: [
     { name: 'CNBC',           url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },

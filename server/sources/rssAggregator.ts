@@ -4,11 +4,19 @@ import { RSS_FEEDS, NEWS_MAX_ITEMS } from '../config.js';
 
 const parser = new Parser({
   timeout: 8000,
-  headers: { 'User-Agent': 'FinanceMonitor/0.1' },
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FinanceMonitor/0.1',
+  },
 });
 
 async function fetchFeed(name: string, url: string, lang: 'ja' | 'en'): Promise<NewsItem[]> {
-  const feed = await parser.parseURL(url);
+  let feed;
+  try {
+    feed = await parser.parseURL(url);
+  } catch (err) {
+    console.warn(`[rss] ${name} failed:`, err instanceof Error ? err.message : err);
+    throw err;
+  }
   return (feed.items ?? []).flatMap(item => {
     const published = item.isoDate ? Date.parse(item.isoDate) : Date.now();
     if (!item.title || !item.link) return [];
