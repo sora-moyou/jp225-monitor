@@ -15,8 +15,8 @@
     "icons": "node scripts/gen-placeholder-icons.mjs",
     "sidecar:copy": "node scripts/copy-sidecar.mjs",
     "tauri": "tauri",
-    "tauri:dev": "npm run package && npm run sidecar:copy && tauri dev",
-    "tauri:build": "npm run package && npm run sidecar:copy && tauri build",
+    "tauri:dev": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && tauri dev",
+    "tauri:build": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && tauri build",
     "tauri:signer": "tauri signer generate -w ~/.tauri/jp225-monitor.key",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

@@ -24,7 +24,10 @@ if (!existsSync(src)) {
 const triple = targetTriple();
 const ext = process.platform === 'win32' ? '.exe' : '';
 const dstDir = 'src-tauri/binaries';
-const dst = join(dstDir, `jp225-monitor-${triple}${ext}`);
+// NOTE: ファイル名は Rust クレート名 (jp225-monitor) と衝突させない。
+// 衝突すると Tauri の sidecar 解決が target/debug/jp225-monitor.exe (Rust本体) を掴み
+// fork-bomb 化する。よって "jp225-sidecar-" prefix を採用。
+const dst = join(dstDir, `jp225-sidecar-${triple}${ext}`);
 
 mkdirSync(dstDir, { recursive: true });
 copyFileSync(src, dst);
