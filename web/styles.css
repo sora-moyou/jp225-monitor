@@ -172,18 +172,26 @@ body {
   padding: 1px 4px;
   letter-spacing: 0.05em;
 }
-.price-card .price {
-  font-size: 19px;
+.price-card .value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.price-card .value .num {
+  font-size: 22px;
   font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.1;
 }
-.price-card .change {
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
+.price-card .value .change {
+  font-size: 14px;
+  font-weight: 600;
 }
-.price-card.up .price, .price-card.up .change { color: var(--up); }
-.price-card.down .price, .price-card.down .change { color: var(--down); }
+.price-card.up .value .num,
+.price-card.up .value .change { color: var(--up); }
+.price-card.down .value .num,
+.price-card.down .value .change { color: var(--down); }
 .price-card.stale { opacity: 0.75; }
 .price-card.flash-up { animation: flashUp 500ms 2; }
 .price-card.flash-down { animation: flashDown 500ms 2; }

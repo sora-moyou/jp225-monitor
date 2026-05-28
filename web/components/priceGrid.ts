@@ -19,13 +19,19 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
       const sourceBadge = p.stale ? '<span class="source-badge">INV</span>' : '';
       const decimals = meta.unit === 'bp' ? 3 : 2;
       const sign = p.changePercent >= 0 ? '+' : '';
+      const formattedPrice = p.price.toLocaleString('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      });
       card.innerHTML = `
         <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
-        <div class="price">${p.price.toFixed(decimals)}</div>
-        <div class="change">${sign}${p.changePercent.toFixed(2)}%</div>
+        <div class="value">
+          <span class="num">${formattedPrice}</span>
+          <span class="change">( ${sign}${p.changePercent.toFixed(2)}% )</span>
+        </div>
       `;
     } else {
-      card.innerHTML = `<div class="label"><span>${meta.labelJa}</span></div><div class="price">---</div>`;
+      card.innerHTML = `<div class="label"><span>${meta.labelJa}</span></div><div class="value"><span class="num">---</span></div>`;
     }
     container.appendChild(card);
   }
