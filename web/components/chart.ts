@@ -9,7 +9,7 @@ declare global {
 }
 
 const TV_SCRIPT_URL = 'https://s3.tradingview.com/tv.js';
-const CHART_SYMBOL = 'OANDA:JP225USD';   // 24h Nikkei CFD（jp225.cfd相当）
+const CHART_SYMBOL = 'FX:JPN225';         // FOREXCOM Japan 225 CFD
 const CHART_INTERVAL = '15';              // 15分足
 
 let scriptPromise: Promise<void> | null = null;
