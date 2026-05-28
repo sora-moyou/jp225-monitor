@@ -103,39 +103,61 @@ export function initSettingsModal(el: SettingsElements): void {
   }
   function close() {
     el.modal.classList.add('hidden');
+    el.inputGemini.value = '';
+    el.inputGroq.value = '';
+    el.inputOpenai.value = '';
   }
 
   el.openBtn.addEventListener('click', () => { void open(); });
   el.closeBtn.addEventListener('click', close);
   el.backdrop.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !el.modal.classList.contains('hidden')) close();
+  });
 
   el.saveBtn.addEventListener('click', async () => {
-    const body: SavePayload = {};
-    const gv = el.inputGemini.value.trim();
-    const grv = el.inputGroq.value.trim();
-    const ov = el.inputOpenai.value.trim();
-    if (gv) body.geminiKey = gv;
-    if (grv) body.groqKey = grv;
-    if (ov) body.openaiKey = ov;
+    el.saveBtn.disabled = true;
+    const originalText = el.saveBtn.textContent ?? '保存';
+    el.saveBtn.textContent = '保存中...';
+    try {
+      const body: SavePayload = {};
+      const gv = el.inputGemini.value.trim();
+      const grv = el.inputGroq.value.trim();
+      const ov = el.inputOpenai.value.trim();
+      if (gv) body.geminiKey = gv;
+      if (grv) body.groqKey = grv;
+      if (ov) body.openaiKey = ov;
 
-    const pp = Number(el.inputPricePoll.value);
-    const np = Number(el.inputNewsPoll.value);
-    const pt = Number(el.inputPort.value);
-    if (current && pp !== current.pricePollMs) body.pricePollMs = pp;
-    if (current && np !== current.newsPollMs) body.newsPollMs = np;
-    if (current && pt !== current.port) body.port = pt;
+      const pp = Number(el.inputPricePoll.value);
+      const np = Number(el.inputNewsPoll.value);
+      const pt = Number(el.inputPort.value);
+      if (current && pp !== current.pricePollMs) body.pricePollMs = pp;
+      if (current && np !== current.newsPollMs) body.newsPollMs = np;
+      if (current && pt !== current.port) body.port = pt;
 
-    const result = await saveSettings(body);
-    if (!result.ok) {
-      el.statusArea.innerHTML = `<div class="settings-status err">${result.error ?? '保存失敗'}</div>`;
-      return;
-    }
-    el.inputGemini.value = '';
-    el.inputGroq.value = '';
-    el.inputOpenai.value = '';
-    await refresh();
-    if (result.portRequiresRestart) {
-      el.portWarning.classList.remove('hidden');
+      const result = await saveSettings(body);
+      if (!result.ok) {
+        el.statusArea.innerHTML = `<div class="settings-status err">${result.error ?? '保存失敗'}</div>`;
+        return;
+      }
+      el.inputGemini.value = '';
+      el.inputGroq.value = '';
+      el.inputOpenai.value = '';
+      await refresh();
+      if (result.portRequiresRestart) {
+        el.portWarning.classList.remove('hidden');
+      }
+    } finally {
+      el.saveBtn.disabled = false;
+      el.saveBtn.textContent = originalText;
     }
   });
+
+  // 初回起動時にプロバイダ未設定なら自動オープン
+  void (async () => {
+    const s = await fetchSettings();
+    if (s && !s.providers.some(p => p.enabled)) {
+      void open();
+    }
+  })();
 }
