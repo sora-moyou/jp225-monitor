@@ -13,6 +13,7 @@
       <span id="clock"></span>
       <span id="connection-status" class="badge offline">offline</span>
       <div id="api-status" class="api-status"></div>
+      <button id="open-logs" class="topbar-btn" title="サーバログを見る">📋</button>
       <button id="settings-btn" class="settings-btn" title="API設定">⚙️</button>
     </div>
   </header>
@@ -78,6 +79,20 @@
         <button type="button" id="settings-close" class="btn-secondary">閉じる</button>
         <button type="button" id="settings-save" class="btn-primary">保存</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ログモーダル -->
+  <div id="logs-modal" class="modal hidden">
+    <div id="logs-backdrop" class="modal-backdrop"></div>
+    <div class="modal-content modal-content-wide">
+      <h2>サーバログ</h2>
+      <div class="modal-controls">
+        <label><input type="checkbox" id="logs-auto" checked /> 自動更新 (2 秒)</label>
+        <button id="logs-clear" type="button" class="btn-secondary">表示をクリア</button>
+        <button id="logs-close" type="button" class="btn-secondary" style="margin-left: auto;">閉じる</button>
+      </div>
+      <pre id="logs-content" class="logs-content"></pre>
     </div>
   </div>
 

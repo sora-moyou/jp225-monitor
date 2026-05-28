@@ -493,3 +493,41 @@ body {
   cursor: help;
 }
 .api-status .dot .label { color: var(--muted); font-size: 11px; }
+
+.topbar-btn {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-right: 6px;
+}
+.topbar-btn:hover { background: var(--border); }
+
+.modal-content-wide { max-width: 900px; width: 90vw; }
+.modal-controls {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.logs-content {
+  background: #000;
+  color: #c0c0c0;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 12px;
+  padding: 12px;
+  margin: 0;
+  height: 60vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.logs-content .log-warn { color: #f0d000; }
+.logs-content .log-error { color: #ff7d75; }
+.logs-content .log-ts { color: #6a737d; margin-right: 6px; }

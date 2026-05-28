@@ -10,6 +10,7 @@ import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
 import { initSettingsModal } from './components/settingsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
+import { initLogsModal } from './components/logsModal.js';
 import { checkForUpdates } from './lib/updater.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
@@ -98,6 +99,19 @@ initSettingsModal({
 
 const apiStatusEl = document.getElementById('api-status');
 if (apiStatusEl) initApiStatusPane(apiStatusEl);
+
+const logsOpenBtn = document.getElementById('open-logs') as HTMLButtonElement | null;
+if (logsOpenBtn) {
+  initLogsModal({
+    openBtn: logsOpenBtn,
+    modal: document.getElementById('logs-modal') as HTMLElement,
+    closeBtn: document.getElementById('logs-close') as HTMLButtonElement,
+    backdrop: document.getElementById('logs-backdrop') as HTMLElement,
+    contentEl: document.getElementById('logs-content') as HTMLElement,
+    autoCheckbox: document.getElementById('logs-auto') as HTMLInputElement,
+    clearBtn: document.getElementById('logs-clear') as HTMLButtonElement,
+  });
+}
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
