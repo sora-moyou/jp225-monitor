@@ -1,6 +1,7 @@
 node_modules/
 dist/
 bin/
+release/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/binaries/
