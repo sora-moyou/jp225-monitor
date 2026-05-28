@@ -53,9 +53,9 @@ enableSoundBtn.onclick = () => {
 };
 
 // ─── LLM呼び出しスロットル ─────────────────────────
-// 0 にすると節約モードOFF (全アラートで即LLM)。
-// レート制限が問題なら 5*60*1000 などへ戻す。
-const LLM_AUTO_INTERVAL_MS = 0;
+// 0 = OFF (全アラート即LLM)、30_000 = 30秒、5*60*1000 = 5分
+// Gemini lite 無料枠 (15 RPM / 1500 RPD) を守るには 30秒以上推奨
+const LLM_AUTO_INTERVAL_MS = 30_000;
 let lastLLMCallAt = -Infinity;
 
 function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {
