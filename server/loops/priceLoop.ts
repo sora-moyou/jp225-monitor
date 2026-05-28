@@ -18,7 +18,13 @@ function mergeWithCached(fresh: Price[]): Price[] {
 
 async function tick(): Promise<number> {
   try {
-    let prices = await fetchYahooPrices();
+    let prices: Price[] = [];
+    try {
+      prices = await fetchYahooPrices();
+    } catch (err) {
+      console.warn(`[priceLoop] Yahoo failed entirely, trying Investing.com for all symbols:`,
+        err instanceof Error ? err.message : err);
+    }
 
     const missing = INSTRUMENTS
       .map(i => i.symbol)
@@ -28,7 +34,7 @@ async function tick(): Promise<number> {
       prices = [...prices, ...fallback];
     }
 
-    if (prices.length === 0) throw new Error('No prices fetched');
+    if (prices.length === 0) throw new Error('No prices fetched (Yahoo + Investing.com both failed)');
 
     const merged = mergeWithCached(prices);
     setPrices(merged);
