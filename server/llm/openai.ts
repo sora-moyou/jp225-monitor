@@ -100,13 +100,20 @@ export async function explain(input: ExplainInput): Promise<string> {
   const completion = await client.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.3,
-    max_tokens: 500,   // Gemini 2.5 Flash は thinking分も使うので余裕を持たせる
+    max_tokens: 1500,   // Gemini lite でも余裕を持たせる
     messages: [
       { role: 'system', content: LLM_SYSTEM_PROMPT },
-      { role: 'user', content: userPrompt },
+      { role: 'user', content: userPrompt + '\n\n出力は必ず200文字以内、1〜2文で。' },
     ],
   });
-  return completion.choices[0]?.message?.content?.trim() ?? '(no response)';
+  const choice = completion.choices[0];
+  const text = choice?.message?.content?.trim() ?? '(no response)';
+  if (choice?.finish_reason === 'length') {
+    const usage = completion.usage;
+    console.warn(`[explain] TRUNCATED by token limit. usage=${JSON.stringify(usage)}`);
+    return text + ' …(token切れ)';
+  }
+  return text;
 }
 
 // 価格を読みやすい桁数で
