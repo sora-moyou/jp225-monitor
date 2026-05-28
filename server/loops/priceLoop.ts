@@ -5,8 +5,11 @@ import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_POLL_INTERVAL_MS, PRICE_BACKOFF_MS } from '../config.js';
 import type { Price } from '../types.js';
 
+const YAHOO_SKIP_AFTER_FAIL_MS = 5 * 60 * 1000;
+
 let backoffIndex = -1;
 let timer: NodeJS.Timeout | null = null;
+let yahooSkipUntil = 0;
 
 function mergeWithCached(fresh: Price[]): Price[] {
   const map = new Map(getPrices().map(p => [p.symbol, { ...p, stale: true }]));
@@ -19,11 +22,21 @@ function mergeWithCached(fresh: Price[]): Price[] {
 async function tick(): Promise<number> {
   try {
     let prices: Price[] = [];
-    try {
-      prices = await fetchYahooPrices();
-    } catch (err) {
-      console.warn(`[priceLoop] Yahoo failed entirely, trying Investing.com for all symbols:`,
-        err instanceof Error ? err.message : err);
+    const now = Date.now();
+
+    if (now >= yahooSkipUntil) {
+      try {
+        prices = await fetchYahooPrices();
+        if (yahooSkipUntil > 0) {
+          console.log('[priceLoop] Yahoo recovered, back to primary source');
+          yahooSkipUntil = 0;
+        }
+      } catch (err) {
+        if (yahooSkipUntil === 0) {
+          console.warn(`[priceLoop] Yahoo unavailable (${err instanceof Error ? err.message : err}), using Investing.com for next 5 min`);
+        }
+        yahooSkipUntil = now + YAHOO_SKIP_AFTER_FAIL_MS;
+      }
     }
 
     const missing = INSTRUMENTS
