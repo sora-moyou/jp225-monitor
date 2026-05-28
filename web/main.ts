@@ -11,7 +11,7 @@ import { initChat } from './components/chatBoard.js';
 import { initSettingsModal } from './components/settingsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
-import { checkForUpdates } from './lib/updater.js';
+import { maybeShowUpdateToast } from './components/updateToast.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
@@ -141,8 +141,6 @@ if (versionEl) {
     .then(r => r.json())
     .then((d: { version: string }) => { versionEl.textContent = `v${d.version}`; })
     .catch(() => { versionEl.textContent = 'v?'; });
-  // Tauri環境なら updater で新版チェック (フラグが立てばボタン化)
-  void checkForUpdates(versionEl);
 }
 
 enableSoundBtn.onclick = () => {
@@ -221,3 +219,6 @@ connectStream({
   },
   onNews: (news) => renderNews(newsListEl, news),
 });
+
+const updateToastEl = document.getElementById('update-toast');
+if (updateToastEl) void maybeShowUpdateToast(updateToastEl, 5000);

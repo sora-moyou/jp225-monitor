@@ -35,7 +35,7 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/jp225-monitor"],
+    "externalBin": ["binaries/jp225-sidecar"],
     "category": "Finance",
     "shortDescription": "JP225 Nikkei 225 futures market monitor",
     "longDescription": "Real-time JP225 (Nikkei 225) futures market dashboard with AI-powered move explanations (Gemini/Groq/OpenAI)."
@@ -47,7 +47,7 @@
         "https://github.com/REPLACE_USER/jp225-monitor/releases/latest/download/latest.json"
       ],
       "pubkey": "REPLACE_AFTER_RUNNING_npx_tauri_signer_generate",
-      "dialog": true
+      "dialog": false
     }
   }
 }
