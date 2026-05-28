@@ -435,3 +435,42 @@ body {
   cursor: pointer;
 }
 .enable-sound.hidden { display: none; }
+
+.hidden { display: none; }
+
+.settings-section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 12px 0;
+}
+.settings-section legend {
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settings-section label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.settings-section input[type="number"] {
+  width: 120px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.settings-warning {
+  background: rgba(248, 81, 73, 0.15);
+  color: #ff9b9b;
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+}

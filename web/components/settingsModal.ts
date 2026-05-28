@@ -1,10 +1,14 @@
-// API キー設定モーダル
-
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
+  pricePollMs: number; newsPollMs: number; port: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
+}
+
+interface SaveResponse {
+  ok: boolean;
+  portRequiresRestart?: boolean;
 }
 
 async function fetchSettings(): Promise<SettingsResponse | null> {
@@ -15,19 +19,28 @@ async function fetchSettings(): Promise<SettingsResponse | null> {
   } catch { return null; }
 }
 
-async function saveSettings(keys: {
+interface SavePayload {
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
-}): Promise<boolean> {
+  pricePollMs?: number | null;
+  newsPollMs?: number | null;
+  port?: number | null;
+}
+
+async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
   try {
     const res = await fetch('/api/settings/keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(keys),
+      body: JSON.stringify(body),
     });
-    return res.ok;
-  } catch { return false; }
+    const data = await res.json() as SaveResponse & { error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, portRequiresRestart: data.portRequiresRestart };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'unknown' };
+  }
 }
 
 function renderStatus(s: SettingsResponse | null): string {
@@ -44,77 +57,85 @@ function renderStatus(s: SettingsResponse | null): string {
   return `<div class="settings-status">${items}</div>`;
 }
 
-export function initSettingsModal(
-  openBtn: HTMLButtonElement,
-  modal: HTMLElement,
-  closeBtn: HTMLButtonElement,
-  saveBtn: HTMLButtonElement,
-  inputGemini: HTMLInputElement,
-  inputGroq: HTMLInputElement,
-  inputOpenai: HTMLInputElement,
-  statusArea: HTMLElement,
-  backdrop: HTMLElement,
-): void {
+export interface SettingsElements {
+  openBtn: HTMLButtonElement;
+  modal: HTMLElement;
+  closeBtn: HTMLButtonElement;
+  saveBtn: HTMLButtonElement;
+  inputGemini: HTMLInputElement;
+  inputGroq: HTMLInputElement;
+  inputOpenai: HTMLInputElement;
+  inputPricePoll: HTMLInputElement;
+  inputNewsPoll: HTMLInputElement;
+  inputPort: HTMLInputElement;
+  portWarning: HTMLElement;
+  statusArea: HTMLElement;
+  backdrop: HTMLElement;
+}
+
+export function initSettingsModal(el: SettingsElements): void {
   let current: SettingsResponse | null = null;
 
   async function refresh() {
     current = await fetchSettings();
-    statusArea.innerHTML = renderStatus(current);
-    inputGemini.placeholder = current?.geminiSet
+    el.statusArea.innerHTML = renderStatus(current);
+    el.inputGemini.placeholder = current?.geminiSet
       ? '設定済み (上書きする場合のみ入力)'
       : current?.geminiFromEnv ? '環境変数から読込中 (上書きするにはここに入力)' : 'AIza...';
-    inputGroq.placeholder = current?.groqSet
+    el.inputGroq.placeholder = current?.groqSet
       ? '設定済み (上書きする場合のみ入力)'
       : current?.groqFromEnv ? '環境変数から読込中' : 'gsk_...';
-    inputOpenai.placeholder = current?.openaiSet
+    el.inputOpenai.placeholder = current?.openaiSet
       ? '設定済み (上書きする場合のみ入力)'
       : current?.openaiFromEnv ? '環境変数から読込中' : 'sk-...';
+    if (current) {
+      el.inputPricePoll.value = String(current.pricePollMs);
+      el.inputNewsPoll.value = String(current.newsPollMs);
+      el.inputPort.value = String(current.port);
+    }
+    el.portWarning.classList.add('hidden');
   }
 
   async function open() {
-    modal.classList.remove('hidden');
+    el.modal.classList.remove('hidden');
     await refresh();
-    inputGemini.focus();
+    el.inputGemini.focus();
   }
   function close() {
-    modal.classList.add('hidden');
-    inputGemini.value = '';
-    inputGroq.value = '';
-    inputOpenai.value = '';
+    el.modal.classList.add('hidden');
   }
 
-  openBtn.addEventListener('click', () => void open());
-  closeBtn.addEventListener('click', close);
-  backdrop.addEventListener('click', close);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.classList.contains('hidden')) close();
-  });
+  el.openBtn.addEventListener('click', () => { void open(); });
+  el.closeBtn.addEventListener('click', close);
+  el.backdrop.addEventListener('click', close);
 
-  saveBtn.addEventListener('click', async () => {
-    saveBtn.disabled = true;
-    saveBtn.textContent = '保存中...';
-    const payload: { geminiKey?: string; groqKey?: string; openaiKey?: string } = {};
-    if (inputGemini.value.trim()) payload.geminiKey = inputGemini.value.trim();
-    if (inputGroq.value.trim()) payload.groqKey = inputGroq.value.trim();
-    if (inputOpenai.value.trim()) payload.openaiKey = inputOpenai.value.trim();
-    const ok = await saveSettings(payload);
-    saveBtn.disabled = false;
-    saveBtn.textContent = '保存';
-    if (ok) {
-      inputGemini.value = '';
-      inputGroq.value = '';
-      inputOpenai.value = '';
-      await refresh();
-    } else {
-      alert('保存失敗');
+  el.saveBtn.addEventListener('click', async () => {
+    const body: SavePayload = {};
+    const gv = el.inputGemini.value.trim();
+    const grv = el.inputGroq.value.trim();
+    const ov = el.inputOpenai.value.trim();
+    if (gv) body.geminiKey = gv;
+    if (grv) body.groqKey = grv;
+    if (ov) body.openaiKey = ov;
+
+    const pp = Number(el.inputPricePoll.value);
+    const np = Number(el.inputNewsPoll.value);
+    const pt = Number(el.inputPort.value);
+    if (current && pp !== current.pricePollMs) body.pricePollMs = pp;
+    if (current && np !== current.newsPollMs) body.newsPollMs = np;
+    if (current && pt !== current.port) body.port = pt;
+
+    const result = await saveSettings(body);
+    if (!result.ok) {
+      el.statusArea.innerHTML = `<div class="settings-status err">${result.error ?? '保存失敗'}</div>`;
+      return;
+    }
+    el.inputGemini.value = '';
+    el.inputGroq.value = '';
+    el.inputOpenai.value = '';
+    await refresh();
+    if (result.portRequiresRestart) {
+      el.portWarning.classList.remove('hidden');
     }
   });
-
-  // 初回起動時にプロバイダ未設定なら自動オープン
-  void (async () => {
-    const s = await fetchSettings();
-    if (s && !s.providers.some(p => p.enabled)) {
-      void open();
-    }
-  })();
 }

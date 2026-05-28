@@ -79,17 +79,21 @@ setupResize('chat-resize', '.chat-board', 'chat-height', 120);
 setupResize('alerts-resize', '.alerts-pane', 'alerts-height', 100);
 
 // 設定モーダル
-initSettingsModal(
-  document.getElementById('settings-btn') as HTMLButtonElement,
-  document.getElementById('settings-modal')!,
-  document.getElementById('settings-close') as HTMLButtonElement,
-  document.getElementById('settings-save') as HTMLButtonElement,
-  document.getElementById('key-gemini') as HTMLInputElement,
-  document.getElementById('key-groq') as HTMLInputElement,
-  document.getElementById('key-openai') as HTMLInputElement,
-  document.getElementById('settings-status-area')!,
-  document.getElementById('settings-backdrop')!,
-);
+initSettingsModal({
+  openBtn:        document.getElementById('settings-btn') as HTMLButtonElement,
+  modal:          document.getElementById('settings-modal') as HTMLElement,
+  closeBtn:       document.getElementById('settings-close') as HTMLButtonElement,
+  saveBtn:        document.getElementById('settings-save') as HTMLButtonElement,
+  inputGemini:    document.getElementById('key-gemini') as HTMLInputElement,
+  inputGroq:      document.getElementById('key-groq') as HTMLInputElement,
+  inputOpenai:    document.getElementById('key-openai') as HTMLInputElement,
+  inputPricePoll: document.getElementById('settings-price-poll') as HTMLInputElement,
+  inputNewsPoll:  document.getElementById('settings-news-poll') as HTMLInputElement,
+  inputPort:      document.getElementById('settings-port') as HTMLInputElement,
+  portWarning:    document.getElementById('settings-port-warning') as HTMLElement,
+  statusArea:     document.getElementById('settings-status-area') as HTMLElement,
+  backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
+});
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
