@@ -44,9 +44,9 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/REPLACE_USER/jp225-monitor/releases/latest/download/latest.json"
+        "https://github.com/sora-moyou/jp225-monitor/releases/latest/download/latest.json"
       ],
-      "pubkey": "REPLACE_AFTER_RUNNING_npx_tauri_signer_generate",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzRDI4RjlCQ0NFN0Q0NDIKUldSQzFPZk1tNC9TbzR5SHRuaHhWcWI4UWNmaHFES2VzOXBhY2paemIveFNHL3ZqbjNkVmZXTUwK",
       "dialog": false
     }
   }

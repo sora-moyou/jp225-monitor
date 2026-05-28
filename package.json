@@ -18,6 +18,7 @@
     "tauri:dev": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && tauri dev",
     "tauri:build": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && tauri build",
     "tauri:signer": "tauri signer generate -w ~/.tauri/jp225-monitor.key",
+    "release:latest-json": "node scripts/make-latest-json.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
