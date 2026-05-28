@@ -10,6 +10,7 @@ import { chatHandler } from './routes/chat.js';
 import { getSettingsHandler, postSettingsHandler } from './routes/settings.js';
 import { statusHandler } from './routes/status.js';
 import { logsHandler } from './routes/logs.js';
+import { translateHandler } from './routes/translate.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { isLLMEnabled } from './llm/openai.js';
@@ -54,6 +55,7 @@ app.get('/api/settings', getSettingsHandler);
 app.post('/api/settings/keys', postSettingsHandler);
 app.get('/api/status', statusHandler);
 app.get('/api/logs', logsHandler);
+app.post('/api/translate', translateHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
 app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor' }));
 

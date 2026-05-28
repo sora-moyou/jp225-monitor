@@ -533,6 +533,21 @@ body {
 .logs-content .log-error { color: #ff7d75; }
 .logs-content .log-ts { color: #6a737d; margin-right: 6px; }
 
+/* ─── News translate button ────────────────────────── */
+.news-translate-btn {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 6px;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1.4;
+  margin-left: 6px;
+}
+.news-translate-btn:hover { background: var(--border); color: var(--text); }
+.news-translate-btn:disabled { opacity: 0.5; cursor: wait; }
+
 /* ─── Update Toast ──────────────────────────────────── */
 .update-toast {
   position: fixed;
