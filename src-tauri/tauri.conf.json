@@ -4,9 +4,9 @@
   "version": "0.3.0",
   "identifier": "app.jp225monitor",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:web",
     "frontendDist": "../dist/web"
   },
   "app": {
