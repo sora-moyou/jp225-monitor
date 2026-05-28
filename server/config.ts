@@ -54,6 +54,52 @@ export const NEWS_MAX_ITEMS = 200;                        // 4時間ぶん保持
 export const NEWS_RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;  // LLMに渡す上限 = 4時間
 export const NEWS_RECENCY_DECAY_MIN = 120;                // recency加点が0になる年齢 (分)
 
+// ニュース取得時の関連性フィルタ用
+// 「これらのキーワードを1つも含まない」OR「明らかに非金融トピック」は破棄
+export const FINANCE_RELEVANCE_KEYWORDS: string[] = [
+  // 市場・商品 (ja)
+  '株', '株価', '株式', '相場', '指数', '配当', '債券', '国債', '金利', '為替', '通貨',
+  '円安', '円高', 'ドル安', 'ドル高', 'ユーロ', '元安', '元高', 'ポンド',
+  '原油', 'ゴールド', '銀', '銅', '商品', 'コモディティ', '先物', '現物', 'etf', 'reit', '投信',
+  // 市場・商品 (en)
+  'stock', 'stocks', 'market', 'markets', 'index', 'indices', 'bond', 'bonds', 'yield',
+  'forex', 'fx', 'currency', 'currencies', 'dollar', 'euro', 'yen', 'pound',
+  'gold', 'silver', 'copper', 'oil', 'crude', 'commodity', 'futures', 'equity', 'equities',
+  'shares', 'etf', 'reit', 'fund', 'hedge fund', 'pension',
+  // 企業アクション
+  '業績', '決算', '増益', '減益', '上方修正', '下方修正', 'ipo', '上場', '買収', '合併', '増資', '自社株買い',
+  'earnings', 'revenue', 'profit', 'loss', 'guidance', 'acquisition', 'merger', 'dividend', 'buyback',
+  // 主要企業 (Nikkei 値がさ・米テック)
+  'apple', 'microsoft', 'tesla', 'nvidia', 'amazon', 'google', 'meta', 'netflix',
+  'aapl', 'msft', 'tsla', 'nvda', 'amzn', 'googl', 'broadcom', 'avgo', 'arm',
+  'ファーストリテイリング', 'ユニクロ', '東京エレクトロン', 'アドバンテスト', 'ソフトバンク',
+  'トヨタ', 'ホンダ', 'ソニー', '任天堂', '日立', 'ntt', 'kddi', 'mufg', 'みずほ',
+  // マクロ
+  '景気', '経済', '物価', 'インフレ', 'デフレ', '雇用', '失業', 'gdp', '貿易', '輸出', '輸入',
+  '金融政策', '財政', '緩和', '引き締め', 'マネーサプライ',
+  'inflation', 'deflation', 'recession', 'economy', 'economic', 'employment', 'unemployment',
+  'gdp', 'trade', 'export', 'import', 'monetary', 'fiscal', 'easing', 'tightening', 'qe', 'qt',
+  // 中央銀行・要人・地政学・関税・指標 (HIGH_IMPACTと重複OK)
+  'fomc', 'fed', 'ecb', 'boj', 'boe', '日銀', '中央銀行', 'central bank',
+  'trump', 'powell', 'yellen', 'bessent', '植田', '神田', '加藤', '財務省', '財務相', '官房長官', '首相',
+  'iran', 'israel', 'opec', 'ロシア', 'ウクライナ', '中東', 'イラン', 'イスラエル', '関税', 'tariff', 'sanctions',
+  'cpi', 'pce', 'nfp', '雇用統計', 'ism', 'pmi',
+  // 仮想通貨（リスクオンオフの代理）
+  'bitcoin', 'btc', 'ethereum', 'eth', 'crypto', '仮想通貨', '暗号資産',
+];
+
+// 明らかに非金融トピック（whitelistヒットがあっても除外したい時のため、現状は併用）
+export const FINANCE_BLACKLIST: string[] = [
+  '読書', '勉強', '受験', '東大入試', '学習', '教諭', '塾', '英会話',
+  'レシピ', '料理', '食事', 'ダイエット', '美容', 'スキンケア', 'ファッション', 'コスメ',
+  '旅行', '観光', 'グルメ', 'ホテル', '宿', '温泉',
+  '野球', 'サッカー', '五輪', 'オリンピック', 'テニス', 'ゴルフ', 'プロ野球', 'mlb', 'nfl', 'nba',
+  '俳優', '女優', '歌手', '映画', 'ドラマ', '音楽', 'k-pop', 'アイドル', '芸能', 'お笑い',
+  '占い', '星座', 'スピリチュアル', '心理テスト',
+  '育児', '子育て', '婚活', '結婚式', '離婚',
+  'ヨガ', '瞑想', '健康法', 'メンタルヘルス',
+];
+
 // 全銘柄共通のマクロ高インパクト・キーワード（強ブースト）
 // 要人発言・地政学・指標・中央銀行など、銘柄横断で必ず注目すべき材料
 export const HIGH_IMPACT_KEYWORDS: string[] = [

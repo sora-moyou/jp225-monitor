@@ -1,6 +1,20 @@
 import Parser from 'rss-parser';
 import type { NewsItem } from '../types.js';
-import { RSS_FEEDS, NEWS_MAX_ITEMS } from '../config.js';
+import { RSS_FEEDS, NEWS_MAX_ITEMS, FINANCE_RELEVANCE_KEYWORDS, FINANCE_BLACKLIST } from '../config.js';
+
+// タイトルが金融関連かどうかを判定
+// - BLACKLIST に1つでもヒット → 除外
+// - WHITELIST に1つもヒットしない → 除外
+function isFinanceRelevant(title: string): boolean {
+  const lc = title.toLowerCase();
+  for (const kw of FINANCE_BLACKLIST) {
+    if (lc.includes(kw.toLowerCase())) return false;
+  }
+  for (const kw of FINANCE_RELEVANCE_KEYWORDS) {
+    if (lc.includes(kw.toLowerCase())) return true;
+  }
+  return false;
+}
 
 const parser = new Parser({
   timeout: 8000,
@@ -20,6 +34,7 @@ async function fetchFeed(name: string, url: string, lang: 'ja' | 'en'): Promise<
   return (feed.items ?? []).flatMap(item => {
     const published = item.isoDate ? Date.parse(item.isoDate) : Date.now();
     if (!item.title || !item.link) return [];
+    if (!isFinanceRelevant(item.title)) return [];   // 非金融トピックを除外
     return [{
       id: `${name}:${item.guid ?? item.link}`,
       title: item.title,
