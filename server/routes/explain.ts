@@ -3,6 +3,7 @@ import { explain } from '../llm/openai.js';
 import { getNews } from '../cache.js';
 
 interface ExplainBody {
+  symbol?: string;
   symbolLabel?: string;
   changePercent?: number;
   windowSeconds?: number;
@@ -11,7 +12,8 @@ interface ExplainBody {
 
 export async function explainHandler(req: Request, res: Response): Promise<void> {
   const body = req.body as ExplainBody;
-  if (typeof body.symbolLabel !== 'string'
+  if (typeof body.symbol !== 'string'
+      || typeof body.symbolLabel !== 'string'
       || typeof body.changePercent !== 'number'
       || typeof body.windowSeconds !== 'number'
       || (body.detectionKind !== 'magnitude' && body.detectionKind !== 'slope')) {
@@ -20,6 +22,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
   }
   try {
     const text = await explain({
+      symbol: body.symbol,
       symbolLabel: body.symbolLabel,
       changePercent: body.changePercent,
       windowSeconds: body.windowSeconds,

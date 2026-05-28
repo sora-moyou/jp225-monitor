@@ -41,7 +41,26 @@ export const PRICE_BACKOFF_MS = [5000, 10_000, 30_000, 60_000];
 export const NEWS_MAX_ITEMS = 100;
 export const NEWS_RECENT_WINDOW_MS = 30 * 60 * 1000;
 
-export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。日本語で1〜2文、結論先出しで簡潔に答えてください。該当しそうなニュースがなければ「明確な材料なし」と返してください。`;
+// 銘柄ごとのキーワード辞書（ja + en、小文字統一）— ニュースのランク付け用
+export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
+  'NK=F': ['日経', '日本株', '東証', '日銀', 'boj', '黒田', '植田', '円', '為替', 'jp', '日本', '株式', 'nikkei', 'japan', 'tokyo', 'yen', 'jp225'],
+  'NQ=F': ['ナスダック', '米株', 'テック', 'ai', 'アップル', 'マイクロソフト', 'エヌビディア', 'メタ', 'グーグル', 'nasdaq', 'nq', 'tech', 'apple', 'aapl', 'msft', 'nvda', 'meta', 'google', 'googl'],
+  'YM=F': ['ダウ', 'nyダウ', '米株', '米国', 'dow', 'dji', 'us 30', 'industrial', 'blue chip'],
+  'ES=F': ['s&p', 'sp500', '米株', 'fomc', 'frb', 'spx', 'fed', 'powell', 'rate', 'inflation', 'cpi', 'jobs', 'payroll'],
+  'JPY=X': ['ドル円', '為替', '日銀', 'boj', 'frb', '介入', '円安', '円高', '為替介入', 'usdjpy', 'usd/jpy', 'yen', 'dollar', 'intervention', 'kanda', '神田'],
+  'CL=F': ['原油', 'opec', 'ガソリン', '石油', 'oil', 'crude', 'wti', 'brent', 'gasoline', 'petroleum', 'iran', 'saudi', 'russia'],
+  '^VIX': ['vix', '恐怖', 'パニック', '売り', '急落', 'リスクオフ', 'volatility', 'fear', 'panic', 'sell-off', 'selloff', 'hedge', 'risk off', 'crash'],
+  '^TNX': ['米10年', '国債', '利回り', '利上げ', '利下げ', 'yield', 'treasury', '10-year', '10y', 't-note', 'bond', 'fed funds', 'powell', 'cpi'],
+};
+
+export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。直近30分のニュース（関連性スコア順）から、相場急変の最有力材料を必ず1つ示してください。
+
+ルール:
+- 日本語で1〜2文、結論先出しで簡潔に。
+- 必ず「○○分前のXXがYYのため」のように、最も関連する1件の発生時刻と内容を引用する。
+- 直接の引き金が薄くても、最も影響の大きい候補（中央銀行、要人発言、地政学、主要指標）を必ず選ぶ。
+- 「明確な材料なし」「特に材料なし」とは絶対に答えない。最低でも仮説として1件は挙げる。
+- 銘柄間連動（例: USD/JPY → 日経）にも触れて良い。`;
 
 // LLM プロバイダ: Groq（無料、Llama 3.3 70B、OpenAI互換API）
 // OpenAI に戻すには LLM_BASE_URL を undefined、LLM_MODEL を 'gpt-4o-mini' などへ

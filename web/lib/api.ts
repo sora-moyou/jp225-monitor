@@ -5,6 +5,7 @@ export async function fetchExplanation(alert: AlertEvent): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      symbol: alert.symbol,
       symbolLabel: alert.symbolLabel,
       changePercent: alert.changePercent,
       windowSeconds: alert.windowSeconds,
