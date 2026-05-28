@@ -8,6 +8,7 @@ interface ExplainBody {
   changePercent?: number;
   windowSeconds?: number;
   detectionKind?: 'magnitude' | 'slope';
+  change15min?: number | null;
 }
 
 export async function explainHandler(req: Request, res: Response): Promise<void> {
@@ -27,6 +28,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       changePercent: body.changePercent,
       windowSeconds: body.windowSeconds,
       detectionKind: body.detectionKind,
+      change15min: typeof body.change15min === 'number' ? body.change15min : null,
       news: getNews(),
     });
     res.json({ explanation: text });

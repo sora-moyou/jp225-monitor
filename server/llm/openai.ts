@@ -23,6 +23,7 @@ export interface ExplainInput {
   changePercent: number;
   windowSeconds: number;
   detectionKind: 'magnitude' | 'slope';
+  change15min: number | null;
   news: NewsItem[];
 }
 
@@ -71,10 +72,14 @@ export async function explain(input: ExplainInput): Promise<string> {
   const kindLabel = input.detectionKind === 'slope' ? 'フラッシュ' : 'トレンド';
   const dirJa = input.changePercent >= 0 ? '上昇' : '下落';
   const windowHours = Math.round(NEWS_RECENT_WINDOW_MS / 3600_000);
+  const ctx15Line = input.change15min !== null
+    ? `【15分コンテキスト】直近15分の変化: ${input.change15min >= 0 ? '+' : ''}${input.change15min.toFixed(2)}%\n\n`
+    : '';
   const userPrompt =
-    `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa}しました。\n\n` +
+    `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa}しました。\n` +
+    ctx15Line +
     `【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
-    `上記から最有力の材料を1つ選び、「○○分前のXXがYYのため」の形で1〜2文で説明してください。古くても相場転換の引き金となる材料（FOMC, 介入, 地政学, 重要指標）を優先してください。`;
+    `上記の急変・コンテキスト・ニュースを総合し、最有力の材料を1つ選び、「○○分前のXXがYYのため」の形で1〜2文で説明してください。古くても相場転換の引き金となる材料（FOMC, 介入, 地政学, 重要指標）を優先してください。`;
 
   const completion = await client.chat.completions.create({
     model: LLM_MODEL,

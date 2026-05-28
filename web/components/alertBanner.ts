@@ -19,12 +19,17 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   el.className = `alert ${alert.direction}`;
   const kindLabel = alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
+  // 直近15分コンテキスト（参考、発火窓と分離）
+  const ctx15 = alert.change15min !== null
+    ? `<span class="ctx-15min">15分: ${alert.change15min >= 0 ? '+' : ''}${alert.change15min.toFixed(2)}%</span>`
+    : '';
   const main = document.createElement('div');
   main.innerHTML =
     `<strong>⚡ ${alert.symbolLabel}</strong> ` +
     `${arrow} ${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒 ` +
-    `<span style="color:#8b949e">[${kindLabel}]</span> ` +
-    `| <span class="explanation">${UI.ja.explanationLoading}</span>`;
+    `<span class="kind-tag">[${kindLabel}]</span> ` +
+    `${ctx15} ` +
+    `<span class="explanation">${UI.ja.explanationLoading}</span>`;
   const close = document.createElement('button');
   close.className = 'close';
   close.textContent = '✕';

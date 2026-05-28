@@ -3,13 +3,15 @@ import type { AlertEvent, DetectionKind } from '../types.js';
 
 interface Sample { t: number; price: number; }
 
-const MAGNITUDE_WINDOW_MS = 5 * 60 * 1000;
-const SLOPE_WINDOW_MS = 30 * 1000;
+const BUFFER_WINDOW_MS = 15 * 60 * 1000;   // バッファ保持期間（コンテキスト用）
+const MAGNITUDE_WINDOW_MS = 5 * 60 * 1000; // 発火: 変動幅判定窓
+const SLOPE_WINDOW_MS = 30 * 1000;          // 発火: 傾き判定窓
+const CONTEXT_WINDOW_MS = 15 * 60 * 1000;   // バナー表示用コンテキスト
 const DEFAULT_COOLDOWN_MS = 60 * 1000;
 
 interface State {
   meta: InstrumentMeta;
-  buffer: Sample[];          // 時系列順、最大5分
+  buffer: Sample[];          // 時系列順、最大15分（発火窓は5分、コンテキストは15分）
   lastAlertAt: number;       // -Infinity means no alert has ever fired
 }
 
@@ -34,8 +36,8 @@ export class ChangeDetector {
 
     state.buffer.push({ t: price.timestamp, price: price.price });
 
-    // 古いサンプルを破棄
-    const cutoff = price.timestamp - MAGNITUDE_WINDOW_MS;
+    // バッファ保持: BUFFER_WINDOW_MS まで残す（コンテキスト計算用）
+    const cutoff = price.timestamp - BUFFER_WINDOW_MS;
     while (state.buffer.length > 0 && (state.buffer[0]?.t ?? 0) < cutoff) {
       state.buffer.shift();
     }
@@ -56,7 +58,8 @@ export class ChangeDetector {
     }
 
     // 変動幅判定（5分窓の最古値と比較）
-    const magBase = state.buffer[0];
+    const magCutoff = price.timestamp - MAGNITUDE_WINDOW_MS;
+    const magBase = state.buffer.find(s => s.t >= magCutoff);
     if (magBase && magBase !== state.buffer[state.buffer.length - 1]) {
       const pct = pctChange(magBase.price, price.price);
       const window = (price.timestamp - magBase.t) / 1000;
@@ -72,6 +75,13 @@ export class ChangeDetector {
     state: State, price: Price, pct: number, windowSec: number, kind: DetectionKind
   ): AlertEvent {
     state.lastAlertAt = price.timestamp;
+    // 直近15分のコンテキスト変化を計算（発火窓と独立）
+    const ctxCutoff = price.timestamp - CONTEXT_WINDOW_MS;
+    const ctxBase = state.buffer.find(s => s.t >= ctxCutoff);
+    const change15min =
+      ctxBase && ctxBase !== state.buffer[state.buffer.length - 1]
+        ? pctChange(ctxBase.price, price.price)
+        : null;
     return {
       symbol: state.meta.symbol,
       symbolLabel: state.meta.labelJa,
@@ -80,6 +90,7 @@ export class ChangeDetector {
       detectionKind: kind,
       direction: pct >= 0 ? 'up' : 'down',
       triggeredAt: price.timestamp,
+      change15min,
     };
   }
 }

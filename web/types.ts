@@ -10,4 +10,6 @@ export interface AlertEvent {
   detectionKind: DetectionKind;
   direction: 'up' | 'down';
   triggeredAt: number;
+  /** 直近15分の参考変化率 (発火窓と分離したコンテキスト) */
+  change15min: number | null;
 }

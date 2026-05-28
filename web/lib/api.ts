@@ -10,6 +10,7 @@ export async function fetchExplanation(alert: AlertEvent): Promise<string> {
       changePercent: alert.changePercent,
       windowSeconds: alert.windowSeconds,
       detectionKind: alert.detectionKind,
+      change15min: alert.change15min,
     }),
   });
   // 500でも body の explanation を採用（実エラーメッセージが入っている）

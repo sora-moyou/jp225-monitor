@@ -57,6 +57,17 @@ body {
   background: rgba(63, 185, 80, 0.08);
 }
 .alert strong { font-size: 14px; }
+.alert .kind-tag { color: var(--muted); font-size: 12px; }
+.alert .ctx-15min {
+  display: inline-block;
+  margin: 0 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.alert .explanation { display: block; margin-top: 4px; color: var(--text); }
 .alert .close {
   cursor: pointer;
   color: var(--muted);
