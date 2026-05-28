@@ -6,9 +6,13 @@ import { renderPriceGrid, flashCard } from './components/priceGrid.js';
 import { renderNews } from './components/newsFeed.js';
 import { addBanner, setExplanation } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
+import { mountChart } from './components/chart.js';
 import { UI } from './lib/i18n.js';
 
 const detector = new ChangeDetector(INSTRUMENTS);
+
+// TradingView チャートをマウント（非同期、失敗してもUIは継続）
+void mountChart('tradingview-chart');
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
