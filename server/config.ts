@@ -36,4 +36,7 @@ export const NEWS_RECENT_WINDOW_MS = 30 * 60 * 1000;
 
 export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。日本語で1〜2文、結論先出しで簡潔に答えてください。該当しそうなニュースがなければ「明確な材料なし」と返してください。`;
 
-export const LLM_MODEL = 'gpt-4o-mini';
+// LLM プロバイダ: Groq（無料、Llama 3.3 70B、OpenAI互換API）
+// OpenAI に戻すには LLM_BASE_URL を undefined、LLM_MODEL を 'gpt-4o-mini' などへ
+export const LLM_BASE_URL: string | undefined = 'https://api.groq.com/openai/v1';
+export const LLM_MODEL = 'llama-3.3-70b-versatile';
