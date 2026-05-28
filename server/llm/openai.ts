@@ -58,7 +58,7 @@ function rankAndFormatNews(input: ExplainInput, now: number): string {
   const ranked = [...recent]
     .map(n => ({ n, s: scoreNews(n, keywords, now) }))
     .sort((a, b) => b.s - a.s)
-    .slice(0, 15)
+    .slice(0, 6)   // トークン節約 (Groq無料枠: 6000 TPM)
     .map(x => x.n);
 
   if (ranked.length === 0) return '(直近4時間のニュース取得なし)';

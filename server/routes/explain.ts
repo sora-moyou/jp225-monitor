@@ -43,9 +43,22 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[explain] error:', msg);
+    // 429 等の障害時はテンプレフォールバック（最新ニュース直接表示）
+    if (/429|rate[_ ]limit/i.test(msg)) {
+      res.json({ explanation: templateFallback(getNews()) });
+      return;
+    }
     const friendly = translateLLMError(msg);
     res.status(500).json({ explanation: friendly });
   }
+}
+
+// LLM呼べない時の苦肉の策: 最新ニュース1件を直接見せる
+function templateFallback(news: ReturnType<typeof getNews>): string {
+  if (news.length === 0) return '(LLMレート制限・直近ニュースなし)';
+  const top = news[0]!;
+  const ageMin = Math.max(0, Math.round((Date.now() - top.publishedAt) / 60000));
+  return `[LLMレート制限のため簡易表示] ${ageMin}分前 [${top.source}] ${top.title}`;
 }
 
 function translateLLMError(msg: string): string {
@@ -55,11 +68,8 @@ function translateLLMError(msg: string): string {
   if (/401|invalid[_ ]api[_ ]key|incorrect api key/i.test(msg)) {
     return '(APIキー無効 — .env の OPENAI_API_KEY を確認)';
   }
-  if (/429/i.test(msg)) {
-    return '(LLMレート制限 — 少し待ってから再試行)';
-  }
   if (/model.*not.*found|does not have access/i.test(msg)) {
-    return '(モデルアクセス不可 — gpt-4o-miniへのアクセス権を確認)';
+    return '(モデルアクセス不可 — モデル名を確認)';
   }
   if (/ECONNREFUSED|ENOTFOUND|network|timeout/i.test(msg)) {
     return '(LLMネットワークエラー)';

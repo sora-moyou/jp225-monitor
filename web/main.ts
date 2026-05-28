@@ -52,6 +52,37 @@ enableSoundBtn.onclick = () => {
   enableSoundBtn.classList.add('hidden');
 };
 
+// ─── LLM呼び出しスロットル ─────────────────────────
+// Groq無料枠 (6000 TPM, 30 RPM) 対策:
+//   - 同一銘柄の説明は60秒キャッシュ
+//   - 全体で6秒間隔以上を保証 (=最大10コール/分)
+const SYMBOL_CACHE_MS = 60_000;
+const GLOBAL_MIN_INTERVAL_MS = 6_000;
+const symbolCache = new Map<string, { at: number; text: string }>();
+let lastLLMCallAt = 0;
+
+function scheduleExplanation(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {
+  const now = Date.now();
+  const cached = symbolCache.get(alert.symbol);
+  if (cached && now - cached.at < SYMBOL_CACHE_MS) {
+    setExplanation(banner, `${cached.text} [60秒以内のキャッシュ]`);
+    return;
+  }
+  const waitMs = Math.max(0, GLOBAL_MIN_INTERVAL_MS - (now - lastLLMCallAt));
+  lastLLMCallAt = now + waitMs;
+  setTimeout(() => {
+    fetchExplanation(alert)
+      .then(text => {
+        symbolCache.set(alert.symbol, { at: Date.now(), text });
+        setExplanation(banner, text);
+      })
+      .catch(() => setExplanation(banner, UI.ja.explanationFailed));
+  }, waitMs);
+  if (waitMs > 0) {
+    setExplanation(banner, `(${Math.ceil(waitMs / 1000)}秒待機後にLLMへ問い合わせ...)`);
+  }
+}
+
 function setStatus(status: 'connecting' | 'online' | 'offline') {
   statusEl.classList.remove('online', 'offline');
   if (status === 'online') {
@@ -82,15 +113,12 @@ connectStream({
       const alerts = detector.feed(p);
       const meta = INSTRUMENTS.find(i => i.symbol === p.symbol);
       const isHeavyweight = meta?.category === 'heavyweight';
-      // 表示中銘柄 OR 値がさ株急変はアラート発火
       if (!displayed.has(p.symbol) && !isHeavyweight) continue;
       for (const alert of alerts) {
-        flashCard(priceGridEl, alert);    // 値がさ株はカード無しなので無視される
+        flashCard(priceGridEl, alert);
         alertBeep(alert.direction);
         const banner = addBanner(bannerEl, alert);
-        fetchExplanation(alert)
-          .then(text => setExplanation(banner, text))
-          .catch(() => setExplanation(banner, UI.ja.explanationFailed));
+        scheduleExplanation(alert, banner);
       }
     }
   },
