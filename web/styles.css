@@ -150,15 +150,25 @@ body {
   background: var(--panel);
 }
 
-/* 右列: アラート上、ニュース下、ニュースが伸縮 */
-.right-col .alerts-pane { flex: 0 0 auto; max-height: 45%; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+/* 右列: アラート (D&D可変、内部スクロール) → ニュース (残り全部) */
+.right-col .alerts-pane {
+  flex: 0 0 auto;
+  height: 260px;                     /* ユーザー指定 (D&D可、localStorageで永続) */
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .right-col .alerts-pane h2 {
   font-size: 12px; margin: 0; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.1em;
+  flex-shrink: 0;
 }
 .right-col .alerts-pane .alert-banner {
+  flex: 1 1 auto;
   overflow-y: auto;
   padding-right: 4px;
+  min-height: 0;                     /* スクロール有効化 */
 }
 .right-col .news-feed { flex: 1 1 auto; min-height: 0; max-height: none; }
 

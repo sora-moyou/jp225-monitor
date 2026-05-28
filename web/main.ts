@@ -26,48 +26,55 @@ initChat(
   document.getElementById('chat-clear') as HTMLButtonElement,
 );
 
-// ─── チャット高さの D&D リサイズ + 永続化 ──────────
-{
-  const handle = document.getElementById('chat-resize');
-  const chatBoard = document.querySelector<HTMLElement>('.chat-board');
-  if (handle && chatBoard) {
-    // localStorage から復元
-    const saved = localStorage.getItem('chat-height');
-    if (saved) chatBoard.style.height = saved;
+// ─── D&D で高さリサイズ + localStorage 永続化 ──────────
+function setupResize(handleId: string, targetSelector: string, storageKey: string, minH = 100) {
+  const handle = document.getElementById(handleId);
+  const target = document.querySelector<HTMLElement>(targetSelector);
+  if (!handle || !target) return;
+  const saved = localStorage.getItem(storageKey);
+  if (saved) target.style.height = saved;
 
-    let dragging = false;
-    let startY = 0;
-    let startHeight = 0;
+  let dragging = false;
+  let startY = 0;
+  let startHeight = 0;
 
-    handle.addEventListener('mousedown', (e) => {
-      dragging = true;
-      startY = e.clientY;
-      startHeight = chatBoard.offsetHeight;
-      handle.classList.add('dragging');
-      document.body.style.cursor = 'row-resize';
-      document.body.style.userSelect = 'none';
-      e.preventDefault();
-    });
+  handle.addEventListener('mousedown', (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startHeight = target.offsetHeight;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
 
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      const delta = e.clientY - startY;
-      // ハンドルを上に動かす = チャット拡大
-      const newH = Math.max(120, Math.min(window.innerHeight - 220, startHeight - delta));
-      chatBoard.style.height = `${newH}px`;
-    });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const delta = e.clientY - startY;
+    // ハンドルが target の下にある場合: 下にドラッグで拡大 (delta > 0)
+    // ハンドルが target の上にある場合: 上にドラッグで拡大 (delta < 0)
+    // 判定: target のbottom と handle のtop で判別
+    const handleRect = handle.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const sign = handleRect.top < targetRect.top ? -1 : 1;
+    const newH = Math.max(minH, Math.min(window.innerHeight - 180, startHeight + sign * delta));
+    target.style.height = `${newH}px`;
+  });
 
-    document.addEventListener('mouseup', () => {
-      if (!dragging) return;
-      dragging = false;
-      handle.classList.remove('dragging');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      // 永続化
-      localStorage.setItem('chat-height', chatBoard.style.height);
-    });
-  }
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(storageKey, target.style.height);
+  });
 }
+
+// チャット高さ: ハンドルはチャットの上にある (上ドラッグでチャット拡大)
+setupResize('chat-resize', '.chat-board', 'chat-height', 120);
+// アラート高さ: ハンドルはアラートの下にある (下ドラッグでアラート拡大)
+setupResize('alerts-resize', '.alerts-pane', 'alerts-height', 100);
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
