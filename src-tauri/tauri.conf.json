@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JP225 Monitor",
+  "version": "0.3.0",
+  "identifier": "app.jp225monitor",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist/web"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "JP225 Monitor",
+        "width": 1500,
+        "height": 950,
+        "minWidth": 1100,
+        "minHeight": 650,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/jp225-monitor"],
+    "category": "Finance",
+    "shortDescription": "JP225 Nikkei 225 futures market monitor",
+    "longDescription": "Real-time JP225 (Nikkei 225) futures market dashboard with AI-powered move explanations (Gemini/Groq/OpenAI)."
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/REPLACE_USER/jp225-monitor/releases/latest/download/latest.json"
+      ],
+      "pubkey": "REPLACE_AFTER_RUNNING_npx_tauri_signer_generate",
+      "dialog": true
+    }
+  }
+}

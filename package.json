@@ -12,6 +12,12 @@
     "build:server": "node scripts/build-server.mjs",
     "package": "npm run build && node scripts/package-sea.mjs",
     "package:pkg": "npm run build && pkg dist/server.cjs --targets node18-win-x64 --output bin/jp225-monitor",
+    "icons": "node scripts/gen-placeholder-icons.mjs",
+    "sidecar:copy": "node scripts/copy-sidecar.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "npm run package && npm run sidecar:copy && tauri dev",
+    "tauri:build": "npm run package && npm run sidecar:copy && tauri build",
+    "tauri:signer": "tauri signer generate -w ~/.tauri/jp225-monitor.key",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -22,6 +28,10 @@
     ]
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "cheerio": "^1.0.0",
     "express": "^4.19.0",
     "openai": "^4.50.0",
@@ -29,6 +39,7 @@
     "yahoo-finance2": "^2.11.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
     "@types/express": "^4.17.0",
     "@types/node": "^20.14.0",
     "@yao-pkg/pkg": "^6.20.0",

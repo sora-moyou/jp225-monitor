@@ -9,6 +9,7 @@ import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
 import { initSettingsModal } from './components/settingsModal.js';
+import { checkForUpdates } from './lib/updater.js';
 import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
@@ -111,13 +112,15 @@ setInterval(() => {
   clockEl.textContent = `JST ${d.toLocaleTimeString('ja-JP', { hour12: false })}`;
 }, 1000);
 
-// バージョン表示 (起動時に1回取得)
+// バージョン表示 (起動時に1回取得) + Tauri内なら更新チェック
 const versionEl = document.getElementById('app-version');
 if (versionEl) {
   fetch('/api/version')
     .then(r => r.json())
     .then((d: { version: string }) => { versionEl.textContent = `v${d.version}`; })
     .catch(() => { versionEl.textContent = 'v?'; });
+  // Tauri環境なら updater で新版チェック (フラグが立てばボタン化)
+  void checkForUpdates(versionEl);
 }
 
 enableSoundBtn.onclick = () => {
