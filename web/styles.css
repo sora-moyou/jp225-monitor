@@ -4,10 +4,10 @@
   --border: #30363d;
   --text: #e6edf3;
   --muted: #8b949e;
-  --up: #3fb950;
-  --down: #f85149;
-  --flash-up: rgba(63, 185, 80, 0.4);
-  --flash-down: rgba(248, 81, 73, 0.4);
+  --up: #5cf08a;                            /* 明るい緑 */
+  --down: #ff7d75;                          /* 明るい赤 */
+  --flash-up: rgba(92, 240, 138, 0.45);
+  --flash-down: rgba(255, 125, 117, 0.45);
 }
 
 * { box-sizing: border-box; }
