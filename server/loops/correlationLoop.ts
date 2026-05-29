@@ -4,7 +4,8 @@ import { INSTRUMENTS } from '../config.js';
 // v0.3.13: 5 分ごとに Yahoo chart API を叩いて全銘柄の 1m bars 取得 → 相関ランキングを更新
 const ANCHOR = 'NIY=F';
 const POLL_MS = 5 * 60 * 1000;
-const MIN_SAMPLES = 10;      // 10 ペア未満は信頼性低として候補から除外
+const MIN_SAMPLES = 100;     // v0.3.14: 100 ペア未満は信頼性低として候補から除外
+                             // (range=1d で目標 500+ samples、ユーザ要望)
 
 const CANDIDATES = INSTRUMENTS
   .filter(i => i.category !== 'heavyweight' && i.symbol !== ANCHOR)

@@ -132,7 +132,9 @@ function updateLeaderInfo() {
   const parts = top.map((r, i) => {
     const label = labelOf(r.symbol as never);
     const v = r.absCorr.toFixed(2);
-    return i === 0 ? `<strong>${label} ${v}</strong>` : `${label} ${v}`;
+    const n = r.samples;
+    const body = `${label} ${v} <span style="opacity:0.55;font-size:11px">n=${n}</span>`;
+    return i === 0 ? `<strong>${body}</strong>` : body;
   });
   leaderInfoEl.innerHTML = `相関 (vs ${labelOf(anchor as never)}): ${parts.join(' / ')}`;
 }
