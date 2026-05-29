@@ -8,6 +8,7 @@ import {
   INSTRUMENTS,
 } from '../config.js';
 import type { LLMProvider } from '../config.js';
+import type { Mover } from '../marketSnapshot.js';
 import { resolveApiKey } from '../configStore.js';
 
 interface ProviderState {
@@ -133,6 +134,7 @@ export interface ExplainInput {
   pa15min: { open: number; high: number; low: number; current: number } | null;
   range1h: { high: number; low: number } | null;
   news: NewsItem[];
+  crossAsset?: Mover[];
 }
 
 export function scoreNews(news: NewsItem, keywords: string[], now: number): number {
@@ -159,6 +161,17 @@ export function selectNewsPool(news: NewsItem[], now: number): NewsItem[] {
   const loose = recent.filter(n => now - n.publishedAt <= looseMs);
   if (loose.length > 0) return loose;
   return recent;
+}
+
+export function formatCrossAsset(movers: Mover[]): string {
+  if (movers.length === 0) return '【他資産】同時刻に目立った連動なし。';
+  const lines = movers.map(m => {
+    const arrow = m.direction === 'up' ? '▲' : '▼';
+    const win = m.windowSeconds >= 300 ? '5分' : '1分';
+    const sign = m.changePercent >= 0 ? '+' : '';
+    return `- ${m.label} ${arrow} ${sign}${m.changePercent.toFixed(2)}% (${win}, z=${m.z.toFixed(1)})`;
+  });
+  return `【同時刻に大きく動いた他資産(z>=4.0)】\n${lines.join('\n')}`;
 }
 
 function rankAndFormatNews(input: ExplainInput, now: number): string {
@@ -198,12 +211,14 @@ export async function explain(input: ExplainInput): Promise<string> {
     `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n` +
     (magnitudeNote ? magnitudeNote + '\n' : '') +
     ctx15Line + pa15Line + range1hLine +
+    `\n${formatCrossAsset(input.crossAsset ?? [])}\n` +
     `\n【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
     `[手順]\n` +
-    `1) 候補ニュースを上から見て、その材料なら相場が ${dirEmphasis} へ動くはずか判定。\n` +
-    `2) 方向が一致する材料を1件選んで「○○分前のXX、(方向の根拠)」形式で説明。\n` +
-    `3) 方向が一致するものが無ければ「整合する明確な材料なし、テクニカル/ノイズ可能性」と書く。地政学リスクなのに株が上がっている等の矛盾を引用しない。\n` +
-    `4) OHLCで下髭/上髭/サポート反転等が読めれば併記してよい。\n\n` +
+    `1) まず「他資産」を見る。${dirEmphasis} と同方向に大きく動いた資産があれば、連動(リスクオン/オフ・金利・為替)として最優先で説明に使う。\n` +
+    `2) 次に候補ニュースを上から見て、その材料なら相場が ${dirEmphasis} へ動くはずか判定。\n` +
+    `3) 方向が一致する材料(他資産 or ニュース)を選んで「○○分前のXX、(方向の根拠)」形式で説明。\n` +
+    `4) 方向が一致するものが無ければ「整合する明確な材料なし、テクニカル/ノイズ可能性」と書く。地政学リスクなのに株が上がっている等の矛盾を引用しない。\n` +
+    `5) OHLCで下髭/上髭/サポート反転等が読めれば併記してよい。\n\n` +
     `出力は必ず200文字以内、1〜2文で。`;
 
   return callWithFallback(async (p) => {
