@@ -35,7 +35,7 @@ https://github.com/sora-moyou/jp225-monitor/releases/latest
 ## 主な機能
 
 - **8 銘柄リアルタイム監視** (NIY=F / NQ=F / YM=F / ES=F / JPY=X / CL=F / ^VIX / ^TNX) を 2 秒間隔
-- **ハイブリッド急変検知** — 5 分窓 magnitude + 30 秒窓 slope
+- **適応 z-score 急変検知** (v0.3.17) — 1 分窓 burst + 5 分窓 trend + 日経 225 専用 5〜10 秒 tick の 3 層。過去 60 分 σ 基準で相場局面に追従
 - **AI 自動説明** — Gemini → Groq → OpenAI 自動フォールバック
 - **AI チャット** — 全銘柄価格 + 直近 15 件ニュースをコンテキストに自由質問
 - **21 ニュースソース** — 日本 7 + 英語 14、英語見出しはワンクリック翻訳

@@ -771,12 +771,12 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.10</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.17</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         JP225 (日経 225) の価格変動をリアルタイムで監視。
-        30 秒・5 分の急変動を検知すると、直近ニュースから AI が動いた要因を推定して提示します。
-        v0.3.9 でニュース選別を急変時刻 ±15 分の近接優先に強化、的外れな材料の引用を抑制。
+        v0.3.17 以降は <strong>適応 z-score</strong> で急変動を検知 — 過去 60 分のボラティリティを基準に「いまの相場として異常か」を判定するので、固定 % 閾値より体感に近い感度になります。
+        日経 225 (NIY=F) には追加で <strong>5〜10 秒の超短期フラッシュ検知</strong> を装備、ニュース反応など瞬時の急変もキャッチ。
       </p>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
@@ -1024,8 +1024,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="features">
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>ハイブリッド急変検知</h3>
-      <p>5 分窓の magnitude (絶対値) と 30 秒窓の slope (傾き) の 2 方式。発火銘柄は <code>[トレンド]</code> / <code>[フラッシュ]</code> ラベル付き。</p>
+      <h3>適応 z-score 急変検知 (v0.3.17)</h3>
+      <p>1 分窓 burst (静寂前提付き) + 5 分窓 trend + 日経 225 専用 5〜10 秒 tick の 3 層構成。すべて過去 60 分のボラティリティ σ を基準にした <strong>適応閾値</strong> で発火するので、相場局面に追従。指数・FX は他銘柄との横断確認パスが必要 (単独データ異常を弾く)。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
@@ -1273,48 +1273,44 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
               <th>銘柄</th>
               <th>コード</th>
               <th>通貨</th>
-              <th>単位</th>
-              <th>magnitude<br>(5 分閾値)</th>
-              <th>slope<br>(30 秒閾値)</th>
+              <th>横断確認</th>
+              <th>超短期 (5〜10 秒)</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>%</td><td>0.20%</td><td>0.07%</td></tr>
-            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>%</td><td>0.50%</td><td>0.20%</td></tr>
-            <tr><td>VIX</td><td><code>^VIX</code></td><td>—</td><td>%</td><td>5.00%</td><td>2.00%</td></tr>
-            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>bp</td><td>2.00 bp</td><td>1.00 bp</td></tr>
+            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td>必須</td><td><strong>有 (k=5.0)</strong></td></tr>
+            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
+            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
+            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
+            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>必須</td><td>—</td></tr>
+            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>不要</td><td>—</td></tr>
+            <tr><td>VIX</td><td><code>^VIX</code></td><td>—</td><td>不要</td><td>—</td></tr>
+            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>不要</td><td>—</td></tr>
           </tbody>
         </table>
         <p style="margin-top: 10px; color: var(--text-faint); font-size: 13px;">
           v0.3.8 で日経銘柄を <code>NK=F</code> (Yahoo の古い ALTSYMBOL、2020 年で更新停止) から <code>NIY=F</code> (CME 上場 JPY 建て日経 225 先物) に切替。USD 建て銘柄 (NQ/YM/ES/CL) は USD のまま表示します。
         </p>
 
-        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示、アラートだけ通知。日経 225 への寄与度が高い東証値がさ株</p>
+        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示、アラートだけ通知。日経 225 への寄与度が高い東証値がさ株。横断確認は不要 (単独で動くことも多い銘柄群)。</p>
         <table class="ref-table">
           <thead>
             <tr>
               <th>銘柄</th>
               <th>コード</th>
-              <th>単位</th>
-              <th>magnitude<br>(5 分閾値)</th>
-              <th>slope<br>(30 秒閾値)</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>ファーストリテイリング</td><td><code>9983.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
-            <tr><td>東京エレクトロン</td><td><code>8035.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
-            <tr><td>アドバンテスト</td><td><code>6857.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
-            <tr><td>ソフトバンク G</td><td><code>9984.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
-            <tr><td>ダイキン</td><td><code>6367.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
+            <tr><td>ファーストリテイリング</td><td><code>9983.T</code></td></tr>
+            <tr><td>東京エレクトロン</td><td><code>8035.T</code></td></tr>
+            <tr><td>アドバンテスト</td><td><code>6857.T</code></td></tr>
+            <tr><td>ソフトバンク G</td><td><code>9984.T</code></td></tr>
+            <tr><td>ダイキン</td><td><code>6367.T</code></td></tr>
           </tbody>
         </table>
 
         <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
-          ※ 閾値は <code>server/config.ts</code> の <code>INSTRUMENTS</code> 配列で定義。アラート発火は magnitude (5 分窓の値幅) または slope (30 秒窓の傾き) いずれかが閾値を超えた時。
+          ※ v0.3.17 以降のアラート発火条件: <strong>(A) 1 分窓 burst</strong> = 直近 1 分 return の |z| > 2.5 (z = 値 / 過去 60 分 σ)、かつ直前 5 本が静寂、かつ横断確認パス (指数・FX のみ)。 <strong>(B) 5 分窓 trend</strong> = 5 分累積 return の |z| > 2.5。 <strong>(C) 5〜10 秒 tick</strong> (NIY=F 専用) = ランダムウォーク仮定でスケールした σ の 5 倍超で発火 (めったに発火しない設定)。
         </p>
       </div>
     </details>
