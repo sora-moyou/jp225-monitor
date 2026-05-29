@@ -41,7 +41,7 @@ async function scrapeOne(symbol: Symbol): Promise<Price | null> {
     price,
     changePercent: Number.isFinite(changePercent) ? changePercent : 0,
     timestamp: Date.now(),
-    stale: true,
+    stale: false,           // v0.3.12: Investing は live フェッチ。stale は「キャッシュ流用」専用フラグ
   };
 }
 
