@@ -3,722 +3,1014 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>JP225 Monitor 利用マニュアル</title>
+<meta name="description" content="JP225 Monitor の使い方ガイド — インストールから日常運用、トラブルシューティングまで" />
+<title>JP225 Monitor — 利用ガイド</title>
+<link rel="icon" href="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/32x32.png" />
 <style>
-  :root {
-    --bg: #0d1117;
-    --panel: #161b22;
-    --panel-2: #1c2128;
-    --border: #30363d;
-    --text: #e6edf3;
-    --muted: #8b949e;
-    --accent: #3fb950;
-    --link: #58a6ff;
-    --warn: #f0d000;
-    --error: #ff7d75;
-    --code-bg: #0a0d12;
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    margin: 0;
-    font-family: -apple-system, 'Segoe UI', 'Hiragino Sans', 'Yu Gothic UI', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.7;
-    font-size: 15px;
-  }
-  /* ─── Layout ─────────────────────────────────────── */
-  .layout {
-    display: grid;
-    grid-template-columns: 280px 1fr;
-    gap: 0;
-    max-width: 1400px;
-    margin: 0 auto;
-    min-height: 100vh;
-  }
-  .sidebar {
-    position: sticky;
-    top: 0;
-    height: 100vh;
-    overflow-y: auto;
-    border-right: 1px solid var(--border);
-    padding: 24px 18px 24px 24px;
-    background: var(--panel);
-  }
-  .sidebar h2 {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 0 0 12px 0;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
-  }
-  .sidebar nav ol {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    counter-reset: chapter;
-  }
-  .sidebar nav li {
-    counter-increment: chapter;
-    margin: 2px 0;
-  }
-  .sidebar nav a {
-    display: block;
-    padding: 6px 10px 6px 32px;
-    border-radius: 4px;
-    color: var(--text);
-    text-decoration: none;
-    position: relative;
-    font-size: 13.5px;
-    transition: background 0.1s, color 0.1s;
-  }
-  .sidebar nav a::before {
-    content: counter(chapter);
-    position: absolute;
-    left: 8px;
-    top: 6px;
-    width: 20px;
-    text-align: right;
-    color: var(--muted);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-  .sidebar nav a:hover {
-    background: var(--panel-2);
-    color: var(--link);
-  }
-  main {
-    padding: 32px 48px 64px;
-    max-width: 900px;
-  }
-  /* ─── Header ─────────────────────────────────────── */
-  header.hero {
-    margin-bottom: 36px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border);
-  }
-  header.hero h1 {
-    font-size: 32px;
-    margin: 0 0 8px 0;
-    background: linear-gradient(135deg, var(--accent), var(--link));
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  header.hero p {
-    color: var(--muted);
-    margin: 0;
-    font-size: 15px;
-  }
-  /* ─── Sections ───────────────────────────────────── */
-  section {
-    margin: 40px 0;
-    scroll-margin-top: 16px;
-  }
-  section h2 {
-    font-size: 22px;
-    margin: 0 0 16px 0;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
-  }
-  section h2 .num {
-    color: var(--accent);
-    margin-right: 12px;
-    font-variant-numeric: tabular-nums;
-  }
-  section h3 {
-    font-size: 17px;
-    margin: 24px 0 10px 0;
-    color: var(--text);
-  }
-  section h3::before {
-    content: '▸';
-    color: var(--accent);
-    margin-right: 8px;
-  }
-  p { margin: 10px 0; }
-  /* ─── Tables ─────────────────────────────────────── */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 16px 0;
-    background: var(--panel);
-    border-radius: 6px;
-    overflow: hidden;
-    font-size: 14px;
-  }
-  th, td {
-    padding: 9px 14px;
-    text-align: left;
-    border-bottom: 1px solid var(--border);
-  }
-  th {
-    background: var(--panel-2);
-    color: var(--muted);
-    font-weight: 600;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: var(--panel-2); }
-  /* ─── Code ───────────────────────────────────────── */
-  code {
-    background: var(--code-bg);
-    color: #ff8e63;
-    padding: 1.5px 6px;
-    border-radius: 3px;
-    font-family: 'Consolas', 'Menlo', monospace;
-    font-size: 13px;
-    border: 1px solid var(--border);
-  }
-  pre {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 18px;
-    overflow-x: auto;
-    font-size: 13px;
-    line-height: 1.5;
-    color: #d8d8d8;
-  }
-  pre code {
-    background: transparent;
-    color: inherit;
-    padding: 0;
-    border: none;
-    font-size: inherit;
-  }
-  /* ─── Images ─────────────────────────────────────── */
-  img.screenshot {
-    max-width: 100%;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    margin: 14px 0;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.5);
-  }
-  img.screenshot.small {
-    max-width: 480px;
-  }
-  figure {
-    margin: 16px 0;
-  }
-  figcaption {
-    color: var(--muted);
-    font-size: 13px;
-    margin-top: 6px;
-    text-align: center;
-    font-style: italic;
-  }
-  /* ─── Callouts ───────────────────────────────────── */
-  .callout {
-    border-left: 4px solid var(--accent);
-    background: rgba(63, 185, 80, 0.08);
-    padding: 12px 16px;
-    margin: 16px 0;
-    border-radius: 4px;
-  }
-  .callout.warn {
-    border-left-color: var(--warn);
-    background: rgba(240, 208, 0, 0.08);
-  }
-  .callout.error {
-    border-left-color: var(--error);
-    background: rgba(255, 125, 117, 0.08);
-  }
-  .callout-title {
-    font-weight: 700;
-    margin-bottom: 4px;
-    display: block;
-  }
-  /* ─── Lists ──────────────────────────────────────── */
-  ul, ol {
-    padding-left: 24px;
-    margin: 10px 0;
-  }
-  ul li, ol li { margin: 4px 0; }
-  /* ─── Links ──────────────────────────────────────── */
-  a { color: var(--link); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  /* ─── Dot indicators ─────────────────────────────── */
-  .dot {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    vertical-align: middle;
-    margin-right: 4px;
-  }
-  .dot.green { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-  .dot.yellow { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
-  .dot.white { background: #e6edf3; }
-  /* ─── Q&A ────────────────────────────────────────── */
-  .qa { margin: 18px 0; padding: 14px 16px; background: var(--panel); border-radius: 6px; border-left: 3px solid var(--link); }
-  .qa .q { font-weight: 700; color: var(--link); margin-bottom: 6px; }
-  /* ─── Responsive ─────────────────────────────────── */
-  @media (max-width: 920px) {
-    .layout { grid-template-columns: 1fr; }
-    .sidebar {
-      position: static;
-      height: auto;
-      border-right: none;
-      border-bottom: 1px solid var(--border);
-    }
-    main { padding: 24px 20px 48px; }
-  }
-  /* ─── Footer ─────────────────────────────────────── */
-  footer {
-    margin-top: 64px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 13px;
-    text-align: center;
-  }
+/* ─────────────────────────────────────────────────
+   Design tokens
+   ───────────────────────────────────────────────── */
+:root {
+  /* Palette */
+  --bg-0: #07090e;
+  --bg-1: #0d1117;
+  --bg-2: #161b22;
+  --bg-3: #1c2533;
+  --border: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.15);
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --text-faint: #6b7280;
+  --up: #10b981;
+  --up-glow: #10b98144;
+  --down: #ef4444;
+  --warn: #f59e0b;
+  --info: #06b6d4;
+  --accent: #5eead4;
+  --link: #7dd3fc;
+  /* Layout */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow: 0 8px 24px rgba(0,0,0,0.4);
+  --shadow-lg: 0 16px 48px rgba(0,0,0,0.5);
+  --space-xs: 6px;
+  --space-sm: 12px;
+  --space: 20px;
+  --space-md: 32px;
+  --space-lg: 48px;
+  --space-xl: 72px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif;
+  font-feature-settings: "palt";
+  background: var(--bg-0);
+  color: var(--text);
+  line-height: 1.7;
+  font-size: 15.5px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ─────────────────────────────────────────────────
+   Top progress bar (scroll indicator)
+   ───────────────────────────────────────────────── */
+.progress {
+  position: fixed; top: 0; left: 0; right: 0; height: 3px;
+  background: transparent; z-index: 100;
+}
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--up), var(--accent), var(--info));
+  width: 0%;
+  transition: width 0.1s;
+}
+
+/* ─────────────────────────────────────────────────
+   Nav (sticky topbar)
+   ───────────────────────────────────────────────── */
+.topnav {
+  position: sticky; top: 0; z-index: 50;
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  background: rgba(7,9,14,0.72);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 0;
+}
+.topnav-inner {
+  max-width: 1200px; margin: 0 auto; padding: 0 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.topnav .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 700; font-size: 16px;
+  text-decoration: none; color: var(--text);
+}
+.topnav .brand img { width: 28px; height: 28px; border-radius: 6px; }
+.topnav .brand .v { color: var(--text-muted); font-weight: 400; font-size: 13px; }
+.topnav nav { display: flex; gap: 18px; }
+.topnav nav a {
+  color: var(--text-muted); text-decoration: none; font-size: 14px;
+  transition: color 0.15s;
+}
+.topnav nav a:hover { color: var(--text); }
+@media (max-width: 720px) {
+  .topnav nav { display: none; }
+}
+
+/* ─────────────────────────────────────────────────
+   Hero
+   ───────────────────────────────────────────────── */
+.hero {
+  position: relative; overflow: hidden;
+  padding: var(--space-xl) 24px var(--space-lg);
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(16,185,129,0.18), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 30%, rgba(6,182,212,0.12), transparent 60%),
+    var(--bg-0);
+}
+.hero::before {
+  content: ''; position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse 60% 40% at 50% 30%, black, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 40% at 50% 30%, black, transparent 70%);
+  pointer-events: none;
+}
+.hero-inner {
+  max-width: 920px; margin: 0 auto;
+  position: relative; z-index: 1;
+  display: grid; grid-template-columns: 1fr auto;
+  gap: var(--space-lg); align-items: center;
+}
+.hero-text .badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 12px;
+  background: rgba(16,185,129,0.1);
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: 99px;
+  color: var(--up);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.hero-text h1 {
+  margin: 16px 0 12px;
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  background: linear-gradient(180deg, var(--text), #94a3b8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero-text p.lead {
+  font-size: 18px;
+  color: var(--text-muted);
+  max-width: 600px;
+  margin-bottom: 28px;
+  line-height: 1.6;
+}
+.hero-actions {
+  display: flex; flex-wrap: wrap; gap: 12px;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14.5px;
+  text-decoration: none;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--up);
+  color: var(--bg-0);
+  box-shadow: 0 4px 12px var(--up-glow);
+}
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px var(--up-glow); }
+.btn-ghost {
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.btn-ghost:hover { background: rgba(255,255,255,0.10); }
+.hero-icon {
+  width: 140px; height: 140px;
+  border-radius: 24px;
+  box-shadow: 0 24px 60px rgba(16,185,129,0.25);
+  border: 1px solid var(--border);
+}
+@media (max-width: 720px) {
+  .hero-inner { grid-template-columns: 1fr; }
+  .hero-icon { width: 96px; height: 96px; margin: 0 auto; order: -1; }
+  .hero-text { text-align: center; }
+  .hero-actions { justify-content: center; }
+}
+
+/* ─────────────────────────────────────────────────
+   Sections
+   ───────────────────────────────────────────────── */
+main { padding: 0 24px; }
+.section {
+  max-width: 1080px; margin: 0 auto;
+  padding: var(--space-xl) 0;
+  scroll-margin-top: 80px;
+}
+.section + .section { border-top: 1px solid var(--border); }
+.section-head {
+  max-width: 720px; margin: 0 auto var(--space-md);
+  text-align: center;
+}
+.section-eyebrow {
+  display: inline-block;
+  font-size: 12px; font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--up);
+  margin-bottom: 12px;
+}
+.section-head h2 {
+  font-size: clamp(26px, 3vw, 36px);
+  font-weight: 800; letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+.section-head p {
+  color: var(--text-muted); font-size: 17px;
+}
+
+/* ─────────────────────────────────────────────────
+   Quickstart steps
+   ───────────────────────────────────────────────── */
+.steps {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+}
+@media (max-width: 860px) { .steps { grid-template-columns: 1fr; } }
+.step {
+  position: relative;
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 24px;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.step:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--up), var(--accent));
+  color: var(--bg-0);
+  font-weight: 800;
+  font-size: 16px;
+  margin-bottom: 14px;
+}
+.step h3 { font-size: 18px; margin-bottom: 8px; }
+.step p { color: var(--text-muted); font-size: 14.5px; }
+.step a { color: var(--link); font-weight: 600; }
+
+/* ─────────────────────────────────────────────────
+   Annotated screenshot
+   ───────────────────────────────────────────────── */
+.shot-wrap {
+  position: relative;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  box-shadow: var(--shadow-lg);
+}
+.shot-wrap img { display: block; width: 100%; border-radius: var(--radius-sm); }
+.annotations {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px; margin-top: 24px;
+}
+.ann {
+  display: flex; gap: 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.ann-num {
+  flex-shrink: 0;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--up);
+  color: var(--bg-0);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 13px;
+}
+.ann-body strong { display: block; font-size: 14.5px; margin-bottom: 2px; }
+.ann-body p { color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+
+/* ─────────────────────────────────────────────────
+   Feature cards
+   ───────────────────────────────────────────────── */
+.features {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+.feature {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  position: relative; overflow: hidden;
+  transition: transform 0.2s, border-color 0.2s;
+}
+.feature:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+.feature::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, var(--up), transparent);
+  opacity: 0; transition: opacity 0.2s;
+}
+.feature:hover::before { opacity: 1; }
+.feature .icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px;
+  border-radius: 10px;
+  background: rgba(16,185,129,0.1);
+  color: var(--up);
+  margin-bottom: 14px;
+}
+.feature .icon svg { width: 22px; height: 22px; }
+.feature h3 {
+  font-size: 17px; font-weight: 700;
+  margin-bottom: 8px;
+}
+.feature p { color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+.feature .tag {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: rgba(94,234,212,0.1);
+  color: var(--accent);
+  border-radius: 99px;
+}
+
+/* ─────────────────────────────────────────────────
+   Setup tabs (Gemini / Groq / OpenAI)
+   ───────────────────────────────────────────────── */
+.setup {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.setup-tabs {
+  display: flex; border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.setup-tab {
+  flex: 1; padding: 16px 20px;
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-muted); font-weight: 600; font-size: 14.5px;
+  transition: color 0.15s;
+  border-bottom: 2px solid transparent;
+  position: relative;
+}
+.setup-tab:hover { color: var(--text); }
+.setup-tab.active { color: var(--text); border-bottom-color: var(--up); }
+.setup-tab .pill {
+  display: inline-block; margin-left: 8px;
+  font-size: 10px; font-weight: 700;
+  padding: 2px 6px; border-radius: 4px;
+  background: rgba(16,185,129,0.15); color: var(--up);
+}
+.setup-tab .pill.paid { background: rgba(239,68,68,0.15); color: var(--down); }
+.setup-panel { display: none; padding: 28px; }
+.setup-panel.active { display: block; }
+.setup-panel h4 { margin-bottom: 12px; font-size: 16px; }
+.setup-panel ol { padding-left: 28px; }
+.setup-panel li { margin: 8px 0; color: var(--text-muted); }
+.setup-panel li strong { color: var(--text); }
+
+/* ─────────────────────────────────────────────────
+   Status dots
+   ───────────────────────────────────────────────── */
+.dots-demo {
+  display: flex; gap: 8px; padding: 10px 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px; width: fit-content;
+  align-items: center;
+}
+.dot-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+}
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+}
+.dot.green { background: var(--up); box-shadow: 0 0 6px var(--up); }
+.dot.yellow { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+.dot.white { background: #e6edf3; }
+.dot.gray { background: var(--text-faint); }
+.dot-table {
+  width: 100%; border-collapse: collapse; margin-top: 24px;
+}
+.dot-table th, .dot-table td {
+  padding: 14px 16px; text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 14.5px; vertical-align: top;
+}
+.dot-table th {
+  background: var(--bg-1);
+  font-weight: 600; font-size: 13px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dot-table tr:last-child td { border-bottom: none; }
+.dot-table td:first-child { width: 50px; text-align: center; }
+
+/* ─────────────────────────────────────────────────
+   FAQ accordion
+   ───────────────────────────────────────────────── */
+.faq { display: flex; flex-direction: column; gap: 10px; }
+.faq details {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.faq details[open] { border-color: var(--border-strong); }
+.faq summary {
+  list-style: none; cursor: pointer;
+  padding: 16px 20px;
+  font-weight: 600;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  transition: background 0.15s;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary:hover { background: var(--bg-3); }
+.faq summary::after {
+  content: '+';
+  color: var(--text-muted);
+  font-size: 24px; line-height: 1; font-weight: 300;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+.faq details[open] summary::after { transform: rotate(45deg); color: var(--up); }
+.faq .faq-body {
+  padding: 4px 20px 18px;
+  color: var(--text-muted);
+  font-size: 14.5px;
+  line-height: 1.7;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.faq .faq-body ol, .faq .faq-body ul { padding-left: 24px; margin-top: 8px; }
+.faq .faq-body code { background: var(--bg-0); padding: 2px 6px; border-radius: 4px; }
+
+/* ─────────────────────────────────────────────────
+   Reference (collapsible)
+   ───────────────────────────────────────────────── */
+.ref { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.ref > details { border-bottom: 1px solid var(--border); }
+.ref > details:last-child { border-bottom: none; }
+.ref > details > summary {
+  cursor: pointer; padding: 18px 24px;
+  font-weight: 600; font-size: 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  list-style: none;
+}
+.ref > details > summary::-webkit-details-marker { display: none; }
+.ref > details > summary::after {
+  content: '›'; color: var(--text-muted); font-size: 22px;
+  transition: transform 0.2s;
+}
+.ref > details[open] > summary::after { transform: rotate(90deg); }
+.ref-body { padding: 0 24px 20px; color: var(--text-muted); }
+table.ref-table {
+  width: 100%; border-collapse: collapse; margin-top: 8px;
+  font-size: 14px;
+}
+table.ref-table th, table.ref-table td {
+  padding: 9px 14px; text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+table.ref-table th { font-weight: 600; color: var(--text); }
+table.ref-table tr:last-child td { border-bottom: none; }
+table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #ff9b85; }
+
+/* ─────────────────────────────────────────────────
+   Callouts
+   ───────────────────────────────────────────────── */
+.callout {
+  border-left: 3px solid var(--info);
+  background: rgba(6,182,212,0.06);
+  padding: 14px 18px;
+  border-radius: 6px;
+  margin: 16px 0;
+  font-size: 14.5px;
+  color: var(--text);
+}
+.callout.warn { border-left-color: var(--warn); background: rgba(245,158,11,0.06); }
+.callout.success { border-left-color: var(--up); background: rgba(16,185,129,0.06); }
+.callout strong { color: var(--text); }
+
+/* ─────────────────────────────────────────────────
+   Footer
+   ───────────────────────────────────────────────── */
+.footer {
+  border-top: 1px solid var(--border);
+  padding: var(--space-lg) 24px;
+  background: var(--bg-1);
+  margin-top: var(--space-xl);
+}
+.footer-inner {
+  max-width: 1080px; margin: 0 auto;
+  display: flex; flex-wrap: wrap; gap: 20px;
+  justify-content: space-between; align-items: center;
+  color: var(--text-muted); font-size: 13.5px;
+}
+.footer a { color: var(--link); text-decoration: none; margin: 0 8px; }
+.footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
-<div class="layout">
 
-  <!-- ─── Sidebar TOC ─────────────────────────────── -->
-  <aside class="sidebar">
-    <h2>目次</h2>
+<!-- Progress bar -->
+<div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+
+<!-- Topnav -->
+<header class="topnav">
+  <div class="topnav-inner">
+    <a class="brand" href="#top">
+      <img src="https://raw.githubusercontent.com/sora-moyou/guide-assets/master/icon.png" onerror="this.src='https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128.png'" alt="">
+      JP225 Monitor <span class="v">利用ガイド</span>
+    </a>
     <nav>
-      <ol>
-        <li><a href="#sec-1">このアプリでできること</a></li>
-        <li><a href="#sec-2">インストール</a></li>
-        <li><a href="#sec-3">初回セットアップ — API キー</a></li>
-        <li><a href="#sec-4">画面の見方</a></li>
-        <li><a href="#sec-5">主な機能</a></li>
-        <li><a href="#sec-6">API ステータスドット</a></li>
-        <li><a href="#sec-7">設定モーダル (⚙️)</a></li>
-        <li><a href="#sec-8">アラート音を有効化</a></li>
-        <li><a href="#sec-9">ニュース翻訳機能</a></li>
-        <li><a href="#sec-10">自動アップデート</a></li>
-        <li><a href="#sec-11">トラブルシューティング</a></li>
-        <li><a href="#sec-12">データの保存場所</a></li>
-        <li><a href="#sec-13">アンインストール</a></li>
-        <li><a href="#sec-14">付録: 監視銘柄</a></li>
-      </ol>
+      <a href="#quickstart">セットアップ</a>
+      <a href="#tour">画面ツアー</a>
+      <a href="#features">機能</a>
+      <a href="#dots">ドット</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/sora-moyou/jp225-monitor">GitHub ↗</a>
     </nav>
-  </aside>
+  </div>
+</header>
 
-  <!-- ─── Main ─────────────────────────────────────── -->
-  <main>
-    <header class="hero">
-      <h1>JP225 Monitor 利用マニュアル</h1>
-      <p>日経先物トレード中のマーケット監視を支援するデスクトップアプリ。ダウンロードから日常の使い方までを解説します。</p>
-    </header>
+<!-- ─── Hero ─── -->
+<section class="hero" id="top">
+  <div class="hero-inner">
+    <div class="hero-text">
+      <span class="badge">● Windows 10 / 11 · 無料</span>
+      <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
+      <p class="lead">
+        JP225 (日経 225) の価格変動をリアルタイムで監視。
+        30 秒・5 分の急変動を検知すると、4 時間分のニュースから AI が動いた要因を推定して提示します。
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/sora-moyou/jp225-monitor/releases/latest">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          最新版をダウンロード
+        </a>
+        <a class="btn btn-ghost" href="#quickstart">3 分でセットアップ</a>
+      </div>
+    </div>
+    <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
+  </div>
+</section>
 
-    <!-- ─── §1 ─── -->
-    <section id="sec-1">
-      <h2><span class="num">1.</span>このアプリでできること</h2>
-      <ul>
-        <li><strong>8 つの主要市場銘柄をリアルタイム監視</strong> (日経 225 先物 / ダウ・ナスダック・S&amp;P 先物 / ドル円 / 原油 / VIX / 米 10 年債)</li>
-        <li><strong>急変動を自動検知</strong>: 設定した閾値を超えた値動きでビープ音 + 画面ハイライト + バナー通知</li>
-        <li><strong>AI が「なぜ動いたか」を日本語で説明</strong>: 4 時間分のニュースを参照して LLM が要因を要約</li>
-        <li><strong>マクロニュースを 21 ソースから集約</strong> (日本 7 + 英語 14)</li>
-        <li><strong>AI チャット</strong>: 「今の地合いは?」「VIX 上昇の影響は?」など自由質問</li>
-        <li><strong>TradingView チャート埋め込み</strong> (日経 225 用)</li>
-        <li><strong>値がさ株 5 銘柄</strong> (ファーストリテイリング、東京エレクトロン等) も裏で監視、急変時はアラート通知</li>
-        <li><strong>新版が出たら自動更新通知</strong></li>
-      </ul>
-    </section>
+<main>
 
-    <!-- ─── §2 ─── -->
-    <section id="sec-2">
-      <h2><span class="num">2.</span>インストール</h2>
+<!-- ─── Quick start ─── -->
+<section class="section" id="quickstart">
+  <div class="section-head">
+    <span class="section-eyebrow">3 ステップ</span>
+    <h2>3 分でセットアップ</h2>
+    <p>ダウンロードから初回起動まで。API キーは無料で取得できます。</p>
+  </div>
 
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
       <h3>ダウンロード</h3>
       <p>
-        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">https://github.com/sora-moyou/jp225-monitor/releases/latest</a>
+        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases</a> から
+        <code>JP225.Monitor_X.X.X_x64-setup.exe</code> をダウンロード。
       </p>
-      <p>ページ下の <strong>Assets</strong> から <code>JP225.Monitor_X.X.X_x64-setup.exe</code> をダウンロード。</p>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>インストール</h3>
+      <p>
+        ダブルクリック → SmartScreen が出たら「<strong>詳細情報</strong>」→「<strong>実行</strong>」。
+        既定の場所にインストールされます。
+      </p>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>API キーを設定</h3>
+      <p>
+        起動時に設定モーダルが自動で開きます。
+        次のセクションで <strong>Gemini (無料・推奨)</strong> の取得方法を解説。
+      </p>
+    </div>
+  </div>
+</section>
 
-      <h3>インストール手順</h3>
+<!-- ─── API setup (tabs) ─── -->
+<section class="section">
+  <div class="section-head">
+    <span class="section-eyebrow">API キー</span>
+    <h2>1 つだけ取れば動きます</h2>
+    <p>3 つのプロバイダから 1 つ以上を選択。複数登録するとレート制限時に自動で次へフォールバック。</p>
+  </div>
+
+  <div class="setup">
+    <div class="setup-tabs">
+      <button class="setup-tab active" data-tab="gemini">Gemini <span class="pill">無料 推奨</span></button>
+      <button class="setup-tab" data-tab="groq">Groq <span class="pill">無料</span></button>
+      <button class="setup-tab" data-tab="openai">OpenAI <span class="pill paid">有料</span></button>
+    </div>
+
+    <div class="setup-panel active" data-panel="gemini">
+      <h4>Gemini 2.5 Flash Lite — 1500 req / 日</h4>
       <ol>
-        <li>ダウンロードした <code>.exe</code> ファイルをダブルクリック</li>
-        <li><strong>「Windows によって PC が保護されました」</strong> と出たら:
-          <ul>
-            <li>「<strong>詳細情報</strong>」をクリック</li>
-            <li>表示された「<strong>実行</strong>」ボタンをクリック</li>
-            <li>無料配布アプリで一般的な警告で、害はありません</li>
-          </ul>
-        </li>
-        <li>インストールウィザードに従う (既定のままで OK)</li>
-        <li>スタートメニュー → <strong>JP225 Monitor</strong> で起動</li>
-      </ol>
-
-      <h3>動作環境</h3>
-      <ul>
-        <li><strong>Windows 10 / 11</strong> (64-bit)</li>
-        <li><strong>WebView2 Runtime</strong>: Win 11 は標準。Win 10 でも最近の Windows Update で入っているはずですが、見つからない場合は <a href="https://developer.microsoft.com/microsoft-edge/webview2/">Microsoft Edge WebView2</a> からダウンロード</li>
-      </ul>
-    </section>
-
-    <!-- ─── §3 ─── -->
-    <section id="sec-3">
-      <h2><span class="num">3.</span>初回セットアップ — API キーの設定</h2>
-      <p>起動時に <strong>設定モーダルが自動で開きます</strong>。ここで LLM (AI) の API キーを 1 つ以上設定します。</p>
-
-      <div class="callout warn">
-        <span class="callout-title">⚠ API キー未設定でも基本機能は動きます</span>
-        価格監視 / アラート音 / チャートは動作。ただし <strong>「なぜ動いた」AI 説明 / AI チャット / ニュース翻訳</strong> は使えなくなります。
-      </div>
-
-      <h3>おすすめ: Gemini (無料・高品質)</h3>
-      <p>無料で日次 1500 回まで使えます。これだけで日常運用に十分。</p>
-      <ol>
-        <li><a href="https://aistudio.google.com/apikey">https://aistudio.google.com/apikey</a> にアクセス</li>
+        <li><a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a> を開く</li>
         <li>Google アカウントでログイン</li>
-        <li><strong>「Create API key」</strong> をクリック</li>
-        <li>表示された <code>AIza...</code> で始まる文字列を <strong>コピー</strong></li>
-        <li>JP225 Monitor の設定モーダル「Gemini」欄に貼り付け</li>
-        <li><strong>「保存」</strong> クリック → 上部の状態が <span class="dot green"></span> 緑になれば成功</li>
+        <li><strong>「Create API key」</strong> → 表示された <code>AIza...</code> をコピー</li>
+        <li>JP225 Monitor の設定モーダル「Gemini」欄に貼り付け → <strong>保存</strong></li>
+        <li>状態表示が <span class="dot green" style="display:inline-block;vertical-align:middle"></span> 緑になれば完了</li>
       </ol>
+    </div>
 
-      <h3>オプション: Groq (無料・超高速、日次 14400 回)</h3>
-      <p>激しく使う場合のフォールバック用。<a href="https://console.groq.com/keys">https://console.groq.com/keys</a> → 「Create API Key」→ <code>gsk_...</code> をコピー → 設定画面に貼り付け。</p>
-
-      <h3>オプション: OpenAI (有料、$5〜)</h3>
-      <p>最後の砦。プロバイダ自動切替が働くので、Gemini と Groq の両方がレート制限に達した時だけ使われます。</p>
-
-      <h3>複数キー設定のメリット</h3>
-      <p>優先順位は <strong>Gemini → Groq → OpenAI</strong>。429 でブロックされたら次のプロバイダに自動切替。1 つだとブロック時に使えませんが、2 つ以上あれば実質常時利用可能。</p>
-    </section>
-
-    <!-- ─── §4 ─── -->
-    <section id="sec-4">
-      <h2><span class="num">4.</span>画面の見方</h2>
-      <figure>
-        <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/main-dashboard.png" alt="メインダッシュボード" class="screenshot" />
-        <figcaption>起動直後のメイン画面</figcaption>
-      </figure>
-
-      <h3>トップバー (上部)</h3>
-      <table>
-        <thead><tr><th>要素</th><th>説明</th></tr></thead>
-        <tbody>
-          <tr><td><strong>JP225 Monitor v0.3.0</strong></td><td>アプリ名 + バージョン</td></tr>
-          <tr><td><strong>相関リーダー: NQ (|r|=0.82)</strong></td><td>現在 NK225 と最も相関が強い銘柄。5 分ごと再評価</td></tr>
-          <tr><td><strong>JST 14:35:12</strong></td><td>日本時間</td></tr>
-          <tr><td><strong>受信中</strong></td><td>サーバとの接続状態。緑=接続、赤=切断</td></tr>
-          <tr><td><strong><span class="dot green"></span> Y / G / Gr / O</strong></td><td>API ステータスドット (詳細は §6)</td></tr>
-          <tr><td><strong>📋</strong></td><td>サーバログ閲覧モーダル</td></tr>
-          <tr><td><strong>⚙️</strong></td><td>設定モーダル</td></tr>
-        </tbody>
-      </table>
-
-      <h3>左ペイン (1/3 幅)</h3>
+    <div class="setup-panel" data-panel="groq">
+      <h4>Groq Llama 3.3 70B — 14400 req / 日 (実質無制限)</h4>
       <ol>
-        <li><strong>価格カード</strong>: 主要 8 銘柄のリアルタイム値 + 騰落率。緑=上昇、赤=下落</li>
-        <li><strong>TradingView チャート</strong>: 日経 225 (FOREXCOM:JP225)</li>
-        <li><strong>AI チャットボード</strong>: LLM に自由質問</li>
+        <li><a href="https://console.groq.com/keys">console.groq.com/keys</a> を開く</li>
+        <li>アカウント作成 → <strong>「Create API Key」</strong></li>
+        <li><code>gsk_...</code> をコピー → 設定画面に貼り付け</li>
       </ol>
+      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">
+        激しく使う場合のフォールバック用。Gemini と併設すると 429 時に自動切替。
+      </p>
+    </div>
 
-      <h3>右ペイン (2/3 幅)</h3>
+    <div class="setup-panel" data-panel="openai">
+      <h4>OpenAI GPT-4o-mini — 従量課金 ($5〜)</h4>
       <ol>
-        <li><strong>アラート欄</strong>: 急変動の通知バナー (最大 5 件、5 分で自動消去)</li>
-        <li><strong>ニュース欄</strong>: 21 ソースから集約。タイトルクリックで原文ページが別タブで開く</li>
+        <li><a href="https://platform.openai.com/api-keys">platform.openai.com/api-keys</a> を開く</li>
+        <li>クレジット入金 → <strong>「Create new secret key」</strong></li>
+        <li><code>sk-...</code> をコピー → 設定画面に貼り付け</li>
       </ol>
+      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">
+        Gemini と Groq の両方がレート制限に達した時のみ呼ばれます。最後の砦。
+      </p>
+    </div>
+  </div>
 
-      <h3>下部</h3>
-      <ul>
-        <li><strong>🔔 サウンドを有効化</strong> ボタン: 初回 1 回だけクリック必要 (詳細は §8)</li>
-      </ul>
-    </section>
+  <div class="callout warn" style="margin-top:24px">
+    <strong>未設定でも動きます。</strong> 価格監視 / アラート音 / チャートは API キー無しでも動作。
+    無効になるのは「なぜ動いた」AI 説明、AI チャット、ニュース翻訳の 3 機能のみ。
+  </div>
+</section>
 
-    <!-- ─── §5 ─── -->
-    <section id="sec-5">
-      <h2><span class="num">5.</span>主な機能</h2>
+<!-- ─── Tour (annotated screenshot) ─── -->
+<section class="section" id="tour">
+  <div class="section-head">
+    <span class="section-eyebrow">画面ツアー</span>
+    <h2>どこに何があるか</h2>
+    <p>起動直後の画面を 7 つの要素で説明します。</p>
+  </div>
 
-      <h3>5.1 価格監視</h3>
-      <p>8 つの主要銘柄を <strong>2 秒ごとに更新</strong> (デフォルト)。価格カードに最新値と騰落率が表示されます。</p>
-      <ul>
-        <li><strong>背景色のハイライト</strong> = 直近で大きく動いた銘柄</li>
-        <li><strong><code>---</code> 表示</strong> = データ取得失敗 (Yahoo + Investing.com 両方ダウン時、復帰待ち)</li>
-      </ul>
+  <div class="shot-wrap">
+    <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/main-dashboard.png" alt="メインダッシュボード">
+  </div>
 
-      <h3>5.2 急変動アラート</h3>
-      <p>以下のいずれかで発火:</p>
-      <ul>
-        <li><strong>磁度</strong> (magnitude): 5 分間で閾値を超える変動 → <code>[トレンド]</code> ラベル</li>
-        <li><strong>傾き</strong> (slope): 30 秒間で急峻な動き → <code>[フラッシュ]</code> ラベル</li>
-      </ul>
-      <p>発火時の挙動:</p>
-      <ul>
-        <li>価格カードが点滅</li>
-        <li>ビープ音 (上昇=高音、下落=低音、§8 で要有効化)</li>
-        <li>アラート欄にバナー追加</li>
-        <li>LLM がニュースを参照して 1〜2 文で説明</li>
-        <li>同じ銘柄は <strong>60 秒のクールダウン</strong> (短時間で連発しない)</li>
-      </ul>
+  <div class="annotations">
+    <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄。5 分ごと再評価。</p></div></div>
+    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。</p></div></div>
+    <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。</p></div></div>
+    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新。緑=上昇 / 赤=下落。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>NK225 のローソク足。時間軸・指標を切替可能。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p>急変動を検知 → 30 秒以内に AI が要因を 1〜2 文で。</p></div></div>
+    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを集約。英語見出しは [訳] で日本語化。</p></div></div>
+  </div>
+</section>
 
-      <h3>5.3 AI による「なぜ動いた」説明</h3>
-      <p>アラート発火 30 秒後にバナー内に表示。例:</p>
-      <pre><code>⚡ 日経225先物 ▲ +0.45% / 4分 [トレンド]
-18分前のFOMC議事要旨ハト派寄りで米株先物↑につられ日経も上昇。</code></pre>
-      <p><strong>🔄 ボタン</strong> でクールダウンを無視して即再生成可能。</p>
+<!-- ─── Features ─── -->
+<section class="section" id="features">
+  <div class="section-head">
+    <span class="section-eyebrow">機能一覧</span>
+    <h2>できること</h2>
+  </div>
 
-      <h3>5.4 AI チャットボード</h3>
-      <p>左下のチャット欄から自由質問できます。LLM には <strong>現在の全銘柄価格</strong> と <strong>直近 15 件のニュース</strong> が自動でコンテキストとして渡されます。</p>
-      <p>例:</p>
-      <ul>
-        <li>「今の地合いを 3 行で」</li>
-        <li>「VIX が上がってる原因は?」</li>
-        <li>「ドル円急騰してるけど介入の可能性?」</li>
-      </ul>
+  <div class="features">
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+      <h3>ハイブリッド急変検知</h3>
+      <p>5 分窓の magnitude (絶対値) と 30 秒窓の slope (傾き) の 2 方式。発火銘柄は <code>[トレンド]</code> / <code>[フラッシュ]</code> ラベル付き。</p>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div>
+      <h3>AI 自動説明</h3>
+      <p>4 時間分のニュースから関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。</p>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+      <h3>AI チャット</h3>
+      <p>「今の地合いは?」など自由質問。現在価格と直近 15 件ニュースが自動でコンテキストに。</p>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>
+      <h3>ニュース翻訳</h3>
+      <p>英語タイトルの <code>[訳]</code> クリックで日本語化。LRU キャッシュで再翻訳ゼロ。</p>
+      <span class="tag">on-demand</span>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></div>
+      <h3>音声アラート</h3>
+      <p>急変動でビープ音。上昇=高音 (1046 Hz)、下落=低音 (659 Hz)。初回のみ手動有効化が必要。</p>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
+      <h3>自動アップデート</h3>
+      <p>起動 5 秒後に新版チェック。利用可能なら右上トースト通知 → ワンクリックで DL + 再起動。</p>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+      <h3>値がさ株の裏監視</h3>
+      <p>ファーストリテイリング / 東京エレクトロン / アドバンテスト / SBG / ダイキンの 5 銘柄も裏で監視 → 急変時にアラート。</p>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+      <h3>カスタマイズ可</h3>
+      <p>polling 間隔 (price 2s / news 60s) と sidecar port を設定モーダルから可変。範囲外は 400 で reject。</p>
+    </div>
+  </div>
+</section>
 
-      <h3>5.5 ニュース翻訳</h3>
-      <p>英語ニュース行の <strong>「訳」</strong> ボタンをクリックで日本語化。詳細は §9。</p>
+<!-- ─── API status dots ─── -->
+<section class="section" id="dots">
+  <div class="section-head">
+    <span class="section-eyebrow">「受信中」の右にある 4 つの○</span>
+    <h2>API ステータスドット</h2>
+    <p>5 秒ごとに自動更新される、データソースの稼働状況インジケータ。</p>
+  </div>
 
-      <h3>5.6 値がさ株のバックグラウンド監視</h3>
-      <p>ファーストリテイリング、東京エレクトロン、アドバンテスト、ソフトバンク G、ダイキンの 5 銘柄も裏で監視中。価格カードには表示されませんが、これらが急変したら同様にアラートが出ます (日経への影響大のため)。</p>
-    </section>
+  <div style="text-align:center; margin: 0 0 32px;">
+    <div class="dots-demo">
+      <span class="dot-chip"><span class="dot green"></span>Y</span>
+      <span class="dot-chip"><span class="dot green"></span>G</span>
+      <span class="dot-chip"><span class="dot green"></span>Gr</span>
+      <span class="dot-chip"><span class="dot green"></span>O</span>
+    </div>
+  </div>
 
-    <!-- ─── §6 ─── -->
-    <section id="sec-6">
-      <h2><span class="num">6.</span>API ステータスドット (受信中の右にある 4 つの○)</h2>
-      <p>5 秒ごとに自動更新される <strong>データソースの稼働状況</strong> インジケータです。</p>
+  <table class="dot-table">
+    <thead>
+      <tr><th>ラベル</th><th>意味</th><th>状態の読み方</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Y</strong></td>
+        <td>Yahoo Finance (価格)</td>
+        <td>
+          <span class="dot green" style="display:inline-block"></span> 正常 /
+          <span class="dot yellow" style="display:inline-block"></span> Investing.com にフォールバック中 (5 分で再試行)
+        </td>
+      </tr>
+      <tr>
+        <td><strong>G</strong></td>
+        <td>Gemini (LLM 第 1)</td>
+        <td>
+          <span class="dot green" style="display:inline-block"></span> 正常 /
+          <span class="dot yellow" style="display:inline-block"></span> 429 で待機 /
+          <span class="dot white" style="display:inline-block"></span> キー未設定
+        </td>
+      </tr>
+      <tr>
+        <td><strong>Gr</strong></td>
+        <td>Groq (LLM 第 2)</td>
+        <td>同上</td>
+      </tr>
+      <tr>
+        <td><strong>O</strong></td>
+        <td>OpenAI (LLM 第 3)</td>
+        <td>同上</td>
+      </tr>
+    </tbody>
+  </table>
 
-      <table>
-        <thead><tr><th>ラベル</th><th>意味</th></tr></thead>
-        <tbody>
-          <tr><td><strong>Y</strong></td><td>Yahoo Finance (価格データ取得元)</td></tr>
-          <tr><td><strong>G</strong></td><td>Gemini (LLM 第一候補)</td></tr>
-          <tr><td><strong>Gr</strong></td><td>Groq (LLM 第二候補)</td></tr>
-          <tr><td><strong>O</strong></td><td>OpenAI (LLM 第三候補)</td></tr>
-        </tbody>
-      </table>
+  <div class="callout" style="margin-top:24px">
+    <strong>hover でカウントダウン表示。</strong>
+    例: 「Yahoo: fallback中 (残 2:35 / 13:47:50 復帰予定)」「gemini: 待機中 (残 1:20 / 13:46:00 復帰予定)」。
+  </div>
+</section>
 
-      <h3>色の意味</h3>
-      <table>
-        <thead><tr><th>色</th><th>状態</th></tr></thead>
-        <tbody>
-          <tr><td><span class="dot green"></span></td><td>正常稼働中</td></tr>
-          <tr><td><span class="dot yellow"></span></td><td>一時停止中 (429 等のレートリミット、復帰待ち)</td></tr>
-          <tr><td><span class="dot white"></span></td><td>未設定 (LLM のみ — ⚙️ から API キー未入力)</td></tr>
-        </tbody>
-      </table>
+<!-- ─── FAQ ─── -->
+<section class="section" id="faq">
+  <div class="section-head">
+    <span class="section-eyebrow">FAQ</span>
+    <h2>よくある質問</h2>
+  </div>
 
-      <h3>各ドットに hover で詳細</h3>
-      <ul>
-        <li><span class="dot green"></span>: 「Yahoo: 利用可」「gemini: 利用可」など</li>
-        <li><span class="dot yellow"></span>: 「Yahoo: fallback中 (残 2:35 / 13:47:50 復帰予定)」 ← Investing.com にフォールバック中</li>
-        <li><span class="dot yellow"></span>: 「gemini: 待機中 (残 1:20 / 13:46:00 復帰予定)」 ← 429 でクールダウン</li>
-        <li><span class="dot white"></span>: 「groq: 未設定」</li>
-      </ul>
-
-      <h3>よくある状況</h3>
-      <ul>
-        <li><strong>Y が <span class="dot yellow"></span> のまま</strong>: Yahoo に拒否られた (短時間に多数アクセスで 429)。値段は Investing.com スクレイピングが代替しているので画面の価格は引き続き更新されます。5 分で自動再試行。</li>
-        <li><strong>3 つの LLM が全部 <span class="dot yellow"></span></strong>: 全プロバイダがレート制限中。アラートが発火しても説明が出ない状態。少し時間を置くか、設定モーダルからプロバイダを追加。</li>
-        <li><strong>G/Gr/O が全部 <span class="dot white"></span></strong>: API キー未設定 = LLM 機能 OFF。価格監視 / アラート音 / チャートは動きますが「なぜ動いた」AI チャット / ニュース翻訳が使えない。</li>
-      </ul>
-    </section>
-
-    <!-- ─── §7 ─── -->
-    <section id="sec-7">
-      <h2><span class="num">7.</span>設定モーダル (⚙️)</h2>
-      <p>右上 ⚙️ クリックで開きます。</p>
-
-      <figure>
-        <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル" class="screenshot small" />
-        <figcaption>設定画面: API キー 3 枠 + 定期 API ポーリング設定</figcaption>
-      </figure>
-
-      <h3>API キー欄 (Gemini / Groq / OpenAI)</h3>
-      <ul>
-        <li>各プロバイダの状態が上部に <span class="dot green"></span>/<span class="dot yellow"></span>/<span class="dot white"></span> で表示されます</li>
-        <li><strong>「設定済み」プレースホルダ</strong>: 既にキーが入っている。新しいキーを入力して「保存」で <strong>上書き</strong></li>
-        <li><strong>空欄のまま「保存」</strong>: 既存キーは <strong>変更されません</strong></li>
-        <li>各プロバイダ名右の <strong>「キー取得 ↗」</strong> リンクから取得ページへ直接ジャンプ可能</li>
-      </ul>
-
-      <h3>定期 API ポーリング設定</h3>
-      <table>
-        <thead><tr><th>項目</th><th>デフォルト</th><th>説明</th></tr></thead>
-        <tbody>
-          <tr><td>Price polling (ms)</td><td>2000</td><td>価格取得間隔。Yahoo に 429 が多発する場合は 5000 以上推奨</td></tr>
-          <tr><td>News polling (ms)</td><td>60000</td><td>ニュース取得間隔 (= 60 秒)</td></tr>
-          <tr><td>Sidecar port</td><td>3000</td><td>内部 HTTP サーバのポート。<strong>変更しない方が無難</strong> (アプリ再起動必要)</td></tr>
-        </tbody>
-      </table>
-      <p>範囲外の値を入れると「out of range」エラーになります。</p>
-
-      <h3>保存先</h3>
-      <p>すべての設定は <code>~/.jp225-monitor/config.json</code> に保存され、ローカル端末から外部に送信されることはありません。</p>
-    </section>
-
-    <!-- ─── §8 ─── -->
-    <section id="sec-8">
-      <h2><span class="num">8.</span>アラート音を有効化する</h2>
-      <div class="callout warn">
-        <span class="callout-title">⚠ 重要</span>
-        ブラウザ / Webview のセキュリティ仕様で、<strong>音はユーザー操作後でないと鳴りません</strong>。
+  <div class="faq">
+    <details>
+      <summary>アラート音が鳴りません</summary>
+      <div class="faq-body">
+        ブラウザのセキュリティ仕様で、初回起動時はユーザー操作が必要です。画面右下の <strong>「🔔 サウンドを有効化」</strong> ボタンを 1 回クリックすれば、以降は自動でビープが鳴ります。
       </div>
-      <p>初回起動時、画面右下に <strong>「🔔 サウンドを有効化」</strong> ボタンが出ます。1 回クリックすれば消えて、以降の急変アラートで自動的にビープが鳴ります。</p>
-      <p>(クリックしないとアラートが視覚的にしか出ない = 気づきにくい)</p>
-    </section>
+    </details>
 
-    <!-- ─── §9 ─── -->
-    <section id="sec-9">
-      <h2><span class="num">9.</span>ニュース翻訳機能</h2>
-      <p>英語ニュース行の <strong>「訳」</strong> ボタンクリックで日本語化:</p>
-      <pre><code>変更前: [EN] CNBC 14:32 [訳]
-        Powell signals possible rate cut at next FOMC meeting
-
-変更後: [EN] CNBC 14:32
-        パウエル氏、次回 FOMC で利下げの可能性を示唆</code></pre>
-
-      <h3>動作仕様</h3>
-      <ul>
-        <li>日本語ニュース ([JP]) には [訳] ボタンは出ません</li>
-        <li>同じタイトルは 2 回目以降 <strong>キャッシュから即返却</strong> (LLM 消費なし、新着で再描画されても再翻訳しない)</li>
-        <li>翻訳の元は <strong>タイトル文字列のみ</strong> (本文は元の URL リンクのまま、クリックで原文ページが別タブで開く)</li>
-        <li>LLM API キー未設定だと動きません</li>
-      </ul>
-
-      <h3>コスト</h3>
-      <p>1 タイトル ≈ 300 token 程度。Gemini 無料枠 (1500 req/日) で 1 日 1500 回以上は翻訳できる計算。普通に使う分には全く減らないでしょう。</p>
-    </section>
-
-    <!-- ─── §10 ─── -->
-    <section id="sec-10">
-      <h2><span class="num">10.</span>自動アップデート</h2>
-      <p>新バージョン (v0.3.1 など) が出ると、<strong>アプリ起動 5 秒後</strong> に右上にトーストが表示されます:</p>
-      <pre><code>┌──────────────────────────┐
-│ 🆙 v0.3.1 が利用可能です │
-│ - 改善点の説明...         │
-│ [更新] [後で]            │
-└──────────────────────────┘</code></pre>
-      <ul>
-        <li><strong>「更新」</strong>: ダウンロード (進捗バー表示) → 自動再起動 → 新版で起動 (約 30 秒)</li>
-        <li><strong>「後で」</strong>: 24 時間後に再通知。それまでトーストは出ません</li>
-      </ul>
-    </section>
-
-    <!-- ─── §11 ─── -->
-    <section id="sec-11">
-      <h2><span class="num">11.</span>トラブルシューティング</h2>
-
-      <div class="qa">
-        <div class="q">Q. 「切断」表示が消えない / 価格が出ない</div>
+    <details>
+      <summary>「切断」のままで価格が出ない</summary>
+      <div class="faq-body">
         <ol>
           <li>アプリを完全終了 (タスクトレイにアイコンがあれば右クリック → 終了)</li>
-          <li>再度スタートメニューから起動</li>
-          <li>それでも直らない場合は <strong>再インストール</strong> (上書きで OK、設定は保持)</li>
+          <li>再起動 (スタートメニューから)</li>
+          <li>それでもダメなら、最新インストーラで上書きインストール (設定は保持されます)</li>
         </ol>
       </div>
+    </details>
 
-      <div class="qa">
-        <div class="q">Q. アラート音が鳴らない</div>
-        <p>下部の <strong>🔔 サウンドを有効化</strong> ボタンを 1 回クリックしましたか?</p>
+    <details>
+      <summary>アラートは出るのに「なぜ動いた」説明が表示されません</summary>
+      <div class="faq-body">
+        API ドットを確認:
+        <ul>
+          <li>全部 <span class="dot white" style="display:inline-block"></span> = キー未設定 → ⚙️ から 1 つ以上設定</li>
+          <li>全部 <span class="dot yellow" style="display:inline-block"></span> = 全プロバイダ 429 中 → 数分待つ。または別プロバイダ追加</li>
+        </ul>
       </div>
+    </details>
 
-      <div class="qa">
-        <div class="q">Q. アラート発火しても「なぜ動いた」説明が出ない</div>
+    <details>
+      <summary>Y (Yahoo) が黄色のまま</summary>
+      <div class="faq-body">
+        Yahoo Finance に拒否されている状態 (短時間に多数アクセスで 429)。価格データは Investing.com フォールバックが代替しているので <strong>画面の価格は引き続き更新</strong> されます。5 分で自動的に Yahoo を再試行。
+      </div>
+    </details>
+
+    <details>
+      <summary>価格カードが <code>---</code> のまま</summary>
+      <div class="faq-body">
+        Yahoo と Investing.com の両方が同時失敗中。ネット接続を確認、数分待つ、ダメなら再起動。
+      </div>
+    </details>
+
+    <details>
+      <summary>起動時にファイアウォール許可ダイアログ</summary>
+      <div class="faq-body">
+        「アクセスを許可する」で OK。内部 HTTP サーバ (port 3000) のために必要です。プライベートネットワークのみで十分。
+      </div>
+    </details>
+
+    <details>
+      <summary>SmartScreen 警告は危険ではないですか?</summary>
+      <div class="faq-body">
+        無料配布アプリ全般で出る警告です。ソースコードは <a href="https://github.com/sora-moyou/jp225-monitor">GitHub</a> で全公開されているので、不安な場合は読んでから判断してください。「詳細情報」→「実行」で起動できます。
+      </div>
+    </details>
+
+    <details>
+      <summary>サーバログを見たい (デバッグ用)</summary>
+      <div class="faq-body">
+        トップバーの <strong>📋</strong> ボタンでログモーダルが開きます。直近 200 行を表示、新しいログが自動で下に追加。アプリ再起動で消えます。
+      </div>
+    </details>
+
+    <details>
+      <summary>polling 間隔を変えたい</summary>
+      <div class="faq-body">
+        ⚙️ → 「定期 API ポーリング設定」セクション。
+        <ul>
+          <li>Price polling: 500–60000 ms (デフォルト 2000)。Yahoo 429 が頻発するなら 5000 推奨</li>
+          <li>News polling: 10000–600000 ms (デフォルト 60000)</li>
+          <li>Sidecar port: 1024–65535 (デフォルト 3000)。変更時はアプリ再起動必要</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary>新版が出たらどうやって知る?</summary>
+      <div class="faq-body">
+        起動 5 秒後に updater が自動チェック。新版があれば右上にトースト通知が出ます。クリック 1 つで DL + 自動再起動 (約 30 秒)。「後で」は 24 時間後再通知。
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ─── Reference ─── -->
+<section class="section">
+  <div class="section-head">
+    <span class="section-eyebrow">リファレンス</span>
+    <h2>詳細情報</h2>
+  </div>
+
+  <div class="ref">
+
+    <details>
+      <summary>監視している銘柄一覧</summary>
+      <div class="ref-body">
+        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄):</strong></p>
+        <table class="ref-table">
+          <thead><tr><th>銘柄</th><th>コード</th><th>単位</th></tr></thead>
+          <tbody>
+            <tr><td>日経 225 先物</td><td><code>NK=F</code></td><td>%</td></tr>
+            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>%</td></tr>
+            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>%</td></tr>
+            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>%</td></tr>
+            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>%</td></tr>
+            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>%</td></tr>
+            <tr><td>VIX</td><td><code>^VIX</code></td><td>%</td></tr>
+            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>bp</td></tr>
+          </tbody>
+        </table>
+        <p style="margin-top: 16px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、日経寄与上位):</strong></p>
+        <table class="ref-table">
+          <thead><tr><th>銘柄</th><th>コード</th></tr></thead>
+          <tbody>
+            <tr><td>ファーストリテイリング</td><td><code>9983.T</code></td></tr>
+            <tr><td>東京エレクトロン</td><td><code>8035.T</code></td></tr>
+            <tr><td>アドバンテスト</td><td><code>6857.T</code></td></tr>
+            <tr><td>ソフトバンク G</td><td><code>9984.T</code></td></tr>
+            <tr><td>ダイキン</td><td><code>6367.T</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+
+    <details>
+      <summary>データの保存場所</summary>
+      <div class="ref-body">
+        <table class="ref-table">
+          <tbody>
+            <tr><td>設定 (API キー、polling 間隔)</td><td><code>%USERPROFILE%\.jp225-monitor\config.json</code></td></tr>
+            <tr><td>ログ</td><td>アプリ内 📋 モーダルのみ (ファイル保存なし、再起動で消失)</td></tr>
+            <tr><td>アプリ本体</td><td><code>C:\Program Files\JP225 Monitor\</code></td></tr>
+          </tbody>
+        </table>
+        <p style="margin-top:14px"><code>config.json</code> はテキストファイルなのでメモ帳で開けます (但し構造を壊すと起動失敗するので慎重に)。</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>動作環境</summary>
+      <div class="ref-body">
+        <ul>
+          <li><strong>Windows 10 / 11</strong> (64-bit)</li>
+          <li><strong>WebView2 Runtime</strong>: Win 11 標準同梱、Win 10 でも近年は標準。万が一未インストールなら <a href="https://developer.microsoft.com/microsoft-edge/webview2/">Microsoft Edge WebView2</a> から</li>
+          <li>インターネット接続 (Yahoo Finance + LLM API + RSS フィード)</li>
+          <li>LLM API キー 1 つ以上 (任意、Gemini は無料)</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary>アンインストール</summary>
+      <div class="ref-body">
         <ol>
-          <li>⚙️ で API status を確認</li>
-          <li>全プロバイダ <span class="dot white"></span> = API キー未設定 → §3 を参照して設定</li>
-          <li>全プロバイダ <span class="dot yellow"></span> = 全レートリミット中 → 数分待つ。頻繁に起きるなら別プロバイダを追加</li>
+          <li><strong>Windows 設定</strong> → <strong>アプリ</strong> → <strong>インストール済みのアプリ</strong></li>
+          <li><strong>JP225 Monitor</strong> を検索 → <strong>アンインストール</strong></li>
+          <li>(任意) <code>%USERPROFILE%\.jp225-monitor</code> フォルダを削除すれば API キー設定もクリア</li>
         </ol>
       </div>
+    </details>
+  </div>
+</section>
 
-      <div class="qa">
-        <div class="q">Q. Y ドット (Yahoo) が黄色のまま</div>
-        <p>Yahoo Finance に拒否されています (cookie / レートリミットの揺らぎ)。価格データは Investing.com フォールバックが代替中で、画面の価格は引き続き更新されます。5 分で自動的に Yahoo に再試行します。</p>
-      </div>
+</main>
 
-      <div class="qa">
-        <div class="q">Q. 価格カードが <code>---</code> のまま</div>
-        <p>両ソース (Yahoo + Investing.com) が同時失敗中。ネット接続を確認、数分待つ、ダメなら再起動。</p>
-      </div>
+<!-- ─── Footer ─── -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div>
+      <strong style="color: var(--text)">JP225 Monitor</strong>
+      <span> · </span>
+      バグ報告 / 要望: <a href="https://github.com/sora-moyou/jp225-monitor/issues">Issues</a>
+    </div>
+    <div>
+      <a href="https://github.com/sora-moyou/jp225-monitor">GitHub</a> ·
+      <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">最新版</a> ·
+      <a href="https://github.com/sora-moyou/jp225-monitor/blob/master/USER_GUIDE.md">md 版</a>
+    </div>
+  </div>
+</footer>
 
-      <div class="qa">
-        <div class="q">Q. 起動時にファイアウォール許可ダイアログが出る</div>
-        <p>「アクセスを許可する」で OK。内部 HTTP サーバ (port 3000) のために必要です。</p>
-      </div>
+<script>
+// Scroll progress
+(function() {
+  const bar = document.getElementById('progressBar');
+  function update() {
+    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+    const pct = docHeight > 0 ? (window.scrollY / docHeight) * 100 : 0;
+    bar.style.width = pct + '%';
+  }
+  window.addEventListener('scroll', update, { passive: true });
+  update();
+})();
 
-      <div class="qa">
-        <div class="q">Q. ログを見たい</div>
-        <p>📋 ボタン → サーバログモーダル。直近 200 行を表示、新しいログが下に自動追加されます。</p>
-      </div>
-
-      <div class="qa">
-        <div class="q">Q. インストール時に SmartScreen 警告</div>
-        <p>無料アプリ全般の警告です。「詳細情報」→「実行」で OK。気になる場合は配布元 (sora-moyou/jp225-monitor) のリポジトリで内容を確認できます。</p>
-      </div>
-    </section>
-
-    <!-- ─── §12 ─── -->
-    <section id="sec-12">
-      <h2><span class="num">12.</span>データの保存場所</h2>
-      <table>
-        <thead><tr><th>項目</th><th>場所</th></tr></thead>
-        <tbody>
-          <tr><td>設定 (API キー、polling 間隔等)</td><td><code>%USERPROFILE%\.jp225-monitor\config.json</code></td></tr>
-          <tr><td>ログ</td><td>アプリ内 📋 モーダルのみ (アプリ再起動で消える、ファイル保存しない)</td></tr>
-          <tr><td>アプリ本体</td><td><code>C:\Program Files\JP225 Monitor\</code></td></tr>
-        </tbody>
-      </table>
-      <p><code>config.json</code> は <strong>テキストファイル</strong> なのでメモ帳で開けます (但し編集して構造を壊すと起動失敗する可能性あり、慎重に)。</p>
-    </section>
-
-    <!-- ─── §13 ─── -->
-    <section id="sec-13">
-      <h2><span class="num">13.</span>アンインストール</h2>
-      <ol>
-        <li><strong>Windows 設定</strong> → <strong>アプリ</strong> → <strong>インストール済みのアプリ</strong></li>
-        <li><strong>JP225 Monitor</strong> を検索 → メニュー → <strong>アンインストール</strong></li>
-        <li>(任意) <code>%USERPROFILE%\.jp225-monitor</code> フォルダを削除すれば API キー設定もクリア</li>
-      </ol>
-    </section>
-
-    <!-- ─── §14 ─── -->
-    <section id="sec-14">
-      <h2><span class="num">14.</span>付録: 監視している銘柄一覧</h2>
-
-      <h3>価格カードに表示される 8 銘柄</h3>
-      <table>
-        <thead><tr><th>銘柄</th><th>コード</th><th>単位</th></tr></thead>
-        <tbody>
-          <tr><td>日経 225 先物</td><td>NK=F</td><td>%</td></tr>
-          <tr><td>ナスダック 100 先物</td><td>NQ=F</td><td>%</td></tr>
-          <tr><td>ダウ先物</td><td>YM=F</td><td>%</td></tr>
-          <tr><td>S&amp;P500 先物</td><td>ES=F</td><td>%</td></tr>
-          <tr><td>ドル円</td><td>JPY=X</td><td>%</td></tr>
-          <tr><td>WTI 原油</td><td>CL=F</td><td>%</td></tr>
-          <tr><td>VIX</td><td>^VIX</td><td>%</td></tr>
-          <tr><td>米 10 年債利回り</td><td>^TNX</td><td>bp (basis points)</td></tr>
-        </tbody>
-      </table>
-
-      <h3>バックグラウンド監視のみ (アラート対象、カード非表示)</h3>
-      <p>日経 225 への寄与度が高い値がさ株:</p>
-      <table>
-        <thead><tr><th>銘柄</th><th>コード</th></tr></thead>
-        <tbody>
-          <tr><td>ファーストリテイリング</td><td>9983.T</td></tr>
-          <tr><td>東京エレクトロン</td><td>8035.T</td></tr>
-          <tr><td>アドバンテスト</td><td>6857.T</td></tr>
-          <tr><td>ソフトバンク G</td><td>9984.T</td></tr>
-          <tr><td>ダイキン</td><td>6367.T</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <footer>
-      <p>
-        バグ報告・要望: <a href="https://github.com/sora-moyou/jp225-monitor/issues">https://github.com/sora-moyou/jp225-monitor/issues</a><br>
-        最新版: <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">https://github.com/sora-moyou/jp225-monitor/releases/latest</a>
-      </p>
-    </footer>
-
-  </main>
-</div>
+// Setup tabs
+document.querySelectorAll('.setup-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const name = tab.dataset.tab;
+    document.querySelectorAll('.setup-tab').forEach(t => t.classList.toggle('active', t === tab));
+    document.querySelectorAll('.setup-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
+  });
+});
+</script>
 </body>
 </html>
