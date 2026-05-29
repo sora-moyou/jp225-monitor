@@ -776,7 +776,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <p class="lead">
         JP225 (日経 225) の価格変動をリアルタイムで監視。
         v0.3.17 以降は <strong>適応 z-score</strong> で急変動を検知 — 過去 60 分のボラティリティを基準に「いまの相場として異常か」を判定するので、固定 % 閾値より体感に近い感度になります。
-        日経 225 (NIY=F) には追加で <strong>5〜10 秒の超短期フラッシュ検知</strong> を装備、ニュース反応など瞬時の急変もキャッチ。
+        日経 225 (NIY=F) には追加で <strong>5〜10 秒の超短期フラッシュ検知</strong> を装備、ニュース反応など瞬時の急変もキャッチ。<strong>アラートを出すのは日経 225 先物のみ</strong> — 他資産やニュースは AI 説明の判断材料に回します。
       </p>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
@@ -1006,7 +1006,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
     <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。「日経225先物」は <code>NIY=F</code> (CME 上場の JPY 建て日経 225 先物、価格は ~66,000 円台)。v0.3.8 以前は <code>NK=F</code> を使っていたが、これは Yahoo 側で 2020 年に更新停止した古い ALTSYMBOL だったため切替。</p></div></div>
     <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て)。価格カードの「日経225先物」(<code>NIY=F</code>) と <strong>同じ日経 225 指数を別商品で表示しているだけ</strong> なので、絶対値も % 変動もほぼ一致します (差は売買スプレッド・取引時間帯のみ)。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
-    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p>急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で。🔄 で再生成、× で消去。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) のみ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。🔄 で再生成、× で消去。</p></div></div>
     <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
     <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。現在の全銘柄価格 + 直近 15 件ニュースが LLM コンテキストに自動付与されるので、相場固有の質問もそのまま聞ける。</p></div></div>
   </div>
@@ -1027,8 +1027,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="features">
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>適応 z-score 急変検知 (v0.3.17)</h3>
-      <p>1 分窓 burst (静寂前提付き) + 5 分窓 trend + 日経 225 専用 5〜10 秒 tick の 3 層構成。すべて過去 60 分のボラティリティ σ を基準にした <strong>適応閾値</strong> で発火するので、相場局面に追従。指数・FX は他銘柄との横断確認パスが必要 (単独データ異常を弾く)。</p>
+      <h3>適応 z-score 急変検知 (v0.3.17 / v0.3.19)</h3>
+      <p>1 分窓 burst (静寂前提付き) + 5 分窓 trend + 日経 225 専用 5〜10 秒 tick の 3 層構成。すべて過去 60 分のボラティリティ σ を基準にした <strong>適応閾値</strong> で発火。<strong>v0.3.19 以降、アラートを出すのは日経 225 先物 (NIY=F) のみ</strong> — 指数・FX (NQ/YM/ES/JPY) はその横断確認に使われ、単独ではアラートを出しません。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
@@ -1039,7 +1039,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div>
       <h3>AI 自動説明</h3>
-      <p>4 時間分のニュースから関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。</p>
+      <p>4 時間分のニュースから関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。<strong>v0.3.19 以降は、同時刻に大きく動いた他資産 (他指数・FX・商品・値がさ株のうち |z|≥4.0) も判断材料</strong>として渡し、連動を優先的に説明します。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
@@ -1060,12 +1060,12 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
       <h3>自動アップデート</h3>
-      <p>起動 5 秒後に新版チェック。利用可能なら右上トースト通知 → ワンクリックで DL + 再起動。</p>
+      <p>起動 5 秒後に新版チェック。利用可能なら右上トースト通知 → ワンクリックで DL + 再起動。<strong>v0.3.18 以降は設定画面の「最新かチェック」</strong>でいつでも手動確認も可能。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>値がさ株の裏監視</h3>
-      <p>ファーストリテイリング / 東京エレクトロン / アドバンテスト / SBG / ダイキンの 5 銘柄も裏で監視 → 急変時にアラート。</p>
+      <h3>値がさ株・他資産を AI 材料に (v0.3.19)</h3>
+      <p>ファーストリテイリング / 東京エレクトロン / アドバンテスト / SBG / ダイキンの 5 値がさ株も裏で監視。単独アラートは出さず、<strong>日経 225 先物アラート時に大きく動いていれば (|z|≥4.0) AI 説明の連動材料</strong>として渡します。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
@@ -1222,6 +1222,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <summary>新版が出たらどうやって知る?</summary>
       <div class="faq-body">
         起動 5 秒後に updater が自動チェック。新版があれば右上にトースト通知が出ます。クリック 1 つで DL + 自動再起動 (約 30 秒)。「後で」は 24 時間後再通知。
+        <p style="margin-top: 8px;">また、⚙️ 設定画面の最下部「バージョン」セクションの <strong>「最新かチェック」</strong> ボタンで、いつでも手動で最新版の有無を確認できます (v0.3.18〜)。更新があればその場で適用可能。</p>
       </div>
     </details>
 
@@ -1269,33 +1270,32 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <details>
       <summary>監視している銘柄一覧 (実装ベース、全 13 銘柄)</summary>
       <div class="ref-body">
-        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄、main カテゴリ)</strong> — 値段はカード表示 + アラート対象。</p>
+        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄、main カテゴリ)</strong> — 全銘柄をカード表示。<strong>v0.3.19 以降、アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。他の 7 銘柄は NIY=F アラートの横断確認や AI 説明の連動材料 (|z|≥4.0) として使われます。</p>
         <table class="ref-table">
           <thead>
             <tr>
               <th>銘柄</th>
               <th>コード</th>
               <th>通貨</th>
-              <th>横断確認</th>
-              <th>超短期 (5〜10 秒)</th>
+              <th>v0.3.19 での役割</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td>必須</td><td><strong>有 (絶対 0.15%)</strong></td></tr>
-            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
-            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
-            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
-            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>必須</td><td>—</td></tr>
-            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>不要</td><td>—</td></tr>
-            <tr><td>VIX</td><td><code>^VIX</code></td><td>—</td><td>不要</td><td>—</td></tr>
-            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>不要</td><td>—</td></tr>
+            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td><strong>アラート対象</strong> — 1分 burst + 5分 trend + 5〜10秒 tick (絶対 0.15%) の 3 層検知</td></tr>
+            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>VIX</td><td><code>^VIX</code></td><td>—</td><td>AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>AI 材料 (|z|≥4.0)</td></tr>
           </tbody>
         </table>
         <p style="margin-top: 10px; color: var(--text-faint); font-size: 13px;">
           v0.3.8 で日経銘柄を <code>NK=F</code> (Yahoo の古い ALTSYMBOL、2020 年で更新停止) から <code>NIY=F</code> (CME 上場 JPY 建て日経 225 先物) に切替。USD 建て銘柄 (NQ/YM/ES/CL) は USD のまま表示します。
         </p>
 
-        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示、アラートだけ通知。日経 225 への寄与度が高い東証値がさ株。横断確認は不要 (単独で動くことも多い銘柄群)。</p>
+        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視 (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示。日経 225 への寄与度が高い東証値がさ株。<strong>v0.3.19 以降は単独アラートを出さず</strong>、NIY=F アラート時に大きく動いていれば (|z|≥4.0) AI 説明の連動材料として渡します。</p>
         <table class="ref-table">
           <thead>
             <tr>
@@ -1313,7 +1313,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         </table>
 
         <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
-          ※ v0.3.17 以降のアラート発火条件: <strong>(A) 1 分窓 burst</strong> = 直近 1 分 return の |z| > 2.5 (z = 値 / 過去 60 分 σ)、かつ直前 5 本が静寂、かつ横断確認パス (指数・FX のみ)。 <strong>(B) 5 分窓 trend</strong> = 5 分累積 return の |z| > 2.5。 <strong>(C) 5〜10 秒 tick</strong> (NIY=F 専用) = 5〜10 秒窓の絶対 |%変化| ≥ 0.15% で発火 (ボラ非依存・固定閾値、めったに発火しない設定)。
+          ※ <strong>v0.3.19 以降アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。発火条件: <strong>(A) 1 分窓 burst</strong> = 直近 1 分 return の |z| > 2.5 (z = 値 / 過去 60 分 σ)、かつ直前 5 本が静寂、かつ横断確認パス。 <strong>(B) 5 分窓 trend</strong> = 5 分累積 return の |z| > 2.5。 <strong>(C) 5〜10 秒 tick</strong> = 5〜10 秒窓の絶対 |%変化| ≥ 0.15% で発火 (ボラ非依存・固定閾値)。他の 12 銘柄は単独アラートを出さず、NIY=F アラート時に <strong>|z| ≥ 4.0</strong> で大きく動いていれば「大きく動いた他資産」として AI 説明に渡されます。
         </p>
       </div>
     </details>
