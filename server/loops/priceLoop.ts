@@ -4,63 +4,63 @@ import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS, USD_DENOMINATED } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
+import { tryUpdate as updateJpyCache, getRate as getJpyRate, getChangePercent as getJpyChange } from '../jpyRateCache.js';
 import type { Price } from '../types.js';
 
-// USD 建て銘柄を JPY 換算する。
-// JPY=X の取得が一瞬抜けた tick でも、直近の有効レートをキャッシュしておき
-// USD 銘柄には常に jpyPrice を付ける。これでバッファに USD/JPY が混ざらない。
-// jpyChangePercent ≈ USD% + JPY=X% (1次近似、小幅変動では十分な精度)。
+// USD 建て銘柄を JPY 換算する (v0.3.7 多層防御版)。
+//
+// 1. 永続キャッシュ (~/.jp225-monitor/jpy-cache.json) を起動時に読み込み済み (server/index.ts)。
+//    → 再起動直後でも前回終値ベースで換算可能。
+// 2. 新規 JPY=X はレンジチェック [50, 300] + 急変動チェック (1 tick で > 2% は data 異常)。
+// 3. 計算後の jpyPrice が [1000, 1B] レンジ外なら、銘柄ごとに保存した直前 jpyPrice を流用。
+// 4. それも無ければ jpy フィールドを付けず raw を返す (frontend は raw 表示にフォールバック)。
 
-// USD/JPY が現実的に取り得る範囲。これ以外なら data 異常 → キャッシュ更新せず無視。
-// 過去 30 年で 75–160 の範囲。300 は災害シナリオ含めて十分広い。
-const JPY_RATE_MIN = 50;
-const JPY_RATE_MAX = 300;
-
-// JPY=X の changePercent (前日比) の許容範囲。±20% を超えるのはどう考えても異常。
-const JPY_CHANGE_MAX = 20;
-
-// 換算後の JPY 価格として現実的に取り得る範囲。
-// 現状 NK=F (~66K USD × 150) ≈ 1000 万。最低 1000 円、最大 10 億で十分。
 const JPY_PRICE_MIN = 1_000;
 const JPY_PRICE_MAX = 1_000_000_000;
 
-let cachedJpyRate = 0;
-let cachedJpyChange = 0;
+// 銘柄ごとの直前の有効 jpyPrice。一時的な data 異常があってもこれで補える。
+const lastValidJpyBySymbol = new Map<string, number>();
 
 function applyJpyConversion(prices: Price[]): Price[] {
   const jpyX = prices.find(p => p.symbol === 'JPY=X');
 
-  // 1. JPY=X が現実的範囲内 (50–300) かを検証。異常値ならキャッシュ放置 (= 直前の有効値を流用)
-  if (jpyX && Number.isFinite(jpyX.price)) {
-    if (jpyX.price >= JPY_RATE_MIN && jpyX.price <= JPY_RATE_MAX) {
-      cachedJpyRate = jpyX.price;
-      // changePercent も sanity check。データ異常で大きく振れたら 0 にしてスキップ
-      const chg = jpyX.changePercent ?? 0;
-      cachedJpyChange = Math.abs(chg) <= JPY_CHANGE_MAX ? chg : 0;
-    } else {
-      console.warn(`[priceLoop] JPY=X out of sane range: ${jpyX.price}, keeping cached ${cachedJpyRate}`);
-    }
+  // 1. JPY=X 永続キャッシュを更新試行 (異常値は中で拒否される)
+  if (jpyX) {
+    updateJpyCache(jpyX.price, jpyX.changePercent);
   }
 
-  // まだ一度も有効な JPY=X を見ていない場合は変換しない (起動直後のみ)
-  if (cachedJpyRate <= 0) return prices;
+  const rate = getJpyRate();
+  const change = getJpyChange();
+  if (rate <= 0) return prices;   // まだキャッシュ無し (本当に初回起動 + 初回 JPY=X 取得失敗)
 
   return prices.map(p => {
     if (!USD_DENOMINATED.has(p.symbol)) return p;
     if (!Number.isFinite(p.price) || p.price <= 0) return p;
 
-    const candidateJpy = p.price * cachedJpyRate;
+    const candidateJpy = p.price * rate;
 
-    // 2. 換算結果が現実的範囲かを検証。範囲外 → jpy* 付けず生 USD を返す (frontend は USD 表示にフォールバック)
+    // 2. 換算結果が現実的範囲かを検証
     if (!Number.isFinite(candidateJpy) || candidateJpy < JPY_PRICE_MIN || candidateJpy > JPY_PRICE_MAX) {
-      console.warn(`[priceLoop] ${p.symbol}: implausible jpyPrice ${candidateJpy} (= ${p.price} × ${cachedJpyRate}), falling back to raw USD this tick`);
-      return p;
+      console.warn(`[priceLoop] ${p.symbol}: implausible jpyPrice ${candidateJpy} (= ${p.price} × ${rate})`);
+      // 3. 銘柄ごとの直前有効値があればそれを使う (異常値表示を回避)
+      const lastGood = lastValidJpyBySymbol.get(p.symbol);
+      if (lastGood !== undefined) {
+        return {
+          ...p,
+          jpyPrice: lastGood,
+          jpyChangePercent: p.changePercent + change,
+          stale: true,   // UI で「stale」マークが出るように
+        };
+      }
+      return p;   // 初回 + 異常: jpy フィールド無しで返す (raw 表示)
     }
 
+    // 4. 正常: 銘柄キャッシュも更新
+    lastValidJpyBySymbol.set(p.symbol, candidateJpy);
     return {
       ...p,
       jpyPrice: candidateJpy,
-      jpyChangePercent: p.changePercent + cachedJpyChange,
+      jpyChangePercent: p.changePercent + change,
     };
   });
 }
