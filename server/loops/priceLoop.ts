@@ -6,19 +6,27 @@ import { INSTRUMENTS, PRICE_BACKOFF_MS, USD_DENOMINATED } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
 import type { Price } from '../types.js';
 
-// USD 建て銘柄を JPY 換算する。USD/JPY が取得できない場合は jpy* 未設定で返す。
+// USD 建て銘柄を JPY 換算する。
+// JPY=X の取得が一瞬抜けた tick でも、直近の有効レートをキャッシュしておき
+// USD 銘柄には常に jpyPrice を付ける。これでバッファに USD/JPY が混ざらない。
 // jpyChangePercent ≈ USD% + JPY=X% (1次近似、小幅変動では十分な精度)。
+let cachedJpyRate = 0;
+let cachedJpyChange = 0;
+
 function applyJpyConversion(prices: Price[]): Price[] {
   const jpyX = prices.find(p => p.symbol === 'JPY=X');
-  if (!jpyX || !Number.isFinite(jpyX.price) || jpyX.price <= 0) return prices;
-  const rate = jpyX.price;
-  const usdJpyChange = jpyX.changePercent ?? 0;
+  if (jpyX && Number.isFinite(jpyX.price) && jpyX.price > 0) {
+    cachedJpyRate = jpyX.price;
+    cachedJpyChange = jpyX.changePercent ?? 0;
+  }
+  // まだ一度も有効な JPY=X を見ていない場合は変換しない (起動直後のみ)
+  if (cachedJpyRate <= 0) return prices;
   return prices.map(p => {
     if (!USD_DENOMINATED.has(p.symbol)) return p;
     return {
       ...p,
-      jpyPrice: p.price * rate,
-      jpyChangePercent: p.changePercent + usdJpyChange,
+      jpyPrice: p.price * cachedJpyRate,
+      jpyChangePercent: p.changePercent + cachedJpyChange,
     };
   });
 }
