@@ -58,6 +58,8 @@ function evaluateAndFire(): void {
   const now = Date.now();
 
   for (const sym of SYMBOLS) {
+    // v0.3.19: アラートは日経225先物のみ。他銘柄は分足取得のみ続け、AI 説明の元ネタ専用。
+    if (sym !== 'NIY=F') continue;
     const bars = barsCache.get(sym);
     if (!bars || bars.length < 65) continue;
 
