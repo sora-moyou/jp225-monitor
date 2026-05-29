@@ -16,7 +16,9 @@ const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 const version = pkg.version;
 
 const SIG_PATH = `src-tauri/target/release/bundle/nsis/JP225 Monitor_${version}_x64-setup.exe.sig`;
-const EXE_NAME = `JP225 Monitor_${version}_x64-setup.exe`;
+// GitHub releases replaces spaces in asset names with dots, so the download
+// URL must use the dotted form even though the local file name has a space.
+const EXE_NAME_FOR_URL = `JP225.Monitor_${version}_x64-setup.exe`;
 const RELEASE_URL_BASE = 'https://github.com/sora-moyou/jp225-monitor/releases/download';
 
 if (!existsSync(SIG_PATH)) {
@@ -26,7 +28,7 @@ if (!existsSync(SIG_PATH)) {
 }
 
 const signature = readFileSync(SIG_PATH, 'utf-8').trim();
-const downloadUrl = `${RELEASE_URL_BASE}/v${version}/${encodeURIComponent(EXE_NAME)}`;
+const downloadUrl = `${RELEASE_URL_BASE}/v${version}/${EXE_NAME_FOR_URL}`;
 
 const latest = {
   version,
@@ -51,6 +53,6 @@ console.log(`   download URL: ${downloadUrl}`);
 console.log(`   signature length: ${signature.length} chars`);
 console.log('');
 console.log('Next: upload the following to GitHub Release v' + version + ':');
-console.log(`   1. ${EXE_NAME}`);
-console.log(`   2. ${EXE_NAME}.sig`);
+console.log(`   1. JP225 Monitor_${version}_x64-setup.exe`);
+console.log(`   2. JP225 Monitor_${version}_x64-setup.exe.sig`);
 console.log(`   3. release/latest.json`);
