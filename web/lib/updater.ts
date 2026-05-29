@@ -6,6 +6,12 @@ export interface UpdateInfo {
   date?: string;
 }
 
+export type UpdateStatus =
+  | { state: 'unsupported' }                  // Tauri 外 (npm run dev のブラウザ)
+  | { state: 'latest' }                       // 最新
+  | { state: 'available'; info: UpdateInfo }  // 更新あり
+  | { state: 'error'; message: string };      // チェック失敗 (ネットワーク等)
+
 interface TauriGlobal {
   __TAURI_INTERNALS__?: unknown;
 }
@@ -14,21 +20,33 @@ function inTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in (window as TauriGlobal);
 }
 
-export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  if (!inTauri()) return null;
+export async function getUpdateStatus(): Promise<UpdateStatus> {
+  if (!inTauri()) return { state: 'unsupported' };
   try {
     const mod = await import('@tauri-apps/plugin-updater');
     const update = await mod.check();
-    if (!update) return null;
+    if (!update) return { state: 'latest' };
     return {
-      version: update.version,
-      notes: update.body ?? undefined,
-      date: update.date ?? undefined,
+      state: 'available',
+      info: {
+        version: update.version,
+        notes: update.body ?? undefined,
+        date: update.date ?? undefined,
+      },
     };
   } catch (err) {
-    console.warn('[updater] check failed:', err instanceof Error ? err.message : err);
-    return null;
+    return { state: 'error', message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// 後方互換: トースト用。更新がある時だけ UpdateInfo を返す。
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  const status = await getUpdateStatus();
+  if (status.state === 'available') return status.info;
+  if (status.state === 'error') {
+    console.warn('[updater] check failed:', status.message);
+  }
+  return null;
 }
 
 // ダウンロード+インストール (再起動含む)。進捗コールバック可。
