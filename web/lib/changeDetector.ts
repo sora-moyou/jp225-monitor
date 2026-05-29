@@ -35,23 +35,18 @@ export class ChangeDetector {
     const state = this.states.get(price.symbol);
     if (!state) return [];
 
-    // USD 建て銘柄は JPY 換算後の値を使う (jpyPrice あれば優先)。
-    // これでアラート閾値 (NK=F の 0.30% など) を JPY ベースの実 P&L 相当に揃える。
-    const effectivePrice = price.jpyPrice ?? price.price;
-
-    // 防御: 直前サンプルと比較して | %変化 | > 50% なら、JPY 換算モードの
-    // 切替やデータ欠損などで桁が変わった可能性。古いバッファを捨ててリスタート。
+    // 防御: 直前サンプルと比較して | %変化 | > 50% は data 異常 → バッファリセット
     // (現実の市場では 30 秒で 50% 動くことはあり得ない)
     const last = state.buffer[state.buffer.length - 1];
     if (last) {
-      const jumpPct = pctChange(last.price, effectivePrice);
+      const jumpPct = pctChange(last.price, price.price);
       if (Math.abs(jumpPct) > 50) {
-        console.warn(`[detector] ${price.symbol}: implausible jump ${jumpPct.toFixed(1)}% (${last.price} → ${effectivePrice}), resetting buffer`);
+        console.warn(`[detector] ${price.symbol}: implausible jump ${jumpPct.toFixed(1)}% (${last.price} → ${price.price}), resetting buffer`);
         state.buffer = [];
       }
     }
 
-    state.buffer.push({ t: price.timestamp, price: effectivePrice });
+    state.buffer.push({ t: price.timestamp, price: price.price });
 
     // バッファ保持: BUFFER_WINDOW_MS まで残す（コンテキスト計算用）
     const cutoff = price.timestamp - BUFFER_WINDOW_MS;
@@ -63,14 +58,14 @@ export class ChangeDetector {
     // クールダウン中は判定スキップ
     if (price.timestamp - state.lastAlertAt < this.cooldownMs) return [];
 
-    // 傾き判定（30秒窓の最古値と比較）— 全て effectivePrice (JPY 換算後) で計算
+    // 傾き判定（30秒窓の最古値と比較）
     const slopeCutoff = price.timestamp - SLOPE_WINDOW_MS;
     const slopeBase = state.buffer.find(s => s.t >= slopeCutoff);
     if (slopeBase && slopeBase !== state.buffer[state.buffer.length - 1]) {
-      const pct = pctChange(slopeBase.price, effectivePrice);
+      const pct = pctChange(slopeBase.price, price.price);
       const window = (price.timestamp - slopeBase.t) / 1000;
       if (Math.abs(pct) >= state.meta.slopeThreshold) {
-        return [this.fireAlert(state, price, effectivePrice, pct, window, 'slope')];
+        return [this.fireAlert(state, price, pct, window, 'slope')];
       }
     }
 
@@ -78,10 +73,10 @@ export class ChangeDetector {
     const magCutoff = price.timestamp - MAGNITUDE_WINDOW_MS;
     const magBase = state.buffer.find(s => s.t >= magCutoff);
     if (magBase && magBase !== state.buffer[state.buffer.length - 1]) {
-      const pct = pctChange(magBase.price, effectivePrice);
+      const pct = pctChange(magBase.price, price.price);
       const window = (price.timestamp - magBase.t) / 1000;
       if (Math.abs(pct) >= state.meta.magnitudeThreshold) {
-        return [this.fireAlert(state, price, effectivePrice, pct, window, 'magnitude')];
+        return [this.fireAlert(state, price, pct, window, 'magnitude')];
       }
     }
 
@@ -89,17 +84,17 @@ export class ChangeDetector {
   }
 
   private fireAlert(
-    state: State, price: Price, effectivePrice: number, pct: number, windowSec: number, kind: DetectionKind
+    state: State, price: Price, pct: number, windowSec: number, kind: DetectionKind
   ): AlertEvent {
     state.lastAlertAt = price.timestamp;
-    // 直近15分のOHLC（テクニカル分析用）— バッファと同じ単位 (JPY換算後) で揃える
+    // 直近15分のOHLC（テクニカル分析用）
     const ctxCutoff = price.timestamp - CONTEXT_WINDOW_MS;
     const ctx15 = state.buffer.filter(s => s.t >= ctxCutoff);
     const pa15min: PriceAction | null = ctx15.length >= 2 ? {
       open: ctx15[0]!.price,
       high: Math.max(...ctx15.map(s => s.price)),
       low: Math.min(...ctx15.map(s => s.price)),
-      current: effectivePrice,
+      current: price.price,
     } : null;
     const change15min = pa15min ? pctChange(pa15min.open, pa15min.current) : null;
 

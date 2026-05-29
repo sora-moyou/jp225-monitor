@@ -34,8 +34,7 @@ https://github.com/sora-moyou/jp225-monitor/releases/latest
 
 ## 主な機能
 
-- **8 銘柄リアルタイム監視** (NK=F / NQ=F / YM=F / ES=F / JPY=X / CL=F / ^VIX / ^TNX) を 2 秒間隔
-- **JPY 基準アラート / 相関** (v0.3.x) — USD 建て銘柄は USD/JPY で円換算した値で % を計算
+- **8 銘柄リアルタイム監視** (NIY=F / NQ=F / YM=F / ES=F / JPY=X / CL=F / ^VIX / ^TNX) を 2 秒間隔
 - **ハイブリッド急変検知** — 5 分窓 magnitude + 30 秒窓 slope
 - **AI 自動説明** — Gemini → Groq → OpenAI 自動フォールバック
 - **AI チャット** — 全銘柄価格 + 直近 15 件ニュースをコンテキストに自由質問
@@ -71,7 +70,7 @@ https://github.com/sora-moyou/jp225-monitor/releases/latest
 | Y ドットが 🟡 | Investing.com フォールバック中、5 分で再試行 |
 | 価格カードが `---` | 両ソース失敗、ネット確認 / 再起動 |
 | インストール時 "Error opening file" | v0.3.3 以降は自動解消。旧版なら タスクマネージャ で `jp225-sidecar.exe` を終了して再実行 |
-| NK=F の表示が ~1 千万円台 | 正常 (USD 価格 × USD/JPY)。¥ バッジ付きなら JPY 換算モード |
+| アラートが頻発する | v0.3.7 以前は内部の JPY 換算バグで誤検知が出ていた。v0.3.8 にアップデートで解消 |
 
 ---
 

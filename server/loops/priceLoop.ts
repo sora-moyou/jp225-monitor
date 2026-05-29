@@ -2,68 +2,9 @@ import { fetchYahooPrices } from '../sources/yahooFinance.js';
 import { fetchInvestingPrices } from '../sources/investingScrape.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
-import { INSTRUMENTS, PRICE_BACKOFF_MS, USD_DENOMINATED } from '../config.js';
+import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
-import { tryUpdate as updateJpyCache, getRate as getJpyRate, getChangePercent as getJpyChange } from '../jpyRateCache.js';
 import type { Price } from '../types.js';
-
-// USD 建て銘柄を JPY 換算する (v0.3.7 多層防御版)。
-//
-// 1. 永続キャッシュ (~/.jp225-monitor/jpy-cache.json) を起動時に読み込み済み (server/index.ts)。
-//    → 再起動直後でも前回終値ベースで換算可能。
-// 2. 新規 JPY=X はレンジチェック [50, 300] + 急変動チェック (1 tick で > 2% は data 異常)。
-// 3. 計算後の jpyPrice が [1000, 1B] レンジ外なら、銘柄ごとに保存した直前 jpyPrice を流用。
-// 4. それも無ければ jpy フィールドを付けず raw を返す (frontend は raw 表示にフォールバック)。
-
-const JPY_PRICE_MIN = 1_000;
-const JPY_PRICE_MAX = 1_000_000_000;
-
-// 銘柄ごとの直前の有効 jpyPrice。一時的な data 異常があってもこれで補える。
-const lastValidJpyBySymbol = new Map<string, number>();
-
-function applyJpyConversion(prices: Price[]): Price[] {
-  const jpyX = prices.find(p => p.symbol === 'JPY=X');
-
-  // 1. JPY=X 永続キャッシュを更新試行 (異常値は中で拒否される)
-  if (jpyX) {
-    updateJpyCache(jpyX.price, jpyX.changePercent);
-  }
-
-  const rate = getJpyRate();
-  const change = getJpyChange();
-  if (rate <= 0) return prices;   // まだキャッシュ無し (本当に初回起動 + 初回 JPY=X 取得失敗)
-
-  return prices.map(p => {
-    if (!USD_DENOMINATED.has(p.symbol)) return p;
-    if (!Number.isFinite(p.price) || p.price <= 0) return p;
-
-    const candidateJpy = p.price * rate;
-
-    // 2. 換算結果が現実的範囲かを検証
-    if (!Number.isFinite(candidateJpy) || candidateJpy < JPY_PRICE_MIN || candidateJpy > JPY_PRICE_MAX) {
-      console.warn(`[priceLoop] ${p.symbol}: implausible jpyPrice ${candidateJpy} (= ${p.price} × ${rate})`);
-      // 3. 銘柄ごとの直前有効値があればそれを使う (異常値表示を回避)
-      const lastGood = lastValidJpyBySymbol.get(p.symbol);
-      if (lastGood !== undefined) {
-        return {
-          ...p,
-          jpyPrice: lastGood,
-          jpyChangePercent: p.changePercent + change,
-          stale: true,   // UI で「stale」マークが出るように
-        };
-      }
-      return p;   // 初回 + 異常: jpy フィールド無しで返す (raw 表示)
-    }
-
-    // 4. 正常: 銘柄キャッシュも更新
-    lastValidJpyBySymbol.set(p.symbol, candidateJpy);
-    return {
-      ...p,
-      jpyPrice: candidateJpy,
-      jpyChangePercent: p.changePercent + change,
-    };
-  });
-}
 
 // Yahoo Finance 失敗時のスキップ期間。連続失敗で長くなる:
 //   1 回目失敗 → 90 秒
@@ -122,9 +63,8 @@ async function tick(): Promise<number> {
     if (prices.length === 0) throw new Error('No prices fetched (Yahoo + Investing.com both failed)');
 
     const merged = mergeWithCached(prices);
-    const converted = applyJpyConversion(merged);
-    setPrices(converted);
-    broadcast({ type: 'prices', payload: converted });
+    setPrices(merged);
+    broadcast({ type: 'prices', payload: merged });
     backoffIndex = -1;
     return intervalMs;
   } catch (err) {

@@ -15,10 +15,8 @@ import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { isLLMEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults } from './configStore.js';
-import { initJpyRateCache } from './jpyRateCache.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
-initJpyRateCache(); // 前回保存した USD/JPY レートを読み込む (異常値防止)
 
 declare const __APP_VERSION__: string | undefined;
 

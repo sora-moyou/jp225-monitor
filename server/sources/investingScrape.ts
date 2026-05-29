@@ -2,7 +2,7 @@ import * as cheerio from 'cheerio';
 import type { Price, Symbol } from '../types.js';
 
 const INVESTING_URLS: Partial<Record<Symbol, string>> = {
-  'NK=F':  'https://www.investing.com/indices/japan-225-futures',
+  'NIY=F': 'https://www.investing.com/indices/japan-225-futures',
   'NQ=F':  'https://www.investing.com/indices/nq-100-futures',
   'YM=F':  'https://www.investing.com/indices/us-30-futures',
   'ES=F':  'https://www.investing.com/indices/us-spx-500-futures',

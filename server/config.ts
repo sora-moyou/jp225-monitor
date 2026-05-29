@@ -1,7 +1,7 @@
 import type { InstrumentMeta } from './types.js';
 
 export const INSTRUMENTS: InstrumentMeta[] = [
-  { symbol: 'NK=F',  labelJa: '日経225先物',    labelEn: 'Nikkei 225 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
+  { symbol: 'NIY=F',  labelJa: '日経225先物',    labelEn: 'Nikkei 225 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
   { symbol: 'NQ=F',  labelJa: 'ナスダック100先物', labelEn: 'Nasdaq 100 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
   { symbol: 'YM=F',  labelJa: 'ダウ先物',        labelEn: 'Dow Fut',        magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
   { symbol: 'ES=F',  labelJa: 'S&P500先物',     labelEn: 'S&P500 Fut',     magnitudeThreshold: 0.30, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
@@ -51,18 +51,9 @@ export const RSS_FEEDS = {
 // 直接定数を参照していた箇所は resolvePricePollMs() / resolveNewsPollMs() を使う。
 export const PRICE_BACKOFF_MS = [5000, 10_000, 30_000, 60_000];
 
-// USD 建て銘柄 (CME US 上場先物 + WTI 原油)。
-// priceLoop で JPY=X (USD/JPY) を掛けて jpyPrice / jpyChangePercent を算出し、
-// アラート検知・相関計算は JPY 換算後の値を使う。
-// 日経 225 トレーダーは JPY ベースの P&L 感覚で見るため、これが直感に合う。
-export const USD_DENOMINATED: ReadonlySet<string> = new Set([
-  'NK=F',  // CME 上場 USD 建て日経先物
-  'NQ=F',  // CME 上場 NASDAQ100 先物
-  'YM=F',  // CME 上場 Dow 先物
-  'ES=F',  // CME 上場 S&P500 先物
-  'CL=F',  // NYMEX 上場 WTI 原油
-]);
-// 換算しない銘柄: JPY=X (それ自体がレート), ^VIX / ^TNX (無次元), *.T (元から JPY)
+// v0.3.8 で「USD/JPY × 銘柄価格」の JPY 換算を全削除。
+// 理由: NIY=F / NKD=F / OANDA JP225YJPY / JP225USD / ^N225 すべて Nikkei 指数値を
+// 表示しており、通貨ラベルは決済通貨を示すのみ。表示価格と % は通貨に依存しない。
 
 export const NEWS_MAX_ITEMS = 200;                        // 4時間ぶん保持できるよう拡大
 export const NEWS_RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;  // LLMに渡す上限 = 4時間
@@ -173,7 +164,7 @@ export const HIGH_IMPACT_KEYWORDS: string[] = [
 
 // 銘柄ごとのキーワード辞書（ja + en、小文字統一）— ニュースのランク付け用
 export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
-  'NK=F': ['日経', '日本株', '東証', '日銀', 'boj', '黒田', '植田', '円', '為替', 'jp', '日本', '株式', 'nikkei', 'japan', 'tokyo', 'yen', 'jp225'],
+  'NIY=F': ['日経', '日本株', '東証', '日銀', 'boj', '黒田', '植田', '円', '為替', 'jp', '日本', '株式', 'nikkei', 'japan', 'tokyo', 'yen', 'jp225'],
   'NQ=F': ['ナスダック', '米株', 'テック', 'ai', 'アップル', 'マイクロソフト', 'エヌビディア', 'メタ', 'グーグル', 'nasdaq', 'nq', 'tech', 'apple', 'aapl', 'msft', 'nvda', 'meta', 'google', 'googl'],
   'YM=F': ['ダウ', 'nyダウ', '米株', '米国', 'dow', 'dji', 'us 30', 'industrial', 'blue chip'],
   'ES=F': ['s&p', 'sp500', '米株', 'fomc', 'frb', 'spx', 'fed', 'powell', 'rate', 'inflation', 'cpi', 'jobs', 'payroll'],
