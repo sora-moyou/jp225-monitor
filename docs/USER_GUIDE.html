@@ -771,7 +771,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.17</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.19</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         JP225 (日経 225) の価格変動をリアルタイムで監視。
@@ -786,7 +786,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <main>
 
 <!-- ─── Quick start ─── -->
-<section class="section" id="quickstart">
+<section class="section" id="quickstart" style="padding-top: var(--space);">
   <div class="section-head">
     <span class="section-eyebrow">3 ステップ</span>
     <h2>3 分でセットアップ</h2>
@@ -937,7 +937,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="flow">
       <figure class="flow-img">
         <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル">
-        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、ポーリング設定</figcaption>
+        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、ポーリング設定、バージョン確認</figcaption>
       </figure>
 
       <div class="flow-steps">
@@ -973,6 +973,9 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
     <div class="callout" style="margin-top: 12px;">
       <strong>polling 設定:</strong> 下部の「定期 API ポーリング設定」で価格・ニュース取得間隔と port も変更可能。範囲外 (例 Price polling=100ms) は 400 で reject。
+    </div>
+    <div class="callout" style="margin-top: 12px;">
+      <strong>バージョン確認 (v0.3.18〜):</strong> 最下部の「バージョン」セクションに現在のバージョンが表示され、<strong>「最新かチェック」</strong>ボタンで最新版が出ているか手動確認できます。更新があればその場の「更新」ボタンから DL + 再起動まで実行可能 (起動時の自動トースト通知に加えての手動確認手段)。
     </div>
   </div>
 </section>
