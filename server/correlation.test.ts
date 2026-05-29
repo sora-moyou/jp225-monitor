@@ -43,11 +43,11 @@ describe('pearsonAlignedReturns (v0.3.13 server-side 1m bars)', () => {
     expect(samples).toBe(2);  // 3 aligned bars → 2 return pairs
   });
 
-  it('skips return pair when consecutive bars span a >90s gap', () => {
+  it('includes return pairs across multi-minute gaps (v0.3.15 — no gap skip)', () => {
     const a: Bar[] = [
       { t: 0,           close: 100 },
       { t: 1 * MIN,     close: 101 },
-      // 5-minute gap (market break) — should not produce a return pair across it
+      // 5-minute gap (market break) — still produces a paired return
       { t: 6 * MIN,     close: 110 },
       { t: 7 * MIN,     close: 111 },
     ];
@@ -58,7 +58,7 @@ describe('pearsonAlignedReturns (v0.3.13 server-side 1m bars)', () => {
       { t: 7 * MIN,     close: 222 },
     ];
     const { samples } = pearsonAlignedReturns(a, b);
-    expect(samples).toBe(2);   // (0→1min), (6min→7min); the 1min→6min gap skipped
+    expect(samples).toBe(3);   // (0→1min), (1min→6min, gap-spanning), (6min→7min)
   });
 
   it('returns 0 / samples 0 when no timestamps overlap', () => {

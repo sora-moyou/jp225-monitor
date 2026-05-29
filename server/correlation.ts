@@ -76,8 +76,8 @@ export function pearsonAlignedReturns(barsA: Bar[], barsB: Bar[]): PearsonResult
   for (let i = 1; i < aligned.length; i++) {
     const prev = aligned[i - 1]!;
     const cur = aligned[i]!;
-    // 1 分ギャップが空く (休場・欠損) ペアは前後で連続性が無いので飛ばす
-    if (cur.t - prev.t > 90_000) continue;
+    // v0.3.15: 時刻ギャップによる skip を撤去 — 休場跨ぎの return も含めて全 pair を使用 (ユーザ要望)。
+    // 正常 close (>0) のみフィルタ。
     if (prev.a > 0 && prev.b > 0) {
       retA.push((cur.a - prev.a) / prev.a);
       retB.push((cur.b - prev.b) / prev.b);
