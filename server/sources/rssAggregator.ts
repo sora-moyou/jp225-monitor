@@ -1,17 +1,28 @@
 import Parser from 'rss-parser';
 import type { NewsItem } from '../types.js';
-import { RSS_FEEDS, NEWS_MAX_ITEMS, FINANCE_RELEVANCE_KEYWORDS, FINANCE_BLACKLIST } from '../config.js';
+import { RSS_FEEDS, NEWS_MAX_ITEMS, FINANCE_RELEVANCE_KEYWORDS, FINANCE_BLACKLIST, HIGH_IMPACT_KEYWORDS } from '../config.js';
 
-// タイトルが金融関連かどうかを判定
+// タイトルが金融関連かどうかを判定 (v0.3.5+ 厳格版)
 // - BLACKLIST に1つでもヒット → 除外
-// - WHITELIST に1つもヒットしない → 除外
+// - HIGH_IMPACT が 1 つ以上ヒット → 通す (中銀・要人・指標・地政学等は単独でも重要)
+// - 通常 keyword は 2 つ以上ヒットしないと除外 (「トヨタ」単独で新車ニュースが通る等を防ぐ)
 function isFinanceRelevant(title: string): boolean {
   const lc = title.toLowerCase();
+  // Blacklist 1 ヒットで即除外
   for (const kw of FINANCE_BLACKLIST) {
     if (lc.includes(kw.toLowerCase())) return false;
   }
-  for (const kw of FINANCE_RELEVANCE_KEYWORDS) {
+  // HIGH_IMPACT 1 ヒットで通過
+  for (const kw of HIGH_IMPACT_KEYWORDS) {
     if (lc.includes(kw.toLowerCase())) return true;
+  }
+  // 通常 keyword は 2 ヒット以上必要
+  let hits = 0;
+  for (const kw of FINANCE_RELEVANCE_KEYWORDS) {
+    if (lc.includes(kw.toLowerCase())) {
+      hits++;
+      if (hits >= 2) return true;
+    }
   }
   return false;
 }

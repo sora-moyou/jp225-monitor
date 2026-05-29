@@ -36,8 +36,8 @@ export async function refreshApiStatus(container: HTMLElement): Promise<void> {
   const now = Date.now();
   const yahooState: 'ok' | 'paused' = data.yahoo.fallback ? 'paused' : 'ok';
   const yahooTip = data.yahoo.fallback
-    ? `Yahoo: fallback中 (残${fmtRemaining(data.yahoo.skipUntil, now)} / ${fmtClock(data.yahoo.skipUntil)} 復帰予定)`
-    : 'Yahoo: 利用可';
+    ? `Yahoo Finance (価格): fallback中 (残${fmtRemaining(data.yahoo.skipUntil, now)} / ${fmtClock(data.yahoo.skipUntil)} 復帰予定) — Investing.com で価格は引き続き更新中。Yahoo News (RSS) とは別系統です`
+    : 'Yahoo Finance (価格): 利用可';
   const yahoo = renderDot('Y', yahooState, yahooTip);
   const llm = data.llm.map(p => {
     const state: 'ok' | 'paused' | 'off' = !p.enabled ? 'off' : p.paused ? 'paused' : 'ok';

@@ -31,12 +31,18 @@ function applyJpyConversion(prices: Price[]): Price[] {
   });
 }
 
-const YAHOO_SKIP_AFTER_FAIL_MS = 5 * 60 * 1000;
+// Yahoo Finance 失敗時のスキップ期間。連続失敗で長くなる:
+//   1 回目失敗 → 90 秒
+//   2 回目失敗 → 3 分
+//   3 回目以降 → 5 分
+// 成功で即リセット。これで一時的な 429 から早期復帰できる。
+const YAHOO_SKIP_LADDER_MS = [90_000, 3 * 60_000, 5 * 60_000];
 
 let backoffIndex = -1;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 let yahooSkipUntil = 0;
+let yahooConsecutiveFails = 0;
 let intervalMs = resolvePricePollMs();
 
 function mergeWithCached(fresh: Price[]): Price[] {
@@ -55,15 +61,19 @@ async function tick(): Promise<number> {
     if (now >= yahooSkipUntil) {
       try {
         prices = await fetchYahooPrices();
-        if (yahooSkipUntil > 0) {
+        if (yahooSkipUntil > 0 || yahooConsecutiveFails > 0) {
           console.log('[priceLoop] Yahoo recovered, back to primary source');
           yahooSkipUntil = 0;
+          yahooConsecutiveFails = 0;
         }
       } catch (err) {
-        if (yahooSkipUntil === 0) {
-          console.warn(`[priceLoop] Yahoo unavailable (${err instanceof Error ? err.message : err}), using Investing.com for next 5 min`);
+        const idx = Math.min(yahooConsecutiveFails, YAHOO_SKIP_LADDER_MS.length - 1);
+        const skipMs = YAHOO_SKIP_LADDER_MS[idx]!;
+        if (yahooConsecutiveFails === 0) {
+          console.warn(`[priceLoop] Yahoo unavailable (${err instanceof Error ? err.message : err}), using Investing.com for next ${Math.round(skipMs/1000)}s`);
         }
-        yahooSkipUntil = now + YAHOO_SKIP_AFTER_FAIL_MS;
+        yahooConsecutiveFails++;
+        yahooSkipUntil = now + skipMs;
       }
     }
 
