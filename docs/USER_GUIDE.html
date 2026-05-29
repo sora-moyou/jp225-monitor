@@ -253,6 +253,50 @@ main { padding: 0 24px; }
   font-size: 16px;
   margin-bottom: 14px;
 }
+.step-emph {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn), 0 8px 24px rgba(245, 158, 11, 0.15);
+}
+.smartscreen-alert {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.smartscreen-title {
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--warn);
+  margin-bottom: 8px;
+  letter-spacing: 0.02em;
+}
+.smartscreen-body {
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0;
+}
+.smartscreen-steps {
+  margin: 10px 0 0 0;
+  padding-left: 24px;
+}
+.smartscreen-steps li {
+  font-size: 13.5px;
+  color: var(--text);
+  margin: 6px 0;
+  line-height: 1.5;
+}
+.kbd-blue {
+  display: inline-block;
+  padding: 2px 10px;
+  background: #0078d4;
+  color: white;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 12.5px;
+  border: 1px solid #006cbe;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
 .step h3 { font-size: 18px; margin-bottom: 8px; }
 .step p { color: var(--text-muted); font-size: 14.5px; }
 .step a { color: var(--link); font-weight: 600; }
@@ -641,12 +685,30 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         <code>JP225.Monitor_X.X.X_x64-setup.exe</code> をダウンロード。
       </p>
     </div>
-    <div class="step">
+    <div class="step step-emph">
       <div class="step-num">2</div>
       <h3>インストール</h3>
-      <p>
-        ダブルクリック → SmartScreen が出たら「<strong>詳細情報</strong>」→「<strong>実行</strong>」。
-        既定の場所にインストールされます。
+      <p style="margin-bottom: 14px;">
+        ダウンロードした <code>.exe</code> をダブルクリック。
+      </p>
+      <div class="smartscreen-alert">
+        <div class="smartscreen-title">
+          ⚠ ここで多くの人が止まります
+        </div>
+        <p class="smartscreen-body">
+          <strong>「Windows によって PC が保護されました」</strong> という<strong>青い画面</strong>が出ます。
+          「実行しない」ボタンしか見えませんが、慌てないでください。
+        </p>
+        <ol class="smartscreen-steps">
+          <li>左上の小さな <span class="kbd-blue">詳細情報</span> リンクをクリック</li>
+          <li>すると下に <span class="kbd-blue">実行</span> ボタンが出現するので、それをクリック</li>
+        </ol>
+        <p class="smartscreen-body" style="margin-top: 10px; font-size: 12.5px; color: var(--text-faint);">
+          ※ 無料配布アプリ全般で出る警告で、害はありません。気になる場合は <a href="https://github.com/sora-moyou/jp225-monitor">GitHub のソースコード</a> を確認できます。
+        </p>
+      </div>
+      <p style="margin-top: 14px;">
+        ウィザードに従ってインストール → スタートメニューから <strong>JP225 Monitor</strong> 起動。
       </p>
     </div>
     <div class="step">
