@@ -420,6 +420,56 @@ main { padding: 0 24px; }
 .dot-table tr:last-child td { border-bottom: none; }
 .dot-table td:first-child { width: 50px; text-align: center; }
 
+/* ─── Click-through flow (settings walkthrough) ─── */
+.flow {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+  margin-top: 32px; align-items: start;
+}
+@media (max-width: 860px) { .flow { grid-template-columns: 1fr; } }
+.flow-img {
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 8px;
+  box-shadow: var(--shadow);
+}
+.flow-img img { display: block; width: 100%; border-radius: var(--radius-sm); }
+.flow-img figcaption {
+  color: var(--text-muted); font-size: 12.5px;
+  text-align: center; padding: 8px 4px 4px; font-style: italic;
+}
+.flow-steps { counter-reset: flowstep; }
+.flow-steps > div {
+  counter-increment: flowstep;
+  position: relative;
+  padding: 14px 16px 14px 56px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+}
+.flow-steps > div::before {
+  content: counter(flowstep);
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: rgba(16,185,129,0.15);
+  color: var(--up);
+  border: 1px solid rgba(16,185,129,0.3);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 13px;
+}
+.flow-steps strong { display: block; margin-bottom: 4px; font-size: 14.5px; }
+.flow-steps p { color: var(--text-muted); font-size: 13.5px; line-height: 1.55; margin: 0; }
+.kbd {
+  display: inline-block;
+  padding: 1px 7px; min-width: 22px; text-align: center;
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 12px;
+  box-shadow: inset 0 -1px 0 rgba(0,0,0,0.4);
+}
+
 /* ─────────────────────────────────────────────────
    FAQ accordion
    ───────────────────────────────────────────────── */
@@ -665,6 +715,57 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <strong>未設定でも動きます。</strong> 価格監視 / アラート音 / チャートは API キー無しでも動作。
     無効になるのは「なぜ動いた」AI 説明、AI チャット、ニュース翻訳の 3 機能のみ。
   </div>
+
+  <!-- ─── Settings walkthrough ─── -->
+  <div style="margin-top: 56px;">
+    <h3 style="font-size: 22px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; text-align:center;">
+      設定画面の使い方
+    </h3>
+    <p style="text-align:center; color: var(--text-muted); margin-bottom: 24px;">
+      ⚙️ アイコンを押してから API キー保存まで、6 ステップ。
+    </p>
+
+    <div class="flow">
+      <figure class="flow-img">
+        <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル">
+        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、ポーリング設定</figcaption>
+      </figure>
+
+      <div class="flow-steps">
+        <div>
+          <strong>右上の <span class="kbd">⚙️</span> をクリック</strong>
+          <p>トップバー右端のギアアイコン。初回起動時は API キー未設定なので自動で開きます。</p>
+        </div>
+        <div>
+          <strong>状態を確認</strong>
+          <p>モーダル上部に <span class="dot green" style="display:inline-block;vertical-align:middle"></span> gemini / groq / openai が並びます。<span class="dot green" style="display:inline-block;vertical-align:middle"></span>=設定済み / <span class="dot white" style="display:inline-block;vertical-align:middle"></span>=未設定。</p>
+        </div>
+        <div>
+          <strong>「キー取得 ↗」リンクをクリック</strong>
+          <p>該当プロバイダのキー発行ページが別タブで開きます。Gemini 推奨。</p>
+        </div>
+        <div>
+          <strong>キーをコピー</strong>
+          <p>発行ページで <code>AIza...</code> / <code>gsk_...</code> / <code>sk-...</code> をコピー。</p>
+        </div>
+        <div>
+          <strong>JP225 Monitor に戻り、対応欄に貼り付け</strong>
+          <p>「設定済み (上書きする場合のみ入力)」プレースホルダの入力欄に貼り付け。<strong>空欄保存は無変更</strong> なので、既存キーを残したい時は触らない。</p>
+        </div>
+        <div>
+          <strong>右下の <span class="kbd">保存</span> をクリック</strong>
+          <p>状態表示が <span class="dot green" style="display:inline-block;vertical-align:middle"></span> 緑に切り替わる。「閉じる」でモーダル退場。これで AI 説明・チャット・翻訳が即有効化。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout success" style="margin-top: 24px;">
+      <strong>保存先:</strong> 入力したキーは <code>~/.jp225-monitor/config.json</code> にローカル保存されます。アプリ外部に送信されることはありません。
+    </div>
+    <div class="callout" style="margin-top: 12px;">
+      <strong>polling 設定:</strong> 下部の「定期 API ポーリング設定」で価格・ニュース取得間隔と port も変更可能。範囲外 (例 Price polling=100ms) は 400 で reject。
+    </div>
+  </div>
 </section>
 
 <!-- ─── Tour (annotated screenshot) ─── -->
@@ -903,33 +1004,54 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="ref">
 
     <details>
-      <summary>監視している銘柄一覧</summary>
+      <summary>監視している銘柄一覧 (実装ベース、全 13 銘柄)</summary>
       <div class="ref-body">
-        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄):</strong></p>
+        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄、main カテゴリ)</strong> — 値段はカード表示 + アラート対象</p>
         <table class="ref-table">
-          <thead><tr><th>銘柄</th><th>コード</th><th>単位</th></tr></thead>
+          <thead>
+            <tr>
+              <th>銘柄</th>
+              <th>コード</th>
+              <th>単位</th>
+              <th>magnitude<br>(5 分閾値)</th>
+              <th>slope<br>(30 秒閾値)</th>
+            </tr>
+          </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NK=F</code></td><td>%</td></tr>
-            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>%</td></tr>
-            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>%</td></tr>
-            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>%</td></tr>
-            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>%</td></tr>
-            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>%</td></tr>
-            <tr><td>VIX</td><td><code>^VIX</code></td><td>%</td></tr>
-            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>bp</td></tr>
+            <tr><td>日経 225 先物</td><td><code>NK=F</code></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>%</td><td>0.20%</td><td>0.07%</td></tr>
+            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>%</td><td>0.50%</td><td>0.20%</td></tr>
+            <tr><td>VIX</td><td><code>^VIX</code></td><td>%</td><td>5.00%</td><td>2.00%</td></tr>
+            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>bp</td><td>2.00 bp</td><td>1.00 bp</td></tr>
           </tbody>
         </table>
-        <p style="margin-top: 16px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、日経寄与上位):</strong></p>
+
+        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示、アラートだけ通知。日経 225 への寄与度が高い東証値がさ株</p>
         <table class="ref-table">
-          <thead><tr><th>銘柄</th><th>コード</th></tr></thead>
+          <thead>
+            <tr>
+              <th>銘柄</th>
+              <th>コード</th>
+              <th>単位</th>
+              <th>magnitude<br>(5 分閾値)</th>
+              <th>slope<br>(30 秒閾値)</th>
+            </tr>
+          </thead>
           <tbody>
-            <tr><td>ファーストリテイリング</td><td><code>9983.T</code></td></tr>
-            <tr><td>東京エレクトロン</td><td><code>8035.T</code></td></tr>
-            <tr><td>アドバンテスト</td><td><code>6857.T</code></td></tr>
-            <tr><td>ソフトバンク G</td><td><code>9984.T</code></td></tr>
-            <tr><td>ダイキン</td><td><code>6367.T</code></td></tr>
+            <tr><td>ファーストリテイリング</td><td><code>9983.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
+            <tr><td>東京エレクトロン</td><td><code>8035.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
+            <tr><td>アドバンテスト</td><td><code>6857.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
+            <tr><td>ソフトバンク G</td><td><code>9984.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
+            <tr><td>ダイキン</td><td><code>6367.T</code></td><td>%</td><td>1.50%</td><td>0.60%</td></tr>
           </tbody>
         </table>
+
+        <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
+          ※ 閾値は <code>server/config.ts</code> の <code>INSTRUMENTS</code> 配列で定義。アラート発火は magnitude (5 分窓の値幅) または slope (30 秒窓の傾き) いずれかが閾値を超えた時。
+        </p>
       </div>
     </details>
 
