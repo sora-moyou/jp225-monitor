@@ -605,3 +605,22 @@ body {
   width: 0%;
   transition: width 0.2s;
 }
+
+.version-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.version-row #settings-current-version { font-weight: 600; }
+.update-result { margin-top: 10px; font-size: 13px; line-height: 1.6; min-height: 1em; }
+.update-result.ok   { color: var(--up); }
+.update-result.warn { color: #c9a227; }
+.update-result.err  { color: var(--down); }
+.update-result .update-now-btn {
+  margin-left: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--up);
+  background: var(--up);
+  color: black;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.update-result .update-now-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.update-result .update-notes { display: block; margin-top: 4px; opacity: 0.8; font-size: 12px; }

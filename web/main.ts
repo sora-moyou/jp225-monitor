@@ -95,6 +95,9 @@ initSettingsModal({
   portWarning:    document.getElementById('settings-port-warning') as HTMLElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
+  checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
+  updateResult:   document.getElementById('settings-update-result') as HTMLElement,
+  currentVersion: document.getElementById('settings-current-version') as HTMLElement,
 });
 
 const apiStatusEl = document.getElementById('api-status');
