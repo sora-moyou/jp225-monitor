@@ -5,10 +5,15 @@ export type Symbol =
 
 export interface Price {
   symbol: Symbol;
-  price: number;
-  changePercent: number;
+  price: number;             // 元の通貨での価格 (USD 建て銘柄は USD、JPY 建ては JPY)
+  changePercent: number;     // 元の通貨での前日比 (Yahoo 提供)
   timestamp: number;
   stale: boolean;
+  // ─── JPY 換算 (USD 建て銘柄のみ、JPY=X レートで変換) ───
+  // 値があるかどうかで「USD 銘柄かつ JPY=X 利用可能」を判定可能。
+  // アラート検知・相関計算は jpyPrice を優先して使い、円ベースで一貫させる。
+  jpyPrice?: number;
+  jpyChangePercent?: number;
 }
 
 export interface NewsItem {

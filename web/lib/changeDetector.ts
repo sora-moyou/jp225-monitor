@@ -35,7 +35,10 @@ export class ChangeDetector {
     const state = this.states.get(price.symbol);
     if (!state) return [];
 
-    state.buffer.push({ t: price.timestamp, price: price.price });
+    // USD 建て銘柄は JPY 換算後の値を使う (jpyPrice あれば優先)。
+    // これでアラート閾値 (NK=F の 0.30% など) を JPY ベースの実 P&L 相当に揃える。
+    const effectivePrice = price.jpyPrice ?? price.price;
+    state.buffer.push({ t: price.timestamp, price: effectivePrice });
 
     // バッファ保持: BUFFER_WINDOW_MS まで残す（コンテキスト計算用）
     const cutoff = price.timestamp - BUFFER_WINDOW_MS;

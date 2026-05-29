@@ -13,21 +13,26 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
     card.className = 'price-card';
     card.dataset.symbol = meta.symbol;
     if (p) {
-      const dir = p.changePercent >= 0 ? 'up' : 'down';
+      // USD 建ては JPY 換算 % で色判定 + 表示 (jpyChangePercent あれば優先)。
+      // ¥ バッジで「これは円換算後の値」と明示する。
+      const isJpyConverted = typeof p.jpyChangePercent === 'number';
+      const displayChange = isJpyConverted ? p.jpyChangePercent! : p.changePercent;
+      const dir = displayChange >= 0 ? 'up' : 'down';
       card.classList.add(dir);
       if (p.stale) card.classList.add('stale');
       const sourceBadge = p.stale ? '<span class="source-badge">INV</span>' : '';
+      const jpyBadge = isJpyConverted ? '<span class="jpy-badge" title="USD建て銘柄を JPY=X で円換算した値動き">¥</span>' : '';
       const decimals = meta.unit === 'bp' ? 3 : 2;
-      const sign = p.changePercent >= 0 ? '+' : '';
+      const sign = displayChange >= 0 ? '+' : '';
       const formattedPrice = p.price.toLocaleString('en-US', {
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
       });
       card.innerHTML = `
-        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
+        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}${jpyBadge}</div>
         <div class="value">
           <span class="num">${formattedPrice}</span>
-          <span class="change">${sign}${p.changePercent.toFixed(2)}%</span>
+          <span class="change">${sign}${displayChange.toFixed(2)}%</span>
         </div>
       `;
     } else {

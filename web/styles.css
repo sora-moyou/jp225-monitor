@@ -214,6 +214,17 @@ body {
   padding: 1px 4px;
   letter-spacing: 0.05em;
 }
+.price-card .jpy-badge {
+  font-size: 10px;
+  color: #f0c674;
+  background: rgba(240, 198, 116, 0.12);
+  border: 1px solid rgba(240, 198, 116, 0.4);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-left: 4px;
+  cursor: help;
+  font-weight: 600;
+}
 .price-card .value {
   display: flex;
   align-items: baseline;

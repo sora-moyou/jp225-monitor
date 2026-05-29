@@ -2,9 +2,26 @@ import { fetchYahooPrices } from '../sources/yahooFinance.js';
 import { fetchInvestingPrices } from '../sources/investingScrape.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
-import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
+import { INSTRUMENTS, PRICE_BACKOFF_MS, USD_DENOMINATED } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
 import type { Price } from '../types.js';
+
+// USD 建て銘柄を JPY 換算する。USD/JPY が取得できない場合は jpy* 未設定で返す。
+// jpyChangePercent ≈ USD% + JPY=X% (1次近似、小幅変動では十分な精度)。
+function applyJpyConversion(prices: Price[]): Price[] {
+  const jpyX = prices.find(p => p.symbol === 'JPY=X');
+  if (!jpyX || !Number.isFinite(jpyX.price) || jpyX.price <= 0) return prices;
+  const rate = jpyX.price;
+  const usdJpyChange = jpyX.changePercent ?? 0;
+  return prices.map(p => {
+    if (!USD_DENOMINATED.has(p.symbol)) return p;
+    return {
+      ...p,
+      jpyPrice: p.price * rate,
+      jpyChangePercent: p.changePercent + usdJpyChange,
+    };
+  });
+}
 
 const YAHOO_SKIP_AFTER_FAIL_MS = 5 * 60 * 1000;
 
@@ -53,8 +70,9 @@ async function tick(): Promise<number> {
     if (prices.length === 0) throw new Error('No prices fetched (Yahoo + Investing.com both failed)');
 
     const merged = mergeWithCached(prices);
-    setPrices(merged);
-    broadcast({ type: 'prices', payload: merged });
+    const converted = applyJpyConversion(merged);
+    setPrices(converted);
+    broadcast({ type: 'prices', payload: converted });
     backoffIndex = -1;
     return intervalMs;
   } catch (err) {

@@ -50,6 +50,20 @@ export const RSS_FEEDS = {
 // PRICE_POLL_INTERVAL_MS / NEWS_POLL_INTERVAL_MS は configStore に移動。
 // 直接定数を参照していた箇所は resolvePricePollMs() / resolveNewsPollMs() を使う。
 export const PRICE_BACKOFF_MS = [5000, 10_000, 30_000, 60_000];
+
+// USD 建て銘柄 (CME US 上場先物 + WTI 原油)。
+// priceLoop で JPY=X (USD/JPY) を掛けて jpyPrice / jpyChangePercent を算出し、
+// アラート検知・相関計算は JPY 換算後の値を使う。
+// 日経 225 トレーダーは JPY ベースの P&L 感覚で見るため、これが直感に合う。
+export const USD_DENOMINATED: ReadonlySet<string> = new Set([
+  'NK=F',  // CME 上場 USD 建て日経先物
+  'NQ=F',  // CME 上場 NASDAQ100 先物
+  'YM=F',  // CME 上場 Dow 先物
+  'ES=F',  // CME 上場 S&P500 先物
+  'CL=F',  // NYMEX 上場 WTI 原油
+]);
+// 換算しない銘柄: JPY=X (それ自体がレート), ^VIX / ^TNX (無次元), *.T (元から JPY)
+
 export const NEWS_MAX_ITEMS = 200;                        // 4時間ぶん保持できるよう拡大
 export const NEWS_RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;  // LLMに渡す上限 = 4時間
 export const NEWS_RECENCY_DECAY_MIN = 120;                // recency加点が0になる年齢 (分)

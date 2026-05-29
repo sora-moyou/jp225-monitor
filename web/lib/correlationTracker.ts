@@ -36,8 +36,10 @@ export interface LeaderChange {
 /** SSE で届いた全銘柄スナップショットを記録し、必要なら再評価して切替を返す */
 export function feedSnapshot(prices: Price[]): LeaderChange | null {
   const now = Date.now();
+  // USD 建ては JPY 換算値を使う。NK=F (JPY) と NQ=F/ES=F/YM=F/CL=F (USD→JPY 換算)
+  // の相関を「円ベース」で揃えるための処理。
   const map = new Map<string, number>();
-  for (const p of prices) map.set(p.symbol, p.price);
+  for (const p of prices) map.set(p.symbol, p.jpyPrice ?? p.price);
   snapshots.push({ t: now, prices: map });
 
   // 古いスナップショットを破棄
