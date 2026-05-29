@@ -1,4 +1,11 @@
 import { apiUrl } from '../lib/apiBase.js';
+import { getUpdateStatus, installUpdate } from '../lib/updater.js';
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c] as string));
+}
 
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
@@ -73,6 +80,9 @@ export interface SettingsElements {
   portWarning: HTMLElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
+  checkUpdateBtn: HTMLButtonElement;
+  updateResult: HTMLElement;
+  currentVersion: HTMLElement;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -98,9 +108,81 @@ export function initSettingsModal(el: SettingsElements): void {
     el.portWarning.classList.add('hidden');
   }
 
+  async function loadCurrentVersion() {
+    el.currentVersion.textContent = '…';
+    try {
+      const res = await fetch(apiUrl('/api/version'));
+      const data = await res.json() as { version: string };
+      el.currentVersion.textContent = `v${data.version}`;
+    } catch {
+      el.currentVersion.textContent = 'v?';
+    }
+  }
+
+  function renderUpdateResult(html: string, cls: '' | 'ok' | 'warn' | 'err') {
+    el.updateResult.className = `update-result${cls ? ' ' + cls : ''}`;
+    el.updateResult.innerHTML = html;
+  }
+
+  function wireInstallButton() {
+    const btn = el.updateResult.querySelector<HTMLButtonElement>('.update-now-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const label = el.updateResult.querySelector<HTMLElement>('.update-progress');
+      try {
+        await installUpdate((dl, total) => {
+          if (label) {
+            label.textContent = total && total > 0
+              ? `ダウンロード中… ${Math.round((dl / total) * 100)}%`
+              : 'ダウンロード中…';
+          }
+        });
+        // installUpdate 内で relaunch されるため通常ここには来ない。
+      } catch (err) {
+        renderUpdateResult(`❌ 更新失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`, 'err');
+      }
+    });
+  }
+
+  async function checkUpdate() {
+    el.checkUpdateBtn.disabled = true;
+    const originalText = el.checkUpdateBtn.textContent ?? '最新かチェック';
+    el.checkUpdateBtn.textContent = 'チェック中...';
+    renderUpdateResult('確認中...', '');
+    try {
+      const status = await getUpdateStatus();
+      const current = el.currentVersion.textContent ?? '';
+      if (status.state === 'latest') {
+        renderUpdateResult(`✅ 最新です (${escapeHtml(current)})`, 'ok');
+      } else if (status.state === 'available') {
+        const notes = status.info.notes
+          ? `<span class="update-notes">${escapeHtml(status.info.notes)}</span>` : '';
+        renderUpdateResult(
+          `🆙 新しいバージョン v${escapeHtml(status.info.version)} があります`
+          + `<button type="button" class="update-now-btn">更新</button>`
+          + `<span class="update-progress"></span>${notes}`,
+          'ok',
+        );
+        wireInstallButton();
+      } else if (status.state === 'unsupported') {
+        renderUpdateResult('⚠️ 開発モードのためチェックできません(パッケージ版でのみ動作)', 'warn');
+      } else {
+        renderUpdateResult(`❌ チェック失敗: ${escapeHtml(status.message)}`, 'err');
+      }
+    } finally {
+      el.checkUpdateBtn.disabled = false;
+      el.checkUpdateBtn.textContent = originalText;
+    }
+  }
+
+  el.checkUpdateBtn.addEventListener('click', () => { void checkUpdate(); });
+
   async function open() {
     el.modal.classList.remove('hidden');
     await refresh();
+    renderUpdateResult('', '');
+    void loadCurrentVersion();
     el.inputGemini.focus();
   }
   function close() {
