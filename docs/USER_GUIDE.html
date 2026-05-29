@@ -1008,8 +1008,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄を表示。5 分ごとに再評価され、その時々で最も連動性の高い指標がわかる。</p></div></div>
     <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。hover でカウントダウン表示。</p></div></div>
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
-    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。「日経225先物」は <code>NK=F</code> (CME 上場、USD 建て先物)。</p></div></div>
-    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD)。価格カードの「日経225先物」(<code>NK=F</code>) とは商品が違うが、どちらも日経 225 指数を参照するため <strong>値動きは同期</strong>。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
+    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。「日経225先物」は <code>NK=F</code> (CME 上場、USD 建て先物) — v0.3.1 以降は <strong>USD/JPY (JPY=X) を掛けて JPY 換算後の %</strong> を表示 (<span style="color:#f0c674;background:rgba(240,198,116,0.12);border:1px solid rgba(240,198,116,0.4);border-radius:3px;padding:0 4px;font-size:11px;font-weight:600">¥</span> バッジ付き)。アラート・相関も同じ JPY 基準。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て)。v0.3.1 以降、価格カードの「日経225先物」も JPY 換算後の % で表示するため、<strong>カードとチャートの % 変動は連動</strong>します (絶対値の数字は CFD vs 先物で異なる)。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
     <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p>急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で。🔄 で再生成、× で消去。</p></div></div>
     <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
     <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。現在の全銘柄価格 + 直近 15 件ニュースが LLM コンテキストに自動付与されるので、相場固有の質問もそのまま聞ける。</p></div></div>
@@ -1017,7 +1017,17 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="callout" style="margin-top: 28px;">
     <strong>💡 価格カード「日経225先物」とチャートの銘柄について</strong><br>
-    <strong>同じ日経 225 を別商品で見ているだけ</strong> です。価格カード <code>NK=F</code> は CME 上場の USD 建て先物、チャート <code>FOREXCOM:JP225</code> は FOREX.com の CFD。<strong>絶対値の表示数字は異なります</strong> (66,115 vs 66,084 など) が、<strong>%変動 / 上下のタイミングはほぼ完全に連動</strong> します。チャートで「動き始めた」と見えたら、価格カードでもほぼ同じ瞬間に色が変わります。
+    <strong>同じ日経 225 を別商品で見ているだけ</strong> です。価格カード <code>NK=F</code> は CME 上場の USD 建て先物、チャート <code>FOREXCOM:JP225</code> は FOREX.com の JPY 建て CFD。<strong>絶対値の表示数字は異なります</strong> (66,115 vs 66,084 など) が、v0.3.1 以降は <strong>NK=F の % を JPY 換算で表示する</strong> ため、% 変動・上下のタイミングは連動します。
+  </div>
+
+  <div class="callout warn" style="margin-top: 12px;">
+    <strong>🟡 ¥ バッジの意味 (v0.3.1+)</strong><br>
+    NK=F / NQ=F / YM=F / ES=F / CL=F は CME / NYMEX 上場の <strong>USD 建て</strong> 銘柄。日経 225 トレーダーの実 P&L 感覚は JPY なので、表示・アラート・相関すべて <strong>JPY=X (USD/JPY) を掛けて JPY 換算した値</strong> で行います。これにより:
+    <ul style="margin-top: 8px; margin-bottom: 0;">
+      <li>NK=F が USD で +0.30% でも、円安が +0.20% なら 表示は <strong>+0.50%</strong> (アラート閾値 0.30% を超える)</li>
+      <li>逆に NK=F が USD で +0.30% でも円高 −0.30% なら、JPY 換算は ±0% で <strong>アラート発火しない</strong></li>
+      <li>相関も全銘柄を JPY 軸で計算するため、為替ノイズが除去される</li>
+    </ul>
   </div>
 </section>
 
