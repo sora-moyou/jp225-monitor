@@ -342,6 +342,50 @@ main { padding: 0 24px; }
   border: 1px solid rgba(16, 185, 129, 0.6);
   box-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }
+.step-info {
+  border-color: var(--info);
+  box-shadow: 0 0 0 1px var(--info), 0 8px 24px rgba(6, 182, 212, 0.18);
+}
+.download-alert {
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.12), rgba(6, 182, 212, 0.04));
+  border: 1px solid rgba(6, 182, 212, 0.4);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.download-title {
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--info);
+  margin-bottom: 8px;
+  letter-spacing: 0.02em;
+}
+.download-body {
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0;
+}
+.download-steps {
+  margin: 10px 0 0 0;
+  padding-left: 24px;
+}
+.download-steps li {
+  font-size: 13.5px;
+  color: var(--text);
+  margin: 6px 0;
+  line-height: 1.55;
+}
+.file-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 12px;
+  color: var(--link);
+  white-space: nowrap;
+}
 .step h3 { font-size: 18px; margin-bottom: 8px; }
 .step p { color: var(--text-muted); font-size: 14.5px; }
 .step a { color: var(--link); font-weight: 600; }
@@ -722,13 +766,27 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 
   <div class="steps">
-    <div class="step">
+    <div class="step step-info">
       <div class="step-num">1</div>
       <h3>ダウンロード</h3>
-      <p>
-        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases</a> から
-        <code>JP225.Monitor_X.X.X_x64-setup.exe</code> をダウンロード。
+      <p style="margin-bottom: 14px;">
+        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a> を開きます。
       </p>
+      <div class="download-alert">
+        <div class="download-title">
+          📥 Releases ページの見方
+        </div>
+        <p class="download-body">
+          ページを開いただけでは <code>.exe</code> は見えません。<strong>下にスクロール</strong> して <strong>Assets</strong> セクションを探してください。
+        </p>
+        <ol class="download-steps">
+          <li>リリース説明の下、▶ <strong>Assets</strong> という折り畳みを <strong>クリックして展開</strong></li>
+          <li>4 つのファイルが表示されるので、その中の <span class="file-pill">📦 JP225.Monitor_X.X.X_x64-setup.exe</span> をクリック</li>
+        </ol>
+        <p class="download-body" style="margin-top: 10px; font-size: 12.5px; color: var(--text-faint);">
+          ※ <code>.sig</code> や <code>latest.json</code> はアプリ側が自動更新で使うもので、利用者は触る必要はありません。
+        </p>
+      </div>
     </div>
     <div class="step step-emph">
       <div class="step-num">2</div>
