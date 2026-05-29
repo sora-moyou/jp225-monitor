@@ -12,7 +12,7 @@ import { initSettingsModal } from './components/settingsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
-import { feedSnapshot, getLeader, getTopCorrelations, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
+import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader } from './lib/correlationClient.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
@@ -123,9 +123,10 @@ const enableSoundBtn = document.getElementById('enable-sound') as HTMLButtonElem
 const leaderInfoEl = document.getElementById('leader-info')!;
 
 function updateLeaderInfo() {
-  const top = getTopCorrelations(3);
+  const top = getCorrelationTop(3);
+  const anchor = getAnchorSymbol();
   if (top.length === 0) {
-    leaderInfoEl.innerHTML = `相関 (vs ${labelOf(ANCHOR_SYMBOL as never)}): <span style="opacity:0.6">暖機中</span>`;
+    leaderInfoEl.innerHTML = `相関 (vs ${labelOf(anchor as never)}): <span style="opacity:0.6">取得中 / 市場休場の可能性</span>`;
     return;
   }
   const parts = top.map((r, i) => {
@@ -133,9 +134,10 @@ function updateLeaderInfo() {
     const v = r.absCorr.toFixed(2);
     return i === 0 ? `<strong>${label} ${v}</strong>` : `${label} ${v}`;
   });
-  leaderInfoEl.innerHTML = `相関 (vs ${labelOf(ANCHOR_SYMBOL as never)}): ${parts.join(' / ')}`;
+  leaderInfoEl.innerHTML = `相関 (vs ${labelOf(anchor as never)}): ${parts.join(' / ')}`;
 }
 updateLeaderInfo();
+startCorrelationPolling(updateLeaderInfo);
 
 setInterval(() => {
   const d = new Date();
@@ -200,16 +202,7 @@ function setStatus(status: 'connecting' | 'online' | 'offline') {
 connectStream({
   onStatusChange: setStatus,
   onPrices: (prices) => {
-    const change = feedSnapshot(prices);
-    if (change) {
-      console.log(`[correlation] leader ${change.prevLeader} → ${change.newLeader} (|r|=${change.absCorrelation.toFixed(2)})`);
-      updateLeaderInfo();
-    }
-    const leader = getLeader();
-    const displayed = new Set([ANCHOR_SYMBOL, leader]);
-    // 起動5分後の初回再評価でも更新（changeが返らない場合に備えて軽くポーリング表示）
-    if (!change && (Date.now() % 30000) < 2100) updateLeaderInfo();
-
+    const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
     renderPriceGrid(priceGridEl, prices, displayed);
 
     for (const p of prices) {
