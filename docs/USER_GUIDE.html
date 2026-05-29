@@ -761,7 +761,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <a href="#quickstart">セットアップ</a>
       <a href="#tour">画面ツアー</a>
       <a href="#features">機能</a>
-      <a href="#jpy-basis">JPY 換算</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/sora-moyou/jp225-monitor">GitHub ↗</a>
     </nav>
@@ -772,12 +771,12 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.3</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.10</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         JP225 (日経 225) の価格変動をリアルタイムで監視。
-        30 秒・5 分の急変動を検知すると、4 時間分のニュースから AI が動いた要因を推定して提示します。
-        USD 建て銘柄は <strong>JPY=X (USD/JPY) で円換算</strong> した % でアラート・相関を計算 — 日経トレーダーの実 P&L 感覚に直結。
+        30 秒・5 分の急変動を検知すると、直近ニュースから AI が動いた要因を推定して提示します。
+        v0.3.9 でニュース選別を急変時刻 ±15 分の近接優先に強化、的外れな材料の引用を抑制。
       </p>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
@@ -1002,26 +1001,16 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄を表示。5 分ごとに再評価され、その時々で最も連動性の高い指標がわかる。</p></div></div>
     <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。hover でカウントダウン表示。</p></div></div>
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
-    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。「日経225先物」は <code>NK=F</code> (CME 上場、USD 建て先物) — v0.3.1 以降は <strong>USD/JPY (JPY=X) を掛けて JPY 換算後の %</strong> を表示 (<span style="color:#f0c674;background:rgba(240,198,116,0.12);border:1px solid rgba(240,198,116,0.4);border-radius:3px;padding:0 4px;font-size:11px;font-weight:600">¥</span> バッジ付き)。アラート・相関も同じ JPY 基準。</p></div></div>
-    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て)。v0.3.1 以降、価格カードの「日経225先物」も JPY 換算後の % で表示するため、<strong>カードとチャートの % 変動は連動</strong>します (絶対値の数字は CFD vs 先物で異なる)。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
+    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。「日経225先物」は <code>NIY=F</code> (CME 上場の JPY 建て日経 225 先物、価格は ~66,000 円台)。v0.3.8 以前は <code>NK=F</code> を使っていたが、これは Yahoo 側で 2020 年に更新停止した古い ALTSYMBOL だったため切替。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て)。価格カードの「日経225先物」(<code>NIY=F</code>) と <strong>同じ日経 225 指数を別商品で表示しているだけ</strong> なので、絶対値も % 変動もほぼ一致します (差は売買スプレッド・取引時間帯のみ)。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
     <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p>急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で。🔄 で再生成、× で消去。</p></div></div>
     <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
     <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。現在の全銘柄価格 + 直近 15 件ニュースが LLM コンテキストに自動付与されるので、相場固有の質問もそのまま聞ける。</p></div></div>
   </div>
 
   <div class="callout" style="margin-top: 28px;">
-    <strong>💡 価格カード「日経225先物」とチャートの銘柄について</strong><br>
-    <strong>同じ日経 225 を別商品で見ているだけ</strong> です。価格カード <code>NK=F</code> は CME 上場の USD 建て先物、チャート <code>FOREXCOM:JP225</code> は FOREX.com の JPY 建て CFD。<strong>絶対値の表示数字は異なります</strong> (66,115 vs 66,084 など) が、v0.3.1 以降は <strong>NK=F の % を JPY 換算で表示する</strong> ため、% 変動・上下のタイミングは連動します。
-  </div>
-
-  <div class="callout warn" style="margin-top: 12px;">
-    <strong>🟡 ¥ バッジの意味 (v0.3.1+)</strong><br>
-    NK=F / NQ=F / YM=F / ES=F / CL=F は CME / NYMEX 上場の <strong>USD 建て</strong> 銘柄。日経 225 トレーダーの実 P&L 感覚は JPY なので、表示・アラート・相関すべて <strong>JPY=X (USD/JPY) を掛けて JPY 換算した値</strong> で行います。これにより:
-    <ul style="margin-top: 8px; margin-bottom: 0;">
-      <li>NK=F が USD で +0.30% でも、円安が +0.20% なら 表示は <strong>+0.50%</strong> (アラート閾値 0.30% を超える)</li>
-      <li>逆に NK=F が USD で +0.30% でも円高 −0.30% なら、JPY 換算は ±0% で <strong>アラート発火しない</strong></li>
-      <li>相関も全銘柄を JPY 軸で計算するため、為替ノイズが除去される</li>
-    </ul>
+    <strong>💡 価格カード「日経225先物」とチャート銘柄の関係</strong><br>
+    どちらも <strong>同じ日経 225 指数</strong> を見ています。価格カード <code>NIY=F</code> (CME JPY 建て日経 225 先物) とチャート <code>FOREXCOM:JP225</code> (FOREX.com の JPY 建て Japan 225 CFD) は商品種別こそ違いますが、参照指数は同一・通貨も同じ JPY なので、表示数字も % 変動もほぼ一致します。
   </div>
 </section>
 
@@ -1040,8 +1029,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
-      <h3>JPY 基準アラート (v0.3.x)</h3>
-      <p>NK=F 等 USD 建て銘柄は <code>JPY=X</code> で <strong>円換算した値で % を計算</strong>。アラート閾値・相関も同じ JPY 軸で揃え、為替ノイズを排除。</p>
+      <h3>ニュース選別の質 (v0.3.9)</h3>
+      <p>金融関連性判定をタイトル+本文ハイブリッドに、LLM へ渡すニュースは急変時刻 ±15 分 → ±60 分 → 4 時間の段階フォールバックで近接優先。的外れな材料引用を抑制。</p>
       <span class="tag">trader-focused</span>
     </div>
     <div class="feature">
@@ -1081,92 +1070,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <p>polling 間隔 (price 2s / news 60s) と sidecar port を設定モーダルから可変。範囲外は 400 で reject。</p>
     </div>
   </div>
-</section>
-
-<!-- ─── JPY-basis ─── -->
-<section class="section" id="jpy-basis">
-  <div class="section-head">
-    <span class="section-eyebrow">v0.3.x の中核設計</span>
-    <h2>JPY 基準で見る</h2>
-    <p>日経トレーダーの実 P&L 感覚に直結する円ベース計算を、価格表示・アラート・相関すべてで一貫させる。</p>
-  </div>
-
-  <div class="callout warn" style="margin-top: 4px;">
-    <strong>🟡 ¥ バッジが付いている銘柄</strong> = USD 建て (CME / NYMEX 上場) を <strong>JPY=X (USD/JPY) で円換算した値</strong> で表示・計算。
-  </div>
-
-  <div style="margin-top: 28px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px 28px;">
-    <h3 style="font-size: 18px; margin-bottom: 14px;">なぜ JPY 換算が必要か</h3>
-    <p style="color: var(--text-muted); margin-bottom: 16px;">
-      NK=F は CME 上場の <strong>USD 建て</strong> 日経 225 先物。Yahoo が返す生 % は USD 軸なので、USD/JPY 変動が値動きに含まれます。日経の上昇でも円安なら % が膨らみ、日経の動きが小さくても円高なら反対側に振れる — <strong>アラート閾値 (例 0.30%) の判定が為替に支配される</strong> ため、日経トレーダーの直感と一致しません。
-    </p>
-    <p style="color: var(--text-muted); margin-bottom: 20px;">
-      解決策: 全 USD 建て銘柄を <code>JPY=X</code> 掛け算で JPY 等価に変換 → 価格表示・%・アラート閾値・相関 すべて JPY 軸で計算。
-    </p>
-
-    <h3 style="font-size: 18px; margin: 24px 0 12px;">具体例</h3>
-    <table class="ref-table">
-      <thead>
-        <tr>
-          <th>シナリオ</th>
-          <th>NK=F (USD%)</th>
-          <th>JPY=X (USD/JPY%)</th>
-          <th>JPY 換算 %</th>
-          <th>判定 (閾値 0.30%)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>日経上昇 + 円安</td>
-          <td>+0.30%</td>
-          <td>+0.20%</td>
-          <td>+0.50%</td>
-          <td style="color: var(--up); font-weight: 700;">✅ 発火</td>
-        </tr>
-        <tr>
-          <td>日経上昇 + 円高</td>
-          <td>+0.30%</td>
-          <td>-0.30%</td>
-          <td>±0.00%</td>
-          <td style="color: var(--text-faint);">— 発火しない</td>
-        </tr>
-        <tr>
-          <td>日経横ばい + 円安</td>
-          <td>+0.05%</td>
-          <td>+0.40%</td>
-          <td>+0.45%</td>
-          <td style="color: var(--up); font-weight: 700;">✅ 発火</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3 style="font-size: 18px; margin: 36px 0 12px; text-align: center;">JPY 換算対象</h3>
-  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
-    <div style="background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;">
-      <div style="font-weight: 700;">NK=F <span class="dot-chip" style="margin-left: 8px;"><span class="dot yellow"></span>¥</span></div>
-      <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 4px;">CME 日経 225 USD 先物</p>
-    </div>
-    <div style="background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;">
-      <div style="font-weight: 700;">NQ=F <span class="dot-chip" style="margin-left: 8px;"><span class="dot yellow"></span>¥</span></div>
-      <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 4px;">CME NASDAQ100 先物</p>
-    </div>
-    <div style="background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;">
-      <div style="font-weight: 700;">YM=F <span class="dot-chip" style="margin-left: 8px;"><span class="dot yellow"></span>¥</span></div>
-      <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 4px;">CME Dow 先物</p>
-    </div>
-    <div style="background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;">
-      <div style="font-weight: 700;">ES=F <span class="dot-chip" style="margin-left: 8px;"><span class="dot yellow"></span>¥</span></div>
-      <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 4px;">CME S&P500 先物</p>
-    </div>
-    <div style="background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;">
-      <div style="font-weight: 700;">CL=F <span class="dot-chip" style="margin-left: 8px;"><span class="dot yellow"></span>¥</span></div>
-      <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 4px;">NYMEX WTI 原油</p>
-    </div>
-  </div>
-  <p style="color: var(--text-faint); font-size: 13px; margin-top: 16px; text-align: center;">
-    対象外: <code>JPY=X</code> (それ自体がレート), <code>^VIX</code> / <code>^TNX</code> (無次元), 値がさ株 <code>*.T</code> (元から JPY)
-  </p>
 </section>
 
 <!-- ─── API status dots ─── -->
@@ -1267,7 +1170,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <details>
       <summary>Y (Yahoo) が黄色のまま</summary>
       <div class="faq-body">
-        Yahoo Finance に拒否されている状態 (短時間に多数アクセスで 429)。価格データは Investing.com フォールバックが代替しているので <strong>画面の価格は引き続き更新</strong> されます。5 分で自動的に Yahoo を再試行。
+        Yahoo Finance に拒否されている状態 (短時間に多数アクセスで 429)。価格データは Investing.com フォールバックが代替しているので <strong>画面の価格は引き続き更新</strong> されます。90s → 3min → 5min の段階で自動的に Yahoo を再試行。
+        <p style="margin-top: 8px;">v0.3.7〜v0.3.9 では 1 tick あたり Yahoo を 2 回呼んでいた残骸コードのせいで黄色から戻らない不具合が出ていました。<strong>v0.3.10 で単一バルク呼び出しに統合済み</strong> — 黄色固定はもう起きません。</p>
       </div>
     </details>
 
@@ -1333,17 +1237,18 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </details>
 
     <details>
-      <summary>NK=F の表示数字が大きいんですが (~1 千万円台)</summary>
+      <summary>日経 225 先物の表示価格が想定と違う</summary>
       <div class="faq-body">
-        正常です。v0.3.2 以降、NK=F (CME 上場 USD 建て先物) は <code>JPY=X</code> を掛けて <strong>JPY 等価表示</strong> しています。例: USD 価格 66,115 × USDJPY 150 = <strong>9,917,250 円</strong>。¥ バッジが付いていればこの表示モードです。
-        <p style="margin-top: 8px;">CME 先物の契約サイズ ($5 × index) を考えると、これがおよそ 1 枚あたりの円建て契約価値に近い値。トレーダーが普段見る「日経指数 ~ 40,000」を見たい場合は別シンボル (<code>^N225</code> 等) を <code>server/config.ts</code> に追加する必要があります。</p>
+        v0.3.10 以降は <code>NIY=F</code> (CME JPY 建て日経 225 先物) を使用しており、日経指数そのままの ~66,000 円台が表示されます。
+        <p style="margin-top: 8px;">v0.3.7 以前は <code>NK=F</code> を JPY 換算した ~1 千万円台が出ていましたが、これは Yahoo の <code>NK=F</code> が 2020 年に更新停止した古い ALTSYMBOL であり、JPY 換算自体も数学的に不要だったことが判明したため、v0.3.8 で銘柄切替・換算機構撤去を実施しました。</p>
       </div>
     </details>
 
     <details>
       <summary>カードの価格はチャートと数字が違うんですが</summary>
       <div class="faq-body">
-        正常です。チャートは <code>FOREXCOM:JP225</code> (JPY 建て CFD)、価格カードの「日経225先物」は <code>NK=F</code> (CME USD 建て先物 × USD/JPY)。<strong>商品が違うので絶対値は別ですが、% 変動はほぼ同期</strong> します (チャート JPY = JPY カード)。
+        v0.3.10 以降は <strong>ほぼ一致</strong> します。価格カードの「日経225先物」(<code>NIY=F</code>) もチャート (<code>FOREXCOM:JP225</code>) も同じ日経 225 指数を JPY で表示しているため、差は売買スプレッド・取引時間帯の鮮度程度です。
+        <p style="margin-top: 8px;">v0.3.7 以前のバージョンを使っている場合は古い NK=F × USD/JPY 換算値 (~1 千万円台) になっているので、最新版にアップデートしてください。</p>
       </div>
     </details>
   </div>
@@ -1361,7 +1266,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <details>
       <summary>監視している銘柄一覧 (実装ベース、全 13 銘柄)</summary>
       <div class="ref-body">
-        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄、main カテゴリ)</strong> — 値段はカード表示 + アラート対象。¥ = JPY 換算 (v0.3.x)</p>
+        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄、main カテゴリ)</strong> — 値段はカード表示 + アラート対象。</p>
         <table class="ref-table">
           <thead>
             <tr>
@@ -1374,18 +1279,18 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
             </tr>
           </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NK=F</code></td><td>USD<span class="dot-chip" style="margin-left: 6px; padding: 1px 4px;"><span class="dot yellow"></span></span></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD<span class="dot-chip" style="margin-left: 6px; padding: 1px 4px;"><span class="dot yellow"></span></span></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD<span class="dot-chip" style="margin-left: 6px; padding: 1px 4px;"><span class="dot yellow"></span></span></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
-            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD<span class="dot-chip" style="margin-left: 6px; padding: 1px 4px;"><span class="dot yellow"></span></span></td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
+            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>%</td><td>0.30%</td><td>0.10%</td></tr>
             <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>%</td><td>0.20%</td><td>0.07%</td></tr>
-            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD<span class="dot-chip" style="margin-left: 6px; padding: 1px 4px;"><span class="dot yellow"></span></span></td><td>%</td><td>0.50%</td><td>0.20%</td></tr>
+            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>%</td><td>0.50%</td><td>0.20%</td></tr>
             <tr><td>VIX</td><td><code>^VIX</code></td><td>—</td><td>%</td><td>5.00%</td><td>2.00%</td></tr>
             <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>bp</td><td>2.00 bp</td><td>1.00 bp</td></tr>
           </tbody>
         </table>
         <p style="margin-top: 10px; color: var(--text-faint); font-size: 13px;">
-          凡例: <span class="dot-chip" style="padding: 1px 4px;"><span class="dot yellow"></span></span> = JPY=X で円換算した値を表示・計算 (¥ バッジ付き)。USD 列の銘柄は v0.3.x 以降すべて自動変換。
+          v0.3.8 で日経銘柄を <code>NK=F</code> (Yahoo の古い ALTSYMBOL、2020 年で更新停止) から <code>NIY=F</code> (CME 上場 JPY 建て日経 225 先物) に切替。USD 建て銘柄 (NQ/YM/ES/CL) は USD のまま表示します。
         </p>
 
         <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視のみ (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示、アラートだけ通知。日経 225 への寄与度が高い東証値がさ株</p>
