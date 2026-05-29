@@ -402,6 +402,40 @@ main { padding: 0 24px; }
   box-shadow: var(--shadow-lg);
 }
 .shot-wrap img { display: block; width: 100%; border-radius: var(--radius-sm); }
+
+/* ─── Numbered pins overlaid on screenshots ─── */
+.ann-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: var(--up);
+  color: var(--bg-0);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  border: 2px solid white;
+  box-shadow:
+    0 0 0 3px rgba(16, 185, 129, 0.35),
+    0 4px 12px rgba(0,0,0,0.7);
+  pointer-events: none;
+  z-index: 5;
+  animation: pin-pulse 2.4s ease-in-out infinite;
+}
+.ann-pin:nth-child(2) { animation-delay: 0.2s; }
+.ann-pin:nth-child(3) { animation-delay: 0.4s; }
+.ann-pin:nth-child(4) { animation-delay: 0.6s; }
+.ann-pin:nth-child(5) { animation-delay: 0.8s; }
+.ann-pin:nth-child(6) { animation-delay: 1.0s; }
+.ann-pin:nth-child(7) { animation-delay: 1.2s; }
+.ann-pin:nth-child(8) { animation-delay: 1.4s; }
+@keyframes pin-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35), 0 4px 12px rgba(0,0,0,0.7); }
+  50%      { box-shadow: 0 0 0 7px rgba(16, 185, 129, 0.18), 0 4px 12px rgba(0,0,0,0.7); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ann-pin { animation: none; }
+}
 .annotations {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 16px; margin-top: 24px;
@@ -959,6 +993,13 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="shot-wrap">
     <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/main-dashboard.png" alt="メインダッシュボード">
+    <span class="ann-pin" style="top: 6.3%;  left: 64%;">1</span>
+    <span class="ann-pin" style="top: 6.3%;  left: 83%;">2</span>
+    <span class="ann-pin" style="top: 6.3%;  left: 96.5%;">3</span>
+    <span class="ann-pin" style="top: 14%;   left: 14%;">4</span>
+    <span class="ann-pin" style="top: 42%;   left: 18%;">5</span>
+    <span class="ann-pin" style="top: 12%;   left: 38%;">6</span>
+    <span class="ann-pin" style="top: 40%;   left: 38%;">7</span>
   </div>
 
   <div class="annotations">
