@@ -407,17 +407,17 @@ main { padding: 0 24px; }
 .ann-pin {
   position: absolute;
   transform: translate(-50%, -50%);
-  width: 30px; height: 30px;
+  width: 22px; height: 22px;
   border-radius: 50%;
   background: var(--up);
   color: var(--bg-0);
   display: inline-flex; align-items: center; justify-content: center;
-  font-weight: 900; font-size: 14px;
+  font-weight: 900; font-size: 11px;
   font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  border: 2px solid white;
+  border: 1.5px solid white;
   box-shadow:
-    0 0 0 3px rgba(16, 185, 129, 0.35),
-    0 4px 12px rgba(0,0,0,0.7);
+    0 0 0 2px rgba(16, 185, 129, 0.4),
+    0 2px 8px rgba(0,0,0,0.7);
   pointer-events: none;
   z-index: 5;
   animation: pin-pulse 2.4s ease-in-out infinite;
@@ -429,9 +429,10 @@ main { padding: 0 24px; }
 .ann-pin:nth-child(6) { animation-delay: 1.0s; }
 .ann-pin:nth-child(7) { animation-delay: 1.2s; }
 .ann-pin:nth-child(8) { animation-delay: 1.4s; }
+.ann-pin:nth-child(9) { animation-delay: 1.6s; }
 @keyframes pin-pulse {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35), 0 4px 12px rgba(0,0,0,0.7); }
-  50%      { box-shadow: 0 0 0 7px rgba(16, 185, 129, 0.18), 0 4px 12px rgba(0,0,0,0.7); }
+  0%, 100% { box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.4), 0 2px 8px rgba(0,0,0,0.7); }
+  50%      { box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.2), 0 2px 8px rgba(0,0,0,0.7); }
 }
 @media (prefers-reduced-motion: reduce) {
   .ann-pin { animation: none; }
@@ -993,23 +994,25 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="shot-wrap">
     <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/main-dashboard.png" alt="メインダッシュボード">
-    <span class="ann-pin" style="top: 6.3%;  left: 64%;">1</span>
-    <span class="ann-pin" style="top: 6.3%;  left: 83%;">2</span>
-    <span class="ann-pin" style="top: 6.3%;  left: 96.5%;">3</span>
-    <span class="ann-pin" style="top: 14%;   left: 14%;">4</span>
-    <span class="ann-pin" style="top: 42%;   left: 18%;">5</span>
-    <span class="ann-pin" style="top: 12%;   left: 38%;">6</span>
-    <span class="ann-pin" style="top: 40%;   left: 38%;">7</span>
+    <span class="ann-pin" style="top: 6.5%;  left: 74.5%;">1</span>
+    <span class="ann-pin" style="top: 6.5%;  left: 86%;">2</span>
+    <span class="ann-pin" style="top: 6.5%;  left: 96.5%;">3</span>
+    <span class="ann-pin" style="top: 11.5%; left: 17%;">4</span>
+    <span class="ann-pin" style="top: 43%;   left: 17%;">5</span>
+    <span class="ann-pin" style="top: 11%;   left: 38%;">6</span>
+    <span class="ann-pin" style="top: 42%;   left: 38%;">7</span>
+    <span class="ann-pin" style="top: 92%;   left: 17%;">8</span>
   </div>
 
   <div class="annotations">
-    <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄。5 分ごと再評価。</p></div></div>
-    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。</p></div></div>
-    <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。</p></div></div>
-    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新。緑=上昇 / 赤=下落。</p></div></div>
-    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>NK225 のローソク足。時間軸・指標を切替可能。</p></div></div>
-    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p>急変動を検知 → 30 秒以内に AI が要因を 1〜2 文で。</p></div></div>
-    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを集約。英語見出しは [訳] で日本語化。</p></div></div>
+    <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄を表示。5 分ごとに再評価され、その時々で最も連動性の高い指標がわかる。</p></div></div>
+    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。hover でカウントダウン表示。</p></div></div>
+    <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
+    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>NK225 (FOREXCOM:JP225) のローソク足。時間軸・指標を切替可能。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p>急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で。🔄 で再生成、× で消去。</p></div></div>
+    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
+    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。現在の全銘柄価格 + 直近 15 件ニュースが LLM コンテキストに自動付与されるので、相場固有の質問もそのまま聞ける。</p></div></div>
   </div>
 </section>
 
