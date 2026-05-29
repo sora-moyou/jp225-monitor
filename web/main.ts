@@ -1,5 +1,4 @@
 import { INSTRUMENTS } from '../server/config.js';
-import { ChangeDetector } from './lib/changeDetector.js';
 import { connectStream } from './lib/stream.js';
 import { fetchExplanation } from './lib/api.js';
 import { renderPriceGrid, flashCard } from './components/priceGrid.js';
@@ -17,7 +16,7 @@ import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
 
-const detector = new ChangeDetector(INSTRUMENTS);
+// v0.3.17: アラート検知はサーバ側 (alertLoop + tickDetector) に移管。クライアントは SSE で受信のみ。
 
 // TradingView チャートをマウント（非同期、失敗してもUIは継続）
 void mountChart('tradingview-chart');
@@ -206,19 +205,12 @@ connectStream({
   onPrices: (prices) => {
     const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
     renderPriceGrid(priceGridEl, prices, displayed);
-
-    for (const p of prices) {
-      const alerts = detector.feed(p);
-      const meta = INSTRUMENTS.find(i => i.symbol === p.symbol);
-      const isHeavyweight = meta?.category === 'heavyweight';
-      if (!displayed.has(p.symbol) && !isHeavyweight) continue;
-      for (const alert of alerts) {
-        flashCard(priceGridEl, alert);
-        alertBeep(alert.direction);
-        const banner = addBanner(bannerEl, alert);
-        scheduleExplanation(alert, banner);
-      }
-    }
+  },
+  onAlert: (alert) => {
+    flashCard(priceGridEl, alert);
+    alertBeep(alert.direction);
+    const banner = addBanner(bannerEl, alert);
+    scheduleExplanation(alert, banner);
   },
   onNews: (news) => renderNews(newsListEl, news),
 });

@@ -1,9 +1,10 @@
-import type { Price, NewsItem } from '../types.js';
+import type { Price, NewsItem, AlertEvent } from '../types.js';
 import { apiUrl } from './apiBase.js';
 
 interface StreamHandlers {
   onPrices: (prices: Price[]) => void;
   onNews: (news: NewsItem[]) => void;
+  onAlert: (alert: AlertEvent) => void;
   onStatusChange: (status: 'connecting' | 'online' | 'offline') => void;
 }
 
@@ -26,6 +27,11 @@ export function connectStream(handlers: StreamHandlers): () => void {
     es.addEventListener('news', (e) => {
       try { handlers.onNews(JSON.parse((e as MessageEvent).data)); }
       catch (err) { console.error('parse news', err); }
+    });
+
+    es.addEventListener('alert', (e) => {
+      try { handlers.onAlert(JSON.parse((e as MessageEvent).data)); }
+      catch (err) { console.error('parse alert', err); }
     });
 
     es.addEventListener('error', () => {

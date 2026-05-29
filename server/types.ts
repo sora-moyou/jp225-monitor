@@ -30,6 +30,22 @@ export interface InstrumentMeta {
   category?: 'main' | 'heavyweight';   // 値がさ株は 'heavyweight'
 }
 
+// AlertEvent shape kept in sync with server/alertDetector.ts (re-declared here to avoid client→alertDetector import)
+export interface AlertEventPayload {
+  symbol: string;
+  symbolLabel: string;
+  changePercent: number;
+  windowSeconds: number;
+  detectionKind: 'slope' | 'magnitude';
+  direction: 'up' | 'down';
+  triggeredAt: number;
+  change15min: number | null;
+  pa15min: { open: number; high: number; low: number; current: number } | null;
+  range1h: { high: number; low: number } | null;
+  zscore: number;
+}
+
 export type SSEEvent =
   | { type: 'prices'; payload: Price[] }
-  | { type: 'news'; payload: NewsItem[] };
+  | { type: 'news'; payload: NewsItem[] }
+  | { type: 'alert'; payload: AlertEventPayload };

@@ -5,6 +5,7 @@ import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
 import type { Price } from '../types.js';
+import { feedPrice as tickDetectorFeed } from '../tickDetector.js';
 
 // Yahoo Finance 失敗時のスキップ期間。連続失敗で長くなる:
 //   1 回目失敗 → 90 秒
@@ -65,6 +66,7 @@ async function tick(): Promise<number> {
     const merged = mergeWithCached(prices);
     setPrices(merged);
     broadcast({ type: 'prices', payload: merged });
+    tickDetectorFeed(merged);   // v0.3.17: 超短期 (5s/10s) フラッシュ検知
     backoffIndex = -1;
     return intervalMs;
   } catch (err) {

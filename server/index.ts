@@ -15,6 +15,7 @@ import { correlationHandler } from './routes/correlation.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
+import { startAlertLoop } from './loops/alertLoop.js';
 import { isLLMEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults } from './configStore.js';
 
@@ -76,6 +77,7 @@ const server = app.listen(PORT, () => {
   startPriceLoop();
   startNewsLoop();
   startCorrelationLoop();
+  startAlertLoop();
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
