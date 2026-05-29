@@ -774,9 +774,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <span class="badge">● Windows 10 / 11 · 無料 · v0.3.19</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
-        JP225 (日経 225) の価格変動をリアルタイムで監視。
-        v0.3.17 以降は <strong>適応 z-score</strong> で急変動を検知 — 過去 60 分のボラティリティを基準に「いまの相場として異常か」を判定するので、固定 % 閾値より体感に近い感度になります。
-        日経 225 (NIY=F) には追加で <strong>5〜10 秒の超短期フラッシュ検知</strong> を装備、ニュース反応など瞬時の急変もキャッチ。<strong>アラートを出すのは日経 225 先物のみ</strong> — 他資産やニュースは AI 説明の判断材料に回します。
+        JP225 (日経 225のCFD) の価格変動をリアルタイムで監視。過去 60 分のボラティリティを基準に「いまの相場として異常か」を判定。
+        その後 AI が、急変の原因をニュースや他銘柄から考えて、説明します。
       </p>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
