@@ -10,22 +10,56 @@ import type { Price } from '../types.js';
 // JPY=X の取得が一瞬抜けた tick でも、直近の有効レートをキャッシュしておき
 // USD 銘柄には常に jpyPrice を付ける。これでバッファに USD/JPY が混ざらない。
 // jpyChangePercent ≈ USD% + JPY=X% (1次近似、小幅変動では十分な精度)。
+
+// USD/JPY が現実的に取り得る範囲。これ以外なら data 異常 → キャッシュ更新せず無視。
+// 過去 30 年で 75–160 の範囲。300 は災害シナリオ含めて十分広い。
+const JPY_RATE_MIN = 50;
+const JPY_RATE_MAX = 300;
+
+// JPY=X の changePercent (前日比) の許容範囲。±20% を超えるのはどう考えても異常。
+const JPY_CHANGE_MAX = 20;
+
+// 換算後の JPY 価格として現実的に取り得る範囲。
+// 現状 NK=F (~66K USD × 150) ≈ 1000 万。最低 1000 円、最大 10 億で十分。
+const JPY_PRICE_MIN = 1_000;
+const JPY_PRICE_MAX = 1_000_000_000;
+
 let cachedJpyRate = 0;
 let cachedJpyChange = 0;
 
 function applyJpyConversion(prices: Price[]): Price[] {
   const jpyX = prices.find(p => p.symbol === 'JPY=X');
-  if (jpyX && Number.isFinite(jpyX.price) && jpyX.price > 0) {
-    cachedJpyRate = jpyX.price;
-    cachedJpyChange = jpyX.changePercent ?? 0;
+
+  // 1. JPY=X が現実的範囲内 (50–300) かを検証。異常値ならキャッシュ放置 (= 直前の有効値を流用)
+  if (jpyX && Number.isFinite(jpyX.price)) {
+    if (jpyX.price >= JPY_RATE_MIN && jpyX.price <= JPY_RATE_MAX) {
+      cachedJpyRate = jpyX.price;
+      // changePercent も sanity check。データ異常で大きく振れたら 0 にしてスキップ
+      const chg = jpyX.changePercent ?? 0;
+      cachedJpyChange = Math.abs(chg) <= JPY_CHANGE_MAX ? chg : 0;
+    } else {
+      console.warn(`[priceLoop] JPY=X out of sane range: ${jpyX.price}, keeping cached ${cachedJpyRate}`);
+    }
   }
+
   // まだ一度も有効な JPY=X を見ていない場合は変換しない (起動直後のみ)
   if (cachedJpyRate <= 0) return prices;
+
   return prices.map(p => {
     if (!USD_DENOMINATED.has(p.symbol)) return p;
+    if (!Number.isFinite(p.price) || p.price <= 0) return p;
+
+    const candidateJpy = p.price * cachedJpyRate;
+
+    // 2. 換算結果が現実的範囲かを検証。範囲外 → jpy* 付けず生 USD を返す (frontend は USD 表示にフォールバック)
+    if (!Number.isFinite(candidateJpy) || candidateJpy < JPY_PRICE_MIN || candidateJpy > JPY_PRICE_MAX) {
+      console.warn(`[priceLoop] ${p.symbol}: implausible jpyPrice ${candidateJpy} (= ${p.price} × ${cachedJpyRate}), falling back to raw USD this tick`);
+      return p;
+    }
+
     return {
       ...p,
-      jpyPrice: p.price * cachedJpyRate,
+      jpyPrice: candidateJpy,
       jpyChangePercent: p.changePercent + cachedJpyChange,
     };
   });
