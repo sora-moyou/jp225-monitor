@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { explain } from '../llm/openai.js';
 import { getNews } from '../cache.js';
+import { getSignificantMovers } from '../marketSnapshot.js';
 
 interface PriceActionBody {
   open: number; high: number; low: number; current: number;
@@ -38,6 +39,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       pa15min: body.pa15min ?? null,
       range1h: body.range1h ?? null,
       news: getNews(),
+      crossAsset: getSignificantMovers(body.symbol),
     });
     res.json({ explanation: text });
   } catch (err) {
