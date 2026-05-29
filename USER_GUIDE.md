@@ -101,6 +101,10 @@ https://github.com/sora-moyou/jp225-monitor/releases/latest
 
 ## 4. 画面の見方
 
+![JP225 Monitor ダッシュボード](./docs/screenshots/main-dashboard.png)
+
+▲ 起動直後のメイン画面。以下、レイアウトの全体像を ASCII 図で示します:
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │ JP225 Monitor v0.3.0  相関リーダー: NQ  時計  受信中 Y G Gr O 📋 ⚙️ │  ← トップバー
