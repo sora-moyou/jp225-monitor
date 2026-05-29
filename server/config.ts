@@ -58,6 +58,9 @@ export const PRICE_BACKOFF_MS = [5000, 10_000, 30_000, 60_000];
 export const NEWS_MAX_ITEMS = 200;                        // 4時間ぶん保持できるよう拡大
 export const NEWS_RECENT_WINDOW_MS = 4 * 60 * 60 * 1000;  // LLMに渡す上限 = 4時間
 export const NEWS_RECENCY_DECAY_MIN = 120;                // recency加点が0になる年齢 (分)
+// v0.3.9: explain() のニュース選別を急変近接優先に
+export const NEWS_PROXIMITY_TIGHT_MIN = 15;               // ±この分内のニュースがあれば最優先
+export const NEWS_PROXIMITY_LOOSE_MIN = 60;               // 次点フォールバック窓
 
 // ニュース取得時の関連性フィルタ用
 // 「これらのキーワードを1つも含まない」OR「明らかに非金融トピック」は破棄

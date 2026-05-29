@@ -3,6 +3,7 @@ import type { NewsItem, Price } from '../types.js';
 import {
   LLM_PROVIDERS, LLM_SYSTEM_PROMPT,
   NEWS_RECENT_WINDOW_MS, NEWS_RECENCY_DECAY_MIN,
+  NEWS_PROXIMITY_TIGHT_MIN, NEWS_PROXIMITY_LOOSE_MIN,
   INSTRUMENT_KEYWORDS, HIGH_IMPACT_KEYWORDS,
   INSTRUMENTS,
 } from '../config.js';
@@ -134,7 +135,7 @@ export interface ExplainInput {
   news: NewsItem[];
 }
 
-function scoreNews(news: NewsItem, keywords: string[], now: number): number {
+export function scoreNews(news: NewsItem, keywords: string[], now: number): number {
   const title = news.title.toLowerCase();
   let kwHits = 0;
   for (const kw of keywords) if (title.includes(kw.toLowerCase())) kwHits++;
@@ -145,11 +146,25 @@ function scoreNews(news: NewsItem, keywords: string[], now: number): number {
   return kwHits * 2 + highImpactHits * 6 + recency;
 }
 
-function rankAndFormatNews(input: ExplainInput, now: number): string {
+// 急変近接プール選別 (v0.3.9)
+// 4h 全体から拾うと「4h 前のキーワード豊富な記事 > 直近の正体不明短文」となり、的外れな引用が増える。
+// ±15min → ±60min → 4h の段階フォールバックで、急変直前の材料を最優先する。
+export function selectNewsPool(news: NewsItem[], now: number): NewsItem[] {
   const cutoff = now - NEWS_RECENT_WINDOW_MS;
-  const recent = input.news.filter(n => n.publishedAt >= cutoff);
+  const recent = news.filter(n => n.publishedAt >= cutoff);
+  const tightMs = NEWS_PROXIMITY_TIGHT_MIN * 60_000;
+  const looseMs = NEWS_PROXIMITY_LOOSE_MIN * 60_000;
+  const tight = recent.filter(n => now - n.publishedAt <= tightMs);
+  if (tight.length > 0) return tight;
+  const loose = recent.filter(n => now - n.publishedAt <= looseMs);
+  if (loose.length > 0) return loose;
+  return recent;
+}
+
+function rankAndFormatNews(input: ExplainInput, now: number): string {
+  const pool = selectNewsPool(input.news, now);
   const keywords = INSTRUMENT_KEYWORDS[input.symbol] ?? [];
-  const ranked = [...recent]
+  const ranked = [...pool]
     .map(n => ({ n, s: scoreNews(n, keywords, now) }))
     .sort((a, b) => b.s - a.s)
     .slice(0, 6)
