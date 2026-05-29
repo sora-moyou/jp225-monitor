@@ -1,16 +1,21 @@
-// 直近 WINDOW_MS の価格スナップショットから、ANCHOR (NK=F) との相関が最も
+// 直近 WINDOW_MS の価格スナップショットから、ANCHOR (NIY=F) との相関が最も
 // 高い銘柄を選び続ける。再評価は REEVAL_MS ごと。
 //
 // 起動直後で履歴が足りない間は INITIAL_LEADER を返す。
-// 値がさ株 (heavyweight) は NK の構成要素なので候補から除外。
+// 値がさ株 (heavyweight) は NIY の構成要素なので候補から除外。
+//
+// v0.3.11:
+//   - WINDOW を 4h → 60min に短縮 (「いま」の連動性を反映)
+//   - stale フラグ付き Price はスナップショットに格納しない (0 リターンノイズ除去)
+//   - pairedReturns で ANCHOR と候補のリターンを時刻同期 (アライメント保証)
+//   - getTopCorrelations(n) で Top-N を取得可能 (UI で併記表示)
 
 import type { Price } from '../types.js';
 import { INSTRUMENTS } from '../../server/config.js';
 
-const WINDOW_MS = 4 * 60 * 60 * 1000; // 4時間のスナップショットを保持
+const WINDOW_MS = 60 * 60 * 1000;     // 60分のスナップショットを保持
 const REEVAL_MS = 5 * 60 * 1000;      // 5分ごとに再評価
-const MIN_SAMPLES = 90;               // 最低90サンプル (=約3分相当) で再評価開始
-                                      // 履歴が増えるほど精度向上、最大で4時間ぶん使用
+const MIN_SAMPLES = 30;               // 最低30サンプル (=約1分相当) で再評価開始
 const ANCHOR: string = 'NIY=F';
 const INITIAL_LEADER = 'JPY=X';       // 履歴が足りない間の暫定リーダー
 
@@ -27,6 +32,9 @@ let currentLeader = INITIAL_LEADER;
 let lastCorrelation = 0;
 let lastReeval = 0;
 
+export interface RankedSymbol { symbol: string; absCorr: number; corr: number; }
+let lastRanked: RankedSymbol[] = [];
+
 export interface LeaderChange {
   prevLeader: string;
   newLeader: string;
@@ -37,7 +45,10 @@ export interface LeaderChange {
 export function feedSnapshot(prices: Price[]): LeaderChange | null {
   const now = Date.now();
   const map = new Map<string, number>();
-  for (const p of prices) map.set(p.symbol, p.price);
+  for (const p of prices) {
+    if (p.stale) continue;            // v0.3.11: stale は記録しない (0 ノイズ除去)
+    map.set(p.symbol, p.price);
+  }
   snapshots.push({ t: now, prices: map });
 
   // 古いスナップショットを破棄
@@ -52,46 +63,56 @@ export function feedSnapshot(prices: Price[]): LeaderChange | null {
 
 export function getLeader(): string { return currentLeader; }
 export function getLastCorrelation(): number { return lastCorrelation; }
+export function getTopCorrelations(n: number): RankedSymbol[] { return lastRanked.slice(0, n); }
 
 function reevaluate(now: number): LeaderChange | null {
   lastReeval = now;
 
-  // ANCHOR の return 列を作る
-  const anchorReturns = returnsFor(ANCHOR);
-  if (anchorReturns.length < MIN_SAMPLES - 1) return null;
-
-  // 候補銘柄ごとに相関を計算（値がさ株は除外）
-  let bestSym: string | null = null;
-  let bestAbs = -1;
+  const ranked: RankedSymbol[] = [];
   for (const sym of ELIGIBLE_CANDIDATES) {
-    const r = returnsFor(sym);
-    const minLen = Math.min(r.length, anchorReturns.length);
-    if (minLen < MIN_SAMPLES - 1) continue;
-    const corr = pearson(anchorReturns.slice(-minLen), r.slice(-minLen));
-    if (Math.abs(corr) > bestAbs) {
-      bestAbs = Math.abs(corr);
-      bestSym = sym;
-    }
+    const { a, b } = pairedReturns(ANCHOR, sym);
+    if (a.length < MIN_SAMPLES - 1) continue;
+    const corr = pearson(a, b);
+    ranked.push({ symbol: sym, absCorr: Math.abs(corr), corr });
   }
+  ranked.sort((x, y) => y.absCorr - x.absCorr);
+  lastRanked = ranked;
 
-  if (!bestSym) return null;
-  lastCorrelation = bestAbs;
-  if (bestSym === currentLeader) return null;
+  const best = ranked[0];
+  if (!best) return null;
+  lastCorrelation = best.absCorr;
+  if (best.symbol === currentLeader) return null;
   const prev = currentLeader;
-  currentLeader = bestSym;
-  return { prevLeader: prev, newLeader: bestSym, absCorrelation: bestAbs };
+  currentLeader = best.symbol;
+  return { prevLeader: prev, newLeader: best.symbol, absCorrelation: best.absCorr };
 }
 
-function returnsFor(symbol: string): number[] {
-  const out: number[] = [];
-  let prev: number | null = null;
+/**
+ * symA / symB のリターン列を時刻アライン取得。
+ * 片方が欠落 (stale) しているスナップショットでは両方の prev をリセット — リターンを生成しない。
+ * これにより両配列は同じ時刻範囲の同じインデックスでペアになり、ピアソンが正しく算出される。
+ */
+export function pairedReturns(symA: string, symB: string): { a: number[]; b: number[] } {
+  const a: number[] = [];
+  const b: number[] = [];
+  let prevA: number | null = null;
+  let prevB: number | null = null;
   for (const snap of snapshots) {
-    const v = snap.prices.get(symbol);
-    if (v === undefined) { prev = null; continue; }
-    if (prev !== null && prev !== 0) out.push((v - prev) / prev);
-    prev = v;
+    const va = snap.prices.get(symA);
+    const vb = snap.prices.get(symB);
+    if (va === undefined || vb === undefined) {
+      prevA = null;
+      prevB = null;
+      continue;
+    }
+    if (prevA !== null && prevB !== null && prevA !== 0 && prevB !== 0) {
+      a.push((va - prevA) / prevA);
+      b.push((vb - prevB) / prevB);
+    }
+    prevA = va;
+    prevB = vb;
   }
-  return out;
+  return { a, b };
 }
 
 function pearson(x: number[], y: number[]): number {
@@ -110,3 +131,20 @@ function pearson(x: number[], y: number[]): number {
 }
 
 export const ANCHOR_SYMBOL = ANCHOR;
+
+// テスト用 internal access (vitest のみ使用想定)
+export const _internals = {
+  reset(): void {
+    snapshots.length = 0;
+    currentLeader = INITIAL_LEADER;
+    lastCorrelation = 0;
+    lastReeval = 0;
+    lastRanked = [];
+  },
+  pushSnapshot(t: number, entries: Record<string, number | null>): void {
+    const m = new Map<string, number>();
+    for (const [sym, v] of Object.entries(entries)) if (v !== null) m.set(sym, v);
+    snapshots.push({ t, prices: m });
+  },
+  pairedReturns,
+};

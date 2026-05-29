@@ -12,7 +12,7 @@ import { initSettingsModal } from './components/settingsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
-import { feedSnapshot, getLeader, getLastCorrelation, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
+import { feedSnapshot, getLeader, getTopCorrelations, ANCHOR_SYMBOL } from './lib/correlationTracker.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
@@ -123,10 +123,17 @@ const enableSoundBtn = document.getElementById('enable-sound') as HTMLButtonElem
 const leaderInfoEl = document.getElementById('leader-info')!;
 
 function updateLeaderInfo() {
-  const leader = getLeader();
-  const corr = getLastCorrelation();
-  const corrText = corr > 0 ? ` (|r|=${corr.toFixed(2)})` : ' (暖機中)';
-  leaderInfoEl.innerHTML = `相関リーダー: <strong>${labelOf(leader as never)}</strong>${corrText}`;
+  const top = getTopCorrelations(3);
+  if (top.length === 0) {
+    leaderInfoEl.innerHTML = `相関 (vs ${labelOf(ANCHOR_SYMBOL as never)}): <span style="opacity:0.6">暖機中</span>`;
+    return;
+  }
+  const parts = top.map((r, i) => {
+    const label = labelOf(r.symbol as never);
+    const v = r.absCorr.toFixed(2);
+    return i === 0 ? `<strong>${label} ${v}</strong>` : `${label} ${v}`;
+  });
+  leaderInfoEl.innerHTML = `相関 (vs ${labelOf(ANCHOR_SYMBOL as never)}): ${parts.join(' / ')}`;
 }
 updateLeaderInfo();
 
