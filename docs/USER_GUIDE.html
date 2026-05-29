@@ -1278,7 +1278,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
             </tr>
           </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td>必須</td><td><strong>有 (k=5.0)</strong></td></tr>
+            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td>必須</td><td><strong>有 (絶対 0.15%)</strong></td></tr>
             <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
             <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
             <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>必須</td><td>—</td></tr>
@@ -1310,7 +1310,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         </table>
 
         <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
-          ※ v0.3.17 以降のアラート発火条件: <strong>(A) 1 分窓 burst</strong> = 直近 1 分 return の |z| > 2.5 (z = 値 / 過去 60 分 σ)、かつ直前 5 本が静寂、かつ横断確認パス (指数・FX のみ)。 <strong>(B) 5 分窓 trend</strong> = 5 分累積 return の |z| > 2.5。 <strong>(C) 5〜10 秒 tick</strong> (NIY=F 専用) = ランダムウォーク仮定でスケールした σ の 5 倍超で発火 (めったに発火しない設定)。
+          ※ v0.3.17 以降のアラート発火条件: <strong>(A) 1 分窓 burst</strong> = 直近 1 分 return の |z| > 2.5 (z = 値 / 過去 60 分 σ)、かつ直前 5 本が静寂、かつ横断確認パス (指数・FX のみ)。 <strong>(B) 5 分窓 trend</strong> = 5 分累積 return の |z| > 2.5。 <strong>(C) 5〜10 秒 tick</strong> (NIY=F 専用) = 5〜10 秒窓の絶対 |%変化| ≥ 0.15% で発火 (ボラ非依存・固定閾値、めったに発火しない設定)。
         </p>
       </div>
     </details>

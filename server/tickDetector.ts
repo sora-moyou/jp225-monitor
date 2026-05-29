@@ -1,33 +1,22 @@
 import type { Price } from './types.js';
-import { returns, stdDev, computeContext, type AlertEvent } from './alertDetector.js';
+import { computeContext, type AlertEvent } from './alertDetector.js';
 import { getCachedBars } from './loops/alertLoop.js';
 import { broadcast } from './sse/broker.js';
 import { INSTRUMENTS } from './config.js';
 import { isOnCooldown, markFired } from './alertCooldown.js';
 
-// v0.3.17: 超短期 (5s/10s) フラッシュ検知。
-// Yahoo 価格の実体キャッシュは 10〜30s 程度なので、それより細かい "真の tick" は捕捉不可だが、
-// ニュース反応等で Yahoo キャッシュを通り抜けた急変は拾える。
-// めったに発火しないよう K_THRESHOLD=5.0、対象は NIY=F のみ。
+// v0.3.17: 超短期 (5s/10s) フラッシュ検知。NIY=F (日経 225) 専用。
+// ボラ依存しない「絶対 % 閾値」設計 (ユーザ要望): 5〜10 秒窓で |%変化| >= ABSOLUTE_THRESHOLD_PCT で発火。
+// 体感的に明確な "フラッシュ" だけを拾い、相場局面・ボラに関わらず一貫した感度を保つ。
+// Yahoo 価格の実体キャッシュは 10〜30s 程度なので "真の tick" は捕捉不可、ニュース反応等で
+// キャッシュを通り抜けた急変は拾える。
 
 const TARGETS = new Set(['NIY=F']);
 const BUFFER_MS = 2 * 60 * 1000;          // 2 min 過去サンプル保持
-const K_THRESHOLD = 5.0;                   // 1m σ から scale した 5s/10s σ の 5 倍超で発火
-const BASELINE_LOOKBACK = 60;              // 1m σ 算出用 (alertLoop と同設定)
-const MIN_BASELINE_RETURNS = 10;
+const ABSOLUTE_THRESHOLD_PCT = 0.15;       // 0.15% 以上の絶対変化で発火 (めったに発生しない閾値)
 
 interface Tick { t: number; price: number; }
 const buffers = new Map<string, Tick[]>();
-
-function getBaselineSigma1m(symbol: string): number | null {
-  const bars = getCachedBars(symbol);
-  if (bars.length < BASELINE_LOOKBACK + 1) return null;
-  const baseline = bars.slice(-(BASELINE_LOOKBACK + 1), -1);
-  const r = returns(baseline);
-  if (r.length < MIN_BASELINE_RETURNS) return null;
-  const s = stdDev(r);
-  return s > 0 ? s : null;
-}
 
 function findBaselinePrice(buf: Tick[], targetT: number): Tick | null {
   // buf は昇順時刻、targetT 以下で最大の t を持つエントリを返す (≒ 5s/10s 前のサンプル)
@@ -58,23 +47,18 @@ function handleOne(price: Price): void {
   if (buf.length < 3) return;
   if (isOnCooldown(price.symbol, now)) return;
 
-  const sigma1m = getBaselineSigma1m(price.symbol);
-  if (sigma1m === null) return;
-
-  // 5s と 10s 双方を評価、より z が高い方を採用
-  const candidates: { window: number; ret: number; z: number }[] = [];
+  // 5s と 10s 双方を評価、より大きい |%変化| を採用
+  const candidates: { window: number; ret: number; pct: number }[] = [];
   for (const win of [5, 10]) {
     const baseline = findBaselinePrice(buf, now - win * 1000);
     if (!baseline || baseline.price <= 0) continue;
     if (baseline.t === now) continue;       // 同一サンプル
     const ret = (price.price - baseline.price) / baseline.price;
-    // ランダムウォーク仮定で 1m σ → win-second σ にスケール: σ_win = σ_1m × √(win/60)
-    const sigmaWin = sigma1m * Math.sqrt(win / 60);
-    const z = Math.abs(ret) / sigmaWin;
-    if (z >= K_THRESHOLD) candidates.push({ window: win, ret, z });
+    const pct = Math.abs(ret * 100);
+    if (pct >= ABSOLUTE_THRESHOLD_PCT) candidates.push({ window: win, ret, pct });
   }
   if (candidates.length === 0) return;
-  candidates.sort((a, b) => b.z - a.z);
+  candidates.sort((a, b) => b.pct - a.pct);
   const fired = candidates[0]!;
 
   markFired(price.symbol, now);
@@ -92,9 +76,9 @@ function handleOne(price: Price): void {
     change15min: ctx.change15min,
     pa15min: ctx.pa15min,
     range1h: ctx.range1h,
-    zscore: fired.z,
+    zscore: 0,    // 絶対閾値方式のため未使用 (alertLoop の z-score 検知と区別)
   };
-  console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.ret >= 0 ? '+' : ''}${(fired.ret * 100).toFixed(3)}% (|z|=${fired.z.toFixed(1)}, σ1m=${(sigma1m * 100).toFixed(4)}%)`);
+  console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.ret >= 0 ? '+' : ''}${(fired.ret * 100).toFixed(3)}% (threshold ${ABSOLUTE_THRESHOLD_PCT}%)`);
   broadcast({ type: 'alert', payload: alert });
 }
 
