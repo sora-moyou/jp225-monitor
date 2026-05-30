@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { chat } from '../llm/openai.js';
 import { getPrices, getNews } from '../cache.js';
+import { buildNikkeiTechnical } from '../chatContext.js';
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; }
 
@@ -27,6 +28,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       messages,
       prices: getPrices(),
       news: getNews(),
+      technical: buildNikkeiTechnical(),
     });
     res.json({ reply });
   } catch (err) {
