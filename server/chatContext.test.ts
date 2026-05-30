@@ -8,7 +8,7 @@ function rising(n = 70): Bar[] {
 }
 
 describe('buildNikkeiTechnical', () => {
-  it('summarizes a 15-60min view with trend and 30/60min change for a rising series', () => {
+  it('summarizes a 15-60min view with trend, 30/60min change and target candidates', () => {
     const getBars = (sym: string) => (sym === 'NIY=F' ? rising() : []);
     const out = buildNikkeiTechnical(getBars);
     expect(out).not.toBeNull();
@@ -18,11 +18,19 @@ describe('buildNikkeiTechnical', () => {
     expect(out!).toContain('30分変化率');
     expect(out!).toContain('中期(15分平均)');
     expect(out!).toContain('傾向: 上昇寄り');
+    expect(out!).toContain('上昇目途候補');
+    expect(out!).toContain('下落目途候補');
+    expect(out!).toContain('節目'); // 250円グリッドの節目レベルが入る
   });
 
-  it('annotates reference levels with a distance rounded to 5 yen', () => {
-    const getBars = (sym: string) => (sym === 'NIY=F' ? rising() : []);
-    const out = buildNikkeiTechnical(getBars)!;
+  it('lists multiple downside target candidates (a ladder, not a single level)', () => {
+    const out = buildNikkeiTechnical((sym) => (sym === 'NIY=F' ? rising() : []))!;
+    const line = out.match(/下落目途候補: (.+)/)![1]!;
+    expect(line.split(' / ').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('annotates levels with distances rounded to 5 yen', () => {
+    const out = buildNikkeiTechnical((sym) => (sym === 'NIY=F' ? rising() : []))!;
     // 中期(15分平均)の距離が「現在値 ±N円」形式で、N は 5 円単位
     const m = out.match(/中期\(15分平均\)[^/]*現在値 ([+-]\d+)円/);
     expect(m).not.toBeNull();
