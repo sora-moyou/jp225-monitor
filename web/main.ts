@@ -76,10 +76,61 @@ function setupResize(handleId: string, targetSelector: string, storageKey: strin
   });
 }
 
+// 左右の幅: 中央のハンドルを左右ドラッグで left:right 比率を変更 (既定 1:2)
+function setupColResize(handleId: string, gridSelector: string, storageKey: string) {
+  const handle = document.getElementById(handleId);
+  const grid = document.querySelector<HTMLElement>(gridSelector);
+  if (!handle || !grid) return;
+
+  // 左比率 frac (0<frac<1) を grid の fr 変数に反映
+  const apply = (frac: number) => {
+    grid.style.setProperty('--left-fr', `${frac}fr`);
+    grid.style.setProperty('--right-fr', `${1 - frac}fr`);
+  };
+  const saved = localStorage.getItem(storageKey);
+  if (saved) {
+    const f = parseFloat(saved);
+    if (f > 0 && f < 1) apply(f);
+  }
+
+  let dragging = false;
+  handle.addEventListener('mousedown', (e) => {
+    dragging = true;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const rect = grid.getBoundingClientRect();
+    // どちらも潰れないよう 15%〜60% にクランプ
+    const frac = Math.max(0.15, Math.min(0.6, (e.clientX - rect.left) / rect.width));
+    apply(frac);
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    const cur = parseFloat(grid.style.getPropertyValue('--left-fr'));
+    if (cur > 0 && cur < 1) localStorage.setItem(storageKey, cur.toString());
+  });
+  // ダブルクリックで初期比率 (1:2) に戻す
+  handle.addEventListener('dblclick', () => {
+    grid.style.removeProperty('--left-fr');
+    grid.style.removeProperty('--right-fr');
+    localStorage.removeItem(storageKey);
+  });
+}
+
 // チャット高さ: ハンドルはチャットの上にある (上ドラッグでチャット拡大)
 setupResize('chat-resize', '.chat-board', 'chat-height', 120);
 // アラート高さ: ハンドルはアラートの下にある (下ドラッグでアラート拡大)
 setupResize('alerts-resize', '.alerts-pane', 'alerts-height', 100);
+// 左右の幅: 中央線を左右ドラッグ
+setupColResize('col-resize', '.main-grid', 'main-split');
 
 // 設定モーダル
 initSettingsModal({
