@@ -28,6 +28,7 @@ initChat(
   document.getElementById('chat-input') as HTMLTextAreaElement,
   document.getElementById('chat-send') as HTMLButtonElement,
   document.getElementById('chat-clear') as HTMLButtonElement,
+  Array.from(document.querySelectorAll('.chat-preset')) as HTMLButtonElement[],
 );
 
 // ─── D&D で高さリサイズ + localStorage 永続化 ──────────

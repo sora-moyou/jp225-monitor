@@ -250,7 +250,7 @@ function fmt(n: number): string {
 // ─── チャット ─────────────────────────────────────────
 
 export interface ChatMessage { role: 'user' | 'assistant'; content: string; }
-export interface ChatInput { messages: ChatMessage[]; prices: Price[]; news: NewsItem[]; }
+export interface ChatInput { messages: ChatMessage[]; prices: Price[]; news: NewsItem[]; technical?: string | null; }
 
 const LABEL_MAP = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
 
@@ -288,6 +288,7 @@ export async function chat(input: ChatInput): Promise<string> {
     `${CHAT_SYSTEM_PROMPT}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(input.prices)}\n\n` +
+    (input.technical ? `${input.technical}\n\n` : '') +
     `■ 直近ニュース (上位15件):\n${formatNewsForChat(input.news, now)}`;
 
   return callWithFallback(async (p) => {
