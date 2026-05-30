@@ -5,12 +5,13 @@ import type { Bar } from './correlation.js';
 const NIKKEI = 'NIY=F';
 const GRID = 250; // 節目(round number)グリッド(円)
 
-interface Level { d: number; label: string; }
+interface Level { d: number; label: string; reversal?: boolean; }
 
 // getBars はテスト用に注入可(既定は本物の barsCache 読み取り)。
 // 15〜60 分(約30分足)の時間軸でのテクニカル要約を返す。
-// 上昇/下落の目途は「構造的レベル(1時間高安・本日高安)+ 250円節目」から
+// 上昇/下落の目途は「構造的レベル(1時間・4時間・本日の高安)+ 250円節目」から
 // 複数候補を近い順に列挙し、各値は現在値からの距離(5円丸め)で示す。
+// さらに、現在トレンドをブレイクで否定する節目を「トレンド転換」として付与する。
 export function buildNikkeiTechnical(
   getBars: (symbol: string) => Bar[] = getCachedBars,
 ): string | null {
@@ -41,39 +42,53 @@ export function buildNikkeiTechnical(
 
   const dayHigh = Math.max(...closes);
   const dayLow = Math.min(...closes);
+  const h4 = closes.slice(-240);          // 直近 4 時間(<240本なら取得分すべて)
+  const fourHigh = Math.max(...h4);
+  const fourLow = Math.min(...h4);
   const gridUp1 = Math.ceil((cur + 5) / GRID) * GRID;
   const gridUp2 = gridUp1 + GRID;
   const gridDown1 = Math.floor((cur - 5) / GRID) * GRID;
   const gridDown2 = gridDown1 - GRID;
-
-  // 構造的レベルを先に並べ(ラベル優先)、距離で重複除去・|距離|昇順・最大3件。
-  const pick = (raw: Level[]): Level[] => {
-    const seen = new Set<number>();
-    const out: Level[] = [];
-    for (const lv of raw) {
-      if (lv.d === 0 || seen.has(lv.d)) continue;
-      seen.add(lv.d);
-      out.push(lv);
-    }
-    out.sort((a, b) => Math.abs(a.d) - Math.abs(b.d));
-    return out.slice(0, 3);
-  };
+  // トレンド転換の節目: 下降寄りなら直近4時間高値の上の節目(ブレイクで上昇転換)、
+  // 上昇寄りなら4時間安値の下の節目(ブレイクで下降転換)。
+  const revUp = Math.ceil(fourHigh / GRID) * GRID;
+  const revDown = Math.floor(fourLow / GRID) * GRID;
 
   const upRaw: Level[] = [
     range1h ? { d: dist(range1h.high), label: '1時間高値' } : null,
+    { d: dist(fourHigh), label: '4時間高値' },
     { d: dist(dayHigh), label: '本日高値' },
     { d: dist(gridUp1), label: `節目${gridUp1}` },
     { d: dist(gridUp2), label: `節目${gridUp2}` },
+    trend === '下降寄り' ? { d: dist(revUp), label: `節目${revUp}`, reversal: true } : null,
   ].filter((x): x is Level => x !== null && x.d > 0);
   const downRaw: Level[] = [
     range1h ? { d: dist(range1h.low), label: '1時間安値' } : null,
+    { d: dist(fourLow), label: '4時間安値' },
     { d: dist(dayLow), label: '本日安値' },
     { d: dist(gridDown1), label: `節目${gridDown1}` },
     { d: dist(gridDown2), label: `節目${gridDown2}` },
+    trend === '上昇寄り' ? { d: dist(revDown), label: `節目${revDown}`, reversal: true } : null,
   ].filter((x): x is Level => x !== null && x.d < 0);
 
-  const upStr = pick(upRaw).map(l => `${fmt(l.d)}(${l.label})`).join(' / ') || '(上値候補なし)';
-  const downStr = pick(downRaw).map(l => `${fmt(l.d)}(${l.label})`).join(' / ') || '(下値候補なし)';
+  // 距離で重複除去(転換フラグはマージ)、|距離|昇順、最大3件。転換ノードは必ず含める。
+  const pick = (raw: Level[]): Level[] => {
+    const byD = new Map<number, Level>();
+    for (const lv of raw) {
+      if (lv.d === 0) continue;
+      const ex = byD.get(lv.d);
+      if (ex) { if (lv.reversal) ex.reversal = true; }
+      else byD.set(lv.d, { ...lv });
+    }
+    const all = [...byD.values()].sort((a, b) => Math.abs(a.d) - Math.abs(b.d));
+    const out = all.slice(0, 3);
+    const rev = all.find(l => l.reversal);
+    if (rev && !out.includes(rev)) out.push(rev);
+    return out;
+  };
+  const fmtLevel = (l: Level): string => `${fmt(l.d)}(${l.label})${l.reversal ? '：トレンド転換' : ''}`;
+  const upStr = pick(upRaw).map(fmtLevel).join(' / ') || '(上値候補なし)';
+  const downStr = pick(downRaw).map(fmtLevel).join(' / ') || '(下値候補なし)';
 
   const pct = (v: number | null, n: number): string | null =>
     v !== null ? `${n}分変化率 ${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : null;
