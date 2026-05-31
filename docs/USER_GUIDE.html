@@ -771,7 +771,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.19</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.27</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         JP225 (日経 225のCFD) の価格変動をリアルタイムで監視。過去 60 分のボラティリティを基準に「いまの相場として異常か」を判定。
@@ -1007,7 +1007,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て)。価格カードの「日経225先物」(<code>NIY=F</code>) と <strong>同じ日経 225 指数を別商品で表示しているだけ</strong> なので、絶対値も % 変動もほぼ一致します (差は売買スプレッド・取引時間帯のみ)。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
     <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) のみ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。🔄 で再生成、× で消去。</p></div></div>
     <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
-    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。現在の全銘柄価格 + 直近 15 件ニュースが LLM コンテキストに自動付与されるので、相場固有の質問もそのまま聞ける。</p></div></div>
+    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近 15 件ニュース + 日経225先物のテクニカル要約が LLM コンテキストに自動付与される。</p></div></div>
   </div>
 
   <div class="callout" style="margin-top: 28px;">
@@ -1042,8 +1042,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-      <h3>AI チャット</h3>
-      <p>「今の地合いは?」など自由質問。現在価格と直近 15 件ニュースが自動でコンテキストに。</p>
+      <h3>AI チャット (定型質問付き)</h3>
+      <p>「今の地合いは?」など自由質問。現在価格・直近ニュース・日経225先物のテクニカル要約が自動でコンテキストに。<strong>ワンタップの定型質問</strong>(① トレンド方向と上値/下値メド ② 急変の理由を詳しく)も用意、入力欄に「1」「2」と打っても送れます。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>
@@ -1068,8 +1068,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
-      <h3>カスタマイズ可</h3>
-      <p>polling 間隔 (price 2s / news 60s) と sidecar port を設定モーダルから可変。範囲外は 400 で reject。</p>
+      <h3>レイアウト & カスタマイズ</h3>
+      <p>polling 間隔 (price 2s / news 60s) と sidecar port を設定モーダルから可変。<strong>パネルの境界をドラッグ</strong>して各欄の高さや左右カラムの幅も自由に調整 (左右の中央線はダブルクリックで 1:2 に初期化)。</p>
     </div>
   </div>
 </section>
