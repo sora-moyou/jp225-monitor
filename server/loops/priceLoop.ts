@@ -1,4 +1,3 @@
-import { fetchYahooPrices } from '../sources/yahooFinance.js';
 import { fetchYahooChartPrices } from '../sources/yahooChart.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
@@ -7,19 +6,20 @@ import { resolvePricePollMs } from '../configStore.js';
 import type { Price } from '../types.js';
 import { feedPrice as tickDetectorFeed } from '../tickDetector.js';
 
-// Yahoo Finance 失敗時のスキップ期間。連続失敗で長くなる:
-//   1 回目失敗 → 90 秒
-//   2 回目失敗 → 3 分
-//   3 回目以降 → 5 分
-// 成功で即リセット。これで一時的な 429 から早期復帰できる。
-const YAHOO_SKIP_LADDER_MS = [90_000, 3 * 60_000, 5 * 60_000];
+// v0.3.29: 価格の主経路を Yahoo chart endpoint に変更(crumb 依存を撤去)。
+// 旧主経路 quote() は crumb が必須で、この環境では恒常的に 429 になっていた。
+// chart endpoint は crumb 不要・全銘柄取得可で、quote() の 429 に影響されない。
+// 取得は銘柄ごと (Promise.allSettled) なので一部失敗にも強く、取れた分だけ反映。
+// 取れなかった銘柄は mergeWithCached で前回値を stale として保持。全滅時のみ
+// バックオフして劣化中 (Y ドット黄) を示す。
 
 let backoffIndex = -1;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
-let yahooSkipUntil = 0;
-let yahooConsecutiveFails = 0;
+let degradedUntil = 0;          // 全取得失敗でバックオフ中はこの時刻まで「劣化中」
 let intervalMs = resolvePricePollMs();
+
+const SYMBOLS = INSTRUMENTS.map(i => i.symbol);
 
 function mergeWithCached(fresh: Price[]): Price[] {
   const map = new Map(getPrices().map(p => [p.symbol, { ...p, stale: true }]));
@@ -31,47 +31,20 @@ function mergeWithCached(fresh: Price[]): Price[] {
 
 async function tick(): Promise<number> {
   try {
-    let prices: Price[] = [];
-    const now = Date.now();
-
-    if (now >= yahooSkipUntil) {
-      try {
-        prices = await fetchYahooPrices();
-        if (yahooSkipUntil > 0 || yahooConsecutiveFails > 0) {
-          console.log('[priceLoop] Yahoo recovered, back to primary source');
-          yahooSkipUntil = 0;
-          yahooConsecutiveFails = 0;
-        }
-      } catch (err) {
-        const idx = Math.min(yahooConsecutiveFails, YAHOO_SKIP_LADDER_MS.length - 1);
-        const skipMs = YAHOO_SKIP_LADDER_MS[idx]!;
-        if (yahooConsecutiveFails === 0) {
-          console.warn(`[priceLoop] Yahoo quote() unavailable (${err instanceof Error ? err.message : err}), using Yahoo chart API fallback for next ${Math.round(skipMs/1000)}s`);
-        }
-        yahooConsecutiveFails++;
-        yahooSkipUntil = now + skipMs;
-      }
-    }
-
-    const missing = INSTRUMENTS
-      .map(i => i.symbol)
-      .filter(s => !prices.find(p => p.symbol === s));
-    if (missing.length > 0) {
-      const fallback = await fetchYahooChartPrices(missing);
-      prices = [...prices, ...fallback];
-    }
-
-    if (prices.length === 0) throw new Error('No prices fetched (Yahoo quote + chart both failed)');
+    const prices = await fetchYahooChartPrices(SYMBOLS);
+    if (prices.length === 0) throw new Error('No prices fetched (Yahoo chart API failed)');
 
     const merged = mergeWithCached(prices);
     setPrices(merged);
     broadcast({ type: 'prices', payload: merged });
     tickDetectorFeed(merged);   // v0.3.17: 超短期 (5s/10s) フラッシュ検知
+    degradedUntil = 0;
     backoffIndex = -1;
     return intervalMs;
   } catch (err) {
     backoffIndex = Math.min(backoffIndex + 1, PRICE_BACKOFF_MS.length - 1);
     const wait = PRICE_BACKOFF_MS[backoffIndex] ?? intervalMs;
+    degradedUntil = Date.now() + wait;
     console.error(`[priceLoop] error, backing off ${wait}ms:`, err instanceof Error ? err.message : err);
     return wait;
   }
@@ -106,6 +79,8 @@ export function restartPriceLoop(): void {
   startPriceLoop();
 }
 
+// Y ステータスドット用。chart 取得が正常なら fallback=false (緑)。
+// 全滅バックオフ中のみ fallback=true (黄) + 再試行予定時刻。
 export function getYahooStatus(): { fallback: boolean; skipUntil: number } {
-  return { fallback: Date.now() < yahooSkipUntil, skipUntil: yahooSkipUntil };
+  return { fallback: Date.now() < degradedUntil, skipUntil: degradedUntil };
 }
