@@ -1,5 +1,5 @@
 import { fetchYahooPrices } from '../sources/yahooFinance.js';
-import { fetchInvestingPrices } from '../sources/investingScrape.js';
+import { fetchYahooChartPrices } from '../sources/yahooChart.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
@@ -46,7 +46,7 @@ async function tick(): Promise<number> {
         const idx = Math.min(yahooConsecutiveFails, YAHOO_SKIP_LADDER_MS.length - 1);
         const skipMs = YAHOO_SKIP_LADDER_MS[idx]!;
         if (yahooConsecutiveFails === 0) {
-          console.warn(`[priceLoop] Yahoo unavailable (${err instanceof Error ? err.message : err}), using Investing.com for next ${Math.round(skipMs/1000)}s`);
+          console.warn(`[priceLoop] Yahoo quote() unavailable (${err instanceof Error ? err.message : err}), using Yahoo chart API fallback for next ${Math.round(skipMs/1000)}s`);
         }
         yahooConsecutiveFails++;
         yahooSkipUntil = now + skipMs;
@@ -57,11 +57,11 @@ async function tick(): Promise<number> {
       .map(i => i.symbol)
       .filter(s => !prices.find(p => p.symbol === s));
     if (missing.length > 0) {
-      const fallback = await fetchInvestingPrices(missing);
+      const fallback = await fetchYahooChartPrices(missing);
       prices = [...prices, ...fallback];
     }
 
-    if (prices.length === 0) throw new Error('No prices fetched (Yahoo + Investing.com both failed)');
+    if (prices.length === 0) throw new Error('No prices fetched (Yahoo quote + chart both failed)');
 
     const merged = mergeWithCached(prices);
     setPrices(merged);
