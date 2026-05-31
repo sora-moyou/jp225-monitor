@@ -28,22 +28,24 @@ describe('buildNikkeiTechnical', () => {
     expect(out!).toContain('節目');
   });
 
-  it('marks a trend-reversal node on the breakout side', () => {
-    // rising = 上昇寄り → 下落側に「トレンド転換」ノードが付く
+  it('marks reversal on downside and acceleration on upside in an uptrend', () => {
+    // rising = 上昇寄り → 下抜けで転換(下側)、上抜けで加速(上側)
     const out = buildNikkeiTechnical((sym) => (sym === 'NIY=F' ? rising() : []))!;
-    expect(out).toContain('トレンド転換');
+    expect(out).toContain('傾向: 上昇寄り');
+    const up = out.match(/上昇目途候補: (.+)/)![1]!;
     const down = out.match(/下落目途候補: (.+)/)![1]!;
     expect(down).toContain('トレンド転換');
+    expect(up).toContain('トレンド加速');
   });
 
-  it('puts the trend-reversal node on the upside in a downtrend (user scenario)', () => {
-    // falling = 下降寄り → 上昇側に「トレンド転換」ノードが付く
+  it('marks reversal on upside and acceleration on downside in a downtrend', () => {
+    // falling = 下降寄り → 上抜けで転換(上側)、下抜けで加速(下側)
     const out = buildNikkeiTechnical((sym) => (sym === 'NIY=F' ? falling() : []))!;
     expect(out).toContain('傾向: 下降寄り');
     const up = out.match(/上昇目途候補: (.+)/)![1]!;
-    expect(up).toContain('トレンド転換');
     const down = out.match(/下落目途候補: (.+)/)![1]!;
-    expect(down).not.toContain('トレンド転換');
+    expect(up).toContain('トレンド転換');
+    expect(down).toContain('トレンド加速');
   });
 
   it('lists multiple downside target candidates (a ladder, not a single level)', () => {
