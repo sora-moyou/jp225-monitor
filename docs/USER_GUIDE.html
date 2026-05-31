@@ -1101,7 +1101,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         <td>Yahoo Finance (価格)</td>
         <td>
           <span class="dot green" style="display:inline-block"></span> 正常 /
-          <span class="dot yellow" style="display:inline-block"></span> Investing.com にフォールバック中 (5 分で再試行)
+          <span class="dot yellow" style="display:inline-block"></span> 予備経路 (Yahoo chart API) にフォールバック中 (5 分で再試行)
         </td>
       </tr>
       <tr>
@@ -1172,7 +1172,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <details>
       <summary>Y (Yahoo) が黄色のまま</summary>
       <div class="faq-body">
-        Yahoo Finance に拒否されている状態 (短時間に多数アクセスで 429)。価格データは Investing.com フォールバックが代替しているので <strong>画面の価格は引き続き更新</strong> されます。90s → 3min → 5min の段階で自動的に Yahoo を再試行。
+        Yahoo の <code>quote()</code> (crumb) が拒否されている状態 (短時間に多数アクセスで 429)。価格データは <strong>予備経路 (Yahoo chart API、crumb 不要)</strong> が代替するので <strong>画面の価格は引き続き更新</strong> されます。90s → 3min → 5min の段階で自動的に通常経路を再試行。<span style="color:var(--text-faint)">※ v0.3.28 で旧 Investing.com スクレイプ (Cloudflare ブロックで機能不全) から chart API へ置換。</span>
         <p style="margin-top: 8px;">v0.3.7〜v0.3.9 では 1 tick あたり Yahoo を 2 回呼んでいた残骸コードのせいで黄色から戻らない不具合が出ていました。<strong>v0.3.10 で単一バルク呼び出しに統合済み</strong> — 黄色固定はもう起きません。</p>
       </div>
     </details>
