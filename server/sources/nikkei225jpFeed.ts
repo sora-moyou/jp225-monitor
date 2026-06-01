@@ -1,15 +1,14 @@
-import type { Price } from '../types.js';
+import type { Price, Symbol } from '../types.js';
 
 // v0.3.30: 日経225先物のリアルタイム価格を nikkei225jp.com の内部 feed から取得する。
+// v0.3.31: 米国系(ダウ/ナスダック/原油/10年債)もこの feed の CFD/リアルタイムコードで
+//          一括取得するよう一般化。
 //
-// 背景: 従来の主経路 Yahoo `NIY=F` は CME(シカゴ)のヤン建て契約で、無料データは
-// 約10分ディレイ。ユーザーが実際に建てる大阪取引所(OSE)の日経225先物とは別物で、
-// 場中の急騰がアプリ側に10分届かず、超短期(5/10秒)フラッシュ検知が空振りしていた。
-//
-// この feed は nikkei225jp.com が 2.5 秒間隔でポーリングしている JS ペイロードで、
-// `A[code]="値_前日比_騰落率_時刻_フラグ_高値_安値";` 形式。code 136 = 日経225先物mini
-// 大阪取引所(OSE)で、日中立会の値がリアルタイム反映される(同 feed の CME code 717 が
-// 約10分遅れているのと対照的)。認証不要・Cloudflare なし。
+// 背景: 従来の主経路 Yahoo は CME/NYMEX 系を約10分ディレイで返す(NIY=F は CME のヤン建てで
+// ユーザーが建てる大阪取引所(OSE)とも別物)。場中の急騰がアプリに10分届かず急変検知が空振り
+// していた。この feed は nikkei225jp.com が 2.5 秒間隔でポーリングする JS ペイロードで、
+// `A[code]="値_前日比_騰落率_時刻_フラグ_高値_安値";` 形式。CFD コード(OTC, CME の10分
+// 再配信制限を受けない)はリアルタイム更新される。認証不要・Cloudflare なし。
 //
 // 時刻フィールドは HH:MM (分粒度) しか無いため tick 検知の 5/10秒窓には使えない。
 // feed 自体がリアルタイムなので、timestamp には取得時の wall-clock を入れる。
@@ -17,7 +16,20 @@ import type { Price } from '../types.js';
 const FEED_URL = 'https://jss.nikkei225jp.com/ajaxindex/ajax_TOP.js';
 const REFERER = 'https://nikkei225jp.com/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FinanceMonitor/0.3';
-const OSE_MINI_CODE = '136';   // 日経225先物mini 大阪取引所(OSE)
+
+// アプリの Symbol → feed コード対応。実測でリアルタイム(数分以内)を確認したもののみ採用。
+//   136 日経225先物mini OSE / 737 CFD NAS100 / 731 ダウCFD / 921 WTI原油先物 /
+//   811 米国10年債利回り / 511 ドル円
+// ES=F(S&P500) はこの feed に現物stale しか無く、^VIX はライブコードのラベル未確認のため
+// 除外し、Yahoo(10分遅延)に残す。
+const SYMBOL_CODES: ReadonlyArray<readonly [Symbol, string]> = [
+  ['NIY=F', '136'],
+  ['NQ=F',  '737'],
+  ['YM=F',  '731'],
+  ['CL=F',  '921'],
+  ['^TNX',  '811'],
+  ['JPY=X', '511'],
+];
 
 /** `A[code]="..."` 行を code → fields(配列) に分解する純粋関数。 */
 export function parseAjaxTop(text: string): Map<string, string[]> {
@@ -31,28 +43,39 @@ export function parseAjaxTop(text: string): Map<string, string[]> {
 }
 
 /**
- * feed テキストから OSE mini (code 136) の価格を Price(NIY=F) に変換する。
+ * feed テキストから SYMBOL_CODES にある全銘柄の Price を抽出する。
  * timestamp は呼び出し側が注入 (テスト容易化 + wall-clock を使うため)。
+ * 値が壊れている/コードが無い銘柄はスキップ (取れた分だけ返す)。
  */
-export function extractOseMini(text: string, now: number): Price | null {
-  const fields = parseAjaxTop(text).get(OSE_MINI_CODE);
-  if (!fields) return null;
-  const price = Number(fields[0]);
-  if (!Number.isFinite(price) || price <= 0) return null;
-  const changePercent = Number(fields[2]);
-  return {
-    symbol: 'NIY=F',
-    price,
-    changePercent: Number.isFinite(changePercent) ? changePercent : 0,
-    timestamp: now,
-    stale: false,
-  };
+export function extractFeedPrices(text: string, now: number): Price[] {
+  const map = parseAjaxTop(text);
+  const out: Price[] = [];
+  for (const [symbol, code] of SYMBOL_CODES) {
+    const fields = map.get(code);
+    if (!fields) continue;
+    const price = Number(fields[0]);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const changePercent = Number(fields[2]);
+    out.push({
+      symbol,
+      price,
+      changePercent: Number.isFinite(changePercent) ? changePercent : 0,
+      timestamp: now,
+      stale: false,
+    });
+  }
+  return out;
 }
 
-/** OSE mini のリアルタイム価格を取得。失敗時は null (呼び出し側で Yahoo にフォールバック)。 */
-export async function fetchOseMiniPrice(): Promise<Price | null> {
+/** OSE mini (NIY=F) 単体を返す薄いヘルパ (互換用)。 */
+export function extractOseMini(text: string, now: number): Price | null {
+  return extractFeedPrices(text, now).find(p => p.symbol === 'NIY=F') ?? null;
+}
+
+/** feed の全リアルタイム銘柄を取得。失敗時は空配列 (呼び出し側で Yahoo にフォールバック)。 */
+export async function fetchFeedPrices(): Promise<Price[]> {
   const res = await fetch(FEED_URL, { headers: { 'User-Agent': UA, 'Referer': REFERER } });
-  if (!res.ok) return null;
+  if (!res.ok) return [];
   const text = await res.text();
-  return extractOseMini(text, Date.now());
+  return extractFeedPrices(text, Date.now());
 }

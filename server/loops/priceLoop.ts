@@ -1,6 +1,6 @@
 import { fetchYahooChartPrices } from '../sources/yahooChart.js';
-import { fetchOseMiniPrice } from '../sources/nikkei225jpFeed.js';
-import { feedOsePrice } from '../oseBars.js';
+import { fetchFeedPrices } from '../sources/nikkei225jpFeed.js';
+import { feedRealtimePrice } from '../feedBars.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
@@ -33,21 +33,20 @@ function mergeWithCached(fresh: Price[]): Price[] {
 
 async function tick(): Promise<number> {
   try {
-    // v0.3.30: NIY=F(日経225先物) は OSE mini リアルタイム feed を主経路にする。
-    // Yahoo の NIY=F は CME(円建て)で約10分ディレイのため、OSE feed が取れたら
-    // それで NIY=F を上書きし、取れなければ Yahoo(CME) をフォールバックとして残す。
-    const [yahoo, ose] = await Promise.all([
+    // v0.3.30/31: 日経225先物(OSE) と米国系(ダウ/ナスダック/原油/10年債)・ドル円は
+    // nikkei225jp のリアルタイム feed を主経路にする。Yahoo は CME/NYMEX を約10分ディレイで
+    // 返すため、feed で取れた銘柄はそれで上書きし、取れない銘柄(S&P/VIX 等)は Yahoo を残す。
+    const [yahoo, feed] = await Promise.all([
       fetchYahooChartPrices(SYMBOLS),
-      fetchOseMiniPrice().catch(() => null),
+      fetchFeedPrices().catch(() => [] as Price[]),
     ]);
-    const prices = ose
-      ? [...yahoo.filter(p => p.symbol !== 'NIY=F'), ose]
-      : yahoo;
+    const feedSyms = new Set(feed.map(p => p.symbol));
+    const prices = [...yahoo.filter(p => !feedSyms.has(p.symbol)), ...feed];
     if (prices.length === 0) throw new Error('No prices fetched (Yahoo chart API failed)');
 
-    // v0.3.30: OSE リアルタイム価格を 1 分足ビルダーへ。alertLoop の z-score が
-    // ウォームアップ後にリアルタイム OSE バーで評価できるようにする。
-    if (ose) feedOsePrice(ose.price, ose.timestamp);
+    // v0.3.30/31: リアルタイム価格を銘柄ごとに 1 分足ビルダーへ。alertLoop の z-score
+    // (NIY=F) と横断確認(NQ/YM/JPY)がウォームアップ後にリアルタイム足で評価できるようにする。
+    for (const p of feed) feedRealtimePrice(p.symbol, p.price, p.timestamp);
 
     const merged = mergeWithCached(prices);
     setPrices(merged);

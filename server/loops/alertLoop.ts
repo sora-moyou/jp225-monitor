@@ -6,7 +6,7 @@ import {
 import { broadcast } from '../sse/broker.js';
 import { INSTRUMENTS } from '../config.js';
 import { isOnCooldown, markFired } from '../alertCooldown.js';
-import { getOseBars, isOseBarsReady } from '../oseBars.js';
+import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
 // 旧 changeDetector (client side, fixed-% threshold) を全置換。
@@ -27,6 +27,13 @@ export function getCachedBars(symbol: string): Bar[] {
   return barsCache.get(symbol) ?? [];
 }
 
+// v0.3.31: 評価に使う 1m bars。リアルタイム feed バーが溜まっていればそれを、
+// ウォームアップ中は Yahoo 分足を返す。系列は混ぜず全リアルタイム or 全 Yahoo。
+// これで日経(NIY=F)の z-score も横断確認(NQ/YM/JPY)も同じ実時間軸で評価できる。
+function barsFor(symbol: string): Bar[] {
+  return isRealtimeBarsReady(symbol) ? getRealtimeBars(symbol) : (barsCache.get(symbol) ?? []);
+}
+
 async function refreshAllBars(): Promise<void> {
   await Promise.all(SYMBOLS.map(async (sym) => {
     try {
@@ -41,7 +48,8 @@ async function refreshAllBars(): Promise<void> {
 function buildCrossSnapshot(): CrossSnapshot {
   const latestReturn = new Map<string, number>();
   const baselineSigma = new Map<string, number>();
-  for (const [sym, bars] of barsCache.entries()) {
+  for (const sym of SYMBOLS) {
+    const bars = barsFor(sym);   // リアルタイム足優先 (横断確認の時間軸を日経に揃える)
     if (bars.length < 62) continue;
     const baseline = bars.slice(-61, -1);
     const r = returns(baseline);
@@ -61,10 +69,9 @@ function evaluateAndFire(): void {
   for (const sym of SYMBOLS) {
     // v0.3.19: アラートは日経225先物のみ。他銘柄は分足取得のみ続け、AI 説明の元ネタ専用。
     if (sym !== 'NIY=F') continue;
-    // v0.3.30: NIY=F はリアルタイム OSE バーが溜まればそれで評価 (z-score もリアルタイム化)。
+    // v0.3.30/31: NIY=F はリアルタイム OSE バーが溜まればそれで z-score 評価。
     // ウォームアップ中(起動〜約65分)は Yahoo(CME, 約10分遅延) 分足にフォールバック。
-    // 系列は混ぜない (全 OSE か全 CME)。跨ぎ return を作らないので偽スパイクは出ない。
-    const bars = isOseBarsReady() ? getOseBars() : barsCache.get(sym);
+    const bars = barsFor(sym);
     if (!bars || bars.length < 65) continue;
 
     if (isOnCooldown(sym, now)) continue;

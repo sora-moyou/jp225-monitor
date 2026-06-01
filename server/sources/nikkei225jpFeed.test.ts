@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { parseAjaxTop, extractOseMini } from './nikkei225jpFeed.js';
+import { parseAjaxTop, extractOseMini, extractFeedPrices } from './nikkei225jpFeed.js';
 
-// nikkei225jp.com /ajaxindex/ajax_TOP.js の実サンプル断片 (2026-06-01 09:35 JST)。
+// nikkei225jp.com /ajaxindex/ajax_TOP.js の実サンプル断片 (2026-06-01 10:07 JST)。
 // 形式: A[code]="値_前日比_騰落率_時刻_フラグ_高値_安値";
 const SAMPLE = `A[111]="66604.27_+274.77_+0.41_09:35_1_66823.36_66244.84";
 A[136]="66645.00_+195.00_+0.29_09:35_1__";
 A[139]="66650.00_+180.00_+0.27_09:35_1__";
 A[717]="66560.00_+335.00_+0.51_09:24_1__";
+A[731]="51052.90_+120.00_+0.24_10:06_1__";
+A[737]="30468.70_-30.00_-0.10_10:06_1__";
+A[921]="89.59_+0.50_+0.56_10:05_1__";
+A[811]="4.468_+0.015_+0.34_10:05_1__";
 A[511]="159.438_+0.160_+0.10_09:35_1_159.451_159.297";`;
 
 describe('parseAjaxTop', () => {
@@ -52,5 +56,35 @@ describe('extractOseMini (code 136 = 日経225先物mini OSE)', () => {
     expect(p).not.toBeNull();
     expect(p!.changePercent).toBe(0);
     expect(p!.price).toBe(66645);
+  });
+});
+
+describe('extractFeedPrices (複数銘柄一括: NIY=F/NQ=F/YM=F/CL=F/^TNX/JPY=X)', () => {
+  it('マッピング済みの全銘柄を Price 配列で返す', () => {
+    const now = 1780274820000;
+    const prices = extractFeedPrices(SAMPLE, now);
+    const bySym = Object.fromEntries(prices.map(p => [p.symbol, p]));
+    expect(bySym['NIY=F']!.price).toBe(66645);   // 136
+    expect(bySym['YM=F']!.price).toBe(51052.9);  // 731 ダウCFD
+    expect(bySym['NQ=F']!.price).toBe(30468.7);  // 737 NAS100 CFD
+    expect(bySym['CL=F']!.price).toBe(89.59);    // 921 WTI
+    expect(bySym['^TNX']!.price).toBe(4.468);    // 811 10年債
+    expect(bySym['JPY=X']!.price).toBe(159.438); // 511 ドル円
+    expect(prices.every(p => p.timestamp === now && p.stale === false)).toBe(true);
+  });
+
+  it('feed に無いコードの銘柄はスキップ (ES=F/VIX は含まれない)', () => {
+    const prices = extractFeedPrices(SAMPLE, 1);
+    const syms = prices.map(p => p.symbol);
+    expect(syms).not.toContain('ES=F');
+    expect(syms).not.toContain('^VIX');
+  });
+
+  it('壊れた値の銘柄だけ除外し、残りは返す', () => {
+    const broken = 'A[136]="66645_+1_+0.1_10:06_1__";\nA[737]="-_-_-_10:06_1__";';
+    const prices = extractFeedPrices(broken, 1);
+    const syms = prices.map(p => p.symbol);
+    expect(syms).toContain('NIY=F');
+    expect(syms).not.toContain('NQ=F');   // 737 が壊れている
   });
 });
