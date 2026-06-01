@@ -26,6 +26,8 @@ export const LOOKBACK_SESSIONS = 10;
 export const CONFLUENCE_TOL = 30;   // 円
 export const GRID = 250;            // 節目グリッド
 export const NEAR_N = 4;            // up/down 各表示本数
+export const FIB_SWING_SESSIONS = 5;
+export const FIB_RATIOS = [0.382, 0.5, 0.618];
 
 interface Cand { price: number; label: string; fib?: number; reversalLine?: boolean; }
 
@@ -109,13 +111,41 @@ export function computeLevels(
     cands.push({ price: Math.floor((current - 5) / GRID) * GRID, label: '節目' });
   }
 
-  // フィボは別タスクで追加（ここでは swing=null）。
-  const swing: LevelsResult['swing'] = null;
-  const reversalSatisfied = false;
+  // ── フィボナッチ戻し（完了セッション直近 FIB_SWING_SESSIONS のスイング）──
+  let swing: LevelsResult['swing'] = null;
+  let reversalSatisfied = false;
+  const fibWin = completed.slice(0, FIB_SWING_SESSIONS);
+  if (fibWin.length >= FIB_SWING_SESSIONS) {
+    const hi = fibWin.reduce((a, b) => (b.high > a.high ? b : a));
+    const lo = fibWin.reduce((a, b) => (b.low < a.low ? b : a));
+    const swingHigh = hi.high, swingLow = lo.low;
+    if (swingHigh > swingLow) {
+      const range = swingHigh - swingLow;
+      // 極値が新しい方が脚の終点。安値が新しい→下げ脚、高値が新しい→上げ脚。
+      const leg: 'up' | 'down' = lo.lowT > hi.highT ? 'down' : 'up';
+      swing = { high: swingHigh, low: swingLow, leg };
+      for (const r of FIB_RATIOS) {
+        const price = leg === 'down' ? swingLow + r * range : swingHigh - r * range;
+        cands.push({
+          price, label: `Fib${(r * 100).toFixed(1).replace(/\.0$/, '')}%`,
+          fib: r, reversalLine: r === 0.5 || undefined,
+        });
+      }
+      const fib50 = leg === 'down' ? swingLow + 0.5 * range : swingHigh - 0.5 * range;
+      reversalSatisfied = leg === 'down' ? current > fib50 : current < fib50;
+    }
+  }
 
   const clustered = cluster(cands, current);
   const up = clustered.filter(l => l.dist > 0).sort((a, b) => a.dist - b.dist).slice(0, NEAR_N);
   const down = clustered.filter(l => l.dist < 0).sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist)).slice(0, NEAR_N);
+
+  // fib50(方向転換ライン)が選抜から漏れたら、現値の上下どちらかへ強制追加。
+  const fib50Level = clustered.find(l => l.reversalLine);
+  if (fib50Level && ![...up, ...down].includes(fib50Level)) {
+    if (fib50Level.dist > 0 && !up.includes(fib50Level)) up.push(fib50Level);
+    else if (fib50Level.dist < 0 && !down.includes(fib50Level)) down.push(fib50Level);
+  }
 
   return { current, up, down, swing, reversalSatisfied, asOf };
 }

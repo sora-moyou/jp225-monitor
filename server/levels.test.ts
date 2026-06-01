@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeLevels, type SessionOHLC } from './levels.js';
+import { computeLevels, FIB_SWING_SESSIONS, type SessionOHLC } from './levels.js';
 
 function s(sessionDate: string, session: 'Day' | 'Night', high: number, low: number,
            extra: Partial<SessionOHLC> = {}): SessionOHLC {
@@ -66,5 +66,48 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     expect(r.up).toEqual([]);
     expect(r.down).toEqual([]);
     expect(r.swing).toBeNull();
+  });
+});
+
+describe('computeLevels フィボナッチ', () => {
+  function swingSessions(opts: { highT: number; lowT: number }): SessionOHLC[] {
+    return [
+      s('2026-06-01', 'Night', 67200, 66500, { highT: 10, lowT: 11 }),
+      s('2026-05-31', 'Day',   67100, 66400, { highT: 8, lowT: 9 }),
+      s('2026-05-30', 'Night', 67000, 66300, { highT: 6, lowT: 7 }),
+      s('2026-05-30', 'Day',   68000, 66800, { highT: opts.highT, lowT: 5 }),
+      s('2026-05-29', 'Day',   67300, 66000, { highT: 3, lowT: opts.lowT }),
+    ];
+  }
+
+  it('下げ脚(安値が新しい): 50%戻し=swingLow+0.5*range、現値が上なら転換成立', () => {
+    const sessions = swingSessions({ highT: 4, lowT: 20 });
+    const r = computeLevels(sessions, 67100, 0, null);
+    expect(r.swing).toEqual({ high: 68000, low: 66000, leg: 'down' });
+    const fib50 = [...r.up, ...r.down].find(l => l.reversalLine);
+    expect(fib50!.price).toBe(67000);
+    expect(r.reversalSatisfied).toBe(true);
+  });
+
+  it('上げ脚(高値が新しい): 50%戻し=swingHigh-0.5*range、現値が下なら転換成立', () => {
+    const sessions = swingSessions({ highT: 20, lowT: 4 });
+    const r = computeLevels(sessions, 66800, 0, null);
+    expect(r.swing).toEqual({ high: 68000, low: 66000, leg: 'up' });
+    const fib50 = [...r.up, ...r.down].find(l => l.reversalLine);
+    expect(fib50!.price).toBe(67000);
+    expect(r.reversalSatisfied).toBe(true);
+  });
+
+  it('fib50(転換ライン)は近傍4に入らなくても必ず含める', () => {
+    const sessions = swingSessions({ highT: 4, lowT: 20 });
+    const r = computeLevels(sessions, 67100, 0, null);
+    expect([...r.up, ...r.down].some(l => l.reversalLine)).toBe(true);
+  });
+
+  it('セッションが5本未満ならフィボ省略（swing=null）', () => {
+    const sessions = [s('2026-06-01', 'Day', 67500, 66500)];
+    const r = computeLevels(sessions, 67000, 0, null);
+    expect(r.swing).toBeNull();
+    expect([...r.up, ...r.down].some(l => l.fib !== undefined)).toBe(false);
   });
 });
