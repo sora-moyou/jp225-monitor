@@ -690,7 +690,8 @@ body {
 }
 .update-result .update-now-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .update-result .update-notes { display: block; margin-top: 4px; opacity: 0.8; font-size: 12px; }
-#settings-check-update { color: #58a6ff; border-color: #58a6ff; }
+#settings-check-update,
+#settings-basedata-check { color: #58a6ff; border-color: #58a6ff; }
 #settings-check-update:hover { background: rgba(88, 166, 255, 0.12); }
 
 .chat-presets { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 0; }
