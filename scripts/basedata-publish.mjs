@@ -4,7 +4,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { execSync } from 'node:child_process';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx';   // SheetJS は CJS: default import で module.exports(readFile/utils 等)を得る
 
 const xlsxPath = process.argv[2];
 if (!xlsxPath) { console.error('usage: npm run basedata:publish -- <path-to-xlsx>'); process.exit(1); }
