@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone always-on collector daemon (v0.3.00) that polls the nikkei225jp feed and persists ticks + 1-minute bars to a local SQLite database via Node's built-in `node:sqlite`.
+**Goal:** Build a standalone always-on collector daemon (v0.4.00) that polls the nikkei225jp feed and persists ticks + 1-minute bars to a local SQLite database via Node's built-in `node:sqlite`.
 
 **Architecture:** A shared DB layer (`server/db/store.ts`, used later by the monitor too) wraps `node:sqlite` with schema + `recordTick`/read helpers. A small collector entry (`collector/index.ts`) reuses the existing `fetchFeedPrices`/`fetchMinuteBars` to poll every 2 s and write to the DB, backfilling history on startup. It builds to a single exe the same way the monitor sidecar does (esbuild → CJS → Node SEA).
 
@@ -351,14 +351,14 @@ git commit -m "feat(collector): recordFeedPrices + backfillBars (pure, tested)"
 
 ```typescript
 // collector/index.ts
-// 日経225 データ収集デーモン v0.3.00。feed を 2秒ごとに DB へ。起動時に Yahoo 分足で backfill。
+// 日経225 データ収集デーモン v0.4.00。feed を 2秒ごとに DB へ。起動時に Yahoo 分足で backfill。
 import { openDb, resolveDbPath } from '../server/db/store.js';
 import { recordFeedPrices, backfillBars } from './record.js';
 import { fetchFeedPrices } from '../server/sources/nikkei225jpFeed.js';
 import { fetchMinuteBars } from '../server/correlation.js';
 import { INSTRUMENTS } from '../server/config.js';
 
-export const COLLECTOR_VERSION = '0.3.00';
+export const COLLECTOR_VERSION = '0.4.00';
 const POLL_MS = 2000;
 const SYMBOLS = INSTRUMENTS.map(i => i.symbol as string);
 
@@ -410,7 +410,7 @@ Expected: a recent NIY=F tick (price ~current) and `bars:` ≥ 1.
 
 ```bash
 git add collector/index.ts
-git commit -m "feat(collector): daemon entry — 2s poll loop + startup backfill (v0.3.00)"
+git commit -m "feat(collector): daemon entry — 2s poll loop + startup backfill (v0.4.00)"
 ```
 
 ---

@@ -106,7 +106,7 @@ CREATE TABLE meta ( key TEXT PRIMARY KEY, value TEXT );  -- schema_version, last
 
 ## 5. 収集デーモン（collector）
 
-- **新規・独立アプリ**。バージョンは **0.3.00 から**（モニターの 0.3.36 系とは別系統）。
+- **新規・独立アプリ**。バージョンは **0.4.00 から**（モニターの 0.3.36 系とは別系統の新ライン）。
 - 実装: 既存 `server/sources/nikkei225jpFeed.ts`(feed 取得) を再利用した小さな Node プロセス。
   esbuild で単一 CJS → SEA で単一 exe 化（モニターと同じビルド方式）。
 - ループ: 2 秒ごとに `fetchFeedPrices()` → 各 symbol を `ticks` に INSERT、分境界で `bars_1m` を upsert。
@@ -167,7 +167,7 @@ CREATE TABLE meta ( key TEXT PRIMARY KEY, value TEXT );  -- schema_version, last
 
 ## 11. SP1 の完了条件（Definition of Done）
 
-- 収集デーモン(0.3.00)が常駐し、`ticks`/`bars_1m` を SQLite に 24/7 蓄積できる。
+- 収集デーモン(0.4.00)が常駐し、`ticks`/`bars_1m` を SQLite に 24/7 蓄積できる。
 - モニターが DB から起動時ウォームアップし、ライブ値も DB 経由で取得して従来どおり動く
   （65分待ち・再起動データ消失が解消）。
 - ON/OFF で重い処理を止めても収集は継続。
