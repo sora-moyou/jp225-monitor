@@ -1,12 +1,13 @@
 import type { Request, Response } from 'express';
 import {
   loadConfig, saveConfig, configFilePath, validateParam,
-  resolvePricePollMs, resolveNewsPollMs, resolvePort,
+  resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
   type UserConfig,
 } from '../configStore.js';
 import { reloadProviders, getProviderStatus } from '../llm/openai.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
 import { restartNewsLoop } from '../loops/newsLoop.js';
+import { setCooldownMs } from '../alertCooldown.js';
 
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
@@ -20,6 +21,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     pricePollMs: resolvePricePollMs(),
     newsPollMs: resolveNewsPollMs(),
     port: resolvePort(),
+    cooldownMin: resolveCooldownMin(),
     providers: getProviderStatus(),
     configFile: configFilePath(),
   });
@@ -32,6 +34,7 @@ interface SettingsBody {
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
+  cooldownMin?: number | null;
 }
 
 function applyStringField(existing: string | undefined, incoming: unknown): string | undefined {
@@ -43,7 +46,7 @@ function applyStringField(existing: string | undefined, incoming: unknown): stri
 }
 
 function applyNumberField(
-  name: 'pricePollMs' | 'newsPollMs' | 'port',
+  name: 'pricePollMs' | 'newsPollMs' | 'port' | 'cooldownMin',
   existing: number | undefined,
   incoming: unknown,
 ): { value: number | undefined; error: string | null; changed: boolean } {
@@ -61,8 +64,9 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const priceResult = applyNumberField('pricePollMs', existing.pricePollMs, body.pricePollMs);
   const newsResult = applyNumberField('newsPollMs', existing.newsPollMs, body.newsPollMs);
   const portResult = applyNumberField('port', existing.port, body.port);
+  const cooldownResult = applyNumberField('cooldownMin', existing.cooldownMin, body.cooldownMin);
 
-  const errors = [priceResult.error, newsResult.error, portResult.error].filter((e): e is string => e !== null);
+  const errors = [priceResult.error, newsResult.error, portResult.error, cooldownResult.error].filter((e): e is string => e !== null);
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -75,12 +79,14 @@ export function postSettingsHandler(req: Request, res: Response): void {
     pricePollMs: priceResult.value,
     newsPollMs: newsResult.value,
     port: portResult.value,
+    cooldownMin: cooldownResult.value,
   };
   saveConfig(next);
   reloadProviders();
 
   if (priceResult.changed) restartPriceLoop();
   if (newsResult.changed) restartNewsLoop();
+  if (cooldownResult.changed) setCooldownMs(resolveCooldownMin() * 60_000);
 
   res.json({
     ok: true,

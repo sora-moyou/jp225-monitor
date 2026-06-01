@@ -147,6 +147,7 @@ initSettingsModal({
   inputPricePoll: document.getElementById('settings-price-poll') as HTMLInputElement,
   inputNewsPoll:  document.getElementById('settings-news-poll') as HTMLInputElement,
   inputPort:      document.getElementById('settings-port') as HTMLInputElement,
+  inputCooldownMin: document.getElementById('settings-cooldown-min') as HTMLInputElement,
   portWarning:    document.getElementById('settings-port-warning') as HTMLElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,

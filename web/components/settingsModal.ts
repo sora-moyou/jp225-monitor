@@ -10,7 +10,7 @@ function escapeHtml(s: string): string {
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
-  pricePollMs: number; newsPollMs: number; port: number;
+  pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
 }
@@ -35,6 +35,7 @@ interface SavePayload {
   pricePollMs?: number | null;
   newsPollMs?: number | null;
   port?: number | null;
+  cooldownMin?: number | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -77,6 +78,7 @@ export interface SettingsElements {
   inputPricePoll: HTMLInputElement;
   inputNewsPoll: HTMLInputElement;
   inputPort: HTMLInputElement;
+  inputCooldownMin: HTMLInputElement;
   portWarning: HTMLElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
@@ -106,6 +108,7 @@ export function initSettingsModal(el: SettingsElements): void {
       el.inputPricePoll.value = String(current.pricePollMs);
       el.inputNewsPoll.value = String(current.newsPollMs);
       el.inputPort.value = String(current.port);
+      el.inputCooldownMin.value = String(current.cooldownMin);
     }
     el.portWarning.classList.add('hidden');
   }
@@ -236,9 +239,11 @@ export function initSettingsModal(el: SettingsElements): void {
       const pp = Number(el.inputPricePoll.value);
       const np = Number(el.inputNewsPoll.value);
       const pt = Number(el.inputPort.value);
+      const cm = Number(el.inputCooldownMin.value);
       if (current && pp !== current.pricePollMs) body.pricePollMs = pp;
       if (current && np !== current.newsPollMs) body.newsPollMs = np;
       if (current && pt !== current.port) body.port = pt;
+      if (current && cm !== current.cooldownMin) body.cooldownMin = cm;
 
       const result = await saveSettings(body);
       if (!result.ok) {

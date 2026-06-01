@@ -68,6 +68,10 @@
           Sidecar port (1024–65535)
           <input type="number" id="settings-port" min="1024" max="65535" step="1" value="3000" />
         </label>
+        <label>
+          アラート クールダウン (分, 1–120)
+          <input type="number" id="settings-cooldown-min" min="1" max="120" step="1" value="15" />
+        </label>
         <div id="settings-port-warning" class="settings-warning hidden">
           ⚠ port を変更しました。サーバを再起動するまで反映されません。
         </div>

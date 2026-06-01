@@ -21,9 +21,11 @@ import { startAlertLoop } from './loops/alertLoop.js';
 import { startLevelsLoop } from './loops/levelsLoop.js';
 import { warmFromDb } from './warmup.js';
 import { isLLMEnabled } from './llm/openai.js';
-import { resolvePort, ensureDefaults } from './configStore.js';
+import { resolvePort, ensureDefaults, resolveCooldownMin } from './configStore.js';
+import { setCooldownMs } from './alertCooldown.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
+setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
 
 declare const __APP_VERSION__: string | undefined;
 
