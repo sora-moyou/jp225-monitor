@@ -265,6 +265,12 @@ body {
 .price-card.up .value .change { color: var(--up); }
 .price-card.down .value .num,
 .price-card.down .value .change { color: var(--down); }
+/* v0.3.33: 日経の超短期(値幅)/短期(率) は各値ごとに符号で色付け (逆符号もありうる) */
+.price-card .value .change.mom { font-size: 16px; display: inline-flex; gap: 7px; align-items: baseline; }
+.price-card .value .change.mom .up { color: var(--up); }
+.price-card .value .change.mom .down { color: var(--down); }
+.price-card .value .change.mom .flat,
+.price-card .value .change.mom .m-sep { color: var(--muted, #888); }
 .price-card.stale { opacity: 0.75; }
 .price-card.flash-up { animation: flashUp 500ms 2; }
 .price-card.flash-down { animation: flashDown 500ms 2; }

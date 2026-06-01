@@ -6,7 +6,7 @@ import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
 import type { Price } from '../types.js';
-import { feedPrice as tickDetectorFeed } from '../tickDetector.js';
+import { feedPrice as tickDetectorFeed, getMomentum } from '../tickDetector.js';
 
 // v0.3.29: 価格の主経路を Yahoo chart endpoint に変更(crumb 依存を撤去)。
 // 旧主経路 quote() は crumb が必須で、この環境では恒常的に 429 になっていた。
@@ -49,9 +49,16 @@ async function tick(): Promise<number> {
     for (const p of feed) feedRealtimePrice(p.symbol, p.price, p.timestamp);
 
     const merged = mergeWithCached(prices);
+    tickDetectorFeed(merged);   // v0.3.17: 超短期 (5s/10s) フラッシュ検知 (バッファ更新)
+    // v0.3.33: 日経カードに「超短期(値幅)/短期(率)」を出すため momentum を添付。
+    // tickDetectorFeed 後に算出 (最新 tick がバッファに入った状態で読む)。
+    const niy = merged.find(p => p.symbol === 'NIY=F');
+    if (niy && !niy.stale) {
+      const mom = getMomentum('NIY=F');
+      if (mom) niy.momentum = mom;
+    }
     setPrices(merged);
     broadcast({ type: 'prices', payload: merged });
-    tickDetectorFeed(merged);   // v0.3.17: 超短期 (5s/10s) フラッシュ検知
     degradedUntil = 0;
     backoffIndex = -1;
     return intervalMs;

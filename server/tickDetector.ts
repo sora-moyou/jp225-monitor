@@ -82,5 +82,28 @@ function handleOne(price: Price): void {
   broadcast({ type: 'alert', payload: alert });
 }
 
+// v0.3.33: 価格ボード表示用。NIY=F の直近の動きをアラート2階層に対応して返す。
+//   ultraShortYen = 超短期(5/10秒窓の値幅・円, |差|が大きい方) — tickDetector は値幅ベース
+//   shortPct      = 短期(直近60秒の変化率 %) — alertLoop 1分burst 相当
+// 既存の tick バッファ(2分保持)を再利用。窓に十分なサンプルが無ければ各値 null。
+export function getMomentum(symbol: string = 'NIY=F'): { ultraShortYen: number | null; shortPct: number | null } | null {
+  const buf = buffers.get(symbol);
+  if (!buf || buf.length < 2) return null;
+  const last = buf[buf.length - 1]!;
+  const now = last.t, cur = last.price;
+  const diffOver = (windowMs: number): number | null => {
+    const base = findBaselinePrice(buf, now - windowMs);
+    if (!base || base.t === now) return null;
+    return cur - base.price;
+  };
+  const diffs = [diffOver(5000), diffOver(10_000)].filter((x): x is number => x !== null);
+  const ultraShortYen = diffs.length ? diffs.sort((a, b) => Math.abs(b) - Math.abs(a))[0]! : null;
+  const base60 = findBaselinePrice(buf, now - 60_000);
+  const shortPct = base60 && base60.price > 0 && base60.t !== now
+    ? ((cur - base60.price) / base60.price) * 100
+    : null;
+  return { ultraShortYen, shortPct };
+}
+
 // テスト用
 export function _reset(): void { buffers.clear(); }

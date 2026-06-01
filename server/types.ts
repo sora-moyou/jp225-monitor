@@ -6,9 +6,14 @@ export type Symbol =
 export interface Price {
   symbol: Symbol;
   price: number;             // Yahoo が返す値そのまま (Nikkei は index 値、ドル円は rate、米株指数も index 値)
-  changePercent: number;     // Yahoo が返す前日比 %
+  changePercent: number;     // 前日終値比 %
   timestamp: number;
   stale: boolean;
+  // v0.3.33: NIY=F のみ。アラート2階層に対応した直近の動きを価格ボードに表示する。
+  //   ultraShortYen = 超短期(5〜10秒窓の値幅・円。tickDetector は値幅ベース) 例 +50
+  //   shortPct      = 短期(直近60秒の変化率 %。alertLoop 1分burst 相当)
+  // 算出に十分なサンプルが無い窓は null。
+  momentum?: { ultraShortYen: number | null; shortPct: number | null };
 }
 
 export interface NewsItem {

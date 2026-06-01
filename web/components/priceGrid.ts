@@ -1,6 +1,23 @@
 import type { Price, AlertEvent } from '../types.js';
 import { INSTRUMENTS } from '../../server/config.js';
 
+// v0.3.33: 日経カード用。アラート2階層に対応した直近の動きを描画する。
+//   超短期 = 値幅(円) … tickDetector(5/10秒)の発火判定に対応
+//   短期   = 変化率(%) … alertLoop(1分burst)に対応
+function momSpan(label: string, text: string, v: number | null): string {
+  const cls = v === null ? 'flat' : v >= 0 ? 'up' : 'down';
+  return `<span class="${cls}">${label} ${text}</span>`;
+}
+function renderMomentum(m: NonNullable<Price['momentum']>): string {
+  const yen = m.ultraShortYen === null
+    ? momSpan('超短', '—', null)
+    : momSpan('超短', `${m.ultraShortYen >= 0 ? '+' : ''}${Math.round(m.ultraShortYen)}円`, m.ultraShortYen);
+  const pct = m.shortPct === null
+    ? momSpan('短期', '—', null)
+    : momSpan('短期', `${m.shortPct >= 0 ? '+' : ''}${m.shortPct.toFixed(2)}%`, m.shortPct);
+  return `<span class="change mom">${yen}<span class="m-sep">/</span>${pct}</span>`;
+}
+
 export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnly?: Set<string>): void {
   const priceMap = new Map(prices.map(p => [p.symbol, p]));
   container.innerHTML = '';
@@ -13,8 +30,11 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
     card.className = 'price-card';
     card.dataset.symbol = meta.symbol;
     if (p) {
-      const dir = p.changePercent >= 0 ? 'up' : 'down';
-      card.classList.add(dir);
+      const mom = meta.symbol === 'NIY=F' ? p.momentum : undefined;
+      // 日経は「短期(率)」の符号でカード方向を決める(日中の値動きと一致させる)。
+      // それ以外/momentum 未取得時は従来どおり前日終値比で判定。
+      const dirBasis = mom && mom.shortPct !== null ? mom.shortPct : p.changePercent;
+      card.classList.add(dirBasis >= 0 ? 'up' : 'down');
       if (p.stale) card.classList.add('stale');
       const sourceBadge = p.stale ? '<span class="source-badge">INV</span>' : '';
       const decimals = meta.unit === 'bp' ? 3 : 2;
@@ -23,11 +43,14 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
         minimumFractionDigits: decimals,
         maximumFractionDigits: decimals,
       });
+      const changeHtml = mom
+        ? renderMomentum(mom)
+        : `<span class="change">${sign}${p.changePercent.toFixed(2)}%</span>`;
       card.innerHTML = `
         <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
         <div class="value">
           <span class="num">${formattedPrice}</span>
-          <span class="change">${sign}${p.changePercent.toFixed(2)}%</span>
+          ${changeHtml}
         </div>
       `;
     } else {
