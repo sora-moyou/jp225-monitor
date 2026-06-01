@@ -3,7 +3,7 @@ import { connectStream } from './lib/stream.js';
 import { fetchExplanation } from './lib/api.js';
 import { renderPriceGrid, flashCard } from './components/priceGrid.js';
 import { renderNews } from './components/newsFeed.js';
-import { addBanner, setExplanation } from './components/alertBanner.js';
+import { addBanner, setExplanation, restoreSavedBanners } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
@@ -130,6 +130,8 @@ function setupColResize(handleId: string, gridSelector: string, storageKey: stri
 setupResize('chat-resize', '.chat-board', 'chat-height', 120);
 // アラート高さ: ハンドルはアラートの下にある (下ドラッグでアラート拡大)
 setupResize('alerts-resize', '.alerts-pane', 'alerts-height', 100);
+// 主要レベル高さ: ハンドルはレベルパネルの下にある (下ドラッグで拡大)
+setupResize('levels-resize', '.levels-panel', 'levels-height', 60);
 // 左右の幅: 中央線を左右ドラッグ
 setupColResize('col-resize', '.main-grid', 'main-split');
 
@@ -199,8 +201,9 @@ const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
 const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
-const levelsMetaEl = document.getElementById('levels-meta');
-if (levelsBodyEl && levelsMetaEl) initLevelsPanel(levelsBodyEl, levelsMetaEl);
+if (levelsBodyEl) initLevelsPanel(levelsBodyEl);
+// 当面、再起動後も直近アラートを残す（localStorage から復元）。
+restoreSavedBanners(bannerEl);
 const statusEl = document.getElementById('connection-status')!;
 const clockEl = document.getElementById('clock')!;
 const enableSoundBtn = document.getElementById('enable-sound') as HTMLButtonElement;

@@ -70,10 +70,14 @@ body {
 }
 .alert strong { font-size: 14px; }
 .alert .alert-time {
-  color: var(--muted);
+  color: var(--text);
+  font-weight: 700;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  margin-right: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 6px;
 }
 .alert .kind-tag { color: var(--muted); font-size: 12px; }
 .alert .ctx-15min {
@@ -110,17 +114,16 @@ body {
 .alert .close:hover { color: var(--text); }
 .alert .explanation { color: var(--text); }
 
-.levels-panel { margin: 8px 0; }
-.levels-panel h2 { font-size: 13px; margin: 0 0 4px; color: var(--muted); }
-.levels-meta { font-size: 11px; color: var(--muted); font-weight: normal; }
+.levels-panel { overflow-y: auto; }
+.levels-meta { font-size: 11px; color: var(--muted); padding: 0 4px 2px; }
 .levels-body { font-variant-numeric: tabular-nums; font-size: 13px; }
 .levels-row { display: flex; gap: 8px; padding: 1px 4px; }
 .levels-row .lv-price { width: 72px; text-align: right; }
-.levels-row .lv-dist { width: 48px; text-align: right; color: var(--muted); }
-.levels-row .lv-label { color: var(--muted); font-size: 12px; }
-.levels-row.strong .lv-price { font-weight: bold; color: var(--text); }
+/* dist / label は薄くせず、その行の価格と同じ色（行の color を継承）にする。 */
+.levels-row .lv-dist { width: 48px; text-align: right; }
+.levels-row .lv-label { font-size: 12px; }
+.levels-row.strong .lv-price { font-weight: bold; }
 .levels-row.reversal { color: #d29922; }
-.levels-row.reversal .lv-label { color: #d29922; }
 .levels-cur { padding: 2px 4px; color: #58a6ff; font-size: 12px; }
 .levels-empty { color: var(--muted); font-size: 12px; padding: 2px 4px; }
 
@@ -141,8 +144,9 @@ body {
   min-height: 0;                    /* flex子のスクロールを有効化 */
 }
 
-/* 左列の3ブロックの高さ配分 */
+/* 左列のブロック高さ配分 */
 .left-col .price-grid { flex: 0 0 auto; }                              /* 内容ぶん */
+.left-col .levels-panel { flex: 0 0 auto; height: 150px; min-height: 40px; }  /* D&Dで高さ可変・内部スクロール */
 .left-col .chart-panel { flex: 1 1 auto; min-height: 150px; }           /* 残り */
 .left-col .chat-board { flex: 0 0 auto; height: 280px; min-height: 120px; }  /* ユーザー指定 (D&D可) */
 
@@ -286,13 +290,13 @@ body {
 .price-card.down .value .num,
 .price-card.down .value .change { color: var(--down); }
 /* v0.3.33: 日経の超短期(値幅)/短期(率) は各値ごとに符号で色付け (逆符号もありうる) */
-/* v0.3.34: 価格と momentum の間隔を広げる (margin-left) */
-.price-card .value .change.mom { font-size: 16px; display: inline-flex; gap: 14px; align-items: baseline; margin-left: 18px; }
+/* 価格と momentum の間隔を広げる (margin-left)。各列は期間ラベルを値の真上に積む。 */
+.price-card .value .change.mom { font-size: 16px; display: inline-flex; gap: 14px; align-items: flex-end; margin-left: 18px; }
+.price-card .value .change.mom .mcol { display: inline-flex; flex-direction: column; align-items: flex-end; line-height: 1.15; }
+.price-card .value .change.mom .mlab { font-size: 10px; color: var(--muted); font-weight: 400; }
 .price-card .value .change.mom .up { color: var(--up); }
 .price-card .value .change.mom .down { color: var(--down); }
 .price-card .value .change.mom .flat { color: var(--muted, #888); }
-/* v0.3.34: 期間ラベル(1分 / 10秒)はラベルと同じ(中立)色・小さめ */
-.price-card .label .periods { font-size: 12px; color: inherit; opacity: 0.7; margin-left: 8px; font-variant-numeric: tabular-nums; }
 .price-card.stale { opacity: 0.75; }
 .price-card.flash-up { animation: flashUp 500ms 2; }
 .price-card.flash-down { animation: flashDown 500ms 2; }

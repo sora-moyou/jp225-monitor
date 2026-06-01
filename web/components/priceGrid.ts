@@ -3,16 +3,19 @@ import { INSTRUMENTS } from '../../server/config.js';
 
 // v0.3.33: 日経カード用。アラート2階層に対応した直近の動きを、ラベル無しで値だけ描画する。
 //   短期 = 変化率(%, 直近60秒) / 超短期 = 値幅(円, 5〜10秒) の順で「+0.20%  +50円」のように出す。
-function momSpan(text: string, v: number | null): string {
+// 各列に期間ラベル(1分/10秒)を値の真上に置き、横ずれしないよう列単位で揃える。
+function momCol(label: string, text: string, v: number | null): string {
   const cls = v === null ? 'flat' : v >= 0 ? 'up' : 'down';
-  return `<span class="${cls}">${text}</span>`;
+  return `<span class="mcol"><span class="mlab">${label}</span><span class="${cls}">${text}</span></span>`;
 }
 function renderMomentum(m: NonNullable<Price['momentum']>): string {
-  const pct = momSpan(
+  const pct = momCol(
+    '1分',
     m.shortPct === null ? '—' : `${m.shortPct >= 0 ? '+' : ''}${m.shortPct.toFixed(2)}%`,
     m.shortPct,
   );
-  const yen = momSpan(
+  const yen = momCol(
+    '10秒',
     m.ultraShortYen === null ? '—' : `${m.ultraShortYen >= 0 ? '+' : ''}${Math.round(m.ultraShortYen)}円`,
     m.ultraShortYen,
   );
@@ -48,10 +51,8 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
       const changeHtml = mom
         ? renderMomentum(mom)
         : `<span class="change">${sign}${p.changePercent.toFixed(2)}%</span>`;
-      // v0.3.34: 日経はラベルと同じ行に期間ラベル(1分=短期率 / 10秒=超短期値幅)をラベル色で。
-      const periods = mom ? '<span class="periods">1分　10秒</span>' : '';
       card.innerHTML = `
-        <div class="label"><span>${meta.labelJa}</span>${periods}${sourceBadge}</div>
+        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
         <div class="value">
           <span class="num">${formattedPrice}</span>
           ${changeHtml}
