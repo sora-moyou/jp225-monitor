@@ -15,6 +15,7 @@ export interface UserConfig {
   pricePollMs?: number;
   newsPollMs?: number;
   port?: number;
+  cooldownMin?: number;   // アラート共有クールダウン(分)
 }
 
 type ProviderName = 'gemini' | 'groq' | 'openai';
@@ -24,6 +25,7 @@ export const PARAM_BOUNDS = {
   pricePollMs: { min: 500, max: 60_000, default: 2000 },
   newsPollMs:  { min: 10_000, max: 600_000, default: 60_000 },
   port:        { min: 1024, max: 65_535, default: 3000 },
+  cooldownMin: { min: 1, max: 120, default: 15 },
 } as const;
 
 let cached: UserConfig | null = null;
@@ -76,6 +78,11 @@ export function resolveNewsPollMs(): number {
   return typeof v === 'number' ? v : PARAM_BOUNDS.newsPollMs.default;
 }
 
+export function resolveCooldownMin(): number {
+  const v = loadConfig().cooldownMin;
+  return typeof v === 'number' ? v : PARAM_BOUNDS.cooldownMin.default;
+}
+
 export function resolvePort(): number {
   const v = loadConfig().port;
   if (typeof v === 'number') return v;
@@ -117,6 +124,10 @@ export function ensureDefaults(): void {
   }
   if (cfg.port === undefined) {
     cfg.port = PARAM_BOUNDS.port.default;
+    modified = true;
+  }
+  if (cfg.cooldownMin === undefined) {
+    cfg.cooldownMin = PARAM_BOUNDS.cooldownMin.default;
     modified = true;
   }
   if (modified) {

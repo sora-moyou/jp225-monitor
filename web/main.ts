@@ -147,14 +147,15 @@ initSettingsModal({
   inputPricePoll: document.getElementById('settings-price-poll') as HTMLInputElement,
   inputNewsPoll:  document.getElementById('settings-news-poll') as HTMLInputElement,
   inputPort:      document.getElementById('settings-port') as HTMLInputElement,
+  inputCooldownMin: document.getElementById('settings-cooldown-min') as HTMLInputElement,
   portWarning:    document.getElementById('settings-port-warning') as HTMLElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
   updateResult:   document.getElementById('settings-update-result') as HTMLElement,
   currentVersion: document.getElementById('settings-current-version') as HTMLElement,
-  basedataBtn:    document.getElementById('settings-basedata-import') as HTMLButtonElement,
-  basedataResult: document.getElementById('settings-basedata-result') as HTMLElement,
+  basedataCheckBtn: document.getElementById('settings-basedata-check') as HTMLButtonElement,
+  basedataResult:   document.getElementById('settings-basedata-result') as HTMLElement,
 });
 
 // v0.3.37: ウィンドウ×/終了時、設定の「完全終了」チェックが入っていれば collector も停止する。

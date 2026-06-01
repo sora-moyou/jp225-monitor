@@ -68,6 +68,10 @@
           Sidecar port (1024–65535)
           <input type="number" id="settings-port" min="1024" max="65535" step="1" value="3000" />
         </label>
+        <label>
+          アラート クールダウン (分, 1–120)
+          <input type="number" id="settings-cooldown-min" min="1" max="120" step="1" value="15" />
+        </label>
         <div id="settings-port-warning" class="settings-warning hidden">
           ⚠ port を変更しました。サーバを再起動するまで反映されません。
         </div>
@@ -84,11 +88,12 @@
 
       <fieldset class="settings-section">
         <legend>基礎データ</legend>
-        <div class="basedata-row">
-          <button type="button" id="settings-basedata-import" class="btn-secondary">基礎データを取り込む</button>
-          <span id="settings-basedata-result" class="basedata-result"></span>
+        <div class="version-row">
+          履歴(1分足)の新着確認:
+          <button type="button" id="settings-basedata-check" class="btn-secondary">新着をチェック</button>
         </div>
-        <div class="exit-hint">GitHub から最新の履歴(1分足)を取得し、ローカルDBへ追記/更新します（既存の新しいデータは消えません）。</div>
+        <div id="settings-basedata-result" class="update-result"></div>
+        <div class="exit-hint">GitHub の最新基礎データを確認し、「取り込み」でローカルDBへ追記/更新します（既存の新しいデータは消えません）。</div>
       </fieldset>
 
       <fieldset class="settings-section">

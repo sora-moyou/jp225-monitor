@@ -10,7 +10,7 @@ function escapeHtml(s: string): string {
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
-  pricePollMs: number; newsPollMs: number; port: number;
+  pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
 }
@@ -35,6 +35,7 @@ interface SavePayload {
   pricePollMs?: number | null;
   newsPollMs?: number | null;
   port?: number | null;
+  cooldownMin?: number | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -77,13 +78,14 @@ export interface SettingsElements {
   inputPricePoll: HTMLInputElement;
   inputNewsPoll: HTMLInputElement;
   inputPort: HTMLInputElement;
+  inputCooldownMin: HTMLInputElement;
   portWarning: HTMLElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
   updateResult: HTMLElement;
   currentVersion: HTMLElement;
-  basedataBtn: HTMLButtonElement;
+  basedataCheckBtn: HTMLButtonElement;
   basedataResult: HTMLElement;
 }
 
@@ -106,6 +108,7 @@ export function initSettingsModal(el: SettingsElements): void {
       el.inputPricePoll.value = String(current.pricePollMs);
       el.inputNewsPoll.value = String(current.newsPollMs);
       el.inputPort.value = String(current.port);
+      el.inputCooldownMin.value = String(current.cooldownMin);
     }
     el.portWarning.classList.add('hidden');
   }
@@ -180,24 +183,64 @@ export function initSettingsModal(el: SettingsElements): void {
 
   el.checkUpdateBtn.addEventListener('click', () => { void checkUpdate(); });
 
-  el.basedataBtn.addEventListener('click', async () => {
-    el.basedataBtn.disabled = true;
-    const orig = el.basedataBtn.textContent ?? '基礎データを取り込む';
-    el.basedataBtn.textContent = '取り込み中…';
-    el.basedataResult.textContent = '';
+  // 基礎データ: アップデートと同じ流れ。「新着をチェック」→ 結果に「取り込み」ボタンを出す。
+  function wireBasedataImport() {
+    const btn = el.basedataResult.querySelector<HTMLButtonElement>('.basedata-import-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const prog = el.basedataResult.querySelector<HTMLElement>('.basedata-progress');
+      if (prog) prog.textContent = ' 取り込み中…';
+      try {
+        const res = await fetch(apiUrl('/api/basedata/import'), { method: 'POST' });
+        const d = await res.json() as { ok: boolean; applied?: number; skipped?: number; from?: string; to?: string; error?: string };
+        el.basedataResult.className = `update-result ${d.ok ? 'ok' : 'err'}`;
+        el.basedataResult.textContent = d.ok
+          ? `✅ ${d.applied}件取り込み (${d.from ?? '?'}〜${d.to ?? '?'})${d.skipped ? ` / 休場スキップ${d.skipped}` : ''}`
+          : `❌ ${d.error ?? '失敗'}`;
+      } catch (err) {
+        el.basedataResult.className = 'update-result err';
+        el.basedataResult.textContent = `❌ ${err instanceof Error ? err.message : 'failed'}`;
+      }
+    });
+  }
+
+  async function checkBasedata() {
+    el.basedataCheckBtn.disabled = true;
+    const orig = el.basedataCheckBtn.textContent ?? '新着をチェック';
+    el.basedataCheckBtn.textContent = 'チェック中...';
+    el.basedataResult.className = 'update-result';
+    el.basedataResult.textContent = '確認中...';
     try {
-      const res = await fetch(apiUrl('/api/basedata/import'), { method: 'POST' });
-      const data = await res.json() as { ok: boolean; applied?: number; skipped?: number; from?: string; to?: string; error?: string };
-      el.basedataResult.textContent = data.ok
-        ? `✅ ${data.applied}件取り込み (${data.from ?? '?'}〜${data.to ?? '?'})${data.skipped ? ` / 休場スキップ${data.skipped}` : ''}`
-        : `❌ ${data.error ?? '失敗'}`;
+      const res = await fetch(apiUrl('/api/basedata/status'));
+      const s = await res.json() as { ok: boolean; published?: boolean; available?: boolean; lastBar?: string | null; count?: number | null; error?: string };
+      if (!s.ok) {
+        el.basedataResult.className = 'update-result err';
+        el.basedataResult.textContent = `❌ ${escapeHtml(s.error ?? 'チェック失敗')}`;
+      } else if (!s.published) {
+        el.basedataResult.className = 'update-result warn';
+        el.basedataResult.textContent = '⚠️ 基礎データ未公開（先に publish が必要）';
+      } else {
+        const label = s.available
+          ? `🆙 新しい基礎データ（${escapeHtml(s.lastBar ?? '?')}まで・${s.count ?? '?'}件）`
+          : `✅ 取り込み済み（最新・${escapeHtml(s.lastBar ?? '?')}まで）`;
+        const btnText = s.available ? '取り込み' : '再取り込み';
+        el.basedataResult.className = 'update-result ok';
+        el.basedataResult.innerHTML =
+          `${label}<button type="button" class="update-now-btn basedata-import-btn">${btnText}</button>`
+          + `<span class="basedata-progress"></span>`;
+        wireBasedataImport();
+      }
     } catch (err) {
+      el.basedataResult.className = 'update-result err';
       el.basedataResult.textContent = `❌ ${err instanceof Error ? err.message : 'failed'}`;
     } finally {
-      el.basedataBtn.disabled = false;
-      el.basedataBtn.textContent = orig;
+      el.basedataCheckBtn.disabled = false;
+      el.basedataCheckBtn.textContent = orig;
     }
-  });
+  }
+
+  el.basedataCheckBtn.addEventListener('click', () => { void checkBasedata(); });
 
   async function open() {
     el.modal.classList.remove('hidden');
@@ -236,9 +279,11 @@ export function initSettingsModal(el: SettingsElements): void {
       const pp = Number(el.inputPricePoll.value);
       const np = Number(el.inputNewsPoll.value);
       const pt = Number(el.inputPort.value);
+      const cm = Number(el.inputCooldownMin.value);
       if (current && pp !== current.pricePollMs) body.pricePollMs = pp;
       if (current && np !== current.newsPollMs) body.newsPollMs = np;
       if (current && pt !== current.port) body.port = pt;
+      if (current && cm !== current.cooldownMin) body.cooldownMin = cm;
 
       const result = await saveSettings(body);
       if (!result.ok) {

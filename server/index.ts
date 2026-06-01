@@ -13,7 +13,7 @@ import { logsHandler } from './routes/logs.js';
 import { translateHandler } from './routes/translate.js';
 import { correlationHandler } from './routes/correlation.js';
 import { levelsHandler } from './routes/levels.js';
-import { basedataImportHandler } from './routes/basedata.js';
+import { basedataImportHandler, basedataStatusHandler } from './routes/basedata.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
@@ -21,9 +21,11 @@ import { startAlertLoop } from './loops/alertLoop.js';
 import { startLevelsLoop } from './loops/levelsLoop.js';
 import { warmFromDb } from './warmup.js';
 import { isLLMEnabled } from './llm/openai.js';
-import { resolvePort, ensureDefaults } from './configStore.js';
+import { resolvePort, ensureDefaults, resolveCooldownMin } from './configStore.js';
+import { setCooldownMs } from './alertCooldown.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
+setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
 
 declare const __APP_VERSION__: string | undefined;
 
@@ -65,6 +67,7 @@ app.get('/api/logs', logsHandler);
 app.post('/api/translate', translateHandler);
 app.get('/api/correlation', correlationHandler);
 app.get('/api/levels', levelsHandler);
+app.get('/api/basedata/status', basedataStatusHandler);
 app.post('/api/basedata/import', basedataImportHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
 app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor' }));

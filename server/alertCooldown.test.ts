@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { canFire, markFired, COOLDOWN_MS, _reset } from './alertCooldown.js';
 
-describe('alertCooldown (共有・同方向30分・逆方向は起点越えで解禁)', () => {
+describe('alertCooldown (共有・同方向は既定15分・逆方向は起点越えで解禁)', () => {
   beforeEach(() => _reset());
   const T0 = 1_000_000;
 
-  it('COOLDOWN_MS は 30 分', () => {
-    expect(COOLDOWN_MS).toBe(30 * 60 * 1000);
+  it('COOLDOWN_MS は既定 15 分', () => {
+    expect(COOLDOWN_MS).toBe(15 * 60 * 1000);
   });
 
   it('記録なしなら発火可', () => {

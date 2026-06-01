@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -133,6 +133,18 @@ describe('getSessionOHLC', () => {
     seedBar(db, '2026-05-31', 'Day', 200, 1, 2, 0.5, 1.5);
     seedBar(db, '2026-06-01', 'Day', 300, 1, 2, 0.5, 1.5);
     expect(getSessionOHLC(db, 'NIY=F', 2).length).toBe(2);
+    db.close();
+  });
+});
+
+describe('getMeta/setMeta', () => {
+  it('未設定は null、setMeta で書いて読める、上書きできる', () => {
+    const db = openDb(':memory:');
+    expect(getMeta(db, 'k')).toBeNull();
+    setMeta(db, 'k', 'v1');
+    expect(getMeta(db, 'k')).toBe('v1');
+    setMeta(db, 'k', 'v2');
+    expect(getMeta(db, 'k')).toBe('v2');
     db.close();
   });
 });
