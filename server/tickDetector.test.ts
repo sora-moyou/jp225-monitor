@@ -15,12 +15,12 @@ describe('getMomentum (日経カード: 超短期=値幅円 / 短期=率%)', () 
     expect(getMomentum('NIY=F')).toBeNull();   // 1本のみ
   });
 
-  it('超短期は5/10秒窓の値幅(円, |差|が大きい方)を返す', () => {
+  it('超短期は10秒窓の値幅(円)を返す', () => {
     feedPrice([px(67000, 0)]);
     feedPrice([px(67050, 5000)]);
     feedPrice([px(67030, 10000)]);
     const m = getMomentum('NIY=F')!;
-    // 5s前(67050)から -20、10s前(67000)から +30 → |30| を採用
+    // 10秒前(67000)から +30 (固定10秒窓)
     expect(m.ultraShortYen).toBe(30);
     // 60秒前のサンプルが無い → 短期は null
     expect(m.shortPct).toBeNull();

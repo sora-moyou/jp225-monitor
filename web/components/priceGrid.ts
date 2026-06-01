@@ -38,7 +38,8 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
       card.classList.add(dirBasis >= 0 ? 'up' : 'down');
       if (p.stale) card.classList.add('stale');
       const sourceBadge = p.stale ? '<span class="source-badge">INV</span>' : '';
-      const decimals = meta.unit === 'bp' ? 3 : 2;
+      // 日経は値幅が大きく小数点以下は不要 → 整数表示。
+      const decimals = meta.symbol === 'NIY=F' ? 0 : meta.unit === 'bp' ? 3 : 2;
       const sign = p.changePercent >= 0 ? '+' : '';
       const formattedPrice = p.price.toLocaleString('en-US', {
         minimumFractionDigits: decimals,
@@ -47,8 +48,10 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
       const changeHtml = mom
         ? renderMomentum(mom)
         : `<span class="change">${sign}${p.changePercent.toFixed(2)}%</span>`;
+      // v0.3.34: 日経はラベルと同じ行に期間ラベル(1分=短期率 / 10秒=超短期値幅)をラベル色で。
+      const periods = mom ? '<span class="periods">1分　10秒</span>' : '';
       card.innerHTML = `
-        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
+        <div class="label"><span>${meta.labelJa}</span>${periods}${sourceBadge}</div>
         <div class="value">
           <span class="num">${formattedPrice}</span>
           ${changeHtml}

@@ -3,7 +3,7 @@ import { computeContext, type AlertEvent } from './alertDetector.js';
 import { getCachedBars } from './loops/alertLoop.js';
 import { broadcast } from './sse/broker.js';
 import { INSTRUMENTS } from './config.js';
-import { isOnCooldown, markFired } from './alertCooldown.js';
+import { canFire, markFired } from './alertCooldown.js';
 
 // v0.3.17: 超短期 (5s/10s) フラッシュ検知。NIY=F (日経 225) 専用。
 // v0.3.33: 価格がリアルタイム取得できるようになったので「値幅(円)」ベースに変更 (ユーザ要望)。
@@ -44,7 +44,6 @@ function handleOne(price: Price): void {
   buffers.set(price.symbol, buf);
 
   if (buf.length < 3) return;
-  if (isOnCooldown(price.symbol, now)) return;
 
   // 5s と 10s 双方を評価、より大きい |値幅(円)| を採用
   const candidates: { window: number; ret: number; yen: number }[] = [];
@@ -59,8 +58,10 @@ function handleOne(price: Price): void {
   if (candidates.length === 0) return;
   candidates.sort((a, b) => Math.abs(b.yen) - Math.abs(a.yen));
   const fired = candidates[0]!;
-
-  markFired(price.symbol, now);
+  const dir = fired.yen >= 0 ? 'up' : 'down';
+  // 共有クールダウン (逆方向は起点越えで解禁)
+  if (!canFire(price.symbol, dir, price.price, now)) return;
+  markFired(price.symbol, dir, price.price, now);
   const bars = getCachedBars(price.symbol);
   const ctx = computeContext(bars);
   const meta = INSTRUMENTS.find(i => i.symbol === price.symbol);
@@ -81,22 +82,17 @@ function handleOne(price: Price): void {
   broadcast({ type: 'alert', payload: alert });
 }
 
-// v0.3.33: 価格ボード表示用。NIY=F の直近の動きをアラート2階層に対応して返す。
-//   ultraShortYen = 超短期(5/10秒窓の値幅・円, |差|が大きい方) — tickDetector は値幅ベース
-//   shortPct      = 短期(直近60秒の変化率 %) — alertLoop 1分burst 相当
-// 既存の tick バッファ(2分保持)を再利用。窓に十分なサンプルが無ければ各値 null。
+// v0.3.33/34: 価格ボード表示用。NIY=F の直近の動きを期間固定で返す。
+//   ultraShortYen = 超短期(10秒窓の値幅・円) … カードのラベル「10秒」に対応
+//   shortPct      = 短期(60秒窓の変化率 %)   … カードのラベル「1分」に対応
+// 既存の tick バッファを再利用。窓に十分なサンプルが無ければ各値 null。
 export function getMomentum(symbol: string = 'NIY=F'): { ultraShortYen: number | null; shortPct: number | null } | null {
   const buf = buffers.get(symbol);
   if (!buf || buf.length < 2) return null;
   const last = buf[buf.length - 1]!;
   const now = last.t, cur = last.price;
-  const diffOver = (windowMs: number): number | null => {
-    const base = findBaselinePrice(buf, now - windowMs);
-    if (!base || base.t === now) return null;
-    return cur - base.price;
-  };
-  const diffs = [diffOver(5000), diffOver(10_000)].filter((x): x is number => x !== null);
-  const ultraShortYen = diffs.length ? diffs.sort((a, b) => Math.abs(b) - Math.abs(a))[0]! : null;
+  const base10 = findBaselinePrice(buf, now - 10_000);
+  const ultraShortYen = base10 && base10.t !== now ? cur - base10.price : null;
   const base60 = findBaselinePrice(buf, now - 60_000);
   const shortPct = base60 && base60.price > 0 && base60.t !== now
     ? ((cur - base60.price) / base60.price) * 100

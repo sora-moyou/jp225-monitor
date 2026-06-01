@@ -1,8 +1,25 @@
 import type { Request, Response } from 'express';
-import { chat } from '../llm/openai.js';
+import { chat, type Correlate } from '../llm/openai.js';
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
-import { getSignificantMovers } from '../marketSnapshot.js';
+import { getCorrelationSnapshot } from '../loops/correlationLoop.js';
+import { INSTRUMENTS } from '../config.js';
+
+// v0.3.34: AI には「相関の高い1銘柄」だけ渡す。日経の急変が外部(ファンダ)要因か
+// 日経固有(テクニカル)要因かを切り分ける材料になればよい(全 movers は渡さない)。
+function topCorrelate(): Correlate | undefined {
+  const top = getCorrelationSnapshot().ranked[0];
+  if (!top) return undefined;
+  const tp = getPrices().find(p => p.symbol === top.symbol);
+  if (!tp) return undefined;
+  const meta = INSTRUMENTS.find(i => i.symbol === top.symbol);
+  return {
+    label: meta?.labelJa ?? top.symbol,
+    corr: top.corr,
+    samples: top.samples,
+    changePercent: tp.changePercent,
+  };
+}
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; }
 
@@ -30,9 +47,7 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       prices: getPrices(),
       news: getNews(),
       technical: buildNikkeiTechnical(),
-      // v0.3.32: 横断分析(リアルタイム足ベース)もチャット文脈に注入。AI が「香港ハンセン急落→
-      // アジア全体リスクオフ→日経つれ安」のように実時間のアジア連動を語れるようにする。
-      crossAsset: getSignificantMovers('NIY=F'),
+      correlate: topCorrelate(),
     });
     res.json({ reply });
   } catch (err) {

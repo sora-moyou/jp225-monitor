@@ -5,7 +5,7 @@ import {
 } from '../alertDetector.js';
 import { broadcast } from '../sse/broker.js';
 import { INSTRUMENTS } from '../config.js';
-import { isOnCooldown, markFired } from '../alertCooldown.js';
+import { canFire, markFired } from '../alertCooldown.js';
 import { getRealtimeBars, isRealtimeBarsReady, getRollingReturn } from '../feedBars.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
@@ -77,13 +77,11 @@ function evaluateAndFire(): void {
     const bars = barsFor(sym);
     if (!bars || bars.length < 65) continue;
 
-    if (isOnCooldown(sym, now)) continue;
-
     const meta = META_BY_SYM.get(sym);
     if (!meta) continue;
     const crossRequired = CROSS_REQUIRED.has(sym);
 
-    // burst (1m) 優先
+    // burst (1m) 優先、無ければ trend (5m, 長期)。両方とも考慮する。
     const burst = detectBurst(sym, bars, crossRequired, cross);
     let result: { z: number; latestRet: number; kind: 'slope' | 'magnitude'; windowSec: number } | null = null;
     if (burst) result = { ...burst, kind: 'slope', windowSec: 60 };
@@ -93,24 +91,27 @@ function evaluateAndFire(): void {
     }
     if (!result) continue;
 
+    const dir = result.latestRet >= 0 ? 'up' : 'down';
+    const curPrice = bars[bars.length - 1]!.close;
+    if (!canFire(sym, dir, curPrice, now)) continue;   // 共有クールダウン (逆方向は起点越えで解禁)
+
     const { pa15min, change15min, range1h } = computeContext(bars);
-    const lastBarT = bars[bars.length - 1]!.t;
     const alert: AlertEvent = {
       symbol: sym,
-      symbolLabel: meta.labelJa,
+      symbolLabel: meta.labelJa + (result.windowSec === 60 ? ' (短期1分)' : ' (長期5分)'),
       changePercent: result.latestRet * 100,
       windowSeconds: result.windowSec,
       detectionKind: result.kind,
-      direction: result.latestRet >= 0 ? 'up' : 'down',
-      triggeredAt: lastBarT,
+      direction: dir,
+      triggeredAt: bars[bars.length - 1]!.t,
       change15min,
       pa15min,
       range1h,
       zscore: result.z,
     };
 
-    markFired(sym, now);
-    console.log(`[alertLoop] ${sym} ${alert.detectionKind} ${alert.direction} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
+    markFired(sym, dir, curPrice, now);
+    console.log(`[alertLoop] ${sym} ${alert.detectionKind} ${dir} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
     broadcast({ type: 'alert', payload: alert });
   }
 }
@@ -145,7 +146,6 @@ function crossConfirms(latestRet: number, cross: CrossSnapshot, P: DetectorParam
 export function evaluateRealtime(): void {
   const sym = 'NIY=F';
   const now = Date.now();
-  if (isOnCooldown(sym, now)) return;
   const meta = META_BY_SYM.get(sym);
   if (!meta) return;
   const bars = barsFor(sym);
@@ -183,20 +183,24 @@ export function evaluateRealtime(): void {
   }
   if (!result) return;
 
+  const dir = result.latestRet >= 0 ? 'up' : 'down';
+  const curPrice = bars[bars.length - 1]!.close;
+  if (!canFire(sym, dir, curPrice, now)) return;   // 共有クールダウン (逆方向は起点越えで解禁)
+
   const { pa15min, change15min, range1h } = computeContext(bars);
   const alert: AlertEvent = {
     symbol: sym,
-    symbolLabel: meta.labelJa,
+    symbolLabel: meta.labelJa + (result.windowSec === 60 ? ' (短期1分)' : ' (長期5分)'),
     changePercent: result.latestRet * 100,
     windowSeconds: result.windowSec,
     detectionKind: result.kind,
-    direction: result.latestRet >= 0 ? 'up' : 'down',
+    direction: dir,
     triggeredAt: now,
     change15min, pa15min, range1h,
     zscore: result.z,
   };
-  markFired(sym, now);
-  console.log(`[alertLoop:rt] ${sym} ${result.kind} ${alert.direction} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
+  markFired(sym, dir, curPrice, now);
+  console.log(`[alertLoop:rt] ${sym} ${result.kind} ${dir} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
   broadcast({ type: 'alert', payload: alert });
 }
 
