@@ -8,6 +8,7 @@ import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
 import { initSettingsModal } from './components/settingsModal.js';
+import { initParamsModal } from './components/paramsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
@@ -144,11 +145,6 @@ initSettingsModal({
   inputGemini:    document.getElementById('key-gemini') as HTMLInputElement,
   inputGroq:      document.getElementById('key-groq') as HTMLInputElement,
   inputOpenai:    document.getElementById('key-openai') as HTMLInputElement,
-  inputPricePoll: document.getElementById('settings-price-poll') as HTMLInputElement,
-  inputNewsPoll:  document.getElementById('settings-news-poll') as HTMLInputElement,
-  inputPort:      document.getElementById('settings-port') as HTMLInputElement,
-  inputCooldownMin: document.getElementById('settings-cooldown-min') as HTMLInputElement,
-  portWarning:    document.getElementById('settings-port-warning') as HTMLElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
@@ -157,6 +153,40 @@ initSettingsModal({
   basedataCheckBtn: document.getElementById('settings-basedata-check') as HTMLButtonElement,
   basedataResult:   document.getElementById('settings-basedata-result') as HTMLElement,
 });
+
+// 詳細パラメータ モーダル (定期ポーリング / クールダウン等。設定とは別ボタン 🎛️)
+initParamsModal({
+  openBtn:     document.getElementById('params-btn') as HTMLButtonElement,
+  modal:       document.getElementById('params-modal') as HTMLElement,
+  backdrop:    document.getElementById('params-backdrop') as HTMLElement,
+  closeBtn:    document.getElementById('params-close') as HTMLButtonElement,
+  saveBtn:     document.getElementById('params-save') as HTMLButtonElement,
+  portWarning: document.getElementById('params-port-warning') as HTMLElement,
+  status:      document.getElementById('params-status') as HTMLElement,
+});
+
+// ③ Ctrl + / Ctrl - / Ctrl 0 でチャート以外のUI文字サイズを可変 (zoom)。localStorage 永続。
+// body 全体を zoom し、チャート(.chart-panel)だけ逆 zoom で実寸を維持する。
+(function setupUiZoom() {
+  const KEY = 'ui-zoom';
+  let zoom = parseFloat(localStorage.getItem(KEY) ?? '1') || 1;
+  const apply = () => {
+    document.documentElement.style.setProperty('--ui-zoom', String(zoom));
+    document.documentElement.style.setProperty('--ui-zoom-inv', String(1 / zoom));
+    localStorage.setItem(KEY, String(zoom));
+  };
+  apply();
+  window.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey) return;
+    if (e.key === '+' || e.key === '=' || e.key === ';') {        // Ctrl + (= キーや日本語配列の ; も）
+      zoom = Math.min(2, Math.round((zoom + 0.1) * 10) / 10); apply(); e.preventDefault();
+    } else if (e.key === '-') {
+      zoom = Math.max(0.6, Math.round((zoom - 0.1) * 10) / 10); apply(); e.preventDefault();
+    } else if (e.key === '0') {
+      zoom = 1; apply(); e.preventDefault();
+    }
+  });
+})();
 
 // v0.3.37: ウィンドウ×/終了時、設定の「完全終了」チェックが入っていれば collector も停止する。
 // 既定(未チェック)はモニターのみ終了し、collector はデタッチ済みでバックグラウンド収集を継続。

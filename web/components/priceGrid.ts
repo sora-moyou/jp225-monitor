@@ -1,21 +1,18 @@
 import type { Price, AlertEvent } from '../types.js';
 import { INSTRUMENTS } from '../../server/config.js';
 
-// v0.3.33: 日経カード用。アラート2階層に対応した直近の動きを、ラベル無しで値だけ描画する。
-//   短期 = 変化率(%, 直近60秒) / 超短期 = 値幅(円, 5〜10秒) の順で「+0.20%  +50円」のように出す。
-// 各列に期間ラベル(1分/10秒)を値の真上に置き、横ずれしないよう列単位で揃える。
-function momCol(label: string, text: string, v: number | null): string {
+// 日経カード用。短期 = 変化率(%, 直近60秒) / 超短期 = 値幅(円, 5〜10秒) を値だけ描画。
+// 期間ラベル(1分/10秒)はヘッダ行(日経225先物の行)側に置き、grid で各値の真上に揃える。
+function momSpan(text: string, v: number | null): string {
   const cls = v === null ? 'flat' : v >= 0 ? 'up' : 'down';
-  return `<span class="mcol"><span class="mlab">${label}</span><span class="${cls}">${text}</span></span>`;
+  return `<span class="${cls}">${text}</span>`;
 }
 function renderMomentum(m: NonNullable<Price['momentum']>): string {
-  const pct = momCol(
-    '1分',
+  const pct = momSpan(
     m.shortPct === null ? '—' : `${m.shortPct >= 0 ? '+' : ''}${m.shortPct.toFixed(2)}%`,
     m.shortPct,
   );
-  const yen = momCol(
-    '10秒',
+  const yen = momSpan(
     m.ultraShortYen === null ? '—' : `${m.ultraShortYen >= 0 ? '+' : ''}${Math.round(m.ultraShortYen)}円`,
     m.ultraShortYen,
   );
@@ -51,8 +48,10 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
       const changeHtml = mom
         ? renderMomentum(mom)
         : `<span class="change">${sign}${p.changePercent.toFixed(2)}%</span>`;
+      // 日経のみ: ヘッダ行(label)の右に期間ラベルを置き、値の真上に揃える。
+      const periods = mom ? '<span class="periods"><span>1分</span><span>10秒</span></span>' : '';
       card.innerHTML = `
-        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}</div>
+        <div class="label"><span>${meta.labelJa}</span>${sourceBadge}${periods}</div>
         <div class="value">
           <span class="num">${formattedPrice}</span>
           ${changeHtml}
