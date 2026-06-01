@@ -42,11 +42,14 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
   // 安全のため履歴を最新20件にキャップ
   const messages = body.messages.slice(-20);
   try {
+    const prices = getPrices();
+    const niyPrice = prices.find(p => p.symbol === 'NIY=F')?.price;
     const reply = await chat({
       messages,
-      prices: getPrices(),
+      prices,
       news: getNews(),
-      technical: buildNikkeiTechnical(),
+      // v0.3.36: バー蓄積中でも現在価格から節目メドを出せるよう fallbackPrice を渡す。
+      technical: buildNikkeiTechnical(undefined, niyPrice),
       correlate: topCorrelate(),
     });
     res.json({ reply });

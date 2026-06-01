@@ -13,11 +13,29 @@ interface Level { price: number; d: number; label: string; reversal?: boolean; a
 // 複数候補を近い順に列挙し、各値は現在値からの距離(5円丸め)で示す。
 // さらに節目に、現在トレンドをブレイクで否定する「トレンド転換」と、
 // 同方向にブレイクで勢いづく「トレンド加速」のラベルを付与する。
+// v0.3.36: バー蓄積中(再起動直後など)でも、現在価格(fallbackPrice)から最低限の節目メドを
+// 返せるようにする。以前は 62 本未満で null を返し、AI が「上値メドのデータなし」になっていた。
+function gridOnly(cur: number): string {
+  const fp = (v: number): string => Math.round(v).toLocaleString('en-US');
+  const up1 = Math.ceil((cur + 5) / GRID) * GRID, up2 = up1 + GRID;
+  const dn1 = Math.floor((cur - 5) / GRID) * GRID, dn2 = dn1 - GRID;
+  return `■ 日経225先物 (NIY=F) テクニカル(簡易: 分足を蓄積中):\n` +
+    `現値 ${fp(cur)}円\n` +
+    `上昇目途候補(節目): ${fp(up1)}円 / ${fp(up2)}円\n` +
+    `下落目途候補(節目): ${fp(dn1)}円 / ${fp(dn2)}円`;
+}
+
 export function buildNikkeiTechnical(
   getBars: (symbol: string) => Bar[] = barsFor,   // v0.3.32: 既定をリアルタイム足優先に
+  fallbackPrice?: number,                         // v0.3.36: バー不足時に節目メドを出す現在価格
 ): string | null {
   const bars = getBars(NIKKEI);
-  if (bars.length < 62) return null;
+  if (bars.length < 62) {
+    // バー不足(再起動直後の蓄積中など): 現在価格から節目だけの簡易メドを返す。
+    // 以前はここで null を返し AI が「上値メドのデータなし」になっていた。
+    const cur = bars.length ? bars[bars.length - 1]!.close : fallbackPrice;
+    return cur !== undefined && cur > 0 ? gridOnly(cur) : null;
+  }
   const closes = bars.map(b => b.close);
   const cur = closes[closes.length - 1]!;
   const sma = (n: number): number => {

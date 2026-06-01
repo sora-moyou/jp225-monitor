@@ -61,8 +61,21 @@ describe('buildNikkeiTechnical', () => {
     expect(Math.abs(Number(m![1])) % 5).toBe(0);
   });
 
-  it('returns null when there are too few bars', () => {
-    const getBars = () => Array.from({ length: 10 }, (_, i) => ({ t: i, close: 100 }));
-    expect(buildNikkeiTechnical(getBars)).toBeNull();
+  it('returns null only when no bars and no fallback price', () => {
+    expect(buildNikkeiTechnical(() => [])).toBeNull();
+  });
+
+  it('falls back to grid-only meds (節目) from current price when bars are few', () => {
+    // バー不足でも 節目 ベースの上値/下値メドは価格で返す (AI が「データなし」にならないように)
+    const out = buildNikkeiTechnical(() => Array.from({ length: 5 }, (_, i) => ({ t: i, close: 66920 })))!;
+    expect(out).not.toBeNull();
+    expect(out).toContain('上昇目途候補');
+    expect(out).toContain('67,000円');   // 66,920 の上の 250 節目
+  });
+
+  it('uses fallbackPrice for grid-only meds when bars are empty', () => {
+    const out = buildNikkeiTechnical(() => [], 66920)!;
+    expect(out).toContain('67,000円');
+    expect(out).toContain('下落目途候補');
   });
 });
