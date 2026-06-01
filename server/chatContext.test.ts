@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildNikkeiTechnical } from './chatContext.js';
+import { buildNikkeiTechnical, formatLevelsBlock } from './chatContext.js';
 import type { Bar } from './correlation.js';
+import type { LevelsResult } from './levels.js';
 
 // 単調増加 70 本: 現値 > 15分平均 > 60分平均 → 上昇寄り
 function rising(n = 70): Bar[] {
@@ -77,5 +78,31 @@ describe('buildNikkeiTechnical', () => {
     const out = buildNikkeiTechnical(() => [], 66920)!;
     expect(out).toContain('67,000円');
     expect(out).toContain('下落目途候補');
+  });
+});
+
+describe('formatLevelsBlock', () => {
+  const base: LevelsResult = {
+    current: 67100,
+    up: [{ price: 67300, dist: 200, labels: ['6/1夜高'], strong: false }],
+    down: [{ price: 67000, dist: -100, labels: ['Fib50%'], strong: false, fib: 0.5, reversalLine: true }],
+    swing: { high: 68000, low: 66000, leg: 'down' },
+    reversalSatisfied: true,
+    asOf: 0,
+  };
+
+  it('上値/下値メドを価格＋ラベルで、フィボ50%の転換判定を文章で出す', () => {
+    const out = formatLevelsBlock(base)!;
+    expect(out).toContain('67,300');
+    expect(out).toContain('6/1夜高');
+    expect(out).toContain('上値メド');
+    expect(out).toContain('下値メド');
+    expect(out).toContain('方向転換');
+    expect(out).toContain('満たす');
+  });
+
+  it('レベルが空なら null', () => {
+    const empty: LevelsResult = { current: 0, up: [], down: [], swing: null, reversalSatisfied: false, asOf: 0 };
+    expect(formatLevelsBlock(empty)).toBeNull();
   });
 });

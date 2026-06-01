@@ -1,3 +1,5 @@
+import type { LevelsResult } from './levels.js';
+
 export type Symbol =
   | 'NIY=F' | 'NQ=F' | 'YM=F' | '^HSI'
   | 'JPY=X' | 'CL=F' | '^TNX'
@@ -53,4 +55,5 @@ export interface AlertEventPayload {
 export type SSEEvent =
   | { type: 'prices'; payload: Price[] }
   | { type: 'news'; payload: NewsItem[] }
-  | { type: 'alert'; payload: AlertEventPayload };
+  | { type: 'alert'; payload: AlertEventPayload }
+  | { type: 'levels'; payload: LevelsResult };
