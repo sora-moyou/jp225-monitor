@@ -37,6 +37,7 @@ export function initSchema(db: DatabaseSync): void {
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
+  if (!cols.includes('volume')) db.exec('ALTER TABLE bars_1m ADD COLUMN volume INTEGER');
 }
 
 // 生 tick を保存しつつ、その分の 1分足 OHLC を upsert する。
@@ -68,6 +69,22 @@ export function getLatestTick(db: DatabaseSync, symbol: string): Tick | null {
     'SELECT symbol, t, price FROM ticks WHERE symbol = ? ORDER BY t DESC LIMIT 1',
   ).get(symbol) as Tick | undefined;
   return row ?? null;
+}
+
+/** 基礎データ取り込み用。(symbol,t) で OHLCV を全上書き upsert（基礎=正）。削除はしない。 */
+export function upsertBar(
+  db: DatabaseSync, symbol: string, t: number,
+  o: number, h: number, l: number, c: number, volume: number | null,
+  sessionDate: string, session: string,
+): void {
+  const minute = Math.floor(t / 60_000) * 60_000;
+  db.prepare(`
+    INSERT INTO bars_1m (symbol, session_date, session, t, o, h, l, c, volume)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(symbol, t) DO UPDATE SET
+      o = excluded.o, h = excluded.h, l = excluded.l, c = excluded.c,
+      volume = excluded.volume, session_date = excluded.session_date, session = excluded.session
+  `).run(symbol, sessionDate, session, minute, o, h, l, c, volume);
 }
 
 /** cutoff(epoch ms) より古い ticks を削除 (bars_1m は残す)。 */

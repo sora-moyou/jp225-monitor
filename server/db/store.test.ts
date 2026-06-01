@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -133,6 +133,20 @@ describe('getSessionOHLC', () => {
     seedBar(db, '2026-05-31', 'Day', 200, 1, 2, 0.5, 1.5);
     seedBar(db, '2026-06-01', 'Day', 300, 1, 2, 0.5, 1.5);
     expect(getSessionOHLC(db, 'NIY=F', 2).length).toBe(2);
+    db.close();
+  });
+});
+
+describe('upsertBar', () => {
+  it('同 (symbol,t) は OHLCV を全上書き、別 t は併存、削除しない', () => {
+    const db = openDb(':memory:');
+    upsertBar(db, 'NIY=F', 60000, 100, 110, 90, 105, null, '2026-06-01', 'Day');
+    upsertBar(db, 'NIY=F', 120000, 200, 210, 190, 205, null, '2026-06-01', 'Day');
+    upsertBar(db, 'NIY=F', 60000, 101, 111, 91, 99, 2086, '2026-06-01', 'Day');
+    const rows = db.prepare('SELECT t,o,h,l,c,volume FROM bars_1m WHERE symbol=? ORDER BY t').all('NIY=F') as any[];
+    expect(rows.length).toBe(2);
+    expect(rows[0]).toEqual({ t: 60000, o: 101, h: 111, l: 91, c: 99, volume: 2086 });
+    expect(rows[1].t).toBe(120000);
     db.close();
   });
 });
