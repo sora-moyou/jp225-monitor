@@ -66,3 +66,8 @@ export function getLatestTick(db: DatabaseSync, symbol: string): Tick | null {
   ).get(symbol) as Tick | undefined;
   return row ?? null;
 }
+
+/** cutoff(epoch ms) より古い ticks を削除 (bars_1m は残す)。 */
+export function pruneTicks(db: DatabaseSync, cutoff: number): void {
+  db.prepare('DELETE FROM ticks WHERE t < ?').run(cutoff);
+}

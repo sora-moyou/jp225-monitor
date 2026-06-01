@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -61,6 +61,17 @@ describe('store', () => {
     recordTick(db, 'NIY=F', 10 * M, 100);
     recordTick(db, 'NIY=F', 11 * M, 200);
     expect(getLatestTick(db, 'NIY=F')).toEqual({ symbol: 'NIY=F', t: 11 * M, price: 200 });
+  });
+});
+
+describe('pruneTicks', () => {
+  it('deletes ticks older than cutoff but keeps bars_1m', () => {
+    const db = memDb();
+    recordTick(db, 'NIY=F', 1 * 60_000, 100);   // old
+    recordTick(db, 'NIY=F', 100 * 60_000, 200); // recent
+    pruneTicks(db, 50 * 60_000);
+    expect(getRecentTicks(db, 'NIY=F', 0).map(t => t.t)).toEqual([100 * 60_000]);
+    expect(getRecentBars(db, 'NIY=F', 0)).toHaveLength(2);  // bars 保持
   });
 });
 
