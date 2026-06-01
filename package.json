@@ -10,6 +10,7 @@
     "build": "npm run build:web && npm run build:server",
     "build:web": "vite build",
     "build:server": "node scripts/build-server.mjs",
+    "build:collector": "node scripts/build-collector.mjs",
     "package": "npm run build && node scripts/package-sea.mjs",
     "package:pkg": "npm run build && pkg dist/server.cjs --targets node18-win-x64 --output bin/jp225-monitor",
     "icons": "node scripts/gen-placeholder-icons.mjs",
