@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { feedRealtimePrice, getRealtimeBars, isRealtimeBarsReady, getRollingReturn, _reset } from './feedBars.js';
+import { feedRealtimePrice, getRealtimeBars, isRealtimeBarsReady, getRollingReturn, _reset, seedBars, seedSamples } from './feedBars.js';
 
 const M = 60_000;
 
@@ -75,5 +75,39 @@ describe('feedBars (マルチ銘柄リアルタイム1分足ビルダー)', () =
     expect(bars.length).toBeLessThanOrEqual(521);   // 確定520 + 進行中1
     expect(bars[bars.length - 1]!.close).toBe(66539);  // 直近は残る
     expect(bars[0]!.close).toBeGreaterThan(66000);     // 最古は捨てられた
+  });
+});
+
+describe('seedBars / seedSamples (DB warmup)', () => {
+  beforeEach(() => _reset());
+
+  it('seedBars fills closed bars + an in-progress bar from the last, and reports ready', () => {
+    const bars = Array.from({ length: 70 }, (_, i) => ({ t: i * M, close: 67000 + i }));
+    seedBars('NIY=F', bars);
+    const out = getRealtimeBars('NIY=F');
+    expect(out).toHaveLength(70);
+    expect(out[0]).toEqual({ t: 0, close: 67000 });
+    expect(out[69]).toEqual({ t: 69 * M, close: 67069 });
+    expect(isRealtimeBarsReady('NIY=F')).toBe(true);
+  });
+
+  it('seedBars does nothing on empty input or if the series already has data', () => {
+    seedBars('NIY=F', []);
+    expect(getRealtimeBars('NIY=F')).toEqual([]);
+    feedRealtimePrice('NIY=F', 67000, 10 * M);            // now has live data
+    seedBars('NIY=F', [{ t: 0, close: 99999 }]);          // must NOT overwrite
+    expect(getRealtimeBars('NIY=F').some(b => b.close === 99999)).toBe(false);
+  });
+
+  it('after seedBars, a live tick in a new minute appends (no duplicate of the last seeded minute)', () => {
+    seedBars('NIY=F', [{ t: 10 * M, close: 67000 }, { t: 11 * M, close: 67010 }]);
+    feedRealtimePrice('NIY=F', 67050, 12 * M);
+    const out = getRealtimeBars('NIY=F');
+    expect(out.map(b => b.t)).toEqual([10 * M, 11 * M, 12 * M]);
+  });
+
+  it('seedSamples enables getRollingReturn; does nothing if samples already exist', () => {
+    seedSamples('NIY=F', [{ t: 0, price: 67000 }, { t: 61_000, price: 67067 }]);
+    expect(getRollingReturn(60_000, 'NIY=F')).toBeCloseTo((67067 - 67000) / 67000, 6);
   });
 });
