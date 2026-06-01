@@ -126,7 +126,7 @@ body {
 .levels-row .lv-dist { width: 48px; text-align: right; }
 .levels-row .lv-label { font-size: 12px; }
 .levels-row.strong .lv-price { font-weight: bold; }
-.levels-row.reversal { color: #d29922; }
+.levels-row.reversal { color: #ffb454; }   /* 転換ライン: 明度を上げて視認性UP */
 .levels-cur { padding: 2px 4px; color: #58a6ff; font-size: 12px; }
 .levels-empty { color: var(--muted); font-size: 12px; padding: 2px 4px; }
 

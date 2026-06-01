@@ -37,10 +37,7 @@ function render(): void {
   }
   const up = [...latest.up].sort((a, b) => b.price - a.price);
   const down = [...latest.down].sort((a, b) => b.price - a.price);
-  const metaHtml = latest.swing
-    ? `<div class="levels-meta">${latest.swing.leg === 'down' ? '下げ脚' : '上げ脚'} ${latest.reversalSatisfied ? '転換目安○' : '転換目安—'}</div>`
-    : '';
   const curLine = `<div class="levels-cur">― 現値 ${fmtPrice(cur)} ―</div>`;
-  bodyEl.innerHTML = metaHtml +
+  bodyEl.innerHTML =
     up.map(l => rowHtml(l, cur)).join('') + curLine + down.map(l => rowHtml(l, cur)).join('');
 }
