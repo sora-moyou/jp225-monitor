@@ -19,7 +19,7 @@ export function openDb(path: string): DatabaseSync {
 }
 
 export interface Tick { symbol: string; t: number; price: number; }
-export interface Bar1m { symbol: string; t: number; o: number; h: number; l: number; c: number; }
+export interface Bar1m { symbol: string; session_date: string | null; session: string | null; t: number; o: number; h: number; l: number; c: number; }
 
 export function initSchema(db: DatabaseSync): void {
   db.exec(`
@@ -28,29 +28,32 @@ export function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (symbol, t)
     );
     CREATE TABLE IF NOT EXISTS bars_1m (
-      symbol TEXT NOT NULL, t INTEGER NOT NULL,
+      symbol TEXT NOT NULL, session_date TEXT, session TEXT, t INTEGER NOT NULL,
       o REAL NOT NULL, h REAL NOT NULL, l REAL NOT NULL, c REAL NOT NULL,
       PRIMARY KEY (symbol, t)
     );
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
   `);
+  const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
+  if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
+  if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
 }
 
 // 生 tick を保存しつつ、その分の 1分足 OHLC を upsert する。
-export function recordTick(db: DatabaseSync, symbol: string, t: number, price: number): void {
+export function recordTick(db: DatabaseSync, symbol: string, t: number, price: number, sessionDate: string, session: string): void {
   if (!Number.isFinite(price) || price <= 0) return;
   db.prepare('INSERT OR IGNORE INTO ticks (symbol, t, price) VALUES (?, ?, ?)').run(symbol, t, price);
   const minute = Math.floor(t / 60_000) * 60_000;
   db.prepare(`
-    INSERT INTO bars_1m (symbol, t, o, h, l, c) VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO bars_1m (symbol, session_date, session, t, o, h, l, c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(symbol, t) DO UPDATE SET
       h = max(h, excluded.h), l = min(l, excluded.l), c = excluded.c
-  `).run(symbol, minute, price, price, price, price);
+  `).run(symbol, sessionDate, session, minute, price, price, price, price);
 }
 
 export function getRecentBars(db: DatabaseSync, symbol: string, sinceT: number): Bar1m[] {
   return db.prepare(
-    'SELECT symbol, t, o, h, l, c FROM bars_1m WHERE symbol = ? AND t >= ? ORDER BY t ASC',
+    'SELECT symbol, session_date, session, t, o, h, l, c FROM bars_1m WHERE symbol = ? AND t >= ? ORDER BY t ASC',
   ).all(symbol, sinceT) as unknown as Bar1m[];
 }
 
