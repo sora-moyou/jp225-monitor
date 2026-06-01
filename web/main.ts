@@ -150,6 +150,8 @@ initSettingsModal({
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
   updateResult:   document.getElementById('settings-update-result') as HTMLElement,
   currentVersion: document.getElementById('settings-current-version') as HTMLElement,
+  exitNormalBtn:  document.getElementById('settings-exit-normal') as HTMLButtonElement,
+  exitFullBtn:    document.getElementById('settings-exit-full') as HTMLButtonElement,
 });
 
 const apiStatusEl = document.getElementById('api-status');
