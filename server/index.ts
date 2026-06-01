@@ -12,10 +12,12 @@ import { statusHandler } from './routes/status.js';
 import { logsHandler } from './routes/logs.js';
 import { translateHandler } from './routes/translate.js';
 import { correlationHandler } from './routes/correlation.js';
+import { levelsHandler } from './routes/levels.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
 import { startAlertLoop } from './loops/alertLoop.js';
+import { startLevelsLoop } from './loops/levelsLoop.js';
 import { warmFromDb } from './warmup.js';
 import { isLLMEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults } from './configStore.js';
@@ -61,6 +63,7 @@ app.get('/api/status', statusHandler);
 app.get('/api/logs', logsHandler);
 app.post('/api/translate', translateHandler);
 app.get('/api/correlation', correlationHandler);
+app.get('/api/levels', levelsHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
 app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor' }));
 
@@ -80,6 +83,7 @@ const server = app.listen(PORT, () => {
   startNewsLoop();
   startCorrelationLoop();
   startAlertLoop();
+  startLevelsLoop();
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
