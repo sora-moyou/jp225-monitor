@@ -74,3 +74,37 @@ export function getLatestTick(db: DatabaseSync, symbol: string): Tick | null {
 export function pruneTicks(db: DatabaseSync, cutoff: number): void {
   db.prepare('DELETE FROM ticks WHERE t < ?').run(cutoff);
 }
+
+export interface SessionOHLC {
+  sessionDate: string;
+  session: 'Day' | 'Night';
+  open: number; high: number; low: number; close: number;
+  highT: number; lowT: number;
+}
+
+/** セッション(session_date+session)別の OHLC と H/L 発生時刻。新しい順(直近が先)、最大 limit 件。 */
+export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number): SessionOHLC[] {
+  const rows = db.prepare(`
+    SELECT session_date AS sessionDate, session,
+           MAX(h) AS high, MIN(l) AS low,
+           (SELECT o FROM bars_1m b2 WHERE b2.symbol=b.symbol AND b2.session_date=b.session_date
+              AND b2.session=b.session ORDER BY t ASC  LIMIT 1) AS open,
+           (SELECT c FROM bars_1m b3 WHERE b3.symbol=b.symbol AND b3.session_date=b.session_date
+              AND b3.session=b.session ORDER BY t DESC LIMIT 1) AS close,
+           (SELECT t FROM bars_1m b4 WHERE b4.symbol=b.symbol AND b4.session_date=b.session_date
+              AND b4.session=b.session ORDER BY h DESC, t ASC LIMIT 1) AS highT,
+           (SELECT t FROM bars_1m b5 WHERE b5.symbol=b.symbol AND b5.session_date=b.session_date
+              AND b5.session=b.session ORDER BY l ASC,  t ASC LIMIT 1) AS lowT
+    FROM bars_1m b
+    WHERE symbol = ? AND session_date IS NOT NULL AND session IS NOT NULL
+    GROUP BY session_date, session
+    ORDER BY MIN(t) DESC
+    LIMIT ?
+  `).all(symbol, limit) as Array<Record<string, unknown>>;
+  return rows.map(r => ({
+    sessionDate: r.sessionDate as string,
+    session: r.session as 'Day' | 'Night',
+    open: r.open as number, high: r.high as number, low: r.low as number, close: r.close as number,
+    highT: r.highT as number, lowT: r.lowT as number,
+  }));
+}
