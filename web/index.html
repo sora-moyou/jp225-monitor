@@ -83,6 +83,15 @@
       </fieldset>
 
       <fieldset class="settings-section">
+        <legend>基礎データ</legend>
+        <div class="basedata-row">
+          <button type="button" id="settings-basedata-import" class="btn-secondary">基礎データを取り込む</button>
+          <span id="settings-basedata-result" class="basedata-result"></span>
+        </div>
+        <div class="exit-hint">GitHub から最新の履歴(1分足)を取得し、ローカルDBへ追記/更新します（既存の新しいデータは消えません）。</div>
+      </fieldset>
+
+      <fieldset class="settings-section">
         <legend>終了</legend>
         <label class="exit-check">
           <input type="checkbox" id="settings-full-exit" />

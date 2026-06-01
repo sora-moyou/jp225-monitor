@@ -83,6 +83,8 @@ export interface SettingsElements {
   checkUpdateBtn: HTMLButtonElement;
   updateResult: HTMLElement;
   currentVersion: HTMLElement;
+  basedataBtn: HTMLButtonElement;
+  basedataResult: HTMLElement;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -177,6 +179,25 @@ export function initSettingsModal(el: SettingsElements): void {
   }
 
   el.checkUpdateBtn.addEventListener('click', () => { void checkUpdate(); });
+
+  el.basedataBtn.addEventListener('click', async () => {
+    el.basedataBtn.disabled = true;
+    const orig = el.basedataBtn.textContent ?? '基礎データを取り込む';
+    el.basedataBtn.textContent = '取り込み中…';
+    el.basedataResult.textContent = '';
+    try {
+      const res = await fetch(apiUrl('/api/basedata/import'), { method: 'POST' });
+      const data = await res.json() as { ok: boolean; applied?: number; skipped?: number; from?: string; to?: string; error?: string };
+      el.basedataResult.textContent = data.ok
+        ? `✅ ${data.applied}件取り込み (${data.from ?? '?'}〜${data.to ?? '?'})${data.skipped ? ` / 休場スキップ${data.skipped}` : ''}`
+        : `❌ ${data.error ?? '失敗'}`;
+    } catch (err) {
+      el.basedataResult.textContent = `❌ ${err instanceof Error ? err.message : 'failed'}`;
+    } finally {
+      el.basedataBtn.disabled = false;
+      el.basedataBtn.textContent = orig;
+    }
+  });
 
   async function open() {
     el.modal.classList.remove('hidden');

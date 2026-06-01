@@ -695,3 +695,6 @@ body {
 }
 .chat-preset:hover { border-color: #58a6ff; color: #58a6ff; }
 .chat-preset:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.basedata-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.basedata-result { font-size: 12px; color: var(--muted); }
