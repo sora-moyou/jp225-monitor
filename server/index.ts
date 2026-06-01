@@ -16,6 +16,7 @@ import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
 import { startAlertLoop } from './loops/alertLoop.js';
+import { warmFromDb } from './warmup.js';
 import { isLLMEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults } from './configStore.js';
 
@@ -74,6 +75,7 @@ if (existsSync(distWeb)) {
 
 const server = app.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT} (LLM ${isLLMEnabled() ? 'enabled' : 'disabled'})`);
+  warmFromDb();          // v0.3.37: 収集デーモンの DB から即ウォームアップ (現在進行中なら)
   startPriceLoop();
   startNewsLoop();
   startCorrelationLoop();
