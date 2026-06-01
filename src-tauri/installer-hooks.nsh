@@ -8,6 +8,7 @@
 !macro NSIS_HOOK_PREINSTALL
   DetailPrint "Stopping any running JP225 Monitor instance..."
   nsExec::Exec 'taskkill /F /T /IM "jp225-sidecar.exe"'
+  nsExec::Exec 'taskkill /F /T /IM "jp225-collector.exe"'
   nsExec::Exec 'taskkill /F /T /IM "jp225-monitor.exe"'
   nsExec::Exec 'taskkill /F /T /IM "JP225 Monitor.exe"'
   Sleep 1500
@@ -16,6 +17,7 @@
 !macro NSIS_HOOK_PREUNINSTALL
   DetailPrint "Stopping any running JP225 Monitor instance before uninstall..."
   nsExec::Exec 'taskkill /F /T /IM "jp225-sidecar.exe"'
+  nsExec::Exec 'taskkill /F /T /IM "jp225-collector.exe"'
   nsExec::Exec 'taskkill /F /T /IM "jp225-monitor.exe"'
   nsExec::Exec 'taskkill /F /T /IM "JP225 Monitor.exe"'
   Sleep 1500
