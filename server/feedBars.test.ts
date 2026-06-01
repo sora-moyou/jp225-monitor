@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { feedRealtimePrice, getRealtimeBars, isRealtimeBarsReady, _reset } from './feedBars.js';
+import { feedRealtimePrice, getRealtimeBars, isRealtimeBarsReady, getRollingReturn, _reset } from './feedBars.js';
 
 const M = 60_000;
 
@@ -49,6 +49,24 @@ describe('feedBars (マルチ銘柄リアルタイム1分足ビルダー)', () =
     feedRealtimePrice('NIY=F', 66064, 64 * M);
     expect(isRealtimeBarsReady('NIY=F')).toBe(true);
     expect(isRealtimeBarsReady('NQ=F')).toBe(false);   // 別銘柄は独立
+  });
+
+  it('getRollingReturn: 指定窓のローリング変化率(比)を生サンプルから返す', () => {
+    // 生サンプルは秒単位 (分足ではない)。10秒間隔で投入。
+    feedRealtimePrice('NIY=F', 67000, 0);
+    feedRealtimePrice('NIY=F', 67020, 10_000);
+    feedRealtimePrice('NIY=F', 67134, 60_000);   // 60秒後
+    // 60秒窓: 60000-60000=0 以下の最大 → t=0(67000)。(67134-67000)/67000
+    expect(getRollingReturn(60_000, 'NIY=F')).toBeCloseTo((67134 - 67000) / 67000, 6);
+    // 5秒窓: 60000-5000=55000 以下の最大 → t=10000(67020)
+    expect(getRollingReturn(5_000, 'NIY=F')).toBeCloseTo((67134 - 67020) / 67020, 6);
+  });
+
+  it('getRollingReturn: サンプル不足/未投入は null', () => {
+    expect(getRollingReturn(60_000, 'NIY=F')).toBeNull();
+    feedRealtimePrice('NIY=F', 67000, 0);
+    expect(getRollingReturn(60_000, 'NIY=F')).toBeNull();   // 1本のみ
+    expect(getRollingReturn(60_000, 'NQ=F')).toBeNull();    // 未投入
   });
 
   it('MAX_BARS(520) を超えると古いバーを捨てる', () => {

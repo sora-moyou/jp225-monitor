@@ -1,12 +1,12 @@
 import { fetchMinuteBars, type Bar } from '../correlation.js';
 import {
-  detectBurst, detectTrend, computeContext, returns, stdDev,
-  type AlertEvent, type CrossSnapshot,
+  detectBurst, detectTrend, computeContext, returns, returns5m, stdDev,
+  DEFAULT_PARAMS, type DetectorParams, type AlertEvent, type CrossSnapshot,
 } from '../alertDetector.js';
 import { broadcast } from '../sse/broker.js';
 import { INSTRUMENTS } from '../config.js';
 import { isOnCooldown, markFired } from '../alertCooldown.js';
-import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
+import { getRealtimeBars, isRealtimeBarsReady, getRollingReturn } from '../feedBars.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
 // 旧 changeDetector (client side, fixed-% threshold) を全置換。
@@ -113,6 +113,91 @@ function evaluateAndFire(): void {
     console.log(`[alertLoop] ${sym} ${alert.detectionKind} ${alert.direction} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
     broadcast({ type: 'alert', payload: alert });
   }
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m]!;
+}
+
+// NIY=F の横断確認: cross の中で |z|>=crossZMin かつ同方向の他資産が1つでもあれば true。
+function crossConfirms(latestRet: number, cross: CrossSnapshot, P: DetectorParams): boolean {
+  const dir = latestRet >= 0 ? 'up' : 'down';
+  for (const cs of CROSS_REQUIRED) {
+    if (cs === 'NIY=F') continue;
+    const csRet = cross.latestReturn.get(cs);
+    const csSig = cross.baselineSigma.get(cs);
+    if (csRet === undefined || csSig === undefined || csSig <= 0) continue;
+    if (Math.abs(csRet) / csSig < P.crossZMin) continue;
+    if ((csRet >= 0 ? 'up' : 'down') === dir) return true;
+  }
+  return false;
+}
+
+// v0.3.33: 短期検知のリアルタイム化。分足の確定を待たず、priceLoop の毎 tick(~2秒) に
+// 呼ばれ、リアルタイム buffer の 60秒(burst)/5分(trend) ローリング窓で z 評価して即発火する。
+// baseline σ は分足から(緩変なので毎分更新で十分)、最新リターンだけ実時間ローリング窓を使う。
+// 横断確認は buildCrossSnapshot(実時間1分足ベース、方向確認用)。クールダウン共有で 60秒経路の
+// バー版と二重発火しない(先に鳴った方が他をロックする)。feed 断などローリング不可時は何もしない
+// (従来の 60秒バー版がフォールバックとして残る)。
+export function evaluateRealtime(): void {
+  const sym = 'NIY=F';
+  const now = Date.now();
+  if (isOnCooldown(sym, now)) return;
+  const meta = META_BY_SYM.get(sym);
+  if (!meta) return;
+  const bars = barsFor(sym);
+  const P = DEFAULT_PARAMS;
+  if (bars.length < P.baselineLookback + 1) return;
+  const baselineReturns = returns(bars.slice(-(P.baselineLookback + 1), -1));
+  if (baselineReturns.length < 10) return;
+  const sigma1 = stdDev(baselineReturns);
+  if (sigma1 <= 0) return;
+
+  const cross = buildCrossSnapshot();
+  let result: { z: number; latestRet: number; kind: 'slope' | 'magnitude'; windowSec: number } | null = null;
+
+  // burst (リアルタイム 60秒ローリング) 優先。静寂前提 + 横断確認は bar 版 detectBurst と同条件。
+  const ret60 = getRollingReturn(60_000, sym);
+  if (ret60 !== null) {
+    const z = Math.abs(ret60) / sigma1;
+    const recent = baselineReturns.slice(-P.quietLookback);
+    const quietOk = recent.length >= P.quietLookback && median(recent.map(Math.abs)) < sigma1 * P.quietMedianRatio;
+    if (z >= P.zThreshold && quietOk && crossConfirms(ret60, cross, P)) {
+      result = { z, latestRet: ret60, kind: 'slope', windowSec: 60 };
+    }
+  }
+  // trend (リアルタイム 5分ローリング)。静寂前提は省略 (bar 版 detectTrend と同様)。
+  if (!result) {
+    const r5 = returns5m(bars);
+    const ret300 = getRollingReturn(300_000, sym);
+    if (r5.length >= 11 && ret300 !== null) {
+      const sigma5 = stdDev(r5.slice(0, -1));
+      const z = sigma5 > 0 ? Math.abs(ret300) / sigma5 : 0;
+      if (sigma5 > 0 && z >= P.zThreshold && crossConfirms(ret300, cross, P)) {
+        result = { z, latestRet: ret300, kind: 'magnitude', windowSec: 300 };
+      }
+    }
+  }
+  if (!result) return;
+
+  const { pa15min, change15min, range1h } = computeContext(bars);
+  const alert: AlertEvent = {
+    symbol: sym,
+    symbolLabel: meta.labelJa,
+    changePercent: result.latestRet * 100,
+    windowSeconds: result.windowSec,
+    detectionKind: result.kind,
+    direction: result.latestRet >= 0 ? 'up' : 'down',
+    triggeredAt: now,
+    change15min, pa15min, range1h,
+    zscore: result.z,
+  };
+  markFired(sym, now);
+  console.log(`[alertLoop:rt] ${sym} ${result.kind} ${alert.direction} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
+  broadcast({ type: 'alert', payload: alert });
 }
 
 async function tick(): Promise<void> {

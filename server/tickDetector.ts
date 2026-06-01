@@ -6,14 +6,13 @@ import { INSTRUMENTS } from './config.js';
 import { isOnCooldown, markFired } from './alertCooldown.js';
 
 // v0.3.17: 超短期 (5s/10s) フラッシュ検知。NIY=F (日経 225) 専用。
-// ボラ依存しない「絶対 % 閾値」設計 (ユーザ要望): 5〜10 秒窓で |%変化| >= ABSOLUTE_THRESHOLD_PCT で発火。
-// 体感的に明確な "フラッシュ" だけを拾い、相場局面・ボラに関わらず一貫した感度を保つ。
-// Yahoo 価格の実体キャッシュは 10〜30s 程度なので "真の tick" は捕捉不可、ニュース反応等で
-// キャッシュを通り抜けた急変は拾える。
+// v0.3.33: 価格がリアルタイム取得できるようになったので「値幅(円)」ベースに変更 (ユーザ要望)。
+// 5〜10 秒窓で |値幅| >= ABSOLUTE_THRESHOLD_YEN(円) で発火。率ではなく円なので、ボード表示
+// (超短期=+50円) と発火基準の単位が一致する。バッファは短期検知のローリング窓にも使うため拡大。
 
 const TARGETS = new Set(['NIY=F']);
-const BUFFER_MS = 2 * 60 * 1000;          // 2 min 過去サンプル保持
-const ABSOLUTE_THRESHOLD_PCT = 0.15;       // 0.15% 以上の絶対変化で発火 (めったに発生しない閾値)
+const BUFFER_MS = 6 * 60 * 1000;          // 6 min 保持 (超短期5/10s + 短期ローリング60s/5分の両用)
+const ABSOLUTE_THRESHOLD_YEN = 80;         // 5〜10秒で 80円 以上の値幅で発火 (要調整ノブ)
 
 interface Tick { t: number; price: number; }
 const buffers = new Map<string, Tick[]>();
@@ -47,18 +46,18 @@ function handleOne(price: Price): void {
   if (buf.length < 3) return;
   if (isOnCooldown(price.symbol, now)) return;
 
-  // 5s と 10s 双方を評価、より大きい |%変化| を採用
-  const candidates: { window: number; ret: number; pct: number }[] = [];
+  // 5s と 10s 双方を評価、より大きい |値幅(円)| を採用
+  const candidates: { window: number; ret: number; yen: number }[] = [];
   for (const win of [5, 10]) {
     const baseline = findBaselinePrice(buf, now - win * 1000);
     if (!baseline || baseline.price <= 0) continue;
     if (baseline.t === now) continue;       // 同一サンプル
-    const ret = (price.price - baseline.price) / baseline.price;
-    const pct = Math.abs(ret * 100);
-    if (pct >= ABSOLUTE_THRESHOLD_PCT) candidates.push({ window: win, ret, pct });
+    const yen = price.price - baseline.price;
+    const ret = yen / baseline.price;
+    if (Math.abs(yen) >= ABSOLUTE_THRESHOLD_YEN) candidates.push({ window: win, ret, yen });
   }
   if (candidates.length === 0) return;
-  candidates.sort((a, b) => b.pct - a.pct);
+  candidates.sort((a, b) => Math.abs(b.yen) - Math.abs(a.yen));
   const fired = candidates[0]!;
 
   markFired(price.symbol, now);
@@ -78,7 +77,7 @@ function handleOne(price: Price): void {
     range1h: ctx.range1h,
     zscore: 0,    // 絶対閾値方式のため未使用 (alertLoop の z-score 検知と区別)
   };
-  console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.ret >= 0 ? '+' : ''}${(fired.ret * 100).toFixed(3)}% (threshold ${ABSOLUTE_THRESHOLD_PCT}%)`);
+  console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円 (threshold ${ABSOLUTE_THRESHOLD_YEN}円)`);
   broadcast({ type: 'alert', payload: alert });
 }
 

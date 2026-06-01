@@ -1,6 +1,7 @@
 import { fetchYahooChartPrices } from '../sources/yahooChart.js';
 import { fetchFeedPrices } from '../sources/nikkei225jpFeed.js';
 import { feedRealtimePrice } from '../feedBars.js';
+import { evaluateRealtime } from './alertLoop.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
@@ -44,9 +45,11 @@ async function tick(): Promise<number> {
     const prices = [...yahoo.filter(p => !feedSyms.has(p.symbol)), ...feed];
     if (prices.length === 0) throw new Error('No prices fetched (Yahoo chart API failed)');
 
-    // v0.3.30/31: リアルタイム価格を銘柄ごとに 1 分足ビルダーへ。alertLoop の z-score
-    // (NIY=F) と横断確認(NQ/YM/JPY)がウォームアップ後にリアルタイム足で評価できるようにする。
+    // v0.3.30/31: リアルタイム価格を銘柄ごとに 1 分足ビルダー + 生サンプルへ。
     for (const p of feed) feedRealtimePrice(p.symbol, p.price, p.timestamp);
+    // v0.3.33: 短期検知をリアルタイム化。分足の確定(最大60秒)を待たず、毎 tick(~2秒)に
+    // 60秒/5分のローリング窓で z 評価して即発火する(alertLoop の 60秒バー版はフォールバック)。
+    evaluateRealtime();
 
     const merged = mergeWithCached(prices);
     tickDetectorFeed(merged);   // v0.3.17: 超短期 (5s/10s) フラッシュ検知 (バッファ更新)
