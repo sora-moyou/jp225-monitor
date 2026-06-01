@@ -5,7 +5,10 @@ import { INSTRUMENTS } from './config.js';
 import { seedBars, seedSamples } from './feedBars.js';
 import { seedBuffer } from './tickDetector.js';
 
-const FRESH_MS = 2 * 60_000;                 // 収集が現在進行中とみなす許容遅れ
+// 収集が現在進行中とみなす許容遅れ。収集は2秒毎に書くので健全なら常に <2s。
+// 短期検知の 60秒ローリング窓より小さく(30s)し、収集が直前に止まった場合の seam gap で
+// 起動直後に偽の短期アラートが出るリスクを抑える(seam を窓未満に収める)。
+const FRESH_MS = 30_000;
 const BARS_LOOKBACK_MS = 8 * 60 * 60_000;    // 8時間ぶんの1分足を種付け
 const TICKS_LOOKBACK_MS = 6 * 60_000;        // 6分ぶんの生tick
 
