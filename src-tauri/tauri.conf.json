@@ -41,7 +41,7 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/jp225-sidecar"],
+    "externalBin": ["binaries/jp225-sidecar", "binaries/jp225-collector"],
     "category": "Finance",
     "shortDescription": "JP225 Nikkei 225 futures market monitor",
     "longDescription": "Real-time JP225 (Nikkei 225) futures market dashboard with AI-powered move explanations (Gemini/Groq/OpenAI)."

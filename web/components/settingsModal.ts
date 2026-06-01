@@ -83,6 +83,24 @@ export interface SettingsElements {
   checkUpdateBtn: HTMLButtonElement;
   updateResult: HTMLElement;
   currentVersion: HTMLElement;
+  exitNormalBtn: HTMLButtonElement;
+  exitFullBtn: HTMLButtonElement;
+}
+
+// v0.3.37: 終了2択。通常終了=モニターのみ終了(collector はデタッチ済で生存)。
+// 完全終了=stop_collector(Rust)で collector を停止してから終了。
+async function appExit(): Promise<void> {
+  const p = await import('@tauri-apps/plugin-process');
+  await p.exit(0);
+}
+async function fullExit(): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('stop_collector');
+  } catch (err) {
+    console.warn('[settings] stop_collector failed:', err);
+  }
+  await appExit();
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -177,6 +195,16 @@ export function initSettingsModal(el: SettingsElements): void {
   }
 
   el.checkUpdateBtn.addEventListener('click', () => { void checkUpdate(); });
+
+  el.exitNormalBtn.addEventListener('click', () => {
+    el.exitNormalBtn.disabled = true;
+    void appExit().catch(err => { console.warn('[settings] exit failed:', err); el.exitNormalBtn.disabled = false; });
+  });
+  el.exitFullBtn.addEventListener('click', () => {
+    el.exitFullBtn.disabled = true;
+    el.exitFullBtn.textContent = '停止中...';
+    void fullExit().catch(err => { console.warn('[settings] full exit failed:', err); el.exitFullBtn.disabled = false; });
+  });
 
   async function open() {
     el.modal.classList.remove('hidden');
