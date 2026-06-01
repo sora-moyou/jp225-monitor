@@ -90,10 +90,12 @@ server  POST /api/basedata/import
 export function upsertBar(db, symbol, t, o, h, l, c, volume, sessionDate, session): void
 ```
 `INSERT INTO bars_1m(...) VALUES(...) ON CONFLICT(symbol, t) DO UPDATE SET o=…,h=…,l=…,c=…,volume=…,
-session_date=…,session=…`。
-**前提**: `bars_1m` に `(symbol, t)` の UNIQUE/PK が必要。無ければマイグレーションで
-`CREATE UNIQUE INDEX IF NOT EXISTS ux_bars_symbol_t ON bars_1m(symbol, t)` を追加。
-（既存 `recordTick`/bar 書き込みが重複行を作っていないか確認し、必要なら重複解消も移行で行う。）
+session_date=…,session=…`。**o/h/l/c を全上書き**（基礎=正。collector の `recordTick` は max(h)/min(l)
+だが、基礎取り込みは確定値で置換）。`t` は分床(`Math.floor(t/60000)*60000`)に正規化（collector と同一キー）。
+
+**前提（確認済み・追加移行不要）**: `bars_1m` は既に `PRIMARY KEY (symbol, t)` を持ち、`recordTick` も
+`ON CONFLICT(symbol,t) DO UPDATE` で upsert している。よって UNIQUE 索引や重複解消の移行は**不要**。
+本SPで必要な移行は **`volume` 列追加のみ**（§5.1）。
 
 **削除はしない**。`upsertBar` は INSERT or UPDATE のみ。基礎データ取り込みは対象時刻だけ上書きし、
 それ以外（collector が貯めた新しい行）は不変。
