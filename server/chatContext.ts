@@ -1,11 +1,13 @@
 import { barsFor } from './loops/alertLoop.js';
 import { computeContext } from './alertDetector.js';
 import type { Bar } from './correlation.js';
+import { getLevelsSnapshot } from './loops/levelsLoop.js';
+import type { LevelsResult, Level } from './levels.js';
 
 const NIKKEI = 'NIY=F';
 const GRID = 250; // 節目(round number)グリッド(円)
 
-interface Level { price: number; d: number; label: string; reversal?: boolean; accel?: boolean; }
+interface GridLevel { price: number; d: number; label: string; reversal?: boolean; accel?: boolean; }
 
 // getBars はテスト用に注入可(既定は本物の barsCache 読み取り)。
 // 15〜60 分(約30分足)の時間軸でのテクニカル要約を返す。
@@ -29,6 +31,14 @@ export function buildNikkeiTechnical(
   getBars: (symbol: string) => Bar[] = barsFor,   // v0.3.32: 既定をリアルタイム足優先に
   fallbackPrice?: number,                         // v0.3.36: バー不足時に節目メドを出す現在価格
 ): string | null {
+  // SP2: levelsLoop が算出した多時間軸レベルがあれば、それを上値/下値メドとして使う。
+  const lv = formatLevelsBlock(getLevelsSnapshot());
+  if (lv) {
+    const headBars = getBars(NIKKEI);
+    const cur = headBars.length ? headBars[headBars.length - 1]!.close : fallbackPrice;
+    const head = cur ? `現値 ${Math.round(cur).toLocaleString('en-US')}円\n` : '';
+    return `■ 日経225先物 (NIY=F) テクニカル(セッションH/L・フィボ):\n${head}${lv}`;
+  }
   const bars = getBars(NIKKEI);
   if (bars.length < 62) {
     // バー不足(再起動直後の蓄積中など): 現在価格から節目だけの簡易メドを返す。
@@ -75,7 +85,7 @@ export function buildNikkeiTechnical(
   // 下降寄り: 上抜け=転換(revUp), 下抜け=加速(revDown)。
   // 上昇寄り: 下抜け=転換(revDown), 上抜け=加速(revUp)。
 
-  const upCandidates: (Level | null)[] = [
+  const upCandidates: (GridLevel | null)[] = [
     range1h ? { price: range1h.high, d: dist(range1h.high), label: '1時間高値' } : null,
     { price: fourHigh, d: dist(fourHigh), label: '4時間高値' },
     { price: dayHigh, d: dist(dayHigh), label: '本日高値' },
@@ -84,8 +94,8 @@ export function buildNikkeiTechnical(
     trend === '下降寄り' ? { price: revUp, d: dist(revUp), label: '節目', reversal: true } : null,
     trend === '上昇寄り' ? { price: revUp, d: dist(revUp), label: '節目', accel: true } : null,
   ];
-  const upRaw = upCandidates.filter((x): x is Level => x !== null && x.d > 0);
-  const downCandidates: (Level | null)[] = [
+  const upRaw = upCandidates.filter((x): x is GridLevel => x !== null && x.d > 0);
+  const downCandidates: (GridLevel | null)[] = [
     range1h ? { price: range1h.low, d: dist(range1h.low), label: '1時間安値' } : null,
     { price: fourLow, d: dist(fourLow), label: '4時間安値' },
     { price: dayLow, d: dist(dayLow), label: '本日安値' },
@@ -94,12 +104,12 @@ export function buildNikkeiTechnical(
     trend === '上昇寄り' ? { price: revDown, d: dist(revDown), label: '節目', reversal: true } : null,
     trend === '下降寄り' ? { price: revDown, d: dist(revDown), label: '節目', accel: true } : null,
   ];
-  const downRaw = downCandidates.filter((x): x is Level => x !== null && x.d < 0);
+  const downRaw = downCandidates.filter((x): x is GridLevel => x !== null && x.d < 0);
 
   // 距離で重複除去(転換/加速フラグはマージ)、|距離|昇順、最大3件。
   // 転換・加速ノードは上位に入らなくても必ず含める。
-  const pick = (raw: Level[]): Level[] => {
-    const byD = new Map<number, Level>();
+  const pick = (raw: GridLevel[]): GridLevel[] => {
+    const byD = new Map<number, GridLevel>();
     for (const lv of raw) {
       if (lv.d === 0) continue;
       const ex = byD.get(lv.d);
@@ -114,7 +124,7 @@ export function buildNikkeiTechnical(
     return out;
   };
   // v0.3.35: 価格を主体に表示 (例「67,000円(節目, あと+80円)」)。距離は補助で括弧内に。
-  const fmtLevel = (l: Level): string => {
+  const fmtLevel = (l: GridLevel): string => {
     const tag = l.reversal ? '：トレンド転換' : l.accel ? '：トレンド加速' : '';
     return `${fmtPrice(l.price)}円(${l.label}, あと${fmt(l.d)})${tag}`;
   };
@@ -133,4 +143,29 @@ export function buildNikkeiTechnical(
     `下落目途候補: ${downStr}`,
   ].filter((x): x is string => x !== null);
   return `■ 日経225先物 (NIY=F) テクニカル(15〜60分):\n${lines.join('\n')}`;
+}
+
+/** computeLevels の結果を AI 向けテキストに。空なら null。 */
+export function formatLevelsBlock(r: LevelsResult): string | null {
+  if (r.up.length === 0 && r.down.length === 0) return null;
+  const fp = (v: number): string => Math.round(v).toLocaleString('en-US');
+  const one = (l: Level): string => {
+    const star = l.strong ? '(強)' : '';
+    const flag = l.reversalLine ? '【方向転換ライン】' : '';
+    return `${fp(l.price)}円${star}(${l.labels.join('・')}${flag})`;
+  };
+  const lines: string[] = [];
+  if (r.up.length) lines.push(`上値メド: ${r.up.map(one).join(' / ')}`);
+  if (r.down.length) lines.push(`下値メド: ${r.down.map(one).join(' / ')}`);
+  if (r.swing) {
+    const leg = r.swing.leg === 'down' ? '下げ脚' : '上げ脚';
+    const fib50 = r.swing.leg === 'down'
+      ? r.swing.low + 0.5 * (r.swing.high - r.swing.low)
+      : r.swing.high - 0.5 * (r.swing.high - r.swing.low);
+    const side = r.swing.leg === 'down'
+      ? (r.reversalSatisfied ? '上回り、上方向への転換目安を満たす' : '下回り、転換目安は未達')
+      : (r.reversalSatisfied ? '下回り、下方向への転換目安を満たす' : '上回り、転換目安は未達');
+    lines.push(`フィボ戻し(${leg}, スイング ${fp(r.swing.high)}→${fp(r.swing.low)}): 50%=${fp(fib50)}円。現値はこれを${side}`);
+  }
+  return lines.join('\n');
 }
