@@ -69,6 +69,12 @@ body {
   background: rgba(63, 185, 80, 0.08);
 }
 .alert strong { font-size: 14px; }
+.alert .alert-time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-right: 2px;
+}
 .alert .kind-tag { color: var(--muted); font-size: 12px; }
 .alert .ctx-15min {
   display: inline-block;

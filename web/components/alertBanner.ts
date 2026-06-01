@@ -10,8 +10,9 @@ export interface BannerItem {
 }
 
 const items = new Map<string, BannerItem>();
-const MAX_BANNERS = 5;
-const AUTO_DISMISS_MS = 5 * 60 * 1000;
+// 直近アラートを最大10件まで保持（11件目で最古を1件削除）。再起動時はページリロードで
+// この Map が空に戻るため自動的に全クリア（サーバは alert をリプレイしない）。
+const MAX_BANNERS = 10;
 
 export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem {
   const id = `${alert.symbol}-${alert.triggeredAt}`;
@@ -25,8 +26,12 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   const ctx15 = alert.change15min !== null
     ? `<span class="ctx-15min">15分: ${alert.change15min >= 0 ? '+' : ''}${alert.change15min.toFixed(2)}%</span>`
     : '';
+  const time = new Date(alert.triggeredAt).toLocaleTimeString('ja-JP', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
   const main = document.createElement('div');
   main.innerHTML =
+    `<span class="alert-time">${time}</span> ` +
     `<strong>⚡ ${alert.symbolLabel}</strong> ` +
     `${arrow} ${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒 ` +
     `<span class="kind-tag">[${kindLabel}]</span> ` +
@@ -63,7 +68,6 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     if (oldest) removeBanner(oldest);
   }
 
-  setTimeout(() => removeBanner(id), AUTO_DISMISS_MS);
   return item;
 }
 
