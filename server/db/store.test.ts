@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick } from './store.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { rmSync } from 'node:fs';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -58,5 +61,21 @@ describe('store', () => {
     recordTick(db, 'NIY=F', 10 * M, 100);
     recordTick(db, 'NIY=F', 11 * M, 200);
     expect(getLatestTick(db, 'NIY=F')).toEqual({ symbol: 'NIY=F', t: 11 * M, price: 200 });
+  });
+});
+
+describe('openDb', () => {
+  it('opens a file db with WAL and persists across reopen', () => {
+    const path = join(tmpdir(), `jp225-test-${process.pid}.db`);
+    rmSync(path, { force: true });
+    const db1 = openDb(path);
+    recordTick(db1, 'NIY=F', 10 * 60_000, 67000);
+    db1.close();
+    const db2 = openDb(path);
+    expect(getRecentBars(db2, 'NIY=F', 0)).toHaveLength(1);
+    db2.close();
+    rmSync(path, { force: true });
+    rmSync(path + '-wal', { force: true });
+    rmSync(path + '-shm', { force: true });
   });
 });

@@ -1,4 +1,22 @@
 import { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+
+/** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。 */
+export function resolveDbPath(): string {
+  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
+  const dir = join(base, 'jp225-monitor');
+  mkdirSync(dir, { recursive: true });
+  return join(dir, 'jp225.db');
+}
+
+export function openDb(path: string): DatabaseSync {
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA busy_timeout = 5000');
+  initSchema(db);
+  return db;
+}
 
 export interface Tick { symbol: string; t: number; price: number; }
 export interface Bar1m { symbol: string; t: number; o: number; h: number; l: number; c: number; }
