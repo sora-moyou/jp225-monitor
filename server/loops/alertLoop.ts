@@ -6,6 +6,7 @@ import {
 import { broadcast } from '../sse/broker.js';
 import { INSTRUMENTS } from '../config.js';
 import { isOnCooldown, markFired } from '../alertCooldown.js';
+import { getOseBars, isOseBarsReady } from '../oseBars.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
 // 旧 changeDetector (client side, fixed-% threshold) を全置換。
@@ -60,7 +61,10 @@ function evaluateAndFire(): void {
   for (const sym of SYMBOLS) {
     // v0.3.19: アラートは日経225先物のみ。他銘柄は分足取得のみ続け、AI 説明の元ネタ専用。
     if (sym !== 'NIY=F') continue;
-    const bars = barsCache.get(sym);
+    // v0.3.30: NIY=F はリアルタイム OSE バーが溜まればそれで評価 (z-score もリアルタイム化)。
+    // ウォームアップ中(起動〜約65分)は Yahoo(CME, 約10分遅延) 分足にフォールバック。
+    // 系列は混ぜない (全 OSE か全 CME)。跨ぎ return を作らないので偽スパイクは出ない。
+    const bars = isOseBarsReady() ? getOseBars() : barsCache.get(sym);
     if (!bars || bars.length < 65) continue;
 
     if (isOnCooldown(sym, now)) continue;
