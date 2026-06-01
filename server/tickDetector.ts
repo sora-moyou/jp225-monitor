@@ -100,5 +100,12 @@ export function getMomentum(symbol: string = 'NIY=F'): { ultraShortYen: number |
   return { ultraShortYen, shortPct };
 }
 
+/** DB ウォームアップ用。NIY=F の tick バッファを種付け。既存があれば上書きしない。 */
+export function seedBuffer(symbol: string, ticks: Tick[]): void {
+  if (ticks.length === 0) return;
+  if ((buffers.get(symbol)?.length ?? 0) > 0) return;
+  buffers.set(symbol, ticks.map(t => ({ t: t.t, price: t.price })));
+}
+
 // テスト用
 export function _reset(): void { buffers.clear(); }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { feedPrice, getMomentum, _reset } from './tickDetector.js';
+import { feedPrice, getMomentum, _reset, seedBuffer } from './tickDetector.js';
 import type { Price } from './types.js';
 
 function px(price: number, t: number, symbol: Price['symbol'] = 'NIY=F'): Price {
@@ -38,5 +38,18 @@ describe('getMomentum (日経カード: 超短期=値幅円 / 短期=率%)', () 
     feedPrice([px(30000, 0, 'NQ=F')]);
     feedPrice([px(30100, 5000, 'NQ=F')]);
     expect(getMomentum('NQ=F')).toBeNull();
+  });
+});
+
+describe('seedBuffer (DB warmup)', () => {
+  beforeEach(() => _reset());
+
+  it('seeds the tick buffer so getMomentum has history immediately; no overwrite if data exists', () => {
+    seedBuffer('NIY=F', [{ t: 0, price: 67000 }, { t: 10_000, price: 67040 }]);
+    const m = getMomentum('NIY=F')!;
+    expect(m.ultraShortYen).toBe(40);   // 10秒窓: 67040-67000
+    // 既存があれば上書きしない
+    seedBuffer('NIY=F', [{ t: 0, price: 1 }]);
+    expect(getMomentum('NIY=F')!.ultraShortYen).toBe(40);
   });
 });
