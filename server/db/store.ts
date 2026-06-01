@@ -92,6 +92,16 @@ export function pruneTicks(db: DatabaseSync, cutoff: number): void {
   db.prepare('DELETE FROM ticks WHERE t < ?').run(cutoff);
 }
 
+/** meta(key/value) テーブルの読み書き。基礎データの取り込み版管理などに使う。 */
+export function getMeta(db: DatabaseSync, key: string): string | null {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+export function setMeta(db: DatabaseSync, key: string, value: string): void {
+  db.prepare('INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(key, value);
+}
+
 export interface SessionOHLC {
   sessionDate: string;
   session: 'Day' | 'Night';

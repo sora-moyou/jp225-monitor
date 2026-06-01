@@ -38,7 +38,13 @@ const out = 'dist/basedata-1min.ndjson.gz';
 writeFileSync(out, gzipSync(Buffer.from(ndjson, 'utf-8')));
 console.log('wrote', out);
 
+// 取り込み版管理用メタ。モニターは generatedAt を比較して「新着」を判定する。
+const metaOut = 'dist/basedata-1min.meta.json';
+const meta = { generatedAt: new Date().toISOString(), firstBar: bars[0].t, lastBar: bars.at(-1).t, count: bars.length };
+writeFileSync(metaOut, JSON.stringify(meta));
+console.log('wrote', metaOut, meta);
+
 try { execSync('gh release view basedata-latest', { stdio: 'ignore' }); }
 catch { execSync('gh release create basedata-latest --title "Base data (N225 mini 1min)" --notes "Auto-published base data. Updated weekly."', { stdio: 'inherit' }); }
-execSync(`gh release upload basedata-latest ${out} --clobber`, { stdio: 'inherit' });
-console.log('✅ uploaded to release basedata-latest');
+execSync(`gh release upload basedata-latest ${out} ${metaOut} --clobber`, { stdio: 'inherit' });
+console.log('✅ uploaded gz + meta to release basedata-latest');
