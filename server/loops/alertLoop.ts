@@ -1,7 +1,7 @@
 import { fetchMinuteBars, type Bar } from '../correlation.js';
 import {
   detectBurst, detectTrend, computeContext, returns, returns5m, stdDev,
-  DEFAULT_PARAMS, type DetectorParams, type AlertEvent, type CrossSnapshot,
+  DEFAULT_PARAMS, type AlertEvent,
 } from '../alertDetector.js';
 import { broadcast } from '../sse/broker.js';
 import { INSTRUMENTS } from '../config.js';
@@ -9,12 +9,9 @@ import { canFire, markFired } from '../alertCooldown.js';
 import { getRealtimeBars, isRealtimeBarsReady, getRollingReturn } from '../feedBars.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
-// 旧 changeDetector (client side, fixed-% threshold) を全置換。
+// v0.3.35: 横断確認(他資産の同方向確認)を全面廃止。日経自身の z-score(+静寂前提) のみで発火。
 
 const POLL_MS = 60 * 1000;
-// v0.3.32: 横断確認に香港ハンセン(^HSI)を追加し、ES=F を外す。東京寄りで米株先物が
-// 夜間閑散でも、アジア時間にリアルタイムで動くハンセンで日経急騰の裏取りができる。
-const CROSS_REQUIRED = new Set(['NIY=F', 'NQ=F', 'YM=F', '^HSI', 'JPY=X']);  // 指数・FX のみ横断確認必須
 
 // instrument label のルックアップ
 const META_BY_SYM = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
@@ -48,25 +45,7 @@ async function refreshAllBars(): Promise<void> {
   }));
 }
 
-function buildCrossSnapshot(): CrossSnapshot {
-  const latestReturn = new Map<string, number>();
-  const baselineSigma = new Map<string, number>();
-  for (const sym of SYMBOLS) {
-    const bars = barsFor(sym);   // リアルタイム足優先 (横断確認の時間軸を日経に揃える)
-    if (bars.length < 62) continue;
-    const baseline = bars.slice(-61, -1);
-    const r = returns(baseline);
-    if (r.length < 10) continue;
-    baselineSigma.set(sym, stdDev(r));
-    const prev = bars[bars.length - 2]!.close;
-    const cur = bars[bars.length - 1]!.close;
-    if (prev > 0) latestReturn.set(sym, (cur - prev) / prev);
-  }
-  return { latestReturn, baselineSigma };
-}
-
 function evaluateAndFire(): void {
-  const cross = buildCrossSnapshot();
   const now = Date.now();
 
   for (const sym of SYMBOLS) {
@@ -79,14 +58,13 @@ function evaluateAndFire(): void {
 
     const meta = META_BY_SYM.get(sym);
     if (!meta) continue;
-    const crossRequired = CROSS_REQUIRED.has(sym);
 
-    // burst (1m) 優先、無ければ trend (5m, 長期)。両方とも考慮する。
-    const burst = detectBurst(sym, bars, crossRequired, cross);
+    // burst (1m) 優先、無ければ trend (5m, 長期)。両方とも考慮する。(v0.3.35: 横断確認なし)
+    const burst = detectBurst(bars);
     let result: { z: number; latestRet: number; kind: 'slope' | 'magnitude'; windowSec: number } | null = null;
     if (burst) result = { ...burst, kind: 'slope', windowSec: 60 };
     else {
-      const trend = detectTrend(sym, bars, crossRequired, cross);
+      const trend = detectTrend(bars);
       if (trend) result = { ...trend, kind: 'magnitude', windowSec: 300 };
     }
     if (!result) continue;
@@ -123,26 +101,11 @@ function median(values: number[]): number {
   return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m]!;
 }
 
-// NIY=F の横断確認: cross の中で |z|>=crossZMin かつ同方向の他資産が1つでもあれば true。
-function crossConfirms(latestRet: number, cross: CrossSnapshot, P: DetectorParams): boolean {
-  const dir = latestRet >= 0 ? 'up' : 'down';
-  for (const cs of CROSS_REQUIRED) {
-    if (cs === 'NIY=F') continue;
-    const csRet = cross.latestReturn.get(cs);
-    const csSig = cross.baselineSigma.get(cs);
-    if (csRet === undefined || csSig === undefined || csSig <= 0) continue;
-    if (Math.abs(csRet) / csSig < P.crossZMin) continue;
-    if ((csRet >= 0 ? 'up' : 'down') === dir) return true;
-  }
-  return false;
-}
-
 // v0.3.33: 短期検知のリアルタイム化。分足の確定を待たず、priceLoop の毎 tick(~2秒) に
 // 呼ばれ、リアルタイム buffer の 60秒(burst)/5分(trend) ローリング窓で z 評価して即発火する。
 // baseline σ は分足から(緩変なので毎分更新で十分)、最新リターンだけ実時間ローリング窓を使う。
-// 横断確認は buildCrossSnapshot(実時間1分足ベース、方向確認用)。クールダウン共有で 60秒経路の
-// バー版と二重発火しない(先に鳴った方が他をロックする)。feed 断などローリング不可時は何もしない
-// (従来の 60秒バー版がフォールバックとして残る)。
+// v0.3.35: 横断確認は廃止。日経自身の z(+静寂前提) のみ。クールダウン共有で 60秒バー版と
+// 二重発火しない(先に鳴った方が他をロックする)。feed 断などローリング不可時は何もしない。
 export function evaluateRealtime(): void {
   const sym = 'NIY=F';
   const now = Date.now();
@@ -156,16 +119,15 @@ export function evaluateRealtime(): void {
   const sigma1 = stdDev(baselineReturns);
   if (sigma1 <= 0) return;
 
-  const cross = buildCrossSnapshot();
   let result: { z: number; latestRet: number; kind: 'slope' | 'magnitude'; windowSec: number } | null = null;
 
-  // burst (リアルタイム 60秒ローリング) 優先。静寂前提 + 横断確認は bar 版 detectBurst と同条件。
+  // burst (リアルタイム 60秒ローリング) 優先。静寂前提は bar 版 detectBurst と同条件。
   const ret60 = getRollingReturn(60_000, sym);
   if (ret60 !== null) {
     const z = Math.abs(ret60) / sigma1;
     const recent = baselineReturns.slice(-P.quietLookback);
     const quietOk = recent.length >= P.quietLookback && median(recent.map(Math.abs)) < sigma1 * P.quietMedianRatio;
-    if (z >= P.zThreshold && quietOk && crossConfirms(ret60, cross, P)) {
+    if (z >= P.zThreshold && quietOk) {
       result = { z, latestRet: ret60, kind: 'slope', windowSec: 60 };
     }
   }
@@ -176,7 +138,7 @@ export function evaluateRealtime(): void {
     if (r5.length >= 11 && ret300 !== null) {
       const sigma5 = stdDev(r5.slice(0, -1));
       const z = sigma5 > 0 ? Math.abs(ret300) / sigma5 : 0;
-      if (sigma5 > 0 && z >= P.zThreshold && crossConfirms(ret300, cross, P)) {
+      if (sigma5 > 0 && z >= P.zThreshold) {
         result = { z, latestRet: ret300, kind: 'magnitude', windowSec: 300 };
       }
     }

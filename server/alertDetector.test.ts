@@ -3,7 +3,7 @@ import {
   returns, stdDev, returns5m,
   detectBurst, detectTrend,
   computeContext,
-  type DetectorParams, type CrossSnapshot,
+  type DetectorParams,
 } from './alertDetector.js';
 import type { Bar } from './correlation.js';
 
@@ -18,10 +18,7 @@ const TEST_PARAMS: DetectorParams = {
   quietMedianRatio: 0.8,
   quietLookback: 5,
   baselineLookback: 60,
-  crossZMin: 1.5,
 };
-
-const EMPTY_CROSS: CrossSnapshot = { latestReturn: new Map(), baselineSigma: new Map() };
 
 describe('returns / stdDev / returns5m', () => {
   it('returns computes 1-bar percent changes', () => {
@@ -55,9 +52,9 @@ describe('detectBurst (1m z-score)', () => {
     return makeBars(closes);
   }
 
-  it('fires when latest return |z| crosses threshold and recent bars are quiet (no cross required)', () => {
+  it('fires when latest return |z| crosses threshold and recent bars are quiet', () => {
     const bars = buildQuietThenSpike(0.003);   // 0.3% spike vs σ ~0.0001 → z huge
-    const r = detectBurst('NIY=F', bars, false, EMPTY_CROSS, TEST_PARAMS);
+    const r = detectBurst(bars, TEST_PARAMS);
     expect(r).not.toBeNull();
     expect(r!.z).toBeGreaterThan(TEST_PARAMS.zThreshold);
     expect(r!.latestRet).toBeGreaterThan(0);
@@ -65,7 +62,7 @@ describe('detectBurst (1m z-score)', () => {
 
   it('does not fire when latest return is within volatility band', () => {
     const bars = buildQuietThenSpike(0.0005);  // 1σ, well below 2.5σ threshold
-    expect(detectBurst('NIY=F', bars, false, EMPTY_CROSS, TEST_PARAMS)).toBeNull();
+    expect(detectBurst(bars, TEST_PARAMS)).toBeNull();
   });
 
   it('does not fire when recent bars are already noisy (no quiet precondition)', () => {
@@ -77,29 +74,11 @@ describe('detectBurst (1m z-score)', () => {
     }
     closes.push(closes[closes.length - 1]! * 1.003);
     const bars = makeBars(closes);
-    expect(detectBurst('NIY=F', bars, false, EMPTY_CROSS, TEST_PARAMS)).toBeNull();
-  });
-
-  it('requires cross-confirmation when crossRequired=true', () => {
-    const bars = buildQuietThenSpike(0.003);
-    // No cross context → blocked
-    expect(detectBurst('NIY=F', bars, true, EMPTY_CROSS, TEST_PARAMS)).toBeNull();
-    // Cross confirms same direction → fires
-    const cross: CrossSnapshot = {
-      latestReturn: new Map([['NQ=F', 0.002]]),
-      baselineSigma: new Map([['NQ=F', 0.0005]]),  // z = 4
-    };
-    expect(detectBurst('NIY=F', bars, true, cross, TEST_PARAMS)).not.toBeNull();
-    // Cross is opposite direction → blocked
-    const opposite: CrossSnapshot = {
-      latestReturn: new Map([['NQ=F', -0.002]]),
-      baselineSigma: new Map([['NQ=F', 0.0005]]),
-    };
-    expect(detectBurst('NIY=F', bars, true, opposite, TEST_PARAMS)).toBeNull();
+    expect(detectBurst(bars, TEST_PARAMS)).toBeNull();
   });
 
   it('returns null when too few bars', () => {
-    expect(detectBurst('NIY=F', makeBars([100, 101, 102]), false, EMPTY_CROSS, TEST_PARAMS)).toBeNull();
+    expect(detectBurst(makeBars([100, 101, 102]), TEST_PARAMS)).toBeNull();
   });
 });
 
@@ -115,7 +94,7 @@ describe('detectTrend (5m z-score)', () => {
       closes.push(closes[closes.length - 1]! * 1.001);
     }
     const bars = makeBars(closes);
-    const r = detectTrend('NIY=F', bars, false, EMPTY_CROSS, TEST_PARAMS);
+    const r = detectTrend(bars, TEST_PARAMS);
     expect(r).not.toBeNull();
     expect(r!.latestRet).toBeGreaterThan(0);
   });

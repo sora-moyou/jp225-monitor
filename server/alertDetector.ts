@@ -22,12 +22,13 @@ export interface AlertEvent {
   zscore: number;          // 新フィールド: 発火時の |z| (UI 表示・LLM 文脈用)
 }
 
+// v0.3.35: 横断確認(他資産の同方向確認)を全面削除。日経単独の急変を握り潰す原因だったため
+// (ユーザ指示)。発火は日経自身の z-score(+静寂前提) のみで判定する。
 export interface DetectorParams {
   zThreshold: number;       // |z| 閾値 (例 2.5)
   quietMedianRatio: number; // 直前 N 本の |return| 中央値 < σ × ratio (例 0.8)
   quietLookback: number;    // 直前 N 本 (例 5)
   baselineLookback: number; // baseline σ 算出窓 (例 60 本 = 60分)
-  crossZMin: number;        // 横断確認に必要な他銘柄 |z| (例 1.5)
 }
 
 export const DEFAULT_PARAMS: DetectorParams = {
@@ -35,15 +36,7 @@ export const DEFAULT_PARAMS: DetectorParams = {
   quietMedianRatio: 0.8,
   quietLookback: 5,
   baselineLookback: 60,
-  crossZMin: 1.5,
 };
-
-export interface CrossSnapshot {
-  /** symbol -> 直近 1m return */
-  latestReturn: Map<string, number>;
-  /** symbol -> baseline σ */
-  baselineSigma: Map<string, number>;
-}
 
 export function returns(bars: Bar[]): number[] {
   const r: number[] = [];
@@ -80,14 +73,11 @@ export function returns5m(bars: Bar[]): number[] {
 
 /**
  * 1m burst (slope kind) 検知。
- * 条件: |latest z| > zThreshold AND median(直前 quietLookback |returns|) < σ * quietMedianRatio
- *       AND (crossRequired なら横断確認パス)
+ * 条件: |latest z| > zThreshold AND median(直前 quietLookback |returns|) < σ * quietMedianRatio。
+ * (v0.3.35: 横断確認は廃止。日経自身の z と静寂前提のみ)
  */
 export function detectBurst(
-  symbol: string,
   bars: Bar[],
-  crossRequired: boolean,
-  cross: CrossSnapshot,
   params: DetectorParams = DEFAULT_PARAMS,
 ): { z: number; latestRet: number; sigma: number } | null {
   if (bars.length < params.baselineLookback + 1) return null;
@@ -110,24 +100,6 @@ export function detectBurst(
   const recentMedian = median(recent.map(Math.abs));
   if (recentMedian >= sigma * params.quietMedianRatio) return null;
 
-  // 横断確認
-  if (crossRequired) {
-    const dir: 'up' | 'down' = latestRet >= 0 ? 'up' : 'down';
-    const CROSS_SYMS = ['NIY=F', 'NQ=F', 'YM=F', '^HSI', 'JPY=X'];
-    let confirmed = false;
-    for (const cs of CROSS_SYMS) {
-      if (cs === symbol) continue;
-      const csRet = cross.latestReturn.get(cs);
-      const csSig = cross.baselineSigma.get(cs);
-      if (csRet === undefined || csSig === undefined || csSig <= 0) continue;
-      const csZ = Math.abs(csRet) / csSig;
-      if (csZ < params.crossZMin) continue;
-      const csDir: 'up' | 'down' = csRet >= 0 ? 'up' : 'down';
-      if (csDir === dir) { confirmed = true; break; }
-    }
-    if (!confirmed) return null;
-  }
-
   return { z, latestRet, sigma };
 }
 
@@ -135,13 +107,10 @@ export function detectBurst(
  * 5m trend (magnitude kind) 検知。
  * 5-min return = (close[t] - close[t-5])/close[t-5]。
  * baseline σ_5m を計算し、|latest 5m return| > σ_5m * zThreshold で発火。
- * 静寂前提は省略 (5-min は本質的に累積、静寂と合わない)。横断確認のみ。
+ * 静寂前提は省略 (5-min は本質的に累積、静寂と合わない)。(v0.3.35: 横断確認は廃止)
  */
 export function detectTrend(
-  symbol: string,
   bars: Bar[],
-  crossRequired: boolean,
-  cross: CrossSnapshot,
   params: DetectorParams = DEFAULT_PARAMS,
 ): { z: number; latestRet: number; sigma: number } | null {
   if (bars.length < params.baselineLookback + 5) return null;
@@ -152,23 +121,6 @@ export function detectTrend(
   const latest = r5[r5.length - 1]!;
   const z = Math.abs(latest) / sigma;
   if (z < params.zThreshold) return null;
-
-  if (crossRequired) {
-    const dir: 'up' | 'down' = latest >= 0 ? 'up' : 'down';
-    const CROSS_SYMS = ['NIY=F', 'NQ=F', 'YM=F', '^HSI', 'JPY=X'];
-    let confirmed = false;
-    for (const cs of CROSS_SYMS) {
-      if (cs === symbol) continue;
-      const csRet = cross.latestReturn.get(cs);
-      const csSig = cross.baselineSigma.get(cs);
-      if (csRet === undefined || csSig === undefined || csSig <= 0) continue;
-      const csZ = Math.abs(csRet) / csSig;
-      if (csZ < params.crossZMin) continue;
-      const csDir: 'up' | 'down' = csRet >= 0 ? 'up' : 'down';
-      if (csDir === dir) { confirmed = true; break; }
-    }
-    if (!confirmed) return null;
-  }
 
   return { z, latestRet: latest, sigma };
 }

@@ -5,7 +5,7 @@ import type { Bar } from './correlation.js';
 const NIKKEI = 'NIY=F';
 const GRID = 250; // 節目(round number)グリッド(円)
 
-interface Level { d: number; label: string; reversal?: boolean; accel?: boolean; }
+interface Level { price: number; d: number; label: string; reversal?: boolean; accel?: boolean; }
 
 // getBars はテスト用に注入可(既定は本物の barsCache 読み取り)。
 // 15〜60 分(約30分足)の時間軸でのテクニカル要約を返す。
@@ -40,6 +40,7 @@ export function buildNikkeiTechnical(
   const round5 = (v: number): number => Math.round(v / 5) * 5;
   const dist = (level: number): number => round5(level - cur);
   const fmt = (d: number): string => `${d >= 0 ? '+' : ''}${d}円`;
+  const fmtPrice = (v: number): string => Math.round(v).toLocaleString('en-US');   // 67,000
 
   const dayHigh = Math.max(...closes);
   const dayLow = Math.min(...closes);
@@ -57,23 +58,23 @@ export function buildNikkeiTechnical(
   // 上昇寄り: 下抜け=転換(revDown), 上抜け=加速(revUp)。
 
   const upCandidates: (Level | null)[] = [
-    range1h ? { d: dist(range1h.high), label: '1時間高値' } : null,
-    { d: dist(fourHigh), label: '4時間高値' },
-    { d: dist(dayHigh), label: '本日高値' },
-    { d: dist(gridUp1), label: `節目${gridUp1}` },
-    { d: dist(gridUp2), label: `節目${gridUp2}` },
-    trend === '下降寄り' ? { d: dist(revUp), label: `節目${revUp}`, reversal: true } : null,
-    trend === '上昇寄り' ? { d: dist(revUp), label: `節目${revUp}`, accel: true } : null,
+    range1h ? { price: range1h.high, d: dist(range1h.high), label: '1時間高値' } : null,
+    { price: fourHigh, d: dist(fourHigh), label: '4時間高値' },
+    { price: dayHigh, d: dist(dayHigh), label: '本日高値' },
+    { price: gridUp1, d: dist(gridUp1), label: '節目' },
+    { price: gridUp2, d: dist(gridUp2), label: '節目' },
+    trend === '下降寄り' ? { price: revUp, d: dist(revUp), label: '節目', reversal: true } : null,
+    trend === '上昇寄り' ? { price: revUp, d: dist(revUp), label: '節目', accel: true } : null,
   ];
   const upRaw = upCandidates.filter((x): x is Level => x !== null && x.d > 0);
   const downCandidates: (Level | null)[] = [
-    range1h ? { d: dist(range1h.low), label: '1時間安値' } : null,
-    { d: dist(fourLow), label: '4時間安値' },
-    { d: dist(dayLow), label: '本日安値' },
-    { d: dist(gridDown1), label: `節目${gridDown1}` },
-    { d: dist(gridDown2), label: `節目${gridDown2}` },
-    trend === '上昇寄り' ? { d: dist(revDown), label: `節目${revDown}`, reversal: true } : null,
-    trend === '下降寄り' ? { d: dist(revDown), label: `節目${revDown}`, accel: true } : null,
+    range1h ? { price: range1h.low, d: dist(range1h.low), label: '1時間安値' } : null,
+    { price: fourLow, d: dist(fourLow), label: '4時間安値' },
+    { price: dayLow, d: dist(dayLow), label: '本日安値' },
+    { price: gridDown1, d: dist(gridDown1), label: '節目' },
+    { price: gridDown2, d: dist(gridDown2), label: '節目' },
+    trend === '上昇寄り' ? { price: revDown, d: dist(revDown), label: '節目', reversal: true } : null,
+    trend === '下降寄り' ? { price: revDown, d: dist(revDown), label: '節目', accel: true } : null,
   ];
   const downRaw = downCandidates.filter((x): x is Level => x !== null && x.d < 0);
 
@@ -94,9 +95,10 @@ export function buildNikkeiTechnical(
     }
     return out;
   };
+  // v0.3.35: 価格を主体に表示 (例「67,000円(節目, あと+80円)」)。距離は補助で括弧内に。
   const fmtLevel = (l: Level): string => {
     const tag = l.reversal ? '：トレンド転換' : l.accel ? '：トレンド加速' : '';
-    return `${fmt(l.d)}(${l.label})${tag}`;
+    return `${fmtPrice(l.price)}円(${l.label}, あと${fmt(l.d)})${tag}`;
   };
   const upStr = pick(upRaw).map(fmtLevel).join(' / ') || '(上値候補なし)';
   const downStr = pick(downRaw).map(fmtLevel).join(' / ') || '(下値候補なし)';
@@ -106,9 +108,9 @@ export function buildNikkeiTechnical(
   const chgLine = [pct(chg30, 30), pct(chg60, 60)].filter((x): x is string => x !== null).join(' / ');
 
   const lines = [
-    `現値 ${cur.toFixed(1)}`,
+    `現値 ${fmtPrice(cur)}円`,
     chgLine !== '' ? chgLine : null,
-    `中期(15分平均) ${sma15.toFixed(1)} (現在値 ${fmt(dist(sma15))}) / 長期(60分平均) ${sma60.toFixed(1)} (現在値 ${fmt(dist(sma60))}) → 傾向: ${trend}`,
+    `中期(15分平均) ${fmtPrice(sma15)}円 (現在値 ${fmt(dist(sma15))}) / 長期(60分平均) ${fmtPrice(sma60)}円 (現在値 ${fmt(dist(sma60))}) → 傾向: ${trend}`,
     `上昇目途候補: ${upStr}`,
     `下落目途候補: ${downStr}`,
   ].filter((x): x is string => x !== null);
