@@ -32,10 +32,6 @@ interface SavePayload {
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
-  pricePollMs?: number | null;
-  newsPollMs?: number | null;
-  port?: number | null;
-  cooldownMin?: number | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -75,11 +71,6 @@ export interface SettingsElements {
   inputGemini: HTMLInputElement;
   inputGroq: HTMLInputElement;
   inputOpenai: HTMLInputElement;
-  inputPricePoll: HTMLInputElement;
-  inputNewsPoll: HTMLInputElement;
-  inputPort: HTMLInputElement;
-  inputCooldownMin: HTMLInputElement;
-  portWarning: HTMLElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -104,13 +95,6 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputOpenai.placeholder = current?.openaiSet
       ? '設定済み (上書きする場合のみ入力)'
       : current?.openaiFromEnv ? '環境変数から読込中' : 'sk-...';
-    if (current) {
-      el.inputPricePoll.value = String(current.pricePollMs);
-      el.inputNewsPoll.value = String(current.newsPollMs);
-      el.inputPort.value = String(current.port);
-      el.inputCooldownMin.value = String(current.cooldownMin);
-    }
-    el.portWarning.classList.add('hidden');
   }
 
   async function loadCurrentVersion() {
@@ -276,15 +260,6 @@ export function initSettingsModal(el: SettingsElements): void {
       if (grv) body.groqKey = grv;
       if (ov) body.openaiKey = ov;
 
-      const pp = Number(el.inputPricePoll.value);
-      const np = Number(el.inputNewsPoll.value);
-      const pt = Number(el.inputPort.value);
-      const cm = Number(el.inputCooldownMin.value);
-      if (current && pp !== current.pricePollMs) body.pricePollMs = pp;
-      if (current && np !== current.newsPollMs) body.newsPollMs = np;
-      if (current && pt !== current.port) body.port = pt;
-      if (current && cm !== current.cooldownMin) body.cooldownMin = cm;
-
       const result = await saveSettings(body);
       if (!result.ok) {
         el.statusArea.innerHTML = `<div class="settings-status err">${result.error ?? '保存失敗'}</div>`;
@@ -294,9 +269,6 @@ export function initSettingsModal(el: SettingsElements): void {
       el.inputGroq.value = '';
       el.inputOpenai.value = '';
       await refresh();
-      if (result.portRequiresRestart) {
-        el.portWarning.classList.remove('hidden');
-      }
     } finally {
       el.saveBtn.disabled = false;
       el.saveBtn.textContent = originalText;

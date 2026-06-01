@@ -16,7 +16,10 @@ body {
   font-family: 'Segoe UI', 'Hiragino Sans', sans-serif;
   background: var(--bg);
   color: var(--text);
+  zoom: var(--ui-zoom, 1);                 /* Ctrl+/- でUI全体を拡縮 (③) */
 }
+/* チャートだけは逆zoomで実寸を維持 (チャートを除く=テキストUIのみ拡縮) */
+.chart-panel { zoom: var(--ui-zoom-inv, 1); }
 
 .topbar {
   display: flex;
