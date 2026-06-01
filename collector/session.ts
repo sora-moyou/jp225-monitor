@@ -10,6 +10,8 @@ function jstParts(epochMs: number): { dow: number; mod: number; date: string } {
   const j = new Date(epochMs + JST_OFFSET);   // UTC ゲッタで JST 壁時計を読む
   return {
     dow: j.getUTCDay(),
+    // 分粒度(秒は無視)。全セッション境界(8:45/15:45/17:00/6:00)が分ちょうどなので安全。
+    // 将来、秒付きの境界を導入する場合はここを秒対応にすること。
     mod: j.getUTCHours() * 60 + j.getUTCMinutes(),
     date: j.toISOString().slice(0, 10),
   };
