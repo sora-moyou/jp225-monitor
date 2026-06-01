@@ -277,6 +277,9 @@ body {
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
+/* 日経 momentum は値の上にラベルを積むため、価格と「値」の行を底で揃える
+   (baseline だと価格がラベル行に乗り、値が1行下にずれる)。 */
+.price-card .value:has(.change.mom) { align-items: flex-end; }
 .price-card .value .num {
   font-size: 22px;
   font-weight: 700;

@@ -43,6 +43,30 @@ describe('classifySession', () => {
   });
 });
 
+describe('classifySession 休場日', () => {
+  it('元日(1/1)・年始(1/2)・年末(12/31)は Day も Night も null', () => {
+    expect(classifySession(jst(2026, 1, 1, 9, 0))).toBeNull();    // 元日 Day
+    expect(classifySession(jst(2026, 1, 1, 18, 0))).toBeNull();   // 元日 Night 夕
+    expect(classifySession(jst(2026, 1, 2, 9, 0))).toBeNull();    // 年始 Day
+    expect(classifySession(jst(2026, 12, 31, 9, 0))).toBeNull();  // 年末 Day
+  });
+
+  it('11/23(勤労感謝・2026はBCPで休場)は null、前後の平日は通常どおり', () => {
+    expect(classifySession(jst(2026, 11, 23, 9, 0))).toBeNull();   // 月 休場 Day
+    expect(classifySession(jst(2026, 11, 23, 18, 0))).toBeNull();  // 月 休場 Night
+    // 翌朝(火 00:00-06:00)は月の Night の続きなので、月が休場→ null
+    expect(classifySession(jst(2026, 11, 24, 2, 0))).toBeNull();
+    // 火 8:45 からは通常の取引日
+    expect(classifySession(jst(2026, 11, 24, 9, 0))).toEqual({ sessionDate: '2026-11-24', session: 'Day' });
+  });
+
+  it('休場前日の Night は開始日が平日なので運用される(翌朝の続きも含む)', () => {
+    // 12/30(水)の Night は sessionDate=12/30(非休場)→ 翌朝 12/31 早朝も 12/30-Night として有効
+    expect(classifySession(jst(2026, 12, 30, 18, 0))).toEqual({ sessionDate: '2026-12-30', session: 'Night' });
+    expect(classifySession(jst(2026, 12, 31, 2, 0))).toEqual({ sessionDate: '2026-12-30', session: 'Night' });
+  });
+});
+
 describe('inPollWindow', () => {
   it('true inside a session', () => {
     expect(inPollWindow(jst(...MON, 9, 0))).toBe(true);

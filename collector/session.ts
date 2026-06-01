@@ -23,16 +23,29 @@ const DAY_CLOSE = 15 * 60 + 45;   // 15:45
 const NIGHT_OPEN = 17 * 60;       // 17:00
 const NIGHT_MORN_CLOSE = 6 * 60;  // 6:00
 
-/** セッション判定。休場帯/週末は null。 */
+// 平日でも日経225先物が取引されない休場日 (sessionDate=セッション開始日 が一致したら休場)。
+// 元日/年始/年末は毎年。2026は勤労感謝の日(11/23)も JPX グループ BCP テストのため休場。
+// 注: 1/3 は土曜のため週末ロジックで既に除外。年ごとに手動メンテする。
+const HOLIDAYS = new Set<string>([
+  '2026-01-01',  // 元日
+  '2026-01-02',  // 年始休業
+  '2026-11-23',  // 勤労感謝の日 (2026は BCP テストのため休場)
+  '2026-12-31',  // 年末休業
+]);
+
+/** セッション判定。休場帯/週末/休場日は null。 */
 export function classifySession(epochMs: number): SessionInfo | null {
   const { dow, mod, date } = jstParts(epochMs);
-  if (isWeekday(dow) && mod >= DAY_OPEN && mod < DAY_CLOSE) return { sessionDate: date, session: 'Day' };
-  if (isWeekday(dow) && mod >= NIGHT_OPEN) return { sessionDate: date, session: 'Night' };
-  if (mod < NIGHT_MORN_CLOSE) {
+  let info: SessionInfo | null = null;
+  if (isWeekday(dow) && mod >= DAY_OPEN && mod < DAY_CLOSE) info = { sessionDate: date, session: 'Day' };
+  else if (isWeekday(dow) && mod >= NIGHT_OPEN) info = { sessionDate: date, session: 'Night' };
+  else if (mod < NIGHT_MORN_CLOSE) {
     const prev = jstParts(epochMs - DAY_MS);
-    if (isWeekday(prev.dow)) return { sessionDate: prev.date, session: 'Night' };
+    if (isWeekday(prev.dow)) info = { sessionDate: prev.date, session: 'Night' };
   }
-  return null;
+  // セッション開始日が休場日なら、その Day/Night(翌朝の続きも含む)はすべて非取引。
+  if (info && HOLIDAYS.has(info.sessionDate)) return null;
+  return info;
 }
 
 const LEAD_MS = 5 * 60_000;    // 開始5分前から
