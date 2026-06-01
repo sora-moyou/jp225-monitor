@@ -12,6 +12,7 @@ import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
 import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader } from './lib/correlationClient.js';
+import { initLevelsPanel, setLevels, setLevelsPrice } from './components/levelsPanel.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
@@ -197,6 +198,9 @@ if (logsOpenBtn) {
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
 const bannerEl = document.getElementById('alert-banner')!;
+const levelsBodyEl = document.getElementById('levels-body');
+const levelsMetaEl = document.getElementById('levels-meta');
+if (levelsBodyEl && levelsMetaEl) initLevelsPanel(levelsBodyEl, levelsMetaEl);
 const statusEl = document.getElementById('connection-status')!;
 const clockEl = document.getElementById('clock')!;
 const enableSoundBtn = document.getElementById('enable-sound') as HTMLButtonElement;
@@ -286,7 +290,10 @@ connectStream({
   onPrices: (prices) => {
     const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
     renderPriceGrid(priceGridEl, prices, displayed);
+    const niy = prices.find(p => p.symbol === 'NIY=F');
+    if (niy) setLevelsPrice(niy.price);
   },
+  onLevels: (levels) => setLevels(levels),
   onAlert: (alert) => {
     flashCard(priceGridEl, alert);
     alertBeep(alert.direction);

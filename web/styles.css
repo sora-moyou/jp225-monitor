@@ -110,6 +110,20 @@ body {
 .alert .close:hover { color: var(--text); }
 .alert .explanation { color: var(--text); }
 
+.levels-panel { margin: 8px 0; }
+.levels-panel h2 { font-size: 13px; margin: 0 0 4px; color: var(--muted); }
+.levels-meta { font-size: 11px; color: var(--muted); font-weight: normal; }
+.levels-body { font-variant-numeric: tabular-nums; font-size: 13px; }
+.levels-row { display: flex; gap: 8px; padding: 1px 4px; }
+.levels-row .lv-price { width: 72px; text-align: right; }
+.levels-row .lv-dist { width: 48px; text-align: right; color: var(--muted); }
+.levels-row .lv-label { color: var(--muted); font-size: 12px; }
+.levels-row.strong .lv-price { font-weight: bold; color: var(--text); }
+.levels-row.reversal { color: #d29922; }
+.levels-row.reversal .lv-label { color: #d29922; }
+.levels-cur { padding: 2px 4px; color: #58a6ff; font-size: 12px; }
+.levels-empty { color: var(--muted); font-size: 12px; padding: 2px 4px; }
+
 .main-grid {
   display: grid;
   grid-template-columns: var(--left-fr, 1fr) 6px var(--right-fr, 2fr);   /* 左 | 境界ハンドル | 右 (既定 1:2, D&D可) */
