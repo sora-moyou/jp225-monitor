@@ -33,8 +33,10 @@ copyFileSync(process.execPath, OUT_PATH);
 console.log(`4️⃣  Injecting blob with postject...`);
 const sentinel = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 const machoArg = platform === 'darwin' ? '--macho-segment-name NODE_SEA' : '';
+// Node v24 の WASM postject は ~90MB の PE を V8 既定ヒープ(~1.5GB)に載せようとして
+// OOM する。`npx postject` ではなく cli.js を直接、ヒープ拡張(8GB)で呼ぶ。
 execSync(
-  `npx postject ${OUT_PATH} NODE_SEA_BLOB ${BLOB_PATH} --sentinel-fuse ${sentinel} ${machoArg}`,
+  `node --max-old-space-size=8192 node_modules/postject/dist/cli.js ${OUT_PATH} NODE_SEA_BLOB ${BLOB_PATH} --sentinel-fuse ${sentinel} ${machoArg}`,
   { stdio: 'inherit' }
 );
 
