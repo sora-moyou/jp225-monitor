@@ -24,6 +24,27 @@ const OUT_PATH      = join(BIN_DIR, OUT_NAME);
 mkdirSync('dist',   { recursive: true });
 mkdirSync(BIN_DIR,  { recursive: true });
 
+// ── Step 0: 実行中の collector を停止 ─────────────────────────────────────────
+// collector は「デタッチで生存」設計なので、ビルド前に必ず止めないと実行中の exe を
+// 上書きできず EPERM になる。bin の直接実行版とバンドル版(triple名)の両方を掃除。
+const collectorTargets = platform === 'win32'
+  ? ['jp225-collector.exe', 'jp225-collector-x86_64-pc-windows-msvc.exe']
+  : ['jp225-collector'];
+let killedCollectors = 0;
+for (const t of collectorTargets) {
+  try {
+    if (platform === 'win32') {
+      execSync(`taskkill /F /T /IM ${t}`, { stdio: ['ignore', 'pipe', 'ignore'] });
+    } else {
+      execSync(`pkill -f ${t}`, { stdio: ['ignore', 'pipe', 'ignore'] });
+    }
+    killedCollectors++;
+  } catch { /* not running = OK */ }
+}
+console.log(killedCollectors > 0
+  ? `0️⃣  killed running collector(s) (${killedCollectors} name(s) matched)`
+  : '0️⃣  no running collector');
+
 // ── Step 1: esbuild ──────────────────────────────────────────────────────────
 console.log('1️⃣  esbuild collector/index.ts → dist/collector.cjs');
 try { rmSync(CJS_OUT, { force: true }); } catch { /* ignore */ }
