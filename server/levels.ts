@@ -95,13 +95,15 @@ export function computeLevels(
   if (recent.length) {
     const recentHigh = Math.max(...recent.map(s => s.high));
     const recentLow  = Math.min(...recent.map(s => s.low));
-    // 直近高/安は既存候補と重複しない場合のみ追加
-    if (!cands.some(c => c.price === recentHigh)) {
-      cands.push({ price: recentHigh, label: '直近高' });
-    }
-    if (!cands.some(c => c.price === recentLow)) {
-      cands.push({ price: recentLow, label: '直近安' });
-    }
+    // 直近高/安は通常いずれかのセッション高安と一致する。重複時は新規候補にせず
+    // 既存候補のラベルに併記する（同一価格をコンフルエンス本数に水増ししないため）。
+    const mark = (price: number, label: string): void => {
+      const ex = cands.find(c => c.price === price);
+      if (ex) ex.label += `・${label}`;
+      else cands.push({ price, label });
+    };
+    mark(recentHigh, '直近高');
+    mark(recentLow, '直近安');
     // グリッド節目（履歴がある場合のみ）
     cands.push({ price: Math.ceil((current + 5) / GRID) * GRID, label: '節目' });
     cands.push({ price: Math.floor((current - 5) / GRID) * GRID, label: '節目' });
