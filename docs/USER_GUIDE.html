@@ -759,6 +759,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </a>
     <nav>
       <a href="#quickstart">セットアップ</a>
+      <a href="#whatsnew">v0.4 新機能</a>
       <a href="#tour">画面ツアー</a>
       <a href="#features">機能</a>
       <a href="#faq">FAQ</a>
@@ -771,11 +772,11 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.3.27</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.4.9</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
-        JP225 (日経 225のCFD) の価格変動をリアルタイムで監視。過去 60 分のボラティリティを基準に「いまの相場として異常か」を判定。
-        その後 AI が、急変の原因をニュースや他銘柄から考えて、説明します。
+        日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
+        その後 AI が、急変の原因をニュースや他銘柄から考えて、説明します。価格は 24/7 デーモンで蓄積し、起動時に即ウォームアップ。
       </p>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
@@ -868,6 +869,80 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 </section>
 
+<!-- ─── What's new in v0.4 ─── -->
+<section class="section" id="whatsnew">
+  <div class="section-head">
+    <span class="section-eyebrow">v0.4 の新機能</span>
+    <h2>v0.4 で変わったこと</h2>
+    <p>価格は OSE mini のリアルタイム配信に切替。24/7 蓄積デーモンと主要レベル表示を新搭載。</p>
+  </div>
+
+  <div class="features">
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg></div>
+      <h3>価格収集デーモン (24/7 蓄積)</h3>
+      <p>常駐デーモンが <strong>月 8:45〜土 6:00</strong> (Day 8:45-15:45 / Night 17:00-翌 6:00、休場日除く) に価格を SQLite へ蓄積。モニター起動時に <strong>即ウォームアップ</strong> され、メドや z-score 判定がすぐ揃います。設定の「終了」で <strong>「完全終了」にチェック</strong> すると閉じる時にデーモンも停止、<strong>未チェック (既定) ならバックグラウンドで収集を継続</strong> します。</p>
+      <span class="tag">v0.4</span>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></div>
+      <h3>主要レベル パネル</h3>
+      <p>チャート脇に <strong>上値/下値メド</strong> を表示。過去セッションの高値/安値が主軸で、±30 円で重なるレベルは <strong>「強レベル ★」</strong>。直近 5 セッションのスイングからフィボナッチ戻し (38.2 / 50 / 61.8%、<strong>50% ＝ 方向転換ライン ⚑</strong>) も描画。各レベルに <strong>現値からの距離</strong> 付き・リアルタイム更新。高さは区切りをドラッグで可変。</p>
+      <span class="tag">v0.4</span>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div>
+      <h3>基礎データ取り込み</h3>
+      <p>N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、<strong>メドの履歴を一気に深く</strong> できます。設定の <strong>「基礎データ」→「新着をチェック」→「取り込み」</strong>。既存の新しいデータは消えず、<strong>追記/更新のみ</strong> なので安全です。</p>
+      <span class="tag">v0.4</span>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></div>
+      <h3>詳細パラメータ (🎛️)</h3>
+      <p>ツールバーの <strong>🎛️</strong> ボタンで開く専用モーダル。<strong>Price polling / News polling / Sidecar port / アラート クールダウン (分, 既定 15)</strong> を設定できます。価格・ニュースの取得間隔やアラートの再発火間隔をここで調整します。</p>
+      <span class="tag">v0.4</span>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></div>
+      <h3>UI 文字サイズ可変</h3>
+      <p><span class="kbd">Ctrl</span> <span class="kbd">+</span> / <span class="kbd">Ctrl</span> <span class="kbd">−</span> で画面の文字サイズを拡大縮小 (<span class="kbd">Ctrl</span> <span class="kbd">0</span> でリセット)。<strong>チャートは実寸を維持</strong> します。</p>
+      <span class="tag">v0.4</span>
+    </div>
+    <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></div>
+      <h3>アラート表示の改善</h3>
+      <p>各行の冒頭に <strong>発生時刻 (チップ表示)</strong>。<strong>最大 10 件のローリング表示</strong> で、<strong>再起動後も保持</strong> されます。</p>
+      <span class="tag">v0.4</span>
+    </div>
+  </div>
+
+  <!-- 詳細パラメータ screenshot -->
+  <div class="flow" style="margin-top: 40px;">
+    <figure class="flow-img">
+      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/params.png" alt="詳細パラメータ">
+      <figcaption>🎛️ 詳細パラメータ モーダル — Price polling / News polling / Sidecar port / アラート クールダウン (分)</figcaption>
+    </figure>
+    <div class="flow-steps">
+      <div>
+        <strong>ツールバーの <span class="kbd">🎛️</span> を開く</strong>
+        <p>価格・ニュースのポーリングまわりとアラートの再発火間隔を、API キー設定とは別のこのモーダルで管理します。</p>
+      </div>
+      <div>
+        <strong>Price / News polling を調整</strong>
+        <p>Yahoo 系の取得が重い時は Price polling を上げると安定します。News polling は既定 60 秒。</p>
+      </div>
+      <div>
+        <strong>アラート クールダウン (分)</strong>
+        <p>同方向アラートの最短再発火間隔。<strong>既定 15 分</strong>。鳴りすぎる時は伸ばし、機敏にしたい時は縮めます (逆方向は起点越えで即解禁)。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout success" style="margin-top: 24px;">
+    <strong>価格はリアルタイムに。</strong> v0.4 系では日経 225 先物の価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、従来の CME 経由 (約 10 分遅延) ではありません。
+  </div>
+</section>
+
 <!-- ─── API setup (tabs) ─── -->
 <section class="section">
   <div class="section-head">
@@ -936,7 +1011,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="flow">
       <figure class="flow-img">
         <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル">
-        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、ポーリング設定、バージョン確認</figcaption>
+        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、バージョン確認 (v0.4.9 + 最新かチェック)、基礎データ (新着をチェック)、終了 (完全終了)</figcaption>
       </figure>
 
       <div class="flow-steps">
@@ -971,10 +1046,16 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <strong>保存先:</strong> 入力したキーは <code>~/.jp225-monitor/config.json</code> にローカル保存されます。アプリ外部に送信されることはありません。
     </div>
     <div class="callout" style="margin-top: 12px;">
-      <strong>polling 設定:</strong> 下部の「定期 API ポーリング設定」で価格・ニュース取得間隔と port も変更可能。範囲外 (例 Price polling=100ms) は 400 で reject。
+      <strong>polling 設定:</strong> 価格・ニュースの取得間隔と port は v0.4 系では <strong>ツールバーの 🎛️ 詳細パラメータ</strong> モーダルに分離されました (Price polling / News polling / Sidecar port / アラート クールダウン)。詳しくは <a href="#whatsnew">v0.4 の新機能</a> を参照。範囲外の値 (例 Price polling=100ms) は reject されます。
     </div>
     <div class="callout" style="margin-top: 12px;">
-      <strong>バージョン確認 (v0.3.18〜):</strong> 最下部の「バージョン」セクションに現在のバージョンが表示され、<strong>「最新かチェック」</strong>ボタンで最新版が出ているか手動確認できます。更新があればその場の「更新」ボタンから DL + 再起動まで実行可能 (起動時の自動トースト通知に加えての手動確認手段)。
+      <strong>バージョン確認 (v0.3.18〜):</strong> 設定モーダルの「バージョン」セクションに現在のバージョン (<strong>v0.4.9</strong>) が表示され、<strong>「最新かチェック」</strong>ボタンで最新版が出ているか手動確認できます。更新があればその場の「更新」ボタンから DL + 再起動まで実行可能 (起動時の自動トースト通知に加えての手動確認手段)。
+    </div>
+    <div class="callout" style="margin-top: 12px;">
+      <strong>基礎データ (v0.4):</strong> 「基礎データ」セクションの <strong>「新着をチェック」→「取り込み」</strong> で、N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、主要レベルの履歴を深くできます。既存の新しいデータは消えず追記/更新のみ。
+    </div>
+    <div class="callout" style="margin-top: 12px;">
+      <strong>終了 (v0.4):</strong> 「終了」セクションの <strong>「完全終了」</strong> チェックを ON にすると、ウィンドウを閉じた時に <strong>24/7 価格収集デーモンも一緒に停止</strong> します。<strong>未チェック (既定) なら閉じてもバックグラウンドで価格収集を継続</strong> し、次回起動時に即ウォームアップできます。
     </div>
   </div>
 </section>
@@ -984,7 +1065,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="section-head">
     <span class="section-eyebrow">画面ツアー</span>
     <h2>どこに何があるか</h2>
-    <p>起動直後の画面を 7 つの要素で説明します。</p>
+    <p>起動直後の画面を 8 つの要素で説明します。価格カードの 2 段モメンタムと主要レベル パネルにも注目。</p>
   </div>
 
   <div class="shot-wrap">
@@ -1003,16 +1084,16 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄を表示。5 分ごとに再評価され、その時々で最も連動性の高い指標がわかる。</p></div></div>
     <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。hover でカウントダウン表示。</p></div></div>
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
-    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード</strong><p>8 主要銘柄をリアルタイム更新 (2 秒間隔)。緑=上昇 / 赤=下落、急変時はハイライト点滅。「日経225先物」は <code>NIY=F</code> (CME 上場の JPY 建て日経 225 先物、価格は ~66,000 円台)。v0.3.8 以前は <code>NK=F</code> を使っていたが、これは Yahoo 側で 2020 年に更新停止した古い ALTSYMBOL だったため切替。</p></div></div>
-    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート</strong><p>銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て)。価格カードの「日経225先物」(<code>NIY=F</code>) と <strong>同じ日経 225 指数を別商品で表示しているだけ</strong> なので、絶対値も % 変動もほぼ一致します (差は売買スプレッド・取引時間帯のみ)。チャート上から銘柄・時間軸・指標を切替可能。</p></div></div>
-    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) のみ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。🔄 で再生成、× で消去。</p></div></div>
+    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード (2 段モメンタム)</strong><p>監視銘柄をリアルタイム更新。緑=上昇 / 赤=下落、急変時はハイライト点滅。日経の値の上には <strong>「1分」(率 %) と「10秒」(値幅・円)</strong> の 2 段モメンタムを表示。「日経225先物」は <code>NIY=F</code> 表記ですが、価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、~66,000〜67,000 円台の日経指数そのままが出ます。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート + 主要レベル パネル</strong><p>チャート銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て) で、参照指数は日経 225 と同一。チャート脇の <strong>主要レベル パネル</strong> に、過去セッション高安を主軸とした <strong>上値/下値メド</strong> (重なるレベルは強レベル ★、フィボ 50% は方向転換ライン ⚑) を現値からの距離付きで表示します。区切りのドラッグで高さ可変。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
     <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
     <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近 15 件ニュース + 日経225先物のテクニカル要約が LLM コンテキストに自動付与される。</p></div></div>
   </div>
 
   <div class="callout" style="margin-top: 28px;">
     <strong>💡 価格カード「日経225先物」とチャート銘柄の関係</strong><br>
-    どちらも <strong>同じ日経 225 指数</strong> を見ています。価格カード <code>NIY=F</code> (CME JPY 建て日経 225 先物) とチャート <code>FOREXCOM:JP225</code> (FOREX.com の JPY 建て Japan 225 CFD) は商品種別こそ違いますが、参照指数は同一・通貨も同じ JPY なので、表示数字も % 変動もほぼ一致します。
+    どちらも <strong>同じ日経 225 指数</strong> を見ています。価格カード (OSE mini リアルタイム、<code>NIY=F</code> 表記) とチャート <code>FOREXCOM:JP225</code> (FOREX.com の JPY 建て Japan 225 CFD) は商品種別こそ違いますが、参照指数は同一・通貨も同じ JPY なので、表示数字も % 変動もほぼ一致します。
   </div>
 </section>
 
@@ -1026,8 +1107,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="features">
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>適応 z-score 急変検知 (v0.3.17 / v0.3.19)</h3>
-      <p>1 分窓 burst (静寂前提付き) + 5 分窓 trend + 日経 225 専用 5〜10 秒 tick の 3 層構成。すべて過去 60 分のボラティリティ σ を基準にした <strong>適応閾値</strong> で発火。<strong>v0.3.19 以降、アラートを出すのは日経 225 先物 (NIY=F) のみ</strong> — 指数・FX (NQ/YM/ES/JPY) はその横断確認に使われ、単独ではアラートを出しません。</p>
+      <h3>リアルタイム z-score 急変検知</h3>
+      <p>OSE mini のライブ配信に対するローリング窓 z-score で、<strong>超短期 (値幅・円, 5〜10 秒) + 短期 (率 %, 〜60 秒) + 長期 (5 分)</strong> の 3 層を判定。<strong>アラートは日経 225 先物 (NIY=F) 単独で発火</strong> — <strong>横断確認は v0.3.35 で廃止</strong> され、他指数・FX の確認を待たずリアルタイムに鳴ります。共有クールダウン <strong>既定 15 分</strong> (逆方向は起点越えで解禁、🎛️ 詳細パラメータで変更可)。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
@@ -1069,7 +1150,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
       <h3>レイアウト & カスタマイズ</h3>
-      <p>polling 間隔 (price 2s / news 60s) と sidecar port を設定モーダルから可変。<strong>パネルの境界をドラッグ</strong>して各欄の高さや左右カラムの幅も自由に調整 (左右の中央線はダブルクリックで 1:2 に初期化)。</p>
+      <p>polling 間隔 (price / news)・sidecar port・アラート クールダウンは <strong>🎛️ 詳細パラメータ</strong> から可変。<strong>パネルの境界をドラッグ</strong>して各欄の高さや左右カラムの幅も自由に調整 (左右の中央線はダブルクリックで 1:2 に初期化)。<span class="kbd">Ctrl</span> <span class="kbd">+</span>/<span class="kbd">−</span> で文字サイズも変更可。</p>
     </div>
   </div>
 </section>
@@ -1180,7 +1261,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <details>
       <summary>価格カードが <code>---</code> のまま</summary>
       <div class="faq-body">
-        Yahoo と Investing.com の両方が同時失敗中。ネット接続を確認、数分待つ、ダメなら再起動。
+        価格ソース (OSE mini フィード / Yahoo フォールバック) が同時失敗中。ネット接続を確認、数分待つ、ダメなら再起動。
       </div>
     </details>
 
@@ -1206,13 +1287,14 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </details>
 
     <details>
-      <summary>polling 間隔を変えたい</summary>
+      <summary>polling 間隔 / アラート クールダウンを変えたい</summary>
       <div class="faq-body">
-        ⚙️ → 「定期 API ポーリング設定」セクション。
+        ツールバーの <strong>🎛️ 詳細パラメータ</strong> モーダル (v0.4 で ⚙️ から分離)。
         <ul>
-          <li>Price polling: 500–60000 ms (デフォルト 2000)。Yahoo 429 が頻発するなら 5000 推奨</li>
-          <li>News polling: 10000–600000 ms (デフォルト 60000)</li>
+          <li>Price polling (ms)。Yahoo 429 が頻発するなら大きめに</li>
+          <li>News polling (ms, デフォルト 60000)</li>
           <li>Sidecar port: 1024–65535 (デフォルト 3000)。変更時はアプリ再起動必要</li>
+          <li>アラート クールダウン (分, 既定 15)。鳴りすぎる時は伸ばす (逆方向は起点越えで即解禁)</li>
         </ul>
       </div>
     </details>
@@ -1242,16 +1324,16 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <details>
       <summary>日経 225 先物の表示価格が想定と違う</summary>
       <div class="faq-body">
-        v0.3.10 以降は <code>NIY=F</code> (CME JPY 建て日経 225 先物) を使用しており、日経指数そのままの ~66,000 円台が表示されます。
-        <p style="margin-top: 8px;">v0.3.7 以前は <code>NK=F</code> を JPY 換算した ~1 千万円台が出ていましたが、これは Yahoo の <code>NK=F</code> が 2020 年に更新停止した古い ALTSYMBOL であり、JPY 換算自体も数学的に不要だったことが判明したため、v0.3.8 で銘柄切替・換算機構撤去を実施しました。</p>
+        日経指数そのままの値 (~66,000〜67,000 円台) が表示されます。<strong>v0.4 系では価格は OSE mini (大阪取引所) のリアルタイム配信が主軸</strong>で、従来の CME 経由 (約 10 分遅延) ではありません (Yahoo は予備経路)。<code>NIY=F</code> はカード上の表記名として残っています。
+        <p style="margin-top: 8px;">参考: ごく初期 (v0.3.7 以前) は <code>NK=F</code> を JPY 換算した ~1 千万円台が出ていましたが、これは Yahoo の古い ALTSYMBOL であり換算も不要だったため、v0.3.8 で撤去済みです。</p>
       </div>
     </details>
 
     <details>
       <summary>カードの価格はチャートと数字が違うんですが</summary>
       <div class="faq-body">
-        v0.3.10 以降は <strong>ほぼ一致</strong> します。価格カードの「日経225先物」(<code>NIY=F</code>) もチャート (<code>FOREXCOM:JP225</code>) も同じ日経 225 指数を JPY で表示しているため、差は売買スプレッド・取引時間帯の鮮度程度です。
-        <p style="margin-top: 8px;">v0.3.7 以前のバージョンを使っている場合は古い NK=F × USD/JPY 換算値 (~1 千万円台) になっているので、最新版にアップデートしてください。</p>
+        <strong>ほぼ一致</strong> します。価格カードの「日経225先物」(OSE mini リアルタイム) もチャート (<code>FOREXCOM:JP225</code>) も同じ日経 225 指数を JPY で表示しているため、差は売買スプレッド・取引時間帯の鮮度程度です。
+        <p style="margin-top: 8px;">ごく初期 (v0.3.7 以前) のバージョンを使っている場合は古い NK=F × USD/JPY 換算値 (~1 千万円台) になっているので、最新版にアップデートしてください。</p>
       </div>
     </details>
   </div>
@@ -1267,34 +1349,33 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="ref">
 
     <details>
-      <summary>監視している銘柄一覧 (実装ベース、全 13 銘柄)</summary>
+      <summary>監視している銘柄一覧 (実装ベース)</summary>
       <div class="ref-body">
-        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (8 銘柄、main カテゴリ)</strong> — 全銘柄をカード表示。<strong>v0.3.19 以降、アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。他の 7 銘柄は NIY=F アラートの横断確認や AI 説明の連動材料 (|z|≥4.0) として使われます。</p>
+        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (7 銘柄、main カテゴリ)</strong> — リアルタイム取得できる銘柄をカード表示。<strong>アラートを出すのは日経 225 先物 (NIY=F) のみ</strong> (横断確認は v0.3.35 で廃止)。他の 6 銘柄は AI 説明の連動材料 (|z|≥4.0) として使われます。</p>
         <table class="ref-table">
           <thead>
             <tr>
               <th>銘柄</th>
               <th>コード</th>
               <th>通貨</th>
-              <th>v0.3.19 での役割</th>
+              <th>役割</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td><strong>アラート対象</strong> — 1分 burst + 5分 trend + 5〜10秒 tick (絶対 0.15%) の 3 層検知</td></tr>
-            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>S&amp;P500 先物</td><td><code>ES=F</code></td><td>USD</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>NIY=F の横断確認 + AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td><strong>アラート対象</strong> — OSE mini リアルタイム配信に対する 超短期 (値幅・円, 5〜10秒) + 短期 (率%, 〜60秒) + 長期 (5分) の 3 層検知</td></tr>
+            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>香港ハンセン</td><td><code>^HSI</code></td><td>HKD</td><td>AI 材料 (|z|≥4.0)</td></tr>
             <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>VIX</td><td><code>^VIX</code></td><td>—</td><td>AI 材料 (|z|≥4.0)</td></tr>
             <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>AI 材料 (|z|≥4.0)</td></tr>
+            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>AI 材料 (|z|≥4.0)</td></tr>
           </tbody>
         </table>
         <p style="margin-top: 10px; color: var(--text-faint); font-size: 13px;">
-          v0.3.8 で日経銘柄を <code>NK=F</code> (Yahoo の古い ALTSYMBOL、2020 年で更新停止) から <code>NIY=F</code> (CME 上場 JPY 建て日経 225 先物) に切替。USD 建て銘柄 (NQ/YM/ES/CL) は USD のまま表示します。
+          v0.4 系で銘柄構成を整理し、リアルタイム取得が難しい <code>ES=F</code> (S&amp;P500 先物) と <code>^VIX</code> を外し、<code>^HSI</code> (香港ハンセン) を追加しました。日経の価格は OSE mini のリアルタイム配信が主軸 (Yahoo は予備)。USD 建て銘柄 (NQ/YM/CL) は USD のまま表示します。
         </p>
 
-        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視 (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示。日経 225 への寄与度が高い東証値がさ株。<strong>v0.3.19 以降は単独アラートを出さず</strong>、NIY=F アラート時に大きく動いていれば (|z|≥4.0) AI 説明の連動材料として渡します。</p>
+        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視 (5 銘柄、heavyweight カテゴリ)</strong> — カード非表示。日経 225 への寄与度が高い東証値がさ株。<strong>単独アラートは出さず</strong>、NIY=F アラート時に大きく動いていれば (|z|≥4.0) AI 説明の連動材料として渡します。</p>
         <table class="ref-table">
           <thead>
             <tr>
@@ -1312,7 +1393,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         </table>
 
         <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
-          ※ <strong>v0.3.19 以降アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。発火条件: <strong>(A) 1 分窓 burst</strong> = 直近 1 分 return の |z| > 2.5 (z = 値 / 過去 60 分 σ)、かつ直前 5 本が静寂、かつ横断確認パス。 <strong>(B) 5 分窓 trend</strong> = 5 分累積 return の |z| > 2.5。 <strong>(C) 5〜10 秒 tick</strong> = 5〜10 秒窓の絶対 |%変化| ≥ 0.15% で発火 (ボラ非依存・固定閾値)。他の 12 銘柄は単独アラートを出さず、NIY=F アラート時に <strong>|z| ≥ 4.0</strong> で大きく動いていれば「大きく動いた他資産」として AI 説明に渡されます。
+          ※ <strong>アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。OSE mini のライブ配信に対するローリング窓 z-score で、<strong>超短期</strong> (値幅・円, 5〜10 秒)、<strong>短期</strong> (率 %, 〜60 秒)、<strong>長期</strong> (5 分) の 3 層を判定します。<strong>横断確認 (他指数・FX による確認) は v0.3.35 で廃止</strong>され、NIY=F 単独・リアルタイムで発火します。共有クールダウンは <strong>既定 15 分</strong> (逆方向は起点越えで解禁、🎛️ 詳細パラメータで変更可)。他の銘柄は単独アラートを出さず、NIY=F アラート時に <strong>|z| ≥ 4.0</strong> で大きく動いていれば「大きく動いた他資産」として AI 説明に渡されます。
         </p>
       </div>
     </details>
@@ -1322,7 +1403,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <div class="ref-body">
         <table class="ref-table">
           <tbody>
-            <tr><td>設定 (API キー、polling 間隔)</td><td><code>%USERPROFILE%\.jp225-monitor\config.json</code></td></tr>
+            <tr><td>設定 (API キー、polling 間隔、クールダウン)</td><td><code>%USERPROFILE%\.jp225-monitor\config.json</code></td></tr>
+            <tr><td>蓄積価格 DB (24/7 収集デーモン / 基礎データ)</td><td><code>%APPDATA%\jp225-monitor\jp225.db</code> (node:sqlite, WAL)</td></tr>
             <tr><td>ログ</td><td>アプリ内 📋 モーダルのみ (ファイル保存なし、再起動で消失)</td></tr>
             <tr><td>アプリ本体</td><td><code>C:\Program Files\JP225 Monitor\</code></td></tr>
           </tbody>
@@ -1349,7 +1431,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         <ol>
           <li><strong>Windows 設定</strong> → <strong>アプリ</strong> → <strong>インストール済みのアプリ</strong></li>
           <li><strong>JP225 Monitor</strong> を検索 → <strong>アンインストール</strong></li>
-          <li>(任意) <code>%USERPROFILE%\.jp225-monitor</code> フォルダを削除すれば API キー設定もクリア</li>
+          <li>(任意) <code>%USERPROFILE%\.jp225-monitor</code> (設定) と <code>%APPDATA%\jp225-monitor</code> (蓄積 DB) のフォルダを削除すれば設定・蓄積データもクリア</li>
         </ol>
       </div>
     </details>
