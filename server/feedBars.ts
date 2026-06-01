@@ -87,5 +87,27 @@ export function isRealtimeBarsReady(symbol: string): boolean {
   return s.closed.length + (s.curBar ? 1 : 0) >= MIN_BARS_READY;
 }
 
+/** DB ウォームアップ用。1分足を closed[] に、最後の足を進行中(curBar)として種付け。
+ *  既にライブデータがある銘柄は上書きしない。 */
+export function seedBars(symbol: string, bars: Bar[]): void {
+  if (bars.length === 0) return;
+  const existing = series.get(symbol);
+  if (existing && (existing.closed.length > 0 || existing.curBar)) return;
+  const trimmed = bars.slice(-MAX_BARS);
+  const last = trimmed[trimmed.length - 1]!;
+  series.set(symbol, {
+    closed: trimmed.slice(0, -1).map(b => ({ t: b.t, close: b.close })),
+    curMinute: Math.floor(last.t / 60_000),
+    curBar: { t: last.t, close: last.close },
+  });
+}
+
+/** DB ウォームアップ用。生サンプル(ローリング窓用)を種付け。既存があれば上書きしない。 */
+export function seedSamples(symbol: string, seeded: Sample[]): void {
+  if (seeded.length === 0) return;
+  if ((samples.get(symbol)?.length ?? 0) > 0) return;
+  samples.set(symbol, seeded.map(s => ({ t: s.t, price: s.price })).slice(-1000));
+}
+
 // テスト用
 export function _reset(): void { series.clear(); samples.clear(); }
