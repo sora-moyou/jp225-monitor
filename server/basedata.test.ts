@@ -12,6 +12,14 @@ describe('rowToBar (Excel serial+fraction → JST epoch)', () => {
     expect(b.t % 60_000).toBe(0);
     expect(b).toMatchObject({ o: 50450, h: 50465, l: 50415, c: 50420, v: 2086 });
   });
+
+  it('早朝(夜間立会の翌朝, <7:00)は翌カレンダー日へ+1日補正、夕方(17:00)は同日', () => {
+    // serial 46021 = 2025-12-30。02:00 のバーは夜間立会の翌朝＝実際は 12-31 02:00。
+    const morning = rowToBar(46021, 2 / 24, 1, 2, 0.5, 1.5, 10);
+    expect(new Date(morning.t + 9 * 3600_000).toISOString().slice(0, 16)).toBe('2025-12-31T02:00');
+    const evening = rowToBar(46021, 17 / 24, 1, 2, 0.5, 1.5, 10);
+    expect(new Date(evening.t + 9 * 3600_000).toISOString().slice(0, 16)).toBe('2025-12-30T17:00');
+  });
 });
 
 describe('parseNdjsonLine', () => {

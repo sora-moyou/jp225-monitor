@@ -11,7 +11,9 @@ if (!xlsxPath) { console.error('usage: npm run basedata:publish -- <path-to-xlsx
 
 const EXCEL_1970 = 25569, JST = 9 * 3600_000;   // 25569 = 1970-01-01 の Excel シリアル(標準1900日付系)
 function rowToBar(serial, frac, o, h, l, c, v) {
-  const dayMs = (serial - EXCEL_1970) * 86400_000;
+  // 日付列はセッション開始日。夜間立会の翌朝(< 7:00)は実カレンダー日が翌日 → +1日補正。
+  const carryDay = frac < 7 / 24 ? 86400_000 : 0;
+  const dayMs = (serial - EXCEL_1970) * 86400_000 + carryDay;
   const minMs = Math.round((frac * 86400_000) / 60_000) * 60_000;
   return { t: dayMs + minMs - JST, o, h, l, c, v: typeof v === 'number' ? v : null };
 }
