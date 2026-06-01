@@ -1,13 +1,15 @@
 import type { InstrumentMeta } from './types.js';
 
+// v0.3.32: 監視銘柄を「リアルタイム取得可能なもの + 値がさ株5」に再設計。
+// S&P500(ES=F)と VIX はリアルタイム無料源が無いためドロップ。代わりにアジア時間に
+// リアルタイムで動く香港ハンセン(^HSI)を追加し、東京寄りの横断確認を強化。
 export const INSTRUMENTS: InstrumentMeta[] = [
   { symbol: 'NIY=F',  labelJa: '日経225先物',    labelEn: 'Nikkei 225 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.15, unit: 'percent', category: 'main' },
   { symbol: 'NQ=F',  labelJa: 'ナスダック100先物', labelEn: 'Nasdaq 100 Fut', magnitudeThreshold: 0.30, slopeThreshold: 0.15, unit: 'percent', category: 'main' },
   { symbol: 'YM=F',  labelJa: 'ダウ先物',        labelEn: 'Dow Fut',        magnitudeThreshold: 0.30, slopeThreshold: 0.15, unit: 'percent', category: 'main' },
-  { symbol: 'ES=F',  labelJa: 'S&P500先物',     labelEn: 'S&P500 Fut',     magnitudeThreshold: 0.30, slopeThreshold: 0.15, unit: 'percent', category: 'main' },
+  { symbol: '^HSI',  labelJa: '香港ハンセン',     labelEn: 'Hang Seng',      magnitudeThreshold: 0.40, slopeThreshold: 0.20, unit: 'percent', category: 'main' },
   { symbol: 'JPY=X', labelJa: 'ドル円',          labelEn: 'USD/JPY',        magnitudeThreshold: 0.20, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
   { symbol: 'CL=F',  labelJa: 'WTI原油',        labelEn: 'WTI Crude',      magnitudeThreshold: 0.50, slopeThreshold: 0.30, unit: 'percent', category: 'main' },
-  { symbol: '^VIX',  labelJa: 'VIX',            labelEn: 'VIX',            magnitudeThreshold: 5.00, slopeThreshold: 3.00, unit: 'percent', category: 'main' },
   { symbol: '^TNX',  labelJa: '米10年債利回り',   labelEn: 'US 10Y Yield',   magnitudeThreshold: 2.00, slopeThreshold: 1.50, unit: 'bp',      category: 'main' },
   // 値がさ株（東証、日経寄与上位5）— アラートのみ、カード非表示
   { symbol: '9983.T', labelJa: 'ファーストリテイリング', labelEn: 'Fast Retailing',    magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
@@ -170,10 +172,9 @@ export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
   'NIY=F': ['日経', '日本株', '東証', '日銀', 'boj', '黒田', '植田', '円', '為替', 'jp', '日本', '株式', 'nikkei', 'japan', 'tokyo', 'yen', 'jp225'],
   'NQ=F': ['ナスダック', '米株', 'テック', 'ai', 'アップル', 'マイクロソフト', 'エヌビディア', 'メタ', 'グーグル', 'nasdaq', 'nq', 'tech', 'apple', 'aapl', 'msft', 'nvda', 'meta', 'google', 'googl'],
   'YM=F': ['ダウ', 'nyダウ', '米株', '米国', 'dow', 'dji', 'us 30', 'industrial', 'blue chip'],
-  'ES=F': ['s&p', 'sp500', '米株', 'fomc', 'frb', 'spx', 'fed', 'powell', 'rate', 'inflation', 'cpi', 'jobs', 'payroll'],
+  '^HSI': ['香港', 'ハンセン', '中国', '上海', 'アジア株', '中国株', 'hang seng', 'hsi', 'china', 'chinese', 'hong kong', 'shanghai', 'pboc', '人民銀行'],
   'JPY=X': ['ドル円', '為替', '日銀', 'boj', 'frb', '介入', '円安', '円高', '為替介入', 'usdjpy', 'usd/jpy', 'yen', 'dollar', 'intervention', 'kanda', '神田'],
   'CL=F': ['原油', 'opec', 'ガソリン', '石油', 'oil', 'crude', 'wti', 'brent', 'gasoline', 'petroleum', 'iran', 'saudi', 'russia'],
-  '^VIX': ['vix', '恐怖', 'パニック', '売り', '急落', 'リスクオフ', 'volatility', 'fear', 'panic', 'sell-off', 'selloff', 'hedge', 'risk off', 'crash'],
   '^TNX': ['米10年', '国債', '利回り', '利上げ', '利下げ', 'yield', 'treasury', '10-year', '10y', 't-note', 'bond', 'fed funds', 'powell', 'cpi'],
   // 値がさ株（個別株、関連業界キーワードも）
   '9983.T': ['ファーストリテイリング', 'ユニクロ', 'fast retailing', 'uniqlo', '小売', 'apparel'],

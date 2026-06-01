@@ -10,7 +10,9 @@ import type { Bar } from './correlation.js';
 // Yahoo 分足にフォールバックする。系列は混ぜない (全リアルタイム or 全 Yahoo) ので
 // 跨ぎ return が生まれず偽スパイクは出ない。
 
-const MAX_BARS = 130;            // 60分 baseline + 余裕。古いバーは捨てる。
+// v0.3.32: 相関(MIN_SAMPLES=100, 場中ぶんの深さを志向)も賄えるよう保持本数を拡大。
+// 検知は末尾60〜65本しか見ないので増やしても影響なし。
+const MAX_BARS = 520;            // 60分 baseline + 相関用の深さ(約8.7時間)。古いバーは捨てる。
 const MIN_BARS_READY = 65;       // alertLoop の発火/確認要件 (これ未満は Yahoo フォールバック)
 
 interface Series { closed: Bar[]; curMinute: number; curBar: Bar | null; }

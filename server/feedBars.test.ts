@@ -51,10 +51,11 @@ describe('feedBars (マルチ銘柄リアルタイム1分足ビルダー)', () =
     expect(isRealtimeBarsReady('NQ=F')).toBe(false);   // 別銘柄は独立
   });
 
-  it('MAX_BARS を超えると古いバーを捨てる', () => {
-    for (let i = 0; i < 140; i++) feedRealtimePrice('NIY=F', 66000 + i, i * M);
+  it('MAX_BARS(520) を超えると古いバーを捨てる', () => {
+    for (let i = 0; i < 540; i++) feedRealtimePrice('NIY=F', 66000 + i, i * M);
     const bars = getRealtimeBars('NIY=F');
-    expect(bars.length).toBeLessThanOrEqual(131);
-    expect(bars[bars.length - 1]!.close).toBe(66139);
+    expect(bars.length).toBeLessThanOrEqual(521);   // 確定520 + 進行中1
+    expect(bars[bars.length - 1]!.close).toBe(66539);  // 直近は残る
+    expect(bars[0]!.close).toBeGreaterThan(66000);     // 最古は捨てられた
   });
 });

@@ -113,7 +113,7 @@ export function detectBurst(
   // 横断確認
   if (crossRequired) {
     const dir: 'up' | 'down' = latestRet >= 0 ? 'up' : 'down';
-    const CROSS_SYMS = ['NIY=F', 'NQ=F', 'YM=F', 'ES=F', 'JPY=X'];
+    const CROSS_SYMS = ['NIY=F', 'NQ=F', 'YM=F', '^HSI', 'JPY=X'];
     let confirmed = false;
     for (const cs of CROSS_SYMS) {
       if (cs === symbol) continue;
@@ -155,7 +155,7 @@ export function detectTrend(
 
   if (crossRequired) {
     const dir: 'up' | 'down' = latest >= 0 ? 'up' : 'down';
-    const CROSS_SYMS = ['NIY=F', 'NQ=F', 'YM=F', 'ES=F', 'JPY=X'];
+    const CROSS_SYMS = ['NIY=F', 'NQ=F', 'YM=F', '^HSI', 'JPY=X'];
     let confirmed = false;
     for (const cs of CROSS_SYMS) {
       if (cs === symbol) continue;

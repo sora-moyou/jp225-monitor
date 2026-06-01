@@ -1,5 +1,5 @@
 import { INSTRUMENTS } from './config.js';
-import { getCachedBars } from './loops/alertLoop.js';
+import { barsFor } from './loops/alertLoop.js';
 import { returns, stdDev, returns5m, DEFAULT_PARAMS } from './alertDetector.js';
 import type { Bar } from './correlation.js';
 
@@ -51,7 +51,7 @@ function trendZ(bars: Bar[]): WindowZ | null {
 export function getSignificantMovers(
   excludeSymbol: string,
   threshold: number = CROSS_ASSET_Z_THRESHOLD,
-  getBars: (symbol: string) => Bar[] = getCachedBars,
+  getBars: (symbol: string) => Bar[] = barsFor,   // v0.3.32: 既定をリアルタイム足優先に
 ): Mover[] {
   const movers: Mover[] = [];
   for (const inst of INSTRUMENTS) {

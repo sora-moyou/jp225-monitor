@@ -12,7 +12,9 @@ import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
 // 旧 changeDetector (client side, fixed-% threshold) を全置換。
 
 const POLL_MS = 60 * 1000;
-const CROSS_REQUIRED = new Set(['NIY=F', 'NQ=F', 'YM=F', 'ES=F', 'JPY=X']);  // 指数・FX のみ横断確認必須
+// v0.3.32: 横断確認に香港ハンセン(^HSI)を追加し、ES=F を外す。東京寄りで米株先物が
+// 夜間閑散でも、アジア時間にリアルタイムで動くハンセンで日経急騰の裏取りができる。
+const CROSS_REQUIRED = new Set(['NIY=F', 'NQ=F', 'YM=F', '^HSI', 'JPY=X']);  // 指数・FX のみ横断確認必須
 
 // instrument label のルックアップ
 const META_BY_SYM = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
@@ -29,8 +31,9 @@ export function getCachedBars(symbol: string): Bar[] {
 
 // v0.3.31: 評価に使う 1m bars。リアルタイム feed バーが溜まっていればそれを、
 // ウォームアップ中は Yahoo 分足を返す。系列は混ぜず全リアルタイム or 全 Yahoo。
-// これで日経(NIY=F)の z-score も横断確認(NQ/YM/JPY)も同じ実時間軸で評価できる。
-function barsFor(symbol: string): Bar[] {
+// これで日経(NIY=F)の z-score も横断確認(NQ/YM/HSI/JPY)も同じ実時間軸で評価できる。
+// v0.3.32: 相関ループ・AIチャット文脈でも同じ実時間優先ロジックを使えるよう export。
+export function barsFor(symbol: string): Bar[] {
   return isRealtimeBarsReady(symbol) ? getRealtimeBars(symbol) : (barsCache.get(symbol) ?? []);
 }
 

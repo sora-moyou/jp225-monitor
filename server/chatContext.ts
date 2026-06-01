@@ -1,4 +1,4 @@
-import { getCachedBars } from './loops/alertLoop.js';
+import { barsFor } from './loops/alertLoop.js';
 import { computeContext } from './alertDetector.js';
 import type { Bar } from './correlation.js';
 
@@ -14,7 +14,7 @@ interface Level { d: number; label: string; reversal?: boolean; accel?: boolean;
 // さらに節目に、現在トレンドをブレイクで否定する「トレンド転換」と、
 // 同方向にブレイクで勢いづく「トレンド加速」のラベルを付与する。
 export function buildNikkeiTechnical(
-  getBars: (symbol: string) => Bar[] = getCachedBars,
+  getBars: (symbol: string) => Bar[] = barsFor,   // v0.3.32: 既定をリアルタイム足優先に
 ): string | null {
   const bars = getBars(NIKKEI);
   if (bars.length < 62) return null;

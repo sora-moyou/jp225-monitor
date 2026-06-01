@@ -18,14 +18,15 @@ const REFERER = 'https://nikkei225jp.com/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FinanceMonitor/0.3';
 
 // アプリの Symbol → feed コード対応。実測でリアルタイム(数分以内)を確認したもののみ採用。
-//   136 日経225先物mini OSE / 737 CFD NAS100 / 731 ダウCFD / 921 WTI原油先物 /
-//   811 米国10年債利回り / 511 ドル円
-// ES=F(S&P500) はこの feed に現物stale しか無く、^VIX はライブコードのラベル未確認のため
-// 除外し、Yahoo(10分遅延)に残す。
+//   136 日経225先物mini OSE / 737 CFD NAS100 / 731 ダウCFD / 733 香港ハンセンCFD /
+//   921 WTI原油先物 / 811 米国10年債利回り / 511 ドル円
+// S&P500(ES=F)はこの feed に現物stale しか無く、VIX はスポットのリアルタイム源が無いため
+// 監視銘柄から外した(v0.3.32)。
 const SYMBOL_CODES: ReadonlyArray<readonly [Symbol, string]> = [
   ['NIY=F', '136'],
   ['NQ=F',  '737'],
   ['YM=F',  '731'],
+  ['^HSI',  '733'],
   ['CL=F',  '921'],
   ['^TNX',  '811'],
   ['JPY=X', '511'],

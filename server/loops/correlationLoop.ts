@@ -1,7 +1,12 @@
 import { fetchMinuteBars, pearsonAlignedReturns, type Bar, type CorrelationResult } from '../correlation.js';
 import { INSTRUMENTS } from '../config.js';
+import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
 
-// v0.3.13: 5 分ごとに Yahoo chart API を叩いて全銘柄の 1m bars 取得 → 相関ランキングを更新
+// v0.3.13: 5 分ごとに 1m bars 取得 → 相関ランキングを更新
+// v0.3.32: データ源をリアルタイム feed バー優先に。アンカー(日経)も候補も実時間軸で
+// 揃うので、CME遅延混在による相関の歪みが消える。リアルタイムバーが溜まる前(ウォームアップ)
+// や feed 非対応銘柄は Yahoo 分足にフォールバック。両者は時刻基準が違うため、片方だけ
+// リアルタイムだと共通 timestamp が MIN_SAMPLES に届かず自然に除外される(偽相関は出ない)。
 const ANCHOR = 'NIY=F';
 const POLL_MS = 5 * 60 * 1000;
 const MIN_SAMPLES = 100;     // v0.3.14: 100 ペア未満は信頼性低として候補から除外
@@ -16,11 +21,17 @@ let lastUpdate = 0;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
+// リアルタイムバーが溜まっていればそれを、無ければ Yahoo 分足を返す。
+async function barsForCorr(sym: string): Promise<Bar[]> {
+  if (isRealtimeBarsReady(sym)) return getRealtimeBars(sym);
+  return fetchMinuteBars(sym);
+}
+
 async function tick(): Promise<void> {
   try {
     let anchorBars: Bar[];
     try {
-      anchorBars = await fetchMinuteBars(ANCHOR);
+      anchorBars = await barsForCorr(ANCHOR);
     } catch (err) {
       console.warn(`[correlationLoop] anchor ${ANCHOR} fetch failed:`, err instanceof Error ? err.message : err);
       return;
@@ -35,7 +46,7 @@ async function tick(): Promise<void> {
     const results: CorrelationResult[] = [];
     for (const sym of CANDIDATES) {
       try {
-        const bars = await fetchMinuteBars(sym);
+        const bars = await barsForCorr(sym);
         const { corr, samples } = pearsonAlignedReturns(anchorBars, bars);
         if (samples >= MIN_SAMPLES) {
           results.push({ symbol: sym, corr, absCorr: Math.abs(corr), samples });

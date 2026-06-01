@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { chat } from '../llm/openai.js';
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
+import { getSignificantMovers } from '../marketSnapshot.js';
 
 interface ChatMsg { role: 'user' | 'assistant'; content: string; }
 
@@ -29,6 +30,9 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       prices: getPrices(),
       news: getNews(),
       technical: buildNikkeiTechnical(),
+      // v0.3.32: 横断分析(リアルタイム足ベース)もチャット文脈に注入。AI が「香港ハンセン急落→
+      // アジア全体リスクオフ→日経つれ安」のように実時間のアジア連動を語れるようにする。
+      crossAsset: getSignificantMovers('NIY=F'),
     });
     res.json({ reply });
   } catch (err) {

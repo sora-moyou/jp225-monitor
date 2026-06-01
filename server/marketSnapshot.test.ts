@@ -28,7 +28,7 @@ describe('getSignificantMovers', () => {
   const bars: Record<string, Bar[]> = {
     'NIY=F': quietThenSpike(0.01),    // 巨大 z だが除外対象
     'NQ=F': quietThenSpike(-0.005),   // -0.5% 急変, 大 z, down
-    'ES=F': quiet(),                  // 静か, 閾値未満
+    '^HSI': quiet(),                  // 静か, 閾値未満
   };
   const getBars = (s: string) => bars[s] ?? [];
 
@@ -48,7 +48,7 @@ describe('getSignificantMovers', () => {
 
   it('excludes quiet symbols below the threshold', () => {
     const movers = getSignificantMovers('NIY=F', 4.0, getBars);
-    expect(movers.every(m => m.symbol !== 'ES=F')).toBe(true);
+    expect(movers.every(m => m.symbol !== '^HSI')).toBe(true);
   });
 
   it('sorts movers by |z| descending', () => {

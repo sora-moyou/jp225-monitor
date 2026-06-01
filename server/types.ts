@@ -1,6 +1,6 @@
 export type Symbol =
-  | 'NIY=F' | 'NQ=F' | 'YM=F' | 'ES=F'
-  | 'JPY=X' | 'CL=F' | '^VIX' | '^TNX'
+  | 'NIY=F' | 'NQ=F' | 'YM=F' | '^HSI'
+  | 'JPY=X' | 'CL=F' | '^TNX'
   | '9983.T' | '8035.T' | '6857.T' | '9984.T' | '6367.T';   // 値がさ株上位5
 
 export interface Price {
