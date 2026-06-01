@@ -5,6 +5,7 @@ import { fetchFeedPrices } from '../server/sources/nikkei225jpFeed.js';
 import { fetchMinuteBars } from '../server/correlation.js';
 import { INSTRUMENTS } from '../server/config.js';
 import { inPollWindow } from './session.js';
+import { acquireLock, releaseLock } from './lock.js';
 
 export const COLLECTOR_VERSION = '0.4.00';
 const POLL_MS = 2000;
@@ -12,6 +13,7 @@ const IDLE_MS = 30_000;
 const SYMBOLS = INSTRUMENTS.map(i => i.symbol as string);
 
 async function main(): Promise<void> {
+  if (!acquireLock()) { console.log('[collector] another instance is running — exiting'); return; }
   const dbPath = resolveDbPath();
   const db = openDb(dbPath);
   console.log(`[collector ${COLLECTOR_VERSION}] db=${dbPath}`);
@@ -47,6 +49,7 @@ async function main(): Promise<void> {
     }
     await new Promise(r => setTimeout(r, Math.max(0, wait - (Date.now() - start))));
   }
+  releaseLock();
   db.close();
   console.log('[collector] stopped');
 }
