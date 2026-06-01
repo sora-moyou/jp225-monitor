@@ -35,7 +35,8 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Finance
 export async function fetchMinuteBars(symbol: string): Promise<Bar[]> {
   // v0.3.14: range 1h → 1d。CME 24h 銘柄なら 1380 bars/symbol、ペア後 500+ samples 取れる。
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  // v0.4: ハングした接続で収集デーモンの起動 backfill が止まらないよう 5秒でタイムアウト。
+  const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`Yahoo chart ${symbol}: HTTP ${res.status}`);
   const data = await res.json() as YahooChartResponse;
   if (data.chart.error) throw new Error(`Yahoo chart ${symbol}: ${data.chart.error.description}`);
