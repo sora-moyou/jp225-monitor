@@ -8,26 +8,33 @@ function memDb(): DatabaseSync { const db = new DatabaseSync(':memory:'); initSc
 function px(symbol: Price['symbol'], price: number, t: number): Price {
   return { symbol, price, changePercent: 0, timestamp: t, stale: false };
 }
-const M = 60_000;
 
-describe('recordFeedPrices', () => {
-  it('writes every feed price as a tick/bar (skips stale)', () => {
+describe('recordFeedPrices (session-aware)', () => {
+  it('writes in-session prices with session tag; drops out-of-session and stale', () => {
     const db = memDb();
-    recordFeedPrices(db, [px('NIY=F', 67000, 10 * M), px('NQ=F', 30000, 10 * M)]);
-    recordFeedPrices(db, [{ ...px('NIY=F', 99999, 11 * M), stale: true }]);  // stale → skip
-    expect(getRecentBars(db, 'NIY=F', 0).map(b => b.c)).toEqual([67000]);
-    expect(getRecentBars(db, 'NQ=F', 0)).toHaveLength(1);
+    // 2026-06-01 is Monday. 12:00 JST = Day session; 16:00 JST = break (closed)
+    const daySession = Date.UTC(2026, 5, 1, 12 - 9, 0, 0);    // Mon 12:00 JST
+    const breakTime  = Date.UTC(2026, 5, 1, 16 - 9, 0, 0);    // Mon 16:00 JST (closed)
+    recordFeedPrices(db, [px('NIY=F', 67000, daySession)]);
+    recordFeedPrices(db, [px('NIY=F', 99999, breakTime)]);                       // out of session → dropped
+    recordFeedPrices(db, [{ ...px('NIY=F', 88888, daySession + 1000), stale: true }]); // stale → dropped
+    const bars = getRecentBars(db, 'NIY=F', 0);
+    expect(bars).toHaveLength(1);
+    expect(bars[0]!.session).toBe('Day');
+    expect(bars[0]!.session_date).toBe('2026-06-01');
   });
 });
 
-describe('backfillBars', () => {
-  it('inserts only missing 1m bars from fetched history (idempotent)', () => {
+describe('backfillBars (session-tagged, idempotent)', () => {
+  it('tags each backfilled bar by its open time and skips out-of-session bars', () => {
     const db = memDb();
-    const bars = [{ t: 10 * M, close: 67000 }, { t: 11 * M, close: 67100 }];
-    backfillBars(db, 'NIY=F', bars);
-    backfillBars(db, 'NIY=F', bars);   // 2回目は何も増えない
-    const out = getRecentBars(db, 'NIY=F', 0);
-    expect(out.map(b => [b.t, b.c])).toEqual([[10 * M, 67000], [11 * M, 67100]]);
-    expect(out.every(b => b.o === b.h && b.h === b.l && b.l === b.c)).toBe(true);
+    const t1 = Date.UTC(2026, 5, 1, 12 - 9, 0, 0);   // Mon 12:00 JST (Day)
+    const t2 = Date.UTC(2026, 5, 1, 16 - 9, 0, 0);   // Mon 16:00 JST (closed → skipped)
+    backfillBars(db, 'NIY=F', [{ t: t1, close: 67000 }, { t: t2, close: 67100 }]);
+    backfillBars(db, 'NIY=F', [{ t: t1, close: 67000 }]);            // idempotent
+    const bars = getRecentBars(db, 'NIY=F', 0);
+    expect(bars).toHaveLength(1);
+    expect(bars[0]!.t).toBe(Math.floor(t1 / 60_000) * 60_000);
+    expect(bars[0]!.session).toBe('Day');
   });
 });
