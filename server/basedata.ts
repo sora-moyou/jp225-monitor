@@ -3,7 +3,7 @@ import { upsertBar } from './db/store.js';
 import { classifySession } from '../collector/session.js';
 
 const SYMBOL = 'NIY=F';
-const EXCEL_1970 = 25567;          // Excel serial offset: (serial - 25567)*86400_000 = UTC epoch ms
+const EXCEL_1970 = 25569;          // 1970-01-01 の Excel シリアル(1900日付系)。(serial-25569)*86400_000 = UTC epoch ms
 const JST_OFFSET_MS = 9 * 3600_000;
 
 export interface BaseBar { t: number; o: number; h: number; l: number; c: number; v: number | null; }

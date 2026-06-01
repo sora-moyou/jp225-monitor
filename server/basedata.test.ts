@@ -4,12 +4,11 @@ import { initSchema } from './db/store.js';
 import { rowToBar, parseNdjsonLine, importBars } from './basedata.js';
 
 describe('rowToBar (Excel serial+fraction → JST epoch)', () => {
-  it('17:00 の時間小数を JST 17:00 に、分床へ丸める', () => {
+  it('Excelシリアル46021@17:00 を JST 2025-12-30 17:00 に変換、分床へ丸める', () => {
+    // 標準の Excel 1900日付系: serial 25569 = 1970-01-01。serial 46021 = 2025-12-30。
     const b = rowToBar(46021, 17 / 24, 50450, 50465, 50415, 50420, 2086);
     const jst = new Date(b.t + 9 * 3600_000);
-    expect(jst.getUTCHours()).toBe(17);
-    expect(jst.getUTCMinutes()).toBe(0);
-    expect(jst.getUTCFullYear()).toBe(2026);
+    expect(jst.toISOString().slice(0, 16)).toBe('2025-12-30T17:00');
     expect(b.t % 60_000).toBe(0);
     expect(b).toMatchObject({ o: 50450, h: 50465, l: 50415, c: 50420, v: 2086 });
   });
