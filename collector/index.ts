@@ -4,9 +4,11 @@ import { recordFeedPrices, backfillBars } from './record.js';
 import { fetchFeedPrices } from '../server/sources/nikkei225jpFeed.js';
 import { fetchMinuteBars } from '../server/correlation.js';
 import { INSTRUMENTS } from '../server/config.js';
+import { inPollWindow } from './session.js';
 
 export const COLLECTOR_VERSION = '0.4.00';
 const POLL_MS = 2000;
+const IDLE_MS = 30_000;
 const SYMBOLS = INSTRUMENTS.map(i => i.symbol as string);
 
 async function main(): Promise<void> {
@@ -28,19 +30,22 @@ async function main(): Promise<void> {
   let lastPrune = 0;
   while (running) {
     const start = Date.now();
-    try {
-      const prices = await fetchFeedPrices();
-      recordFeedPrices(db, prices);
-    } catch (err) {
-      console.error('[collector] poll error:', err instanceof Error ? err.message : err);
+    let wait = IDLE_MS;
+    if (inPollWindow(start)) {
+      try {
+        const prices = await fetchFeedPrices();
+        recordFeedPrices(db, prices);
+      } catch (err) {
+        console.error('[collector] poll error:', err instanceof Error ? err.message : err);
+      }
+      wait = POLL_MS;
     }
     // 1分に1回、3日より古い tick を間引く (bars_1m は長期保持)
     if (Date.now() - lastPrune > 60_000) {
       pruneTicks(db, Date.now() - 3 * 24 * 60 * 60 * 1000);
       lastPrune = Date.now();
     }
-    const wait = Math.max(0, POLL_MS - (Date.now() - start));
-    await new Promise(r => setTimeout(r, wait));
+    await new Promise(r => setTimeout(r, Math.max(0, wait - (Date.now() - start))));
   }
   db.close();
   console.log('[collector] stopped');
