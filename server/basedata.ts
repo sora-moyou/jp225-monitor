@@ -29,14 +29,22 @@ export function parseNdjsonLine(line: string): BaseBar | null {
 
 export interface ImportResult { inserted: number; updated: number; skipped: number; from: number; to: number; total: number; }
 
-/** bars を session 付与して upsert。session=null(休場/場外)はスキップ。削除はしない。 */
+/** bars を session 付与して upsert。session=null(休場/場外)はスキップ。削除はしない。
+ *  ~13万行を1トランザクションで一括コミット(行ごとの autocommit だと WAL の fsync で激遅)。 */
 export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
   let applied = 0, skipped = 0, from = Infinity, to = -Infinity;
-  for (const b of bars) {
-    const s = classifySession(b.t);
-    if (!s) { skipped++; continue; }
-    upsertBar(db, SYMBOL, b.t, b.o, b.h, b.l, b.c, b.v, s.sessionDate, s.session);
-    applied++; if (b.t < from) from = b.t; if (b.t > to) to = b.t;
+  db.exec('BEGIN');
+  try {
+    for (const b of bars) {
+      const s = classifySession(b.t);
+      if (!s) { skipped++; continue; }
+      upsertBar(db, SYMBOL, b.t, b.o, b.h, b.l, b.c, b.v, s.sessionDate, s.session);
+      applied++; if (b.t < from) from = b.t; if (b.t > to) to = b.t;
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
   }
   return { inserted: applied, updated: 0, skipped, from: from === Infinity ? 0 : from, to: to === -Infinity ? 0 : to, total: bars.length };
 }
