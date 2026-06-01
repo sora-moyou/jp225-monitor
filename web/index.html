@@ -84,11 +84,11 @@
 
       <fieldset class="settings-section">
         <legend>終了</legend>
-        <div class="exit-row">
-          <button type="button" id="settings-exit-normal" class="btn-secondary">通常終了（収集は継続）</button>
-          <button type="button" id="settings-exit-full" class="btn-secondary">完全終了（収集も停止）</button>
-        </div>
-        <div class="exit-hint">急変感知が不要なときは「通常終了」。バックグラウンドで価格収集だけ続きます。</div>
+        <label class="exit-check">
+          <input type="checkbox" id="settings-full-exit" />
+          完全終了（ウィンドウ×／終了でデーモンの価格収集も停止する）
+        </label>
+        <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
       </fieldset>
 
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>

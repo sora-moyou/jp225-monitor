@@ -150,9 +150,32 @@ initSettingsModal({
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
   updateResult:   document.getElementById('settings-update-result') as HTMLElement,
   currentVersion: document.getElementById('settings-current-version') as HTMLElement,
-  exitNormalBtn:  document.getElementById('settings-exit-normal') as HTMLButtonElement,
-  exitFullBtn:    document.getElementById('settings-exit-full') as HTMLButtonElement,
 });
+
+// v0.3.37: ウィンドウ×/終了時、設定の「完全終了」チェックが入っていれば collector も停止する。
+// 既定(未チェック)はモニターのみ終了し、collector はデタッチ済みでバックグラウンド収集を継続。
+// チェック状態は永続させない(起動時は常に未チェック=収集継続が既定)。非Tauri環境では何もしない。
+void (async () => {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const win = getCurrentWindow();
+    await win.onCloseRequested(async (event) => {
+      const fullExit = (document.getElementById('settings-full-exit') as HTMLInputElement | null)?.checked ?? false;
+      if (fullExit) {
+        event.preventDefault();   // 停止が終わるまで閉じない
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('stop_collector');
+        } catch (err) {
+          console.warn('[exit] stop_collector failed:', err);
+        }
+        const p = await import('@tauri-apps/plugin-process');
+        await p.exit(0);          // 収集停止後にアプリ終了(process:default 権限で許可済み)
+      }
+      // 未チェック → preventDefault しない = 通常クローズ(collector は生存)
+    });
+  } catch { /* 非Tauri(ブラウザ)では無視 */ }
+})();
 
 const apiStatusEl = document.getElementById('api-status');
 if (apiStatusEl) initApiStatusPane(apiStatusEl);
