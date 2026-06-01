@@ -75,7 +75,8 @@ export function extractOseMini(text: string, now: number): Price | null {
 
 /** feed の全リアルタイム銘柄を取得。失敗時は空配列 (呼び出し側で Yahoo にフォールバック)。 */
 export async function fetchFeedPrices(): Promise<Price[]> {
-  const res = await fetch(FEED_URL, { headers: { 'User-Agent': UA, 'Referer': REFERER } });
+  // v0.4: ハングした接続でポーリングループ/起動が止まらないよう 5秒でタイムアウト。
+  const res = await fetch(FEED_URL, { headers: { 'User-Agent': UA, 'Referer': REFERER }, signal: AbortSignal.timeout(5000) });
   if (!res.ok) return [];
   const text = await res.text();
   return extractFeedPrices(text, Date.now());
