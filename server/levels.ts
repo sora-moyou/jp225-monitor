@@ -2,7 +2,7 @@ export interface SessionOHLC {
   sessionDate: string;
   session: 'Day' | 'Night';
   open: number; high: number; low: number; close: number;
-  highT: number; lowT: number;
+  highT: number; lowT: number; openT: number;   // セッション最初のバー時刻(寄り欠け判定用)
 }
 export interface Level {
   price: number;
@@ -35,6 +35,20 @@ function fmtSession(sd: string, ses: 'Day' | 'Night'): string {
   const [, m, d] = sd.split('-');   // YYYY-MM-DD
   return `${Number(m)}/${Number(d)}${ses === 'Day' ? '昼' : '夜'}`;
 }
+
+// セッションの寄り(Day=8:45 / Night=17:00 JST)を UTC epoch に。
+const DAY_OPEN_MIN = 8 * 60 + 45, NIGHT_OPEN_MIN = 17 * 60;
+const COMPLETE_TOL_MS = 12 * 60_000;   // 最初のバーが寄りからこの範囲内なら「寄りから揃っている」とみなす
+function sessionOpenEpoch(sd: string, ses: 'Day' | 'Night'): number {
+  const [y, m, d] = sd.split('-').map(Number);
+  const min = ses === 'Day' ? DAY_OPEN_MIN : NIGHT_OPEN_MIN;
+  return Date.UTC(y!, m! - 1, d!, Math.floor(min / 60), min % 60) - 9 * 3600_000;   // JST壁時計→UTC
+}
+/** セッションのデータが寄りから揃っているか(収集開始が遅れて寄り欠けのセッションは高安が不正確)。 */
+function isSessionComplete(s: SessionOHLC): boolean {
+  return s.openT <= sessionOpenEpoch(s.sessionDate, s.session) + COMPLETE_TOL_MS;
+}
+
 const round5 = (v: number): number => Math.round(v / 5) * 5;
 function median(xs: number[]): number {
   const a = [...xs].sort((x, y) => x - y);
@@ -83,14 +97,15 @@ export function computeLevels(
   const completed = sessions.filter(s => !isCurrent(s));
 
   const cands: Cand[] = [];
-  const recent = completed.slice(0, LOOKBACK_SESSIONS);
+  // 寄りから揃っているセッションだけ高安を水準に使う(寄り欠け=収集途中のセッションは高安が不正確)。
+  const recent = completed.filter(isSessionComplete).slice(0, LOOKBACK_SESSIONS);
   for (const s of recent) {
     const tag = fmtSession(s.sessionDate, s.session);
     cands.push({ price: s.high, label: `${tag}高` });
     cands.push({ price: s.low, label: `${tag}安` });
   }
-  if (inProgress) {
-    // 当日高/安はライブ現値で即時拡張(DBバー書き込み待ちのラグを無くす)。
+  if (inProgress && isSessionComplete(inProgress)) {
+    // 当日も寄りから揃っている時だけ。高/安はライブ現値で即時拡張(DB書込待ちのラグ解消)。
     cands.push({ price: Math.max(inProgress.high, current), label: '当日高' });
     cands.push({ price: Math.min(inProgress.low, current), label: '当日安' });
     cands.push({ price: inProgress.open, label: '当日始' });
@@ -107,15 +122,17 @@ export function computeLevels(
     };
     mark(recentHigh, '直近高');
     mark(recentLow, '直近安');
-    // グリッド節目（履歴がある場合のみ）
+  }
+  if (completed.length) {
+    // グリッド節目（履歴データがあれば現値から。寄り欠け判定とは独立）。
     cands.push({ price: Math.ceil((current + 5) / GRID) * GRID, label: '節目' });
     cands.push({ price: Math.floor((current - 5) / GRID) * GRID, label: '節目' });
   }
 
-  // ── フィボナッチ戻し（完了セッション直近 FIB_SWING_SESSIONS のスイング）──
+  // ── フィボナッチ戻し（寄りから揃った完了セッション直近 FIB_SWING_SESSIONS のスイング）──
   let swing: LevelsResult['swing'] = null;
   let reversalSatisfied = false;
-  const fibWin = completed.slice(0, FIB_SWING_SESSIONS);
+  const fibWin = completed.filter(isSessionComplete).slice(0, FIB_SWING_SESSIONS);
   if (fibWin.length >= FIB_SWING_SESSIONS) {
     const hi = fibWin.reduce((a, b) => (b.high > a.high ? b : a));
     const lo = fibWin.reduce((a, b) => (b.low < a.low ? b : a));

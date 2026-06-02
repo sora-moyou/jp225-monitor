@@ -118,11 +118,11 @@ describe('getSessionOHLC', () => {
     expect(out.length).toBe(2);
     expect(out[0]).toEqual({
       sessionDate: '2026-06-01', session: 'Night',
-      open: 66850, high: 66900, low: 66700, close: 66750, highT: 400, lowT: 400,
+      open: 66850, high: 66900, low: 66700, close: 66750, highT: 400, lowT: 400, openT: 400,
     });
     expect(out[1]).toEqual({
       sessionDate: '2026-06-01', session: 'Day',
-      open: 67000, high: 67300, low: 66800, close: 66850, highT: 200, lowT: 300,
+      open: 67000, high: 67300, low: 66800, close: 66850, highT: 200, lowT: 300, openT: 100,
     });
     db.close();
   });

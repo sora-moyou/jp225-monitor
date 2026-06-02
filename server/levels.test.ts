@@ -7,6 +7,7 @@ function s(sessionDate: string, session: 'Day' | 'Night', high: number, low: num
     sessionDate, session, high, low,
     open: extra.open ?? low, close: extra.close ?? high,
     highT: extra.highT ?? 0, lowT: extra.lowT ?? 0,
+    openT: extra.openT ?? 0,   // 既定0=寄り前→「寄りから揃っている」扱い
   };
 }
 
@@ -51,6 +52,27 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     expect(labels.some(x => x.includes('当日高'))).toBe(true);
     expect(labels.some(x => x.includes('当日安'))).toBe(true);
     expect(labels.some(x => x.includes('当日始'))).toBe(true);
+  });
+
+  it('当日が寄り欠け(openT が寄りより大幅後)なら当日高/安/始を出さない', () => {
+    const cur = { sessionDate: '2026-06-02', session: 'Day' as const };
+    const lateOpenT = Date.UTC(2026, 5, 2, 13 - 9, 32);   // 最初のバーが 13:32 JST (寄り8:45欠け)
+    const sessions = [
+      s('2026-06-02', 'Day', 66215, 66085, { open: 66100, openT: lateOpenT }),
+      s('2026-06-01', 'Night', 67250, 66900),              // 完了(openT=0=揃い扱い)
+    ];
+    const r = computeLevels(sessions, 66200, 0, cur);
+    const labels = [...r.up, ...r.down].flatMap(l => l.labels);
+    expect(labels.some(x => x.includes('当日'))).toBe(false);          // 当日高/安/始は出ない
+    expect([...r.up, ...r.down].some(l => l.price === 67250 || l.price === 66900)).toBe(true);  // 完了分は出る
+  });
+
+  it('当日が寄りから揃っていれば当日高/安を出す', () => {
+    const cur = { sessionDate: '2026-06-02', session: 'Day' as const };
+    const goodOpenT = Date.UTC(2026, 5, 2, 8 - 9, 46);    // 8:46 JST ≈ 寄り
+    const sessions = [s('2026-06-02', 'Day', 66215, 66085, { open: 66100, openT: goodOpenT })];
+    const r = computeLevels(sessions, 66200, 0, cur);
+    expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => x.includes('当日'))).toBe(true);
   });
 
   it('up/down は各最大4本', () => {

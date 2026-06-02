@@ -114,7 +114,7 @@ export interface SessionOHLC {
   sessionDate: string;
   session: 'Day' | 'Night';
   open: number; high: number; low: number; close: number;
-  highT: number; lowT: number;
+  highT: number; lowT: number; openT: number;   // openT = セッション最初のバー時刻(寄り欠け判定用)
 }
 
 export interface AlertRow {
@@ -166,7 +166,7 @@ export function getRecentAlerts(db: DatabaseSync, limit: number): AlertRow[] {
 export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number): SessionOHLC[] {
   const rows = db.prepare(`
     SELECT session_date AS sessionDate, session,
-           MAX(h) AS high, MIN(l) AS low,
+           MAX(h) AS high, MIN(l) AS low, MIN(t) AS openT,
            (SELECT o FROM bars_1m b2 WHERE b2.symbol=b.symbol AND b2.session_date=b.session_date
               AND b2.session=b.session ORDER BY t ASC  LIMIT 1) AS open,
            (SELECT c FROM bars_1m b3 WHERE b3.symbol=b.symbol AND b3.session_date=b.session_date
@@ -185,6 +185,6 @@ export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number):
     sessionDate: r.sessionDate as string,
     session: r.session as 'Day' | 'Night',
     open: r.open as number, high: r.high as number, low: r.low as number, close: r.close as number,
-    highT: r.highT as number, lowT: r.lowT as number,
+    highT: r.highT as number, lowT: r.lowT as number, openT: r.openT as number,
   }));
 }
