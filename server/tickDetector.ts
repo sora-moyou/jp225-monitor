@@ -4,15 +4,15 @@ import { getCachedBars } from './loops/alertLoop.js';
 import { emitAlert } from './alertHistory.js';
 import { INSTRUMENTS } from './config.js';
 import { canFire, markFired } from './alertCooldown.js';
+import { resolveFlashYen } from './configStore.js';
 
 // v0.3.17: 超短期 (5s/10s) フラッシュ検知。NIY=F (日経 225) 専用。
 // v0.3.33: 価格がリアルタイム取得できるようになったので「値幅(円)」ベースに変更 (ユーザ要望)。
-// 5〜10 秒窓で |値幅| >= ABSOLUTE_THRESHOLD_YEN(円) で発火。率ではなく円なので、ボード表示
+// 5〜10 秒窓で |値幅| >= flashYen(円・config 即反映) で発火。率ではなく円なので、ボード表示
 // (超短期=+50円) と発火基準の単位が一致する。バッファは短期検知のローリング窓にも使うため拡大。
 
 const TARGETS = new Set(['NIY=F']);
 const BUFFER_MS = 6 * 60 * 1000;          // 6 min 保持 (超短期5/10s + 短期ローリング60s/5分の両用)
-const ABSOLUTE_THRESHOLD_YEN = 80;         // 5〜10秒で 80円 以上の値幅で発火 (要調整ノブ)
 
 interface Tick { t: number; price: number; }
 const buffers = new Map<string, Tick[]>();
@@ -45,6 +45,7 @@ function handleOne(price: Price): void {
 
   if (buf.length < 3) return;
 
+  const threshold = resolveFlashYen();      // 5〜10秒で threshold円 以上の値幅で発火 (要調整ノブ・即反映)
   // 5s と 10s 双方を評価、より大きい |値幅(円)| を採用
   const candidates: { window: number; ret: number; yen: number }[] = [];
   for (const win of [5, 10]) {
@@ -53,7 +54,7 @@ function handleOne(price: Price): void {
     if (baseline.t === now) continue;       // 同一サンプル
     const yen = price.price - baseline.price;
     const ret = yen / baseline.price;
-    if (Math.abs(yen) >= ABSOLUTE_THRESHOLD_YEN) candidates.push({ window: win, ret, yen });
+    if (Math.abs(yen) >= threshold) candidates.push({ window: win, ret, yen });
   }
   if (candidates.length === 0) return;
   candidates.sort((a, b) => Math.abs(b.yen) - Math.abs(a.yen));
@@ -78,7 +79,7 @@ function handleOne(price: Price): void {
     range1h: ctx.range1h,
     zscore: 0,    // 絶対閾値方式のため未使用 (alertLoop の z-score 検知と区別)
   };
-  console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円 (threshold ${ABSOLUTE_THRESHOLD_YEN}円)`);
+  console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円 (threshold ${threshold}円)`);
   emitAlert(alert);
 }
 

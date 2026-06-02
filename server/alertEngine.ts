@@ -5,18 +5,18 @@ import {
 } from './alertDetector.js';
 import { detectGranvilleReversal, detectGranvilleContinuation } from './granville.js';
 import { canFire, markFired } from './alertCooldown.js';
-import { detectShock, DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
+import { detectShock } from './shockDetector.js';
+import { resolveShockParams, resolveShockCooldownBars } from './configStore.js';
 import type { InstrumentMeta, AlertEventPayload } from './types.js';
 
 export type AlertSink = (e: AlertEventPayload) => void;
 
 // 急変専用のバー数クールダウン(直近ラベルの分インデックスから cooldownBars 本超で再発火可)。
 // alertCooldown(共有・時間ベース)とは別系統。プロセスごとに独立。
-const SHOCK_COOLDOWN_BARS = 3;
 const lastShockBar = new Map<string, number>();
 function shockCanFire(symbol: string, bar: number): boolean {
   const prev = lastShockBar.get(symbol);
-  return prev === undefined || bar - prev > SHOCK_COOLDOWN_BARS;
+  return prev === undefined || bar - prev > resolveShockCooldownBars();
 }
 function shockMarkFired(symbol: string, bar: number): void { lastShockBar.set(symbol, bar); }
 export function _resetShockCooldown(): void { lastShockBar.clear(); }
@@ -53,7 +53,7 @@ export function evaluateBarsNiy(
 
   // 急変(価格変化スコア方式)。完成足のみ(末尾=進行中バーを除外)。バー数クールダウンで間引く。
   const completed = bars.slice(0, -1).map(b => b.close);
-  const shock = detectShock(completed, DEFAULT_SHOCK_PARAMS);
+  const shock = detectShock(completed, resolveShockParams());
   if (shock) {
     const lastCompleted = bars[bars.length - 2]!;        // 評価対象の完成足
     const bar = Math.floor(lastCompleted.t / 60_000);    // 「バーインデックス」=分インデックス
