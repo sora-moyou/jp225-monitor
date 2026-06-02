@@ -1,7 +1,7 @@
 import type { Price } from './types.js';
 import { computeContext, type AlertEvent } from './alertDetector.js';
 import { getCachedBars } from './loops/alertLoop.js';
-import { broadcast } from './sse/broker.js';
+import { emitAlert } from './alertHistory.js';
 import { INSTRUMENTS } from './config.js';
 import { canFire, markFired } from './alertCooldown.js';
 
@@ -79,7 +79,7 @@ function handleOne(price: Price): void {
     zscore: 0,    // 絶対閾値方式のため未使用 (alertLoop の z-score 検知と区別)
   };
   console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円 (threshold ${ABSOLUTE_THRESHOLD_YEN}円)`);
-  broadcast({ type: 'alert', payload: alert });
+  emitAlert(alert);
 }
 
 // v0.3.33/34: 価格ボード表示用。NIY=F の直近の動きを期間固定で返す。

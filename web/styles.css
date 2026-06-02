@@ -712,3 +712,13 @@ body {
 
 .basedata-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .basedata-result { font-size: 12px; color: var(--muted); }
+
+.ah-summary { margin-bottom: 14px; }
+.ah-body { max-height: 50vh; overflow-y: auto; }
+.ah-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ah-table th, .ah-table td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.ah-table th { color: var(--muted); font-weight: 500; }
+.ah-table td:first-child, .ah-table th:first-child { text-align: left; }
+.ah-table td.up { color: var(--up); }
+.ah-table td.down { color: var(--down); }
+.ah-empty { color: var(--muted); font-size: 12px; padding: 8px 0; }

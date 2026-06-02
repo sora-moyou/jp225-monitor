@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getAlertsNeedingFollowup, updateAlertReturns } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -159,6 +159,50 @@ describe('upsertBar', () => {
     expect(rows.length).toBe(2);
     expect(rows[0]).toEqual({ t: 60000, o: 101, h: 111, l: 91, c: 99, volume: 2086 });
     expect(rows[1].t).toBe(120000);
+    db.close();
+  });
+});
+
+describe('alerts store', () => {
+  function mkAlert(over: Partial<any> = {}) {
+    return { symbol: 'NIY=F', triggeredAt: 1000, direction: 'up', detectionKind: 'slope',
+      windowSeconds: 60, changePercent: 0.3, price: 67000, sessionDate: '2026-06-01', session: 'Day', ...over };
+  }
+  it('insertAlert → getRecentAlerts (新しい順)、ret は初期 null', () => {
+    const db = openDb(':memory:');
+    insertAlert(db, mkAlert({ triggeredAt: 1000 }));
+    insertAlert(db, mkAlert({ triggeredAt: 2000 }));
+    const rows = getRecentAlerts(db, 10);
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.triggered_at).toBe(2000);          // 新しい順
+    expect(rows[0]!.price).toBe(67000);
+    expect(rows[0]!.ret5).toBeNull();
+    db.close();
+  });
+
+  it('getBarCloseAt: t 以下で最新の bar.close を返す、無ければ null', () => {
+    const db = openDb(':memory:');
+    db.prepare('INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
+      .run('NIY=F', '2026-06-01', 'Day', 60000, 1, 1, 1, 100);
+    db.prepare('INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
+      .run('NIY=F', '2026-06-01', 'Day', 120000, 1, 1, 1, 110);
+    expect(getBarCloseAt(db, 'NIY=F', 120000)).toBe(110);
+    expect(getBarCloseAt(db, 'NIY=F', 90000)).toBe(100);   // 90000以下の最新=60000の100
+    expect(getBarCloseAt(db, 'NIY=F', 30000)).toBeNull();  // それ以前は無し
+    db.close();
+  });
+
+  it('updateAlertReturns で ret を埋める / getAlertsNeedingFollowup', () => {
+    const db = openDb(':memory:');
+    insertAlert(db, mkAlert({ triggeredAt: 1000 }));
+    const id = getRecentAlerts(db, 1)[0]!.id;
+    // now が triggered+30分超なら followup 対象
+    const now = 1000 + 31 * 60_000;
+    expect(getAlertsNeedingFollowup(db, now).length).toBe(1);
+    updateAlertReturns(db, id, 0.1, 0.2, 0.3);
+    const r = getRecentAlerts(db, 1)[0]!;
+    expect([r.ret5, r.ret15, r.ret30]).toEqual([0.1, 0.2, 0.3]);
+    expect(getAlertsNeedingFollowup(db, now).length).toBe(0);   // ret30 が埋まったので対象外
     db.close();
   });
 });

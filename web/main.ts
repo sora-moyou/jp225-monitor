@@ -11,6 +11,7 @@ import { initSettingsModal } from './components/settingsModal.js';
 import { initParamsModal } from './components/paramsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
+import { initAlertsHistoryModal } from './components/alertsHistoryModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
 import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader } from './lib/correlationClient.js';
 import { initLevelsPanel, setLevels, setLevelsPrice } from './components/levelsPanel.js';
@@ -216,6 +217,15 @@ void (async () => {
 
 const apiStatusEl = document.getElementById('api-status');
 if (apiStatusEl) initApiStatusPane(apiStatusEl);
+
+initAlertsHistoryModal({
+  openBtn:  document.getElementById('alerts-history-btn') as HTMLButtonElement,
+  modal:    document.getElementById('alerts-history-modal') as HTMLElement,
+  backdrop: document.getElementById('alerts-history-backdrop') as HTMLElement,
+  closeBtn: document.getElementById('alerts-history-close') as HTMLButtonElement,
+  summary:  document.getElementById('alerts-history-summary') as HTMLElement,
+  body:     document.getElementById('alerts-history-body') as HTMLElement,
+});
 
 const logsOpenBtn = document.getElementById('open-logs') as HTMLButtonElement | null;
 if (logsOpenBtn) {

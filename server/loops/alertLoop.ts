@@ -3,7 +3,7 @@ import {
   detectBurst, detectTrend, computeContext, returns, returns5m, stdDev,
   DEFAULT_PARAMS, type AlertEvent,
 } from '../alertDetector.js';
-import { broadcast } from '../sse/broker.js';
+import { emitAlert } from '../alertHistory.js';
 import { INSTRUMENTS } from '../config.js';
 import { canFire, markFired } from '../alertCooldown.js';
 import { getRealtimeBars, isRealtimeBarsReady, getRollingReturn } from '../feedBars.js';
@@ -90,7 +90,7 @@ function evaluateAndFire(): void {
 
     markFired(sym, dir, curPrice, now);
     console.log(`[alertLoop] ${sym} ${alert.detectionKind} ${dir} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
-    broadcast({ type: 'alert', payload: alert });
+    emitAlert(alert);
   }
 }
 
@@ -163,7 +163,7 @@ export function evaluateRealtime(): void {
   };
   markFired(sym, dir, curPrice, now);
   console.log(`[alertLoop:rt] ${sym} ${result.kind} ${dir} ${alert.changePercent.toFixed(3)}% (|z|=${result.z.toFixed(2)})`);
-  broadcast({ type: 'alert', payload: alert });
+  emitAlert(alert);
 }
 
 async function tick(): Promise<void> {
