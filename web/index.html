@@ -154,6 +154,29 @@
           <input type="number" id="params-flash-yen" min="1" max="1000" step="5" />
         </label>
       </fieldset>
+      <fieldset class="settings-section">
+        <legend>主要レベル (リビルド不要・即反映)</legend>
+        <label>
+          束ね許容 (円)
+          <input type="number" id="params-level-tol" min="5" max="200" step="5" />
+        </label>
+        <label>
+          上下表示数 (本)
+          <input type="number" id="params-level-shown" min="1" max="12" step="1" />
+        </label>
+        <label>
+          近接選抜窓 (円)
+          <input type="number" id="params-level-window" min="100" max="10000" step="100" />
+        </label>
+        <label>
+          合流ボーナス倍率
+          <input type="number" id="params-fib-confluence" min="1.0" max="5.0" step="0.1" />
+        </label>
+        <label>
+          被テスト加点係数
+          <input type="number" id="params-level-testbonus" min="0" max="1" step="0.05" />
+        </label>
+      </fieldset>
       <div id="params-status" class="settings-status"></div>
       <div class="modal-actions">
         <button type="button" id="params-close" class="btn-secondary">閉じる</button>

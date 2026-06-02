@@ -1,6 +1,7 @@
 import type { SessionOHLC } from './sessionOHLC.js';
 import { isSessionComplete } from './sessionOHLC.js';
 import { deriveSwing, fibLevelsForSwing, currentSessionSwing, DEFAULT_SWING_WINDOWS } from './fibLevels.js';
+import { resolveLevelsConfig } from './configStore.js';
 // 後方互換のため再export(forecast.ts / forecastLoop.ts / 各テストは './levels.js' から import している)。
 export type { SessionOHLC } from './sessionOHLC.js';
 export { isSessionComplete } from './sessionOHLC.js';
@@ -92,6 +93,8 @@ function representativePrice(group: Cand[]): number {
 interface ClusterOpts {
   tol: number;
   sessions: SessionOHLC[];   // 被テスト count 用の全(寄り揃い)セッション
+  fibConfluenceBonus: number;
+  levelTestBonus: number;
 }
 
 /**
@@ -100,7 +103,7 @@ interface ClusterOpts {
  * 被テスト count は「クラスタに寄与していないセッション」の high/low/close が代表価格±tol 内に入った数。
  */
 function cluster(cands: Cand[], current: number, opts: ClusterOpts): Level[] {
-  const { tol, sessions } = opts;
+  const { tol, sessions, fibConfluenceBonus, levelTestBonus } = opts;
   const sorted = [...cands].sort((a, b) => a.price - b.price);
   const out: Level[] = [];
   let group: Cand[] = [];
@@ -139,11 +142,11 @@ function cluster(cands: Cand[], current: number, opts: ClusterOpts): Level[] {
     for (const sc of fibScales) s += sc === '当日' ? 0.5 : 1;
     const hasFib = fibScales.size > 0;
     let mult = 1;
-    if (s >= 2 || (hasFib && hasNonFib)) mult = FIB_CONFLUENCE_BONUS;
+    if (s >= 2 || (hasFib && hasNonFib)) mult = fibConfluenceBonus;
     if (s >= 3) mult *= 1.25;
 
     const sumWeight = group.reduce((acc, g) => acc + g.weight, 0);
-    const score = sumWeight * (1 + LEVEL_TEST_BONUS * Math.min(testCount, 5)) * mult;
+    const score = sumWeight * (1 + levelTestBonus * Math.min(testCount, 5)) * mult;
 
     out.push({
       price,
@@ -174,7 +177,10 @@ export function computeLevels(
   currentSession: { sessionDate: string; session: 'Day' | 'Night' } | null,
   extraLevels: { price: number; label: string }[] = [],
 ): LevelsResult {
-  const tol = LEVEL_TOL;
+  const cfg = resolveLevelsConfig();
+  const tol = cfg.tol;
+  const showN = cfg.showN;
+  const selectWindowYen = cfg.selectWindowYen;
   const isCurrent = (s: SessionOHLC): boolean =>
     !!currentSession && s.sessionDate === currentSession.sessionDate && s.session === currentSession.session;
   const inProgress = sessions.find(isCurrent) ?? null;
@@ -275,16 +281,21 @@ export function computeLevels(
     }
   }
 
-  const clustered = cluster(cands, current, { tol, sessions: completedComplete });
+  const clustered = cluster(cands, current, {
+    tol,
+    sessions: completedComplete,
+    fibConfluenceBonus: cfg.fibConfluenceBonus,
+    levelTestBonus: cfg.levelTestBonus,
+  });
 
   // ── 選抜: 近接窓内スコア降順 + 直近1本 + 最上位1本(各側)──
-  const inWindow = (l: Level): boolean => Math.abs(l.dist) <= SELECT_WINDOW_YEN;
+  const inWindow = (l: Level): boolean => Math.abs(l.dist) <= selectWindowYen;
   const upAll = clustered.filter(l => l.dist > 0);
   const downAll = clustered.filter(l => l.dist < 0);
 
   const pickSide = (side: Level[]): Level[] => {
     const win = side.filter(inWindow);
-    const chosen: Level[] = [...win].sort((a, b) => b.score - a.score).slice(0, LEVEL_SHOW_N);
+    const chosen: Level[] = [...win].sort((a, b) => b.score - a.score).slice(0, showN);
     const add = (l: Level | undefined): void => {
       if (l && !chosen.includes(l)) chosen.push(l);
     };

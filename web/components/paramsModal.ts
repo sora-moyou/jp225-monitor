@@ -21,6 +21,11 @@ const PARAMS: ParamSpec[] = [
   { key: 'shockCooldownBars', inputId: 'params-shock-cooldown-bars' },
   { key: 'openGuardBars',     inputId: 'params-open-guard-bars' },
   { key: 'flashYen',          inputId: 'params-flash-yen' },
+  { key: 'levelTol',             inputId: 'params-level-tol' },
+  { key: 'levelShowN',           inputId: 'params-level-shown' },
+  { key: 'levelSelectWindowYen', inputId: 'params-level-window' },
+  { key: 'fibConfluenceBonus',   inputId: 'params-fib-confluence' },
+  { key: 'levelTestBonus',       inputId: 'params-level-testbonus' },
 ];
 
 export interface ParamsElements {

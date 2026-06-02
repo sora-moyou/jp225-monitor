@@ -27,6 +27,11 @@ export interface UserConfig {
   shockCooldownBars?: number;
   openGuardBars?: number;
   flashYen?: number;
+  levelTol?: number;
+  levelShowN?: number;
+  levelSelectWindowYen?: number;
+  fibConfluenceBonus?: number;
+  levelTestBonus?: number;
 }
 
 type ProviderName = 'gemini' | 'groq' | 'openai';
@@ -47,6 +52,11 @@ export const PARAM_BOUNDS = {
   shockCooldownBars:{ min: 0, max: 120,  default: 3 },
   openGuardBars:    { min: 0, max: 60,   default: 3 },
   flashYen:         { min: 1, max: 1000, default: 80 },
+  levelTol:              { min: 5, max: 200, default: 25 },
+  levelShowN:            { min: 1, max: 12, default: 5 },
+  levelSelectWindowYen:  { min: 100, max: 10000, default: 1500 },
+  fibConfluenceBonus:    { min: 1.0, max: 5.0, default: 1.5 },
+  levelTestBonus:        { min: 0, max: 1, default: 0.15 },
 } as const;
 
 let cached: UserConfig | null = null;
@@ -154,6 +164,24 @@ export function resolveShockParams(): ShockParams {
 export function resolveShockCooldownBars(): number { return resolveNumeric('shockCooldownBars'); }
 export function resolveOpenGuardBars(): number { return resolveNumeric('openGuardBars'); }
 export function resolveFlashYen(): number { return resolveNumeric('flashYen'); }
+
+// 主要レベル(意識される水準)のノブをまとめて解決。
+// 数値のみ返す(Level 型に依存しない＝levels を import しない＝循環回避)。
+export function resolveLevelsConfig(): {
+  tol: number;
+  showN: number;
+  selectWindowYen: number;
+  fibConfluenceBonus: number;
+  levelTestBonus: number;
+} {
+  return {
+    tol: resolveNumeric('levelTol'),
+    showN: resolveNumeric('levelShowN'),
+    selectWindowYen: resolveNumeric('levelSelectWindowYen'),
+    fibConfluenceBonus: resolveNumeric('fibConfluenceBonus'),
+    levelTestBonus: resolveNumeric('levelTestBonus'),
+  };
+}
 
 // 全数値パラメータを解決して返す（/api/settings GET 用、DRY）
 export function resolveAllNumericParams(): Record<keyof typeof PARAM_BOUNDS, number> {
