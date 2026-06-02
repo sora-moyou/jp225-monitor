@@ -90,8 +90,9 @@ export function computeLevels(
     cands.push({ price: s.low, label: `${tag}安` });
   }
   if (inProgress) {
-    cands.push({ price: inProgress.high, label: '当日高' });
-    cands.push({ price: inProgress.low, label: '当日安' });
+    // 当日高/安はライブ現値で即時拡張(DBバー書き込み待ちのラグを無くす)。
+    cands.push({ price: Math.max(inProgress.high, current), label: '当日高' });
+    cands.push({ price: Math.min(inProgress.low, current), label: '当日安' });
     cands.push({ price: inProgress.open, label: '当日始' });
   }
   if (recent.length) {
