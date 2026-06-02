@@ -3,7 +3,7 @@ import { DEFAULT_PARAMS } from '../alertDetector.js';
 import { emitAlert } from '../alertHistory.js';
 import { INSTRUMENTS } from '../config.js';
 import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
-import { evaluateBarsNiy, evaluateRealtimeNiy } from '../alertEngine.js';
+import { evaluateBarsNiy } from '../alertEngine.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
 // v0.3.35: 横断確認(他資産の同方向確認)を全面廃止。日経自身の z-score(+静寂前提) のみで発火。
@@ -59,19 +59,6 @@ function evaluateAndFire(): void {
     // 検知ロジックは sink ベースの alertEngine に委譲。sink = emitAlert (SSE + DB)。
     evaluateBarsNiy(bars, meta, DEFAULT_PARAMS, now, emitAlert);
   }
-}
-
-// v0.3.33: 短期検知のリアルタイム化。分足の確定を待たず、priceLoop の毎 tick(~2秒) に
-// 呼ばれ、リアルタイム buffer の 60秒(burst)/5分(trend) ローリング窓で z 評価して即発火する。
-// baseline σ は分足から(緩変なので毎分更新で十分)、最新リターンだけ実時間ローリング窓を使う。
-// v0.3.35: 横断確認は廃止。日経自身の z(+静寂前提) のみ。クールダウン共有で 60秒バー版と
-// 二重発火しない(先に鳴った方が他をロックする)。feed 断などローリング不可時は何もしない。
-export function evaluateRealtime(): void {
-  const sym = 'NIY=F';
-  const meta = META_BY_SYM.get(sym);
-  if (!meta) return;
-  const bars = barsFor(sym);
-  evaluateRealtimeNiy(bars, meta, DEFAULT_PARAMS, Date.now(), emitAlert);
 }
 
 async function tick(): Promise<void> {

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { feedRealtimePrice, getRealtimeBars } from '../server/feedBars.js';
-import { evaluateBarsNiy, evaluateRealtimeNiy, type AlertSink } from '../server/alertEngine.js';
+import { evaluateBarsNiy, type AlertSink } from '../server/alertEngine.js';
 import { DEFAULT_PARAMS } from '../server/alertDetector.js';
 import { INSTRUMENTS } from '../server/config.js';
 import { getLatestTick, insertAlertIfNew, type AlertInsert } from '../server/db/store.js';
@@ -41,11 +41,10 @@ export class AlertCollector {
     insertAlertIfNew(this.db, row, this.dedupWindowMs);
   };
 
-  /** Feed one live price; build realtime bars and run sub-minute detection for NIY. */
+  /** Feed one live price; build realtime bars. */
   onPrice(symbol: string, price: number, t: number): void {
     feedRealtimePrice(symbol, price, t);
-    if (symbol !== NIY) return;
-    evaluateRealtimeNiy(this.barsForNiy(), META, DEFAULT_PARAMS, t, this.sink);
+    // 急変は確定足ベース(onMinute → evaluateBarsNiy)。realtime z-score は廃止。
   }
 
   /** Run bar-confirmed detection at most once per minute boundary. */
