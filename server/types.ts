@@ -43,7 +43,7 @@ export interface AlertEventPayload {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  detectionKind: 'slope' | 'magnitude';
+  detectionKind: 'slope' | 'magnitude' | 'granville';
   direction: 'up' | 'down';
   triggeredAt: number;
   change15min: number | null;

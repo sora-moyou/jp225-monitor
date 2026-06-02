@@ -34,7 +34,8 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
 
   const el = document.createElement('div');
   el.className = `alert ${alert.direction}`;
-  const kindLabel = alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
+  const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
+    : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
   // 直近15分コンテキスト（参考、発火窓と分離）
   const ctx15 = alert.change15min !== null
