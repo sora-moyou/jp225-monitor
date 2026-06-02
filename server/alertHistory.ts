@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFollowup,
   updateAlertReturns, getBarCloseAt, type AlertRow } from './db/store.js';
 import { broadcast } from './sse/broker.js';
+import { isCollectorAlive } from './collectorHeartbeat.js';
 import { classifySession } from '../collector/session.js';
 import type { AlertEventPayload } from './types.js';
 
@@ -42,6 +43,7 @@ export function emitAlert(p: AlertEventPayload): void {
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());
+    if (isCollectorAlive(db, Date.now())) return;   // collector is the authoritative writer
     const latest = getLatestTick(db, p.symbol);
     const price = latest ? latest.price : (p.pa15min ? p.pa15min.current : 0);
     if (price > 0) recordAlert(db, p, price);
@@ -91,7 +93,12 @@ export function summarize(rows: AlertRow[]): KindStat[] {
 
 function schedule(): void {
   if (!running) return;
-  timer = setTimeout(() => { if (db) { try { followupTick(db, Date.now()); } catch { /* ignore */ } } schedule(); }, FOLLOWUP_MS);
+  timer = setTimeout(() => {
+    if (db && !isCollectorAlive(db, Date.now())) {
+      try { followupTick(db, Date.now()); } catch { /* ignore */ }
+    }
+    schedule();
+  }, FOLLOWUP_MS);
 }
 
 export function startAlertHistoryLoop(): void {
