@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeLevels, FIB_SWING_SESSIONS, type SessionOHLC } from './levels.js';
+import { computeLevels, FIB_SWING_SESSIONS, LEVEL_SHOW_N, type SessionOHLC } from './levels.js';
 
 function s(sessionDate: string, session: 'Day' | 'Night', high: number, low: number,
            extra: Partial<SessionOHLC> = {}): SessionOHLC {
@@ -36,7 +36,9 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     const r = computeLevels(sessions, 67000, 0, null);
     const strong = r.up.find(l => l.strong);
     expect(strong).toBeDefined();
-    expect(strong!.labels.length).toBe(2);
+    // 2本の H/L が同帯で重なり強レベルになる。新ロジックでは前日終値/長期高など
+    // 他の構造水準も同価格帯に合流しうるため、ラベルは「2本以上」を確認する。
+    expect(strong!.labels.length).toBeGreaterThanOrEqual(2);
     expect(strong!.price).toBeGreaterThanOrEqual(67400);
     expect(strong!.price).toBeLessThanOrEqual(67410);
   });
@@ -75,12 +77,13 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => x.includes('当日'))).toBe(true);
   });
 
-  it('up/down は各最大4本', () => {
+  it('up/down はスコア上位 LEVEL_SHOW_N 本(+直近1/最上位1)の範囲に収まる', () => {
     const sessions = Array.from({ length: 10 }, (_, i) =>
       s(`2026-05-${10 + i}`, 'Day', 67000 + (i + 1) * 100, 67000 - (i + 1) * 100));
     const r = computeLevels(sessions, 67000, 0, null);
-    expect(r.up.length).toBeLessThanOrEqual(4);
-    expect(r.down.length).toBeLessThanOrEqual(4);
+    // 新ロジック: 窓内スコア降順 LEVEL_SHOW_N(=5) に直近1本+最上位1本を足しうる。
+    expect(r.up.length).toBeLessThanOrEqual(LEVEL_SHOW_N + 2);
+    expect(r.down.length).toBeLessThanOrEqual(LEVEL_SHOW_N + 2);
   });
 
   it('履歴ゼロなら空を返す（クラッシュしない）', () => {

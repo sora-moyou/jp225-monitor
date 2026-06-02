@@ -15,8 +15,8 @@ function rising(n = 70): Bar[] {
 vi.mock('./loops/levelsLoop.js', () => ({
   getLevelsSnapshot: (): LevelsResult => ({
     current: 67100,
-    up: [{ price: 67300, dist: 200, labels: ['6/1夜高'], strong: false }],
-    down: [{ price: 67000, dist: -100, labels: ['Fib50%'], strong: false }],
+    up: [{ price: 67300, dist: 200, labels: ['6/1夜高'], strong: false, score: 0, tier: 0, confluence: false }],
+    down: [{ price: 67000, dist: -100, labels: ['Fib50%'], strong: false, score: 0, tier: 0, confluence: false }],
     swing: null,
     reversalSatisfied: false,
     asOf: 0,

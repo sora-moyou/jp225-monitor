@@ -84,8 +84,8 @@ describe('buildNikkeiTechnical', () => {
 describe('formatLevelsBlock', () => {
   const base: LevelsResult = {
     current: 67100,
-    up: [{ price: 67300, dist: 200, labels: ['6/1夜高'], strong: false }],
-    down: [{ price: 67000, dist: -100, labels: ['Fib50%'], strong: false, fib: 0.5, reversalLine: true }],
+    up: [{ price: 67300, dist: 200, labels: ['6/1夜高'], strong: false, score: 0, tier: 0, confluence: false }],
+    down: [{ price: 67000, dist: -100, labels: ['Fib50%'], strong: false, fib: 0.5, reversalLine: true, score: 0, tier: 0, confluence: false }],
     swing: { high: 68000, low: 66000, leg: 'down' },
     reversalSatisfied: true,
     asOf: 0,
