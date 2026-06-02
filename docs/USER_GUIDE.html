@@ -886,8 +886,15 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></div>
-      <h3>主要レベル パネル</h3>
-      <p>チャート脇に <strong>上値/下値メド</strong> を表示。過去セッションの高値/安値が主軸で、±30 円で重なるレベルは <strong>「強レベル ★」</strong>。直近 5 セッションのスイングからフィボナッチ戻し (38.2 / 50 / 61.8%、<strong>50% ＝ 方向転換ライン ⚑</strong>) も描画。各レベルに <strong>現値からの距離</strong> 付き・リアルタイム更新。高さは区切りをドラッグで可変。</p>
+      <h3>主要レベル パネル (意識される水準を点数化)</h3>
+      <p>チャート脇に <strong>上値/下値メド</strong> を表示。v0.4.27 で精度を大幅強化:</p>
+      <ul style="margin:6px 0; padding-left:18px; font-size:14px;">
+        <li><strong>多スイング・多比率フィボナッチ</strong> — 5/10/20セッション＋当日の各スイングから、戻し (23.6/38.2/50/61.8/78.6%) ＋ 拡張 (127.2/161.8%) を描画 (50% ＝ 方向転換ライン ⚑)。</li>
+        <li><strong>多時間スケールの水準</strong> — 過去セッション高安に加え、<strong>前日終値・長期(20セッション)高安・節目 (250/500/1000円)</strong> を候補化。</li>
+        <li><strong>点数化（意識度スコア）</strong> — 約25円幅で束ね、重み合計・被テスト回数・合流で採点。<strong>複数スイングのフィボや異種水準が重なる「合流帯」を ★★ で最優先表示</strong>(日経で非常に効く価格帯)。★＝注目、無印＝通常。代表価格は平均値ではなく <strong>実際に意識される実価格</strong>。</li>
+        <li><strong>🎛️で可変</strong> — 束ね幅・表示本数・選抜窓・合流ボーナス・被テスト係数を詳細パラメータからリビルド不要で調整。</li>
+      </ul>
+      <p>各レベルに <strong>現値からの距離</strong> 付き・リアルタイム更新。高さは区切りをドラッグで可変。</p>
       <span class="tag">v0.4</span>
     </div>
     <div class="feature">
