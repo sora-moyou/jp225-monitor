@@ -155,6 +155,15 @@ export function resolveShockCooldownBars(): number { return resolveNumeric('shoc
 export function resolveOpenGuardBars(): number { return resolveNumeric('openGuardBars'); }
 export function resolveFlashYen(): number { return resolveNumeric('flashYen'); }
 
+// 全数値パラメータを解決して返す（/api/settings GET 用、DRY）
+export function resolveAllNumericParams(): Record<keyof typeof PARAM_BOUNDS, number> {
+  const out = {} as Record<keyof typeof PARAM_BOUNDS, number>;
+  for (const key of Object.keys(PARAM_BOUNDS) as (keyof typeof PARAM_BOUNDS)[]) {
+    out[key] = resolveNumeric(key);
+  }
+  return out;
+}
+
 export function configFilePath(): string { return CONFIG_FILE(); }
 
 // 起動時に呼ぶ: pricePollMs / newsPollMs / port が未設定なら default を
