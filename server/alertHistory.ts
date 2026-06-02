@@ -21,6 +21,12 @@ export function kindLabel(windowSeconds: number | null): string {
   return '長期';
 }
 
+/** 履歴の種別ラベル。グランビルは検知種別で別扱い、それ以外は窓秒で 超短期/短期/長期。 */
+export function rowKind(detectionKind: string | null, windowSeconds: number | null): string {
+  if (detectionKind === 'granville') return 'グランビル転換';
+  return kindLabel(windowSeconds);
+}
+
 /** payload と発火価格から alerts に1行記録。 */
 export function recordAlert(database: DatabaseSync, p: AlertEventPayload, price: number): void {
   const s = classifySession(p.triggeredAt);
@@ -63,7 +69,7 @@ export interface KindStat { label: string; count: number; hitRate: number; avgRe
 export function summarize(rows: AlertRow[]): KindStat[] {
   const groups = new Map<string, AlertRow[]>();
   for (const r of rows) {
-    const k = kindLabel(r.window_seconds);
+    const k = rowKind(r.detection_kind, r.window_seconds);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k)!.push(r);
   }

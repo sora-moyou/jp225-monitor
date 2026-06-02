@@ -4,6 +4,7 @@ import {
   DEFAULT_PARAMS, type AlertEvent,
 } from '../alertDetector.js';
 import { emitAlert } from '../alertHistory.js';
+import { detectGranvilleReversal } from '../granville.js';
 import { INSTRUMENTS } from '../config.js';
 import { canFire, markFired } from '../alertCooldown.js';
 import { getRealtimeBars, isRealtimeBarsReady, getRollingReturn } from '../feedBars.js';
@@ -58,6 +59,31 @@ function evaluateAndFire(): void {
 
     const meta = META_BY_SYM.get(sym);
     if (!meta) continue;
+
+    // グランビル①(トレンド転換)。MA(75本)が下げ止まり/頭打ちに転じ価格が MA を抜けた時に発火。
+    // 日経のみ・共有クールダウン使用。先に評価し、発火したらこのtickの burst/trend は同方向で抑制される。
+    if (sym === 'NIY=F') {
+      const g = detectGranvilleReversal(bars.map(b => b.close));
+      const gPrice = bars[bars.length - 1]!.close;
+      if (g && canFire(sym, g.dir, gPrice, now)) {
+        const ctx = computeContext(bars);
+        markFired(sym, g.dir, gPrice, now);
+        console.log(`[alertLoop] ${sym} granville ${g.dir} dev=${g.deviation.toFixed(2)}% (MA=${Math.round(g.ma)})`);
+        emitAlert({
+          symbol: sym,
+          symbolLabel: `${meta.labelJa} (グランビル${g.dir === 'up' ? '買い' : '売り'}転換)`,
+          changePercent: g.deviation,
+          windowSeconds: 75 * 60,
+          detectionKind: 'granville',
+          direction: g.dir,
+          triggeredAt: bars[bars.length - 1]!.t,
+          change15min: ctx.change15min,
+          pa15min: ctx.pa15min,
+          range1h: ctx.range1h,
+          zscore: 0,
+        });
+      }
+    }
 
     // burst (1m) 優先、無ければ trend (5m, 長期)。両方とも考慮する。(v0.3.35: 横断確認なし)
     const burst = detectBurst(bars);
