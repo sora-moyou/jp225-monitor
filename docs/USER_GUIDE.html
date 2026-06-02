@@ -772,7 +772,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.4.9</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.4.22</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
@@ -1070,14 +1070,15 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="shot-wrap">
     <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/main-dashboard.png" alt="メインダッシュボード">
-    <span class="ann-pin" style="top: 6.5%;  left: 74.5%;">1</span>
-    <span class="ann-pin" style="top: 6.5%;  left: 86%;">2</span>
-    <span class="ann-pin" style="top: 6.5%;  left: 96.5%;">3</span>
-    <span class="ann-pin" style="top: 11.5%; left: 17%;">4</span>
-    <span class="ann-pin" style="top: 43%;   left: 17%;">5</span>
-    <span class="ann-pin" style="top: 11%;   left: 38%;">6</span>
-    <span class="ann-pin" style="top: 42%;   left: 38%;">7</span>
-    <span class="ann-pin" style="top: 92%;   left: 17%;">8</span>
+    <span class="ann-pin" style="top: 5.5%;  left: 48%;">1</span>
+    <span class="ann-pin" style="top: 5.5%;  left: 75%;">2</span>
+    <span class="ann-pin" style="top: 5.5%;  left: 97%;">3</span>
+    <span class="ann-pin" style="top: 13%;   left: 13%;">4</span>
+    <span class="ann-pin" style="top: 29%;   left: 13%;">5</span>
+    <span class="ann-pin" style="top: 88%;   left: 13%;">6</span>
+    <span class="ann-pin" style="top: 20%;   left: 72%;">7</span>
+    <span class="ann-pin" style="top: 56%;   left: 72%;">8</span>
+    <span class="ann-pin" style="top: 86%;   left: 72%;">9</span>
   </div>
 
   <div class="annotations">
@@ -1085,10 +1086,11 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。hover でカウントダウン表示。</p></div></div>
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
     <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード (2 段モメンタム)</strong><p>監視銘柄をリアルタイム更新。緑=上昇 / 赤=下落、急変時はハイライト点滅。日経の値の上には <strong>「1分」(率 %) と「10秒」(値幅・円)</strong> の 2 段モメンタムを表示。「日経225先物」は <code>NIY=F</code> 表記ですが、価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、~66,000〜67,000 円台の日経指数そのままが出ます。</p></div></div>
-    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>TradingView チャート + 主要レベル パネル</strong><p>チャート銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て) で、参照指数は日経 225 と同一。チャート脇の <strong>主要レベル パネル</strong> に、過去セッション高安を主軸とした <strong>上値/下値メド</strong> (重なるレベルは強レベル ★、フィボ 50% は方向転換ライン ⚑) を現値からの距離付きで表示します。区切りのドラッグで高さ可変。</p></div></div>
-    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
-    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
-    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近 15 件ニュース + 日経225先物のテクニカル要約が LLM コンテキストに自動付与される。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>主要レベル (メド) パネル</strong><p>価格カード下のパネルに、過去セッション高安を主軸とした <strong>上値/下値メド</strong> (重なるレベルは強レベル ★、フィボ 50% は方向転換ライン ⚑、<strong>ADR 予測メド</strong> も) を現値からの距離付きで表示します。区切りのドラッグで高さ可変。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近 15 件ニュース + 日経225先物のテクニカル要約が LLM コンテキストに自動付与される。</p></div></div>
+    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
+    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>TradingView チャート</strong><p>右カラム中段に表示。チャート銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て) で、<strong>参照指数は日経 225 と同一</strong>。価格カード「日経225先物」(<code>NIY=F</code>) とほぼ一致します。区切りのドラッグで高さ可変。</p></div></div>
+    <div class="ann"><div class="ann-num">9</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
   </div>
 
   <div class="callout" style="margin-top: 28px;">
