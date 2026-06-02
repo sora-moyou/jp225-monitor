@@ -139,6 +139,26 @@ export function insertAlert(db: DatabaseSync, a: AlertInsert): void {
     a.changePercent, a.price, a.sessionDate, a.session);
 }
 
+/** Insert an alert only if no row with the same symbol+direction+detection_kind+window_seconds
+ *  exists within [triggeredAt - dedupWindowMs, triggeredAt + dedupWindowMs]. Cross-process
+ *  near-duplicate guard (monitor + collector overlap). Returns true if inserted. */
+export function insertAlertIfNew(db: DatabaseSync, a: AlertInsert, dedupWindowMs: number): boolean {
+  const dup = db.prepare(`
+    SELECT 1 FROM alerts
+    WHERE symbol = ? AND direction = ? AND detection_kind = ?
+      AND (window_seconds IS ? OR window_seconds = ?)
+      AND triggered_at >= ? AND triggered_at <= ?
+    LIMIT 1
+  `).get(
+    a.symbol, a.direction, a.detectionKind,
+    a.windowSeconds, a.windowSeconds,
+    a.triggeredAt - dedupWindowMs, a.triggeredAt + dedupWindowMs,
+  );
+  if (dup) return false;
+  insertAlert(db, a);
+  return true;
+}
+
 /** t 以下で最も新しい bar の close。無ければ null。 */
 export function getBarCloseAt(db: DatabaseSync, symbol: string, t: number): number | null {
   const row = db.prepare('SELECT c FROM bars_1m WHERE symbol = ? AND t <= ? ORDER BY t DESC LIMIT 1')
