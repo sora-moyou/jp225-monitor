@@ -4,7 +4,7 @@ import type { Bar } from './correlation.js';
 // 過去 60min の 1m return から σ を継続計算、|z| > 閾値 + 静寂前提 + 横断確認の三段で発火。
 // changeDetector (client side) は廃止、本モジュールがサーバ単一の発火源。
 
-export type DetectionKind = 'slope' | 'magnitude' | 'granville';  // 既存 LLM プロンプトとの互換維持
+export type DetectionKind = 'slope' | 'magnitude' | 'granville' | 'shock';  // 既存 LLM プロンプトとの互換維持。shock = 価格変化スコア急変(短期/長期の後継)
                                                      // slope = 1m burst, magnitude = 5m trend
 export interface PriceAction { open: number; high: number; low: number; current: number; }
 
