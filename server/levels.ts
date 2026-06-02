@@ -1,9 +1,9 @@
-export interface SessionOHLC {
-  sessionDate: string;
-  session: 'Day' | 'Night';
-  open: number; high: number; low: number; close: number;
-  highT: number; lowT: number; openT: number;   // セッション最初のバー時刻(寄り欠け判定用)
-}
+import type { SessionOHLC } from './sessionOHLC.js';
+import { isSessionComplete } from './sessionOHLC.js';
+// 後方互換のため再export(forecast.ts / forecastLoop.ts / 各テストは './levels.js' から import している)。
+export type { SessionOHLC } from './sessionOHLC.js';
+export { isSessionComplete } from './sessionOHLC.js';
+
 export interface Level {
   price: number;
   dist: number;             // price - current (5円丸め)
@@ -34,19 +34,6 @@ interface Cand { price: number; label: string; fib?: number; reversalLine?: bool
 function fmtSession(sd: string, ses: 'Day' | 'Night'): string {
   const [, m, d] = sd.split('-');   // YYYY-MM-DD
   return `${Number(m)}/${Number(d)}${ses === 'Day' ? '昼' : '夜'}`;
-}
-
-// セッションの寄り(Day=8:45 / Night=17:00 JST)を UTC epoch に。
-const DAY_OPEN_MIN = 8 * 60 + 45, NIGHT_OPEN_MIN = 17 * 60;
-const COMPLETE_TOL_MS = 12 * 60_000;   // 最初のバーが寄りからこの範囲内なら「寄りから揃っている」とみなす
-function sessionOpenEpoch(sd: string, ses: 'Day' | 'Night'): number {
-  const [y, m, d] = sd.split('-').map(Number);
-  const min = ses === 'Day' ? DAY_OPEN_MIN : NIGHT_OPEN_MIN;
-  return Date.UTC(y!, m! - 1, d!, Math.floor(min / 60), min % 60) - 9 * 3600_000;   // JST壁時計→UTC
-}
-/** セッションのデータが寄りから揃っているか(収集開始が遅れて寄り欠けのセッションは高安が不正確)。 */
-export function isSessionComplete(s: SessionOHLC): boolean {
-  return s.openT <= sessionOpenEpoch(s.sessionDate, s.session) + COMPLETE_TOL_MS;
 }
 
 const round5 = (v: number): number => Math.round(v / 5) * 5;
