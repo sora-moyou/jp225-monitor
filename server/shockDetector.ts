@@ -4,10 +4,11 @@
 export interface ShockParams {
   move1: number; move2: number; shock1: number; shock2: number; accelTh: number;
   avgLen: number; avgMult: number; breakLen: number; sameDirLen: number; sameDirNeed: number;
+  scoreNeed: number;   // 急変とみなす最小スコア(6条件中)
 }
 export const DEFAULT_SHOCK_PARAMS: ShockParams = {
   move1: 25, move2: 40, shock1: 50, shock2: 70, accelTh: 10,
-  avgLen: 30, avgMult: 2.0, breakLen: 10, sameDirLen: 3, sameDirNeed: 2,
+  avgLen: 30, avgMult: 2.0, breakLen: 10, sameDirLen: 3, sameDirNeed: 2, scoreNeed: 4,
 };
 
 export interface ShockSignal {
@@ -53,8 +54,8 @@ export function detectShock(closes: number[], p: ShockParams = DEFAULT_SHOCK_PAR
   const upScore = b(aUp) + b(bUp) + b(cUp) + b(dUp) + b(eUp) + b(fUp);
   const dnScore = b(aDn) + b(bDn) + b(cDn) + b(dDn) + b(eDn) + b(fDn);
 
-  const upShockRaw = (d1 >= p.shock1 && (d2 >= p.shock2 || eUp)) || upScore >= 4;
-  const dnShockRaw = (d1 <= -p.shock1 && (d2 <= -p.shock2 || eDn)) || dnScore >= 4;
+  const upShockRaw = (d1 >= p.shock1 && (d2 >= p.shock2 || eUp)) || upScore >= p.scoreNeed;
+  const dnShockRaw = (d1 <= -p.shock1 && (d2 <= -p.shock2 || eDn)) || dnScore >= p.scoreNeed;
 
   if (upScore > dnScore && upShockRaw) return { dir: 'up', d1, d2, score: upScore };
   if (dnScore > upScore && dnShockRaw) return { dir: 'down', d1, d2, score: dnScore };
