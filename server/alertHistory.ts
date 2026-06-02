@@ -3,7 +3,7 @@ import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFoll
   updateAlertReturns, getBarCloseAt, type AlertRow } from './db/store.js';
 import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
-import { classifySession } from '../collector/session.js';
+import { classifySession, isWithinOpenGuard } from '../collector/session.js';
 import type { AlertEventPayload } from './types.js';
 
 const FOLLOWUP_MS = 30_000;
@@ -41,6 +41,7 @@ export function recordAlert(database: DatabaseSync, p: AlertEventPayload, price:
 
 /** broadcast + DB記録。アラート発火箇所はこれを呼ぶ(記録漏れ防止の単一経路)。記録失敗してもUIは止めない。 */
 export function emitAlert(p: AlertEventPayload): void {
+  if (isWithinOpenGuard(p.triggeredAt)) return;   // 寄りから3本は全アラート抑制(UIバナーも記録も出さない)
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());

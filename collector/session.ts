@@ -48,6 +48,26 @@ export function classifySession(epochMs: number): SessionInfo | null {
   return info;
 }
 
+export const OPEN_GUARD_BARS = 3;   // 寄りから3本(=3分)は抑制
+
+/** 立会開始(寄付)からの分オフセット。非取引時間は null。
+ *  Day=8:45起点、Night=17:00起点。早朝継続(00:00-06:00)は前日Nightの大きなオフセットになり寄付近傍にならない。 */
+export function minutesFromOpen(epochMs: number): number | null {
+  const s = classifySession(epochMs);
+  if (!s) return null;
+  const j = new Date(epochMs + JST_OFFSET);
+  const mod = j.getUTCHours() * 60 + j.getUTCMinutes();
+  if (s.session === 'Day') return mod - DAY_OPEN;            // 8:45起点 (525)
+  if (mod >= NIGHT_OPEN) return mod - NIGHT_OPEN;            // 当日 17:00起点 (1020)
+  return (24 * 60 - NIGHT_OPEN) + mod;                       // 早朝継続 = 420 + mod (寄付から十分離れる)
+}
+
+/** 寄りから OPEN_GUARD_BARS 本以内か(=最初の3分。trueなら全アラート抑制)。 */
+export function isWithinOpenGuard(epochMs: number, nBars: number = OPEN_GUARD_BARS): boolean {
+  const off = minutesFromOpen(epochMs);
+  return off !== null && off >= 0 && off < nBars;
+}
+
 const LEAD_MS = 5 * 60_000;    // 開始5分前から
 const TRAIL_MS = 10 * 60_000;  // 終了10分後まで
 

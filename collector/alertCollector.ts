@@ -6,7 +6,7 @@ import { INSTRUMENTS } from '../server/config.js';
 import { getLatestTick, insertAlertIfNew, type AlertInsert } from '../server/db/store.js';
 import { followupTick } from '../server/alertHistory.js';
 import { getCooldownMs } from '../server/alertCooldown.js';
-import { classifySession } from './session.js';
+import { classifySession, isWithinOpenGuard } from './session.js';
 import type { Bar } from '../server/correlation.js';
 import type { AlertEventPayload } from '../server/types.js';
 
@@ -28,6 +28,7 @@ export class AlertCollector {
 
   /** DB-only sink: persist the alert with a near-duplicate guard. No SSE (collector has no UI). */
   private sink: AlertSink = (e: AlertEventPayload) => {
+    if (isWithinOpenGuard(e.triggeredAt)) return;   // 寄りから3本は collector 側記録も抑制
     const latest = getLatestTick(this.db, e.symbol);
     const price = latest ? latest.price : (e.pa15min ? e.pa15min.current : 0);
     if (!(price > 0)) return;
