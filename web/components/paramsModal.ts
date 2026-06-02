@@ -11,6 +11,16 @@ const PARAMS: ParamSpec[] = [
   { key: 'newsPollMs',  inputId: 'params-news-poll' },
   { key: 'port',        inputId: 'params-port' },
   { key: 'cooldownMin', inputId: 'params-cooldown-min' },
+  { key: 'shock1Yen',         inputId: 'params-shock1' },
+  { key: 'shock2Yen',         inputId: 'params-shock2' },
+  { key: 'shockAccelYen',     inputId: 'params-shock-accel' },
+  { key: 'shockMove1Yen',     inputId: 'params-shock-move1' },
+  { key: 'shockMove2Yen',     inputId: 'params-shock-move2' },
+  { key: 'shockAvgMult',      inputId: 'params-shock-avgmult' },
+  { key: 'shockScoreNeed',    inputId: 'params-shock-score' },
+  { key: 'shockCooldownBars', inputId: 'params-shock-cooldown-bars' },
+  { key: 'openGuardBars',     inputId: 'params-open-guard-bars' },
+  { key: 'flashYen',          inputId: 'params-flash-yen' },
 ];
 
 export interface ParamsElements {
