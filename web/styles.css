@@ -128,6 +128,9 @@ body {
 .levels-row .lv-dist { width: 48px; text-align: right; }
 .levels-row .lv-label { font-size: 12px; }
 .levels-row.strong .lv-price { font-weight: bold; }
+.levels-row.confluence { color: #f0c674; }   /* 合流帯(★★): 強調色 */
+.levels-row.confluence .lv-price { font-weight: bold; }
+.levels-row .lv-score { margin-left: auto; color: var(--muted); font-size: 11px; opacity: 0.75; }
 .levels-row.reversal { color: #ffb454; }   /* 転換ライン: 明度を上げて視認性UP */
 .levels-cur { padding: 2px 4px; color: #58a6ff; font-size: 12px; }
 .levels-empty { color: var(--muted); font-size: 12px; padding: 2px 4px; }

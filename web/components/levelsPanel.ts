@@ -44,14 +44,16 @@ function rowHtml(l: Level, cur: number): string {
   const dist = round5(l.price - cur);
   const cls = ['levels-row'];
   if (l.strong) cls.push('strong');
+  if (l.tier === 2) cls.push('confluence');
   if (l.reversalLine) cls.push('reversal');
-  const star = l.strong ? '★ ' : '';
+  const star = l.tier === 2 ? '★★ ' : l.tier === 1 ? '★ ' : '';
   const flag = l.reversalLine ? ' ⚑転換' : '';
   const labels = l.labels.join('・');
   return `<div class="${cls.join(' ')}">` +
     `<span class="lv-price">${star}${fmtPrice(l.price)}</span>` +
     `<span class="lv-dist">${fmtDist(dist)}</span>` +
-    `<span class="lv-label">${labels}${flag}</span></div>`;
+    `<span class="lv-label">${labels}${flag}</span>` +
+    `<span class="lv-score">${l.score.toFixed(1)}</span></div>`;
 }
 
 function render(): void {
