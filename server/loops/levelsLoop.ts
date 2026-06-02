@@ -7,7 +7,7 @@ import { getForecastSnapshot } from './forecastLoop.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 8_000;   // 当日H/Lをほぼリアルタイム化(従来60s)。NIY=Fのみで軽い。
-const FETCH_SESSIONS = LOOKBACK_SESSIONS + 2;   // フィボ窓 + 余裕
+const FETCH_SESSIONS = Math.max(LOOKBACK_SESSIONS, 20) + 4;   // 20Sスイング + 長期高安 + 余裕
 
 let db: DatabaseSync | null = null;
 let timer: NodeJS.Timeout | null = null;
@@ -19,10 +19,15 @@ export function sessionKey(cs: { sessionDate: string; session: string } | null):
   return cs ? `${cs.sessionDate}/${cs.session}` : 'none';
 }
 
-/** レベル集合(価格+swing)の署名。current は UI が price SSE でライブ追従するため除外。
+/** レベル集合(価格+tier+丸めスコア+swing)の署名。current は UI が price SSE でライブ追従するため除外。
+ *  価格が同じでも tier/score(強さ)が変わったら再配信されるよう、各 level の tier と
+ *  0.5刻みに丸めた score も署名に含める。price 昇順ソートで決定性を保つ。
  *  これが変わった時だけ SSE 配信し、8秒間隔でも無駄な配信をしない。 */
 export function levelSignature(r: LevelsResult): string {
-  const prices = [...r.up, ...r.down].map(l => l.price).sort((a, b) => a - b).join(',');
+  const prices = [...r.up, ...r.down]
+    .sort((a, b) => a.price - b.price)
+    .map(l => `${l.price}:${l.tier}:${Math.round(l.score * 2) / 2}`)
+    .join(',');
   return `${prices}#${r.swing ? `${r.swing.high}-${r.swing.low}-${r.swing.leg}` : ''}`;
 }
 
