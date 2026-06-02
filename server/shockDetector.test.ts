@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { detectShock, DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
-// 30本の微小ジグザグ(±1円)で平均変化を小さくし、最後に+45円ジャンプ → 上急変。
+// 30本の微小ジグザグ(±1円)で平均変化を小さくし、最後に大きくジャンプ → 急変。
+// ジャンプ幅は shock1(現50円)を確実に超える 55円 を使う。
 function quietThenJump(jump: number): number[] {
   const c: number[] = []; let p = 30000;
   for (let i = 0; i < 33; i++) { p += (i % 2 === 0 ? 1 : -1); c.push(p); }
@@ -11,14 +12,14 @@ function quietThenJump(jump: number): number[] {
 
 describe('detectShock', () => {
   it('fires up on a sharp jump after a quiet stretch', () => {
-    const sig = detectShock(quietThenJump(45), DEFAULT_SHOCK_PARAMS);
+    const sig = detectShock(quietThenJump(55), DEFAULT_SHOCK_PARAMS);
     expect(sig).not.toBeNull();
     expect(sig!.dir).toBe('up');
     expect(sig!.d1).toBeGreaterThanOrEqual(DEFAULT_SHOCK_PARAMS.shock1);
   });
 
   it('fires down on a sharp drop', () => {
-    const sig = detectShock(quietThenJump(-45), DEFAULT_SHOCK_PARAMS);
+    const sig = detectShock(quietThenJump(-55), DEFAULT_SHOCK_PARAMS);
     expect(sig).not.toBeNull();
     expect(sig!.dir).toBe('down');
   });

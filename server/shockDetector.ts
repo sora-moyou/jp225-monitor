@@ -6,7 +6,7 @@ export interface ShockParams {
   avgLen: number; avgMult: number; breakLen: number; sameDirLen: number; sameDirNeed: number;
 }
 export const DEFAULT_SHOCK_PARAMS: ShockParams = {
-  move1: 25, move2: 40, shock1: 40, shock2: 70, accelTh: 15,
+  move1: 25, move2: 40, shock1: 50, shock2: 70, accelTh: 10,
   avgLen: 30, avgMult: 2.0, breakLen: 10, sameDirLen: 3, sameDirNeed: 2,
 };
 
