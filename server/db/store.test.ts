@@ -13,6 +13,12 @@ function memDb(): DatabaseSync {
 const M = 60_000;
 
 describe('store', () => {
+  it('creates an index on bars_1m(session_date, session) so getSessionOHLC subqueries seek instead of full-scan', () => {
+    const db = memDb();
+    const idx = (db.prepare('PRAGMA index_list(bars_1m)').all() as Array<{ name: string }>).map(r => r.name);
+    expect(idx).toContain('idx_bars_session');
+  });
+
   it('recordTick inserts a tick and creates a 1m bar (o=h=l=c on first tick of minute)', () => {
     const db = memDb();
     recordTick(db, 'NIY=F', 10 * M + 1000, 67000, '2026-06-01', 'Day');

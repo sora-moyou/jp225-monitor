@@ -46,6 +46,11 @@ export function initSchema(db: DatabaseSync): void {
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
   if (!cols.includes('volume')) db.exec('ALTER TABLE bars_1m ADD COLUMN volume INTEGER');
+  // getSessionOHLC は (symbol, session_date, session) で絞る相関サブクエリを4本/セッション走らせる。
+  // この索引が無いと各サブクエリが bars_1m 全表スキャン → 基礎データ取込後(数十万行・数百セッション)は
+  // O(セッション数² × 行数) になり「価格水準の計算が終わらない」。索引でセッション単位のシークに落とす。
+  // ALTER で session_date/session 列を足した後に作る必要があるためここで実行。
+  db.exec('CREATE INDEX IF NOT EXISTS idx_bars_session ON bars_1m(symbol, session_date, session, t)');
 }
 
 // 生 tick を保存しつつ、その分の 1分足 OHLC を upsert する。
