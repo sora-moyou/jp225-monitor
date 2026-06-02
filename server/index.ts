@@ -12,6 +12,7 @@ import { statusHandler } from './routes/status.js';
 import { logsHandler } from './routes/logs.js';
 import { translateHandler } from './routes/translate.js';
 import { correlationHandler } from './routes/correlation.js';
+import { forecastHandler } from './routes/forecast.js';
 import { alertsHistoryHandler } from './routes/alerts.js';
 import { levelsHandler } from './routes/levels.js';
 import { basedataImportHandler, basedataStatusHandler } from './routes/basedata.js';
@@ -20,6 +21,7 @@ import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
 import { startAlertLoop } from './loops/alertLoop.js';
 import { startLevelsLoop } from './loops/levelsLoop.js';
+import { startForecastLoop } from './loops/forecastLoop.js';
 import { startAlertHistoryLoop } from './alertHistory.js';
 import { warmFromDb } from './warmup.js';
 import { isLLMEnabled } from './llm/openai.js';
@@ -68,6 +70,7 @@ app.get('/api/status', statusHandler);
 app.get('/api/logs', logsHandler);
 app.post('/api/translate', translateHandler);
 app.get('/api/correlation', correlationHandler);
+app.get('/api/forecast', forecastHandler);
 app.get('/api/alerts/history', alertsHistoryHandler);
 app.get('/api/levels', levelsHandler);
 app.get('/api/basedata/status', basedataStatusHandler);
@@ -93,6 +96,7 @@ const server = app.listen(PORT, () => {
   startAlertLoop();
   startAlertHistoryLoop();
   startLevelsLoop();
+  startForecastLoop();
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
