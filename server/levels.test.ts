@@ -133,3 +133,25 @@ describe('computeLevels フィボナッチ', () => {
     expect([...r.up, ...r.down].some(l => l.fib !== undefined)).toBe(false);
   });
 });
+
+describe('computeLevels extraLevels (ADR等の外部レベル)', () => {
+  it('extraLevels が候補に混ざり、近傍選抜に乗る', () => {
+    const sessions = [
+      s('2026-06-01', 'Night', 67300, 66800),
+      s('2026-06-01', 'Day',   67500, 66600),
+    ];
+    const r = computeLevels(sessions, 67000, 0, null, [
+      { price: 67400, label: 'ADR上限予測' },
+      { price: 66700, label: 'ADR下限予測' },
+    ]);
+    const labels = [...r.up, ...r.down].flatMap(l => l.labels);
+    expect(labels.some(x => x.includes('ADR上限予測'))).toBe(true);
+    expect(labels.some(x => x.includes('ADR下限予測'))).toBe(true);
+  });
+
+  it('extraLevels 省略時は従来どおり(既存挙動不変)', () => {
+    const sessions = [s('2026-06-01', 'Day', 67500, 66600)];
+    const r = computeLevels(sessions, 67000, 0, null);
+    expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => x.includes('ADR'))).toBe(false);
+  });
+});

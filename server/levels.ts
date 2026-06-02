@@ -90,6 +90,7 @@ export function computeLevels(
   current: number,
   asOf: number,
   currentSession: { sessionDate: string; session: 'Day' | 'Night' } | null,
+  extraLevels: { price: number; label: string }[] = [],
 ): LevelsResult {
   const isCurrent = (s: SessionOHLC): boolean =>
     !!currentSession && s.sessionDate === currentSession.sessionDate && s.session === currentSession.session;
@@ -127,6 +128,11 @@ export function computeLevels(
     // グリッド節目（履歴データがあれば現値から。寄り欠け判定とは独立）。
     cands.push({ price: Math.ceil((current + 5) / GRID) * GRID, label: '節目' });
     cands.push({ price: Math.floor((current - 5) / GRID) * GRID, label: '節目' });
+  }
+
+  // ── 外部レベル注入（予測ADR上限/下限など）──
+  for (const e of extraLevels) {
+    if (Number.isFinite(e.price) && e.price > 0) cands.push({ price: e.price, label: e.label });
   }
 
   // ── フィボナッチ戻し（寄りから揃った完了セッション直近 FIB_SWING_SESSIONS のスイング）──
