@@ -1109,8 +1109,10 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="features">
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>リアルタイム z-score 急変検知</h3>
-      <p>OSE mini のライブ配信に対するローリング窓 z-score で、<strong>超短期 (値幅・円, 5〜10 秒) + 短期 (率 %, 〜60 秒) + 長期 (5 分)</strong> の 3 層を判定。<strong>アラートは日経 225 先物 (NIY=F) 単独で発火</strong> — <strong>横断確認は v0.3.35 で廃止</strong> され、他指数・FX の確認を待たずリアルタイムに鳴ります。共有クールダウン <strong>既定 15 分</strong> (逆方向は起点越えで解禁、🎛️ 詳細パラメータで変更可)。</p>
+      <h3>急変検知 (価格変化スコア方式)</h3>
+      <p><strong>アラートは日経 225 先物 (NIY=F) 単独で発火</strong>。発火条件は次の 3 つ (v0.4.24 で短期/長期の z-score を撤廃):</p>
+      <p>① <strong>急変</strong> — 完成 1 分足の価格変化(円)のみで判定するスコア方式 (1分変化・2分変化・加速度・平均変化倍率・ブレイク・同方向本数の 6 条件＋急変条件)。クールダウンは<strong>バー数方式 (直近発火から 3 本超)</strong>。<br>② <strong>超短期フラッシュ</strong> — 5〜10 秒窓で値幅 ≥ 80 円。<br>③ <strong>グランビル</strong> — 移動平均(75本)の①転換・②③継続(戻り売り/押し目買い)。</p>
+      <p><strong>寄り (Day 8:45 / Night 17:00) から 3 本(=最初の 3 分)は全アラートを抑制</strong>し、寄付直後の荒れによる誤発火を避けます。②③の共有クールダウンは <strong>既定 15 分</strong> (逆方向は起点越えで解禁、🎛️ 詳細パラメータで変更可)。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
@@ -1364,7 +1366,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
             </tr>
           </thead>
           <tbody>
-            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td><strong>アラート対象</strong> — OSE mini リアルタイム配信に対する 超短期 (値幅・円, 5〜10秒) + 短期 (率%, 〜60秒) + 長期 (5分) の 3 層検知</td></tr>
+            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td><strong>アラート対象</strong> — ①急変(完成1分足の価格変化スコア方式) + ②超短期フラッシュ(値幅・円, 5〜10秒) + ③グランビル(MA75) の 3 条件。寄りから3本は抑制</td></tr>
             <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
             <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
             <tr><td>香港ハンセン</td><td><code>^HSI</code></td><td>HKD</td><td>AI 材料 (|z|≥4.0)</td></tr>
@@ -1395,7 +1397,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         </table>
 
         <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
-          ※ <strong>アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。OSE mini のライブ配信に対するローリング窓 z-score で、<strong>超短期</strong> (値幅・円, 5〜10 秒)、<strong>短期</strong> (率 %, 〜60 秒)、<strong>長期</strong> (5 分) の 3 層を判定します。<strong>横断確認 (他指数・FX による確認) は v0.3.35 で廃止</strong>され、NIY=F 単独・リアルタイムで発火します。共有クールダウンは <strong>既定 15 分</strong> (逆方向は起点越えで解禁、🎛️ 詳細パラメータで変更可)。他の銘柄は単独アラートを出さず、NIY=F アラート時に <strong>|z| ≥ 4.0</strong> で大きく動いていれば「大きく動いた他資産」として AI 説明に渡されます。
+          ※ <strong>アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。発火条件は <strong>①急変 (完成1分足の価格変化スコア方式・バー数クールダウン)</strong>、<strong>②超短期フラッシュ (値幅・円, 5〜10秒)</strong>、<strong>③グランビル (MA75)</strong> の 3 つ。<strong>短期(率%, 〜60秒)/長期(5分)の z-score 方式は v0.4.24 で撤廃</strong>。<strong>寄り(Day 8:45 / Night 17:00)から3本は全アラート抑制</strong>。横断確認 (他指数・FX) は v0.3.35 で廃止。他の銘柄は単独アラートを出さず、NIY=F アラート時に <strong>|z| ≥ 4.0</strong> で大きく動いていれば「大きく動いた他資産」として AI 説明に渡されます。
         </p>
       </div>
     </details>
