@@ -2,6 +2,7 @@ import { barsFor } from './loops/alertLoop.js';
 import { computeContext } from './alertDetector.js';
 import type { Bar } from './correlation.js';
 import { getLevelsSnapshot } from './loops/levelsLoop.js';
+import { getForecastSnapshot } from './loops/forecastLoop.js';
 import type { LevelsResult, Level } from './levels.js';
 
 const NIKKEI = 'NIY=F';
@@ -37,7 +38,8 @@ export function buildNikkeiTechnical(
     const headBars = getBars(NIKKEI);
     const cur = headBars.length ? headBars[headBars.length - 1]!.close : fallbackPrice;
     const head = cur ? `現値 ${Math.round(cur).toLocaleString('en-US')}円\n` : '';
-    return `■ 日経225先物 (NIY=F) テクニカル(セッションH/L・フィボ):\n${head}${lv}`;
+    const fc = formatForecastBlock();
+    return `■ 日経225先物 (NIY=F) テクニカル(セッションH/L・フィボ):\n${head}${lv}${fc ? `\n${fc}` : ''}`;
   }
   const bars = getBars(NIKKEI);
   if (bars.length < 62) {
@@ -143,6 +145,25 @@ export function buildNikkeiTechnical(
     `下落目途候補: ${downStr}`,
   ].filter((x): x is string => x !== null);
   return `■ 日経225先物 (NIY=F) テクニカル(15〜60分):\n${lines.join('\n')}`;
+}
+
+/** forecast スナップショットを AI 向け予測ブロックに。データ無しなら null。 */
+export function formatForecastBlock(): string | null {
+  const f = getForecastSnapshot();
+  const lines: string[] = [];
+  const fp = (v: number): string => Math.round(v).toLocaleString('en-US');
+  if (f.adr) {
+    lines.push(`ADR(直近${f.adr.samples}セッション中央値): 上${Math.round(f.adr.adrUp)}円 / 下${Math.round(f.adr.adrDown)}円`);
+  }
+  if (f.targets) {
+    lines.push(`本日ADR予測メド: 上限 ${fp(f.targets.projHigh)}円 / 下限 ${fp(f.targets.projLow)}円`);
+  }
+  if (f.seasonalityNow) {
+    const s = f.seasonalityNow;
+    lines.push(`時間帯傾向(${s.slot}台, ${s.samples}日): 平均${s.avgReturn >= 0 ? '+' : ''}${s.avgReturn.toFixed(2)}% / 上昇${Math.round(s.upRate * 100)}% / 値幅${s.avgRange.toFixed(2)}%`);
+  }
+  if (lines.length === 0) return null;
+  return `― 予測(ADR/シーズナリティ) ―\n${lines.join('\n')}`;
 }
 
 /** computeLevels の結果を AI 向けテキストに。空なら null。 */
