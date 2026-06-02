@@ -1,4 +1,5 @@
-// 日経225 データ収集デーモン v0.4.00。feed を 2秒ごとに DB へ。起動時に Yahoo 分足で backfill。
+// 日経225 データ収集デーモン v0.5.00。feed を 2秒ごとに DB へ。起動時に Yahoo 分足で backfill。
+// v0.5.00: デーモン単独でアラート検知→DB記録(単一ライター・ハートビート調停)。アプリ閉でも24/7記録。
 import { openDb, resolveDbPath, pruneTicks } from '../server/db/store.js';
 import { recordFeedPrices, backfillBars } from './record.js';
 import { fetchFeedPrices } from '../server/sources/nikkei225jpFeed.js';

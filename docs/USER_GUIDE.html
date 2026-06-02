@@ -880,9 +880,9 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="features">
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg></div>
-      <h3>価格収集デーモン (24/7 蓄積)</h3>
-      <p>常駐デーモンが <strong>月 8:45〜土 6:00</strong> (Day 8:45-15:45 / Night 17:00-翌 6:00、休場日除く) に価格を SQLite へ蓄積。モニター起動時に <strong>即ウォームアップ</strong> され、メドや z-score 判定がすぐ揃います。設定の「終了」で <strong>「完全終了」にチェック</strong> すると閉じる時にデーモンも停止、<strong>未チェック (既定) ならバックグラウンドで収集を継続</strong> します。</p>
-      <span class="tag">v0.4</span>
+      <h3>価格収集デーモン (24/7 蓄積 + アラート記録)</h3>
+      <p>常駐デーモンが <strong>月 8:45〜土 6:00</strong> (Day 8:45-15:45 / Night 17:00-翌 6:00、休場日除く) に価格を SQLite へ蓄積。モニター起動時に <strong>即ウォームアップ</strong> され、メドや z-score 判定がすぐ揃います。<strong>v0.5 からはデーモン自身が急変アラートを検知して履歴に記録</strong> するので、<strong>アプリを閉じていても 24/7 でアラート履歴が貯まり</strong> ます (デーモン稼働中はデーモンが唯一の記録者、アプリは表示のみ・二重記録なし)。設定の「終了」で <strong>「完全終了」にチェック</strong> すると閉じる時にデーモンも停止、<strong>未チェック (既定) ならバックグラウンドで収集を継続</strong> します。</p>
+      <span class="tag">v0.4</span> <span class="tag">v0.5</span>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></div>
