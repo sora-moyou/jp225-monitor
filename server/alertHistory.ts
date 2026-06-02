@@ -25,6 +25,7 @@ export function kindLabel(windowSeconds: number | null): string {
 /** 履歴の種別ラベル。グランビルは検知種別で別扱い、それ以外は窓秒で 超短期/短期/長期。 */
 export function rowKind(detectionKind: string | null, windowSeconds: number | null): string {
   if (detectionKind === 'granville') return 'グランビル';
+  if (detectionKind === 'shock') return '急変';
   return kindLabel(windowSeconds);
 }
 

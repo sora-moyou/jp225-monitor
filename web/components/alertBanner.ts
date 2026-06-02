@@ -35,6 +35,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   const el = document.createElement('div');
   el.className = `alert ${alert.direction}`;
   const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
+    : alert.detectionKind === 'shock' ? '急変'
     : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
   // note があれば「%/秒」の代わりにそれを表示(グランビル等)。
