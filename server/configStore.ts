@@ -1,9 +1,10 @@
 // ユーザー設定の永続化: ~/.jp225-monitor/config.json
 // .env よりも優先。配布版でも .env なしで動かせる。
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { DEFAULT_SHOCK_PARAMS, type ShockParams } from './shockDetector.js';
 
 const CONFIG_DIR = () => join(homedir(), '.jp225-monitor');
 const CONFIG_FILE = () => join(CONFIG_DIR(), 'config.json');
@@ -16,6 +17,16 @@ export interface UserConfig {
   newsPollMs?: number;
   port?: number;
   cooldownMin?: number;   // アラート共有クールダウン(分)
+  shockMove1Yen?: number;
+  shockMove2Yen?: number;
+  shock1Yen?: number;
+  shock2Yen?: number;
+  shockAccelYen?: number;
+  shockAvgMult?: number;
+  shockScoreNeed?: number;
+  shockCooldownBars?: number;
+  openGuardBars?: number;
+  flashYen?: number;
 }
 
 type ProviderName = 'gemini' | 'groq' | 'openai';
@@ -26,20 +37,35 @@ export const PARAM_BOUNDS = {
   newsPollMs:  { min: 10_000, max: 600_000, default: 60_000 },
   port:        { min: 1024, max: 65_535, default: 3000 },
   cooldownMin: { min: 1, max: 120, default: 15 },
+  shockMove1Yen:    { min: 1, max: 500,  default: 25 },
+  shockMove2Yen:    { min: 1, max: 1000, default: 40 },
+  shock1Yen:        { min: 1, max: 1000, default: 50 },
+  shock2Yen:        { min: 1, max: 2000, default: 70 },
+  shockAccelYen:    { min: 0, max: 1000, default: 10 },
+  shockAvgMult:     { min: 0.1, max: 20, default: 2.0 },
+  shockScoreNeed:   { min: 2, max: 6,    default: 4 },
+  shockCooldownBars:{ min: 0, max: 120,  default: 3 },
+  openGuardBars:    { min: 0, max: 60,   default: 3 },
+  flashYen:         { min: 1, max: 1000, default: 80 },
 } as const;
 
 let cached: UserConfig | null = null;
+let cachedMtime = -1;
 
 export function loadConfig(): UserConfig {
-  if (cached) return cached;
   const file = CONFIG_FILE();
-  if (!existsSync(file)) { cached = {}; return cached; }
+  if (!existsSync(file)) { if (!cached) cached = {}; return cached; }
+  let mtime = -1;
+  try { mtime = statSync(file).mtimeMs; } catch { /* ignore */ }
+  if (cached && mtime === cachedMtime) return cached;
   try {
     cached = JSON.parse(readFileSync(file, 'utf-8')) as UserConfig;
+    cachedMtime = mtime;
     return cached;
   } catch (err) {
     console.error('[configStore] load failed:', err);
-    cached = {}; return cached;
+    if (!cached) cached = {};
+    return cached;
   }
 }
 
@@ -48,6 +74,7 @@ export function saveConfig(config: UserConfig): void {
   mkdirSync(CONFIG_DIR(), { recursive: true });
   writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
   cached = config;
+  try { cachedMtime = statSync(file).mtimeMs; } catch { cachedMtime = -1; }
   console.log(`[configStore] saved to ${file}`);
 }
 
@@ -107,6 +134,27 @@ export function validateParam(
   return null;
 }
 
+function resolveNumeric(key: keyof typeof PARAM_BOUNDS): number {
+  const v = (loadConfig() as Record<string, unknown>)[key];
+  return typeof v === 'number' ? v : PARAM_BOUNDS[key].default;
+}
+
+export function resolveShockParams(): ShockParams {
+  return {
+    ...DEFAULT_SHOCK_PARAMS,   // 固定: avgLen/breakLen/sameDirLen/sameDirNeed
+    move1: resolveNumeric('shockMove1Yen'),
+    move2: resolveNumeric('shockMove2Yen'),
+    shock1: resolveNumeric('shock1Yen'),
+    shock2: resolveNumeric('shock2Yen'),
+    accelTh: resolveNumeric('shockAccelYen'),
+    avgMult: resolveNumeric('shockAvgMult'),
+    scoreNeed: resolveNumeric('shockScoreNeed'),
+  };
+}
+export function resolveShockCooldownBars(): number { return resolveNumeric('shockCooldownBars'); }
+export function resolveOpenGuardBars(): number { return resolveNumeric('openGuardBars'); }
+export function resolveFlashYen(): number { return resolveNumeric('flashYen'); }
+
 export function configFilePath(): string { return CONFIG_FILE(); }
 
 // 起動時に呼ぶ: pricePollMs / newsPollMs / port が未設定なら default を
@@ -139,4 +187,5 @@ export function ensureDefaults(): void {
 // テスト用 / 設定変更後のキャッシュリセット
 export function resetConfigCache(): void {
   cached = null;
+  cachedMtime = -1;
 }
