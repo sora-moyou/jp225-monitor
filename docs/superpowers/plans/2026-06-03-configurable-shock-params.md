@@ -15,7 +15,8 @@
 - **公開するノブ(10)**: `shockMove1Yen`(25)/`shockMove2Yen`(40)/`shock1Yen`(50)/`shock2Yen`(70)/`shockAccelYen`(10)/`shockAvgMult`(2.0)/`shockScoreNeed`(4)/`shockCooldownBars`(3)/`openGuardBars`(3)/`flashYen`(80)。既定値は現行のハードコード値と一致。
 - **窓長は固定**: `avgLen`(30)/`breakLen`(10)/`sameDirLen`(3)/`sameDirNeed`(2) は構造的なので `DEFAULT_SHOCK_PARAMS` のまま（UI には出さない）。
 - **反映方式**: 検知側は resolver を毎評価呼ぶ（≒1分に1回）。`loadConfig` の mtime キャッシュにより、モニター保存→ファイル更新→デーモンが次の評価で再読込。ループ再起動不要（ポーリング間隔/ポートのみ従来どおり再起動扱い）。
-- **`scoreNeed`**: 6条件中いくつで「急変」とみなすか（現行ハードコード `>=4`）を可変化。
+- **`scoreNeed`**: 6条件中いくつで「急変」とみなすか（現行ハードコード `>=4`）を可変化。**小さくすると鳴りやすく(2は鳴りすぎ注意)、大きくすると厳しめ**。UI ラベルに注記する。
+- **`flashYen` はモニター専用**: 超短期フラッシュ(`tickDetector`)は priceLoop（モニター）からのみ呼ばれ、**デーモンは超短期検知を動かさない**（デーモンは確定足ベースの急変/グランビルのみ記録）。よって flashYen はモニターのカード/バナー表示にのみ反映され、デーモンの記録には影響しない。**デーモンにも反映されるのは shock params・shockCooldownBars・openGuardBars の3系統**。
 
 ---
 
@@ -81,29 +82,53 @@ export const DEFAULT_SHOCK_PARAMS: ShockParams = {
 - [ ] **Step 1: mtime キャッシュのテストを追加** — `configStore.test.ts` に、保存→ファイル更新で `loadConfig` が再読込することを確認するケース（一時ディレクトリで HOME を差し替える既存パターンに倣う。既存テストの構造を READ して合わせること）。最低限、`resolveShockParams()` が config 値を反映し、未設定なら既定を返すことを `configResolvers.test.ts` で確認:
 
 ```ts
-import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-// configStore は homedir()/.jp225-monitor/config.json を読む。HOME を一時dirに差し替える。
-// 既存 configStore.test.ts が HOME/USERPROFILE をどう差し替えているか READ して同じ方法を使うこと。
-
 import { resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
+// configStore は os.homedir() (Windowsは USERPROFILE, Unixは HOME) /.jp225-monitor/config.json を読む。
+// 実ユーザーの config を読まないよう、HOME と USERPROFILE の両方を一時dirへ差し替える
+// (configStore.test.ts と同じ隔離手法。READ して厳密に合わせること)。
 describe('shock param resolvers', () => {
-  beforeEach(() => resetConfigCache());
-  it('returns defaults when unset', () => {
+  let dir: string; let origHome: string | undefined; let origUserProfile: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-resolv-'));
+    origHome = process.env.HOME; origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = dir; process.env.USERPROFILE = dir;
+    resetConfigCache();
+  });
+  afterEach(() => {
+    process.env.HOME = origHome; process.env.USERPROFILE = origUserProfile;
+    resetConfigCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns defaults when config is empty', () => {
     const p = resolveShockParams();
-    expect(p.shock1).toBe(DEFAULT_SHOCK_PARAMS.shock1);   // 50
-    expect(p.accelTh).toBe(DEFAULT_SHOCK_PARAMS.accelTh); // 10
+    expect(p.shock1).toBe(DEFAULT_SHOCK_PARAMS.shock1);    // 50
+    expect(p.accelTh).toBe(DEFAULT_SHOCK_PARAMS.accelTh);  // 10
+    expect(p.scoreNeed).toBe(DEFAULT_SHOCK_PARAMS.scoreNeed); // 4
     expect(resolveOpenGuardBars()).toBe(3);
     expect(resolveFlashYen()).toBe(80);
   });
+
+  it('reflects config.json values', () => {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'),
+      JSON.stringify({ shock1Yen: 90, shockAccelYen: 5, openGuardBars: 1, flashYen: 120 }), 'utf-8');
+    resetConfigCache();
+    const p = resolveShockParams();
+    expect(p.shock1).toBe(90);
+    expect(p.accelTh).toBe(5);
+    expect(resolveOpenGuardBars()).toBe(1);
+    expect(resolveFlashYen()).toBe(120);
+  });
 });
 ```
-  > 実 HOME を汚さないため、テストは既存 `configStore.test.ts` の隔離手法に合わせる（環境変数差し替え or 一時ファイル）。READ してから書くこと。
+  > **必須**: 既存 `configStore.test.ts` の隔離手法（HOME と USERPROFILE を一時dirへ差し替え、afterEach で復元、`resetConfigCache()` を前後で呼ぶ）を READ して厳密に合わせること。これをしないと実ユーザーの `~/.jp225-monitor/config.json`（トレーダーが実際にチューニング済みの値が入っている可能性大）を読んでアサーションが落ちる。
 
 - [ ] **Step 2: 失敗確認** — Run: `npx vitest run server/configResolvers.test.ts` → resolver 未実装で FAIL。
 
@@ -225,7 +250,7 @@ const NUMERIC_PARAM_KEYS = [
 ```
   `getSettingsHandler` の res.json に、`resolveNumeric` 相当で各キーを追加（既存4つに加えて新10）。実装簡略化のため `configStore` に「全数値パラメータを解決して返す」ヘルパ `resolveAllNumericParams(): Record<string, number>` を追加してもよい（任意・DRY 向上）。
 
-- [ ] **Step 2: POST ハンドラを配列ループに。** 各キーについて `applyNumberField(key, existing[key], body[key])` を回し、エラー集約。`next: UserConfig` は既存文字列フィールド + 全数値フィールドをループで埋める。保存後、restart 要否を判定:
+- [ ] **Step 2: POST ハンドラを配列ループに。** `SettingsBody` は元の4数値フィールドしか持たないため、ループで `body[key]` を引くと TS2339 になる。**`const bodyRec = body as Record<string, unknown>;` を作り `applyNumberField(key, existing[key], bodyRec[key])` を回す**（`existing` は Task 2 で UserConfig に全キー追加済みなので `existing[key]` は型OK）。エラー集約。`next: UserConfig` は既存文字列フィールド + 全数値フィールドをループで埋める（`(next as Record<string, unknown>)[key] = result.value` 形）。保存後、restart 要否を判定:
   - `pricePollMs` 変化 → `restartPriceLoop()`
   - `newsPollMs` 変化 → `restartNewsLoop()`
   - `cooldownMin` 変化 → `setCooldownMs(resolveCooldownMin()*60_000)`
@@ -254,7 +279,7 @@ const NUMERIC_PARAM_KEYS = [
         <label>1分スコア値幅 (円) <input type="number" id="params-shock-move1" min="1" max="500" step="5"></label>
         <label>2分スコア合計 (円) <input type="number" id="params-shock-move2" min="1" max="1000" step="5"></label>
         <label>平均変化倍率 <input type="number" id="params-shock-avgmult" min="0.1" max="20" step="0.1"></label>
-        <label>急変スコア閾値 (2〜6) <input type="number" id="params-shock-score" min="2" max="6" step="1"></label>
+        <label>急変スコア閾値 (2〜6, 小さいほど鳴りやすい) <input type="number" id="params-shock-score" min="2" max="6" step="1"></label>
         <label>急変クールダウン (本) <input type="number" id="params-shock-cooldown-bars" min="0" max="120" step="1"></label>
         <label>寄り抑制本数 <input type="number" id="params-open-guard-bars" min="0" max="60" step="1"></label>
         <label>超短期フラッシュ値幅 (円) <input type="number" id="params-flash-yen" min="1" max="1000" step="5"></label>
