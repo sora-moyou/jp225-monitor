@@ -57,22 +57,13 @@
       </div>
 
       <fieldset class="settings-section">
-        <legend>バージョン</legend>
+        <legend>更新</legend>
         <div class="version-row">
           現在のバージョン: <span id="settings-current-version">…</span>
-          <button type="button" id="settings-check-update" class="btn-secondary">最新かチェック</button>
+          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
         </div>
         <div id="settings-update-result" class="update-result"></div>
-      </fieldset>
-
-      <fieldset class="settings-section">
-        <legend>基礎データ</legend>
-        <div class="version-row">
-          履歴(1分足)の新着確認:
-          <button type="button" id="settings-basedata-check" class="btn-secondary">新着をチェック</button>
-        </div>
-        <div id="settings-basedata-result" class="update-result"></div>
-        <div class="exit-hint">GitHub の最新基礎データを確認し、「取り込み」でローカルDBへ追記/更新します（既存の新しいデータは消えません）。</div>
+        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
       </fieldset>
 
       <fieldset class="settings-section">

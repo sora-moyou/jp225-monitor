@@ -893,7 +893,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div>
       <h3>基礎データ取り込み</h3>
-      <p>N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、<strong>メドの履歴を一気に深く</strong> できます。設定の <strong>「基礎データ」→「新着をチェック」→「取り込み」</strong>。既存の新しいデータは消えず、<strong>追記/更新のみ</strong> なので安全です。</p>
+      <p>N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、<strong>メドの履歴を一気に深く</strong> できます。設定の <strong>「更新」→「更新をチェック」→「取り込み」</strong>。既存の新しいデータは消えず、<strong>追記/更新のみ</strong> なので安全です。</p>
       <span class="tag">v0.4</span>
     </div>
     <div class="feature">
@@ -1011,7 +1011,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="flow">
       <figure class="flow-img">
         <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル">
-        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、バージョン確認 (v0.4.9 + 最新かチェック)、基礎データ (新着をチェック)、終了 (完全終了)</figcaption>
+        <figcaption>設定モーダル — 上から状態表示、3 つの API キー欄、更新 (現在バージョン + 「更新をチェック」でアプリ本体と基礎データを同時確認)、終了 (完全終了)</figcaption>
       </figure>
 
       <div class="flow-steps">
@@ -1049,10 +1049,10 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <strong>polling 設定:</strong> 価格・ニュースの取得間隔と port は v0.4 系では <strong>ツールバーの 🎛️ 詳細パラメータ</strong> モーダルに分離されました (Price polling / News polling / Sidecar port / アラート クールダウン)。詳しくは <a href="#whatsnew">v0.4 の新機能</a> を参照。範囲外の値 (例 Price polling=100ms) は reject されます。
     </div>
     <div class="callout" style="margin-top: 12px;">
-      <strong>バージョン確認 (v0.3.18〜):</strong> 設定モーダルの「バージョン」セクションに現在のバージョン (<strong>v0.4.9</strong>) が表示され、<strong>「最新かチェック」</strong>ボタンで最新版が出ているか手動確認できます。更新があればその場の「更新」ボタンから DL + 再起動まで実行可能 (起動時の自動トースト通知に加えての手動確認手段)。
+      <strong>更新 (v0.3.18〜 / v0.4 で統合):</strong> 設定モーダルの「更新」セクションに現在のバージョンが表示され、<strong>「更新をチェック」</strong>ボタン1つで<strong>アプリ本体と基礎データを同時に確認</strong>します。アプリに更新があればその場の「更新」ボタンから DL + 再起動、基礎データに新着があれば「取り込み」ボタンで適用 (起動時の自動トースト通知に加えての手動確認手段)。
     </div>
     <div class="callout" style="margin-top: 12px;">
-      <strong>基礎データ (v0.4):</strong> 「基礎データ」セクションの <strong>「新着をチェック」→「取り込み」</strong> で、N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、主要レベルの履歴を深くできます。既存の新しいデータは消えず追記/更新のみ。
+      <strong>基礎データ (v0.4):</strong> 「更新」セクションの <strong>「更新をチェック」→「取り込み」</strong> で、N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、主要レベルの履歴を深くできます。既存の新しいデータは消えず追記/更新のみ。
     </div>
     <div class="callout" style="margin-top: 12px;">
       <strong>終了 (v0.4):</strong> 「終了」セクションの <strong>「完全終了」</strong> チェックを ON にすると、ウィンドウを閉じた時に <strong>24/7 価格収集デーモンも一緒に停止</strong> します。<strong>未チェック (既定) なら閉じてもバックグラウンドで価格収集を継続</strong> し、次回起動時に即ウォームアップできます。
@@ -1140,7 +1140,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
       <h3>自動アップデート</h3>
-      <p>起動 5 秒後に新版チェック。利用可能なら右上トースト通知 → ワンクリックで DL + 再起動。<strong>v0.3.18 以降は設定画面の「最新かチェック」</strong>でいつでも手動確認も可能。</p>
+      <p>起動 5 秒後に新版チェック。利用可能なら右上トースト通知 → ワンクリックで DL + 再起動。<strong>v0.3.18 以降は設定画面の「更新をチェック」</strong>でいつでも手動確認も可能。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
@@ -1303,7 +1303,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <summary>新版が出たらどうやって知る?</summary>
       <div class="faq-body">
         起動 5 秒後に updater が自動チェック。新版があれば右上にトースト通知が出ます。クリック 1 つで DL + 自動再起動 (約 30 秒)。「後で」は 24 時間後再通知。
-        <p style="margin-top: 8px;">また、⚙️ 設定画面の最下部「バージョン」セクションの <strong>「最新かチェック」</strong> ボタンで、いつでも手動で最新版の有無を確認できます (v0.3.18〜)。更新があればその場で適用可能。</p>
+        <p style="margin-top: 8px;">また、⚙️ 設定画面の「更新」セクションの <strong>「更新をチェック」</strong> ボタンで、いつでも手動でアプリ本体と基礎データの新着を確認できます (v0.3.18〜)。更新があればその場で適用可能。</p>
       </div>
     </details>
 

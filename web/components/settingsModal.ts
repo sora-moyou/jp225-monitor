@@ -20,6 +20,15 @@ interface SaveResponse {
   portRequiresRestart?: boolean;
 }
 
+interface BasedataStatus {
+  ok: boolean;
+  published?: boolean;
+  available?: boolean;
+  lastBar?: string | null;
+  count?: number | null;
+  error?: string;
+}
+
 async function fetchSettings(): Promise<SettingsResponse | null> {
   try {
     const res = await fetch(apiUrl('/api/settings'));
@@ -76,8 +85,6 @@ export interface SettingsElements {
   checkUpdateBtn: HTMLButtonElement;
   updateResult: HTMLElement;
   currentVersion: HTMLElement;
-  basedataCheckBtn: HTMLButtonElement;
-  basedataResult: HTMLElement;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -108,13 +115,21 @@ export function initSettingsModal(el: SettingsElements): void {
     }
   }
 
-  function renderUpdateResult(html: string, cls: '' | 'ok' | 'warn' | 'err') {
-    el.updateResult.className = `update-result${cls ? ' ' + cls : ''}`;
-    el.updateResult.innerHTML = html;
+  function clearUpdateResult() {
+    el.updateResult.className = 'update-result';
+    el.updateResult.innerHTML = '';
   }
 
+  // 統合された更新セクション: 1つの「更新をチェック」で アプリ本体 と 基礎データ を
+  // 同時に確認し、行ごとにラベル付きの状態文 + それぞれに適切なアクションを出す。
+  function setRow(rowId: 'upd-app-row' | 'upd-base-row', cls: 'ok' | 'warn' | 'err', html: string) {
+    const row = el.updateResult.querySelector<HTMLElement>(`#${rowId}`);
+    if (row) { row.className = `upd-row ${cls}`; row.innerHTML = html; }
+  }
+
+  // アプリ本体: 結果行内の「更新」ボタン → DL+再起動 (Tauri)。
   function wireInstallButton() {
-    const btn = el.updateResult.querySelector<HTMLButtonElement>('.update-now-btn');
+    const btn = el.updateResult.querySelector<HTMLButtonElement>('.update-now-btn:not(.basedata-import-btn)');
     if (!btn) return;
     btn.addEventListener('click', async () => {
       btn.disabled = true;
@@ -123,41 +138,86 @@ export function initSettingsModal(el: SettingsElements): void {
         await installUpdate((dl, total) => {
           if (label) {
             label.textContent = total && total > 0
-              ? `ダウンロード中… ${Math.round((dl / total) * 100)}%`
-              : 'ダウンロード中…';
+              ? ` ダウンロード中… ${Math.round((dl / total) * 100)}%`
+              : ' ダウンロード中…';
           }
         });
         // installUpdate 内で relaunch されるため通常ここには来ない。
       } catch (err) {
-        renderUpdateResult(`❌ 更新失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`, 'err');
+        setRow('upd-app-row', 'err', `アプリ: ❌ 更新失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
       }
     });
   }
 
-  async function checkUpdate() {
+  // 基礎データ: 結果行内の「取り込み」ボタン → DBへ追記/更新。
+  function wireBasedataImport() {
+    const btn = el.updateResult.querySelector<HTMLButtonElement>('.basedata-import-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const prog = el.updateResult.querySelector<HTMLElement>('.basedata-progress');
+      if (prog) prog.textContent = ' 取り込み中…';
+      try {
+        const res = await fetch(apiUrl('/api/basedata/import'), { method: 'POST' });
+        const d = await res.json() as { ok: boolean; applied?: number; skipped?: number; from?: string; to?: string; error?: string };
+        setRow('upd-base-row', d.ok ? 'ok' : 'err', d.ok
+          ? `基礎データ: ✅ ${d.applied}件取り込み (${escapeHtml(d.from ?? '?')}〜${escapeHtml(d.to ?? '?')})${d.skipped ? ` / 休場スキップ${d.skipped}` : ''}`
+          : `基礎データ: ❌ ${escapeHtml(d.error ?? '失敗')}`);
+      } catch (err) {
+        setRow('upd-base-row', 'err', `基礎データ: ❌ ${escapeHtml(err instanceof Error ? err.message : 'failed')}`);
+      }
+    });
+  }
+
+  async function checkAll() {
     el.checkUpdateBtn.disabled = true;
-    const originalText = el.checkUpdateBtn.textContent ?? '最新かチェック';
+    const originalText = el.checkUpdateBtn.textContent ?? '更新をチェック';
     el.checkUpdateBtn.textContent = 'チェック中...';
-    renderUpdateResult('確認中...', '');
+    el.updateResult.className = 'update-result';
+    el.updateResult.innerHTML =
+      `<div class="upd-row" id="upd-app-row">アプリ: 確認中…</div>`
+      + `<div class="upd-row" id="upd-base-row">基礎データ: 確認中…</div>`;
+    const current = el.currentVersion.textContent ?? '';
     try {
-      const status = await getUpdateStatus();
-      const current = el.currentVersion.textContent ?? '';
-      if (status.state === 'latest') {
-        renderUpdateResult(`✅ 最新です (${escapeHtml(current)})`, 'ok');
-      } else if (status.state === 'available') {
-        const notes = status.info.notes
-          ? `<span class="update-notes">${escapeHtml(status.info.notes)}</span>` : '';
-        renderUpdateResult(
-          `🆙 新しいバージョン v${escapeHtml(status.info.version)} があります`
+      const [appStatus, baseStatus] = await Promise.all([
+        getUpdateStatus(),
+        fetch(apiUrl('/api/basedata/status'))
+          .then(r => r.json() as Promise<BasedataStatus>)
+          .catch((err: unknown): BasedataStatus => ({ ok: false, error: err instanceof Error ? err.message : 'failed' })),
+      ]);
+
+      // --- アプリ本体 ---
+      if (appStatus.state === 'latest') {
+        setRow('upd-app-row', 'ok', `アプリ: ✅ 最新です (${escapeHtml(current)})`);
+      } else if (appStatus.state === 'available') {
+        const notes = appStatus.info.notes
+          ? `<span class="update-notes">${escapeHtml(appStatus.info.notes)}</span>` : '';
+        setRow('upd-app-row', 'ok',
+          `アプリ: 🆙 v${escapeHtml(appStatus.info.version)} があります`
           + `<button type="button" class="update-now-btn">更新</button>`
-          + `<span class="update-progress"></span>${notes}`,
-          'ok',
-        );
+          + `<span class="update-progress"></span>${notes}`);
         wireInstallButton();
-      } else if (status.state === 'unsupported') {
-        renderUpdateResult('⚠️ 開発モードのためチェックできません(パッケージ版でのみ動作)', 'warn');
+      } else if (appStatus.state === 'unsupported') {
+        setRow('upd-app-row', 'warn', 'アプリ: ⚠️ 開発モードのため確認できません（パッケージ版でのみ動作）');
       } else {
-        renderUpdateResult(`❌ チェック失敗: ${escapeHtml(status.message)}`, 'err');
+        setRow('upd-app-row', 'err', `アプリ: ❌ 確認失敗: ${escapeHtml(appStatus.message)}`);
+      }
+
+      // --- 基礎データ ---
+      const s = baseStatus;
+      if (!s.ok) {
+        setRow('upd-base-row', 'err', `基礎データ: ❌ ${escapeHtml(s.error ?? '確認失敗')}`);
+      } else if (!s.published) {
+        setRow('upd-base-row', 'warn', '基礎データ: ⚠️ 未公開（先に publish が必要）');
+      } else {
+        const label = s.available
+          ? `基礎データ: 🆙 新着（${escapeHtml(s.lastBar ?? '?')}まで・${s.count ?? '?'}件）`
+          : `基礎データ: ✅ 取り込み済み（最新・${escapeHtml(s.lastBar ?? '?')}まで）`;
+        const btnText = s.available ? '取り込み' : '再取り込み';
+        setRow('upd-base-row', 'ok',
+          `${label}<button type="button" class="update-now-btn basedata-import-btn">${btnText}</button>`
+          + `<span class="basedata-progress"></span>`);
+        wireBasedataImport();
       }
     } finally {
       el.checkUpdateBtn.disabled = false;
@@ -165,71 +225,12 @@ export function initSettingsModal(el: SettingsElements): void {
     }
   }
 
-  el.checkUpdateBtn.addEventListener('click', () => { void checkUpdate(); });
-
-  // 基礎データ: アップデートと同じ流れ。「新着をチェック」→ 結果に「取り込み」ボタンを出す。
-  function wireBasedataImport() {
-    const btn = el.basedataResult.querySelector<HTMLButtonElement>('.basedata-import-btn');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      const prog = el.basedataResult.querySelector<HTMLElement>('.basedata-progress');
-      if (prog) prog.textContent = ' 取り込み中…';
-      try {
-        const res = await fetch(apiUrl('/api/basedata/import'), { method: 'POST' });
-        const d = await res.json() as { ok: boolean; applied?: number; skipped?: number; from?: string; to?: string; error?: string };
-        el.basedataResult.className = `update-result ${d.ok ? 'ok' : 'err'}`;
-        el.basedataResult.textContent = d.ok
-          ? `✅ ${d.applied}件取り込み (${d.from ?? '?'}〜${d.to ?? '?'})${d.skipped ? ` / 休場スキップ${d.skipped}` : ''}`
-          : `❌ ${d.error ?? '失敗'}`;
-      } catch (err) {
-        el.basedataResult.className = 'update-result err';
-        el.basedataResult.textContent = `❌ ${err instanceof Error ? err.message : 'failed'}`;
-      }
-    });
-  }
-
-  async function checkBasedata() {
-    el.basedataCheckBtn.disabled = true;
-    const orig = el.basedataCheckBtn.textContent ?? '新着をチェック';
-    el.basedataCheckBtn.textContent = 'チェック中...';
-    el.basedataResult.className = 'update-result';
-    el.basedataResult.textContent = '確認中...';
-    try {
-      const res = await fetch(apiUrl('/api/basedata/status'));
-      const s = await res.json() as { ok: boolean; published?: boolean; available?: boolean; lastBar?: string | null; count?: number | null; error?: string };
-      if (!s.ok) {
-        el.basedataResult.className = 'update-result err';
-        el.basedataResult.textContent = `❌ ${escapeHtml(s.error ?? 'チェック失敗')}`;
-      } else if (!s.published) {
-        el.basedataResult.className = 'update-result warn';
-        el.basedataResult.textContent = '⚠️ 基礎データ未公開（先に publish が必要）';
-      } else {
-        const label = s.available
-          ? `🆙 新しい基礎データ（${escapeHtml(s.lastBar ?? '?')}まで・${s.count ?? '?'}件）`
-          : `✅ 取り込み済み（最新・${escapeHtml(s.lastBar ?? '?')}まで）`;
-        const btnText = s.available ? '取り込み' : '再取り込み';
-        el.basedataResult.className = 'update-result ok';
-        el.basedataResult.innerHTML =
-          `${label}<button type="button" class="update-now-btn basedata-import-btn">${btnText}</button>`
-          + `<span class="basedata-progress"></span>`;
-        wireBasedataImport();
-      }
-    } catch (err) {
-      el.basedataResult.className = 'update-result err';
-      el.basedataResult.textContent = `❌ ${err instanceof Error ? err.message : 'failed'}`;
-    } finally {
-      el.basedataCheckBtn.disabled = false;
-      el.basedataCheckBtn.textContent = orig;
-    }
-  }
-
-  el.basedataCheckBtn.addEventListener('click', () => { void checkBasedata(); });
+  el.checkUpdateBtn.addEventListener('click', () => { void checkAll(); });
 
   async function open() {
     el.modal.classList.remove('hidden');
     await refresh();
-    renderUpdateResult('', '');
+    clearUpdateResult();
     void loadCurrentVersion();
     el.inputGemini.focus();
   }
