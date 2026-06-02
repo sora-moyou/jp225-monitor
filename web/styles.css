@@ -699,6 +699,13 @@ body {
   font-size: 12px;
 }
 .update-result .update-now-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 取り込み済み(再取り込み)時の控えめボタン: 背面無色・薄文字で目立たせない。 */
+.update-result .update-now-btn.muted {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+}
+.update-result .update-now-btn.muted:hover { color: var(--text); border-color: var(--muted); }
 .update-result .update-notes { display: block; margin-top: 4px; opacity: 0.8; font-size: 12px; }
 #settings-check-update { color: #58a6ff; border-color: #58a6ff; }
 #settings-check-update:hover { background: rgba(88, 166, 255, 0.12); }

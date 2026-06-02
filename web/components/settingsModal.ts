@@ -214,8 +214,13 @@ export function initSettingsModal(el: SettingsElements): void {
           ? `基礎データ: 🆙 新着（${escapeHtml(s.lastBar ?? '?')}まで・${s.count ?? '?'}件）`
           : `基礎データ: ✅ 取り込み済み（最新・${escapeHtml(s.lastBar ?? '?')}まで）`;
         const btnText = s.available ? '取り込み' : '再取り込み';
+        // 取り込み済み(再取り込み)時は通常不要なので、ボタンを背面無色の控えめ表示にして
+        // ユーザーが毎回反射的にクリックしないようにする。新着(取り込み)時は目立つ緑のまま。
+        const btnClass = s.available
+          ? 'update-now-btn basedata-import-btn'
+          : 'update-now-btn basedata-import-btn muted';
         setRow('upd-base-row', 'ok',
-          `${label}<button type="button" class="update-now-btn basedata-import-btn">${btnText}</button>`
+          `${label}<button type="button" class="${btnClass}">${btnText}</button>`
           + `<span class="basedata-progress"></span>`);
         wireBasedataImport();
       }
