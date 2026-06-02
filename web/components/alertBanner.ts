@@ -37,6 +37,8 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
     : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
+  // note があれば「%/秒」の代わりにそれを表示(グランビル等)。
+  const mid = alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`;
   // 直近15分コンテキスト（参考、発火窓と分離）
   const ctx15 = alert.change15min !== null
     ? `<span class="ctx-15min">15分: ${alert.change15min >= 0 ? '+' : ''}${alert.change15min.toFixed(2)}%</span>`
@@ -48,7 +50,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   main.innerHTML =
     `<span class="alert-time">${time}</span> ` +
     `<strong>⚡ ${alert.symbolLabel}</strong> ` +
-    `${arrow} ${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒 ` +
+    `${arrow} ${mid} ` +
     `<span class="kind-tag">[${kindLabel}]</span> ` +
     `${ctx15} ` +
     `<span class="explanation">${UI.ja.explanationLoading}</span>`;

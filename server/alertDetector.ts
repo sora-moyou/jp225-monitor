@@ -20,6 +20,7 @@ export interface AlertEvent {
   pa15min: PriceAction | null;
   range1h: { high: number; low: number } | null;
   zscore: number;          // 新フィールド: 発火時の |z| (UI 表示・LLM 文脈用)
+  note?: string;           // 任意: バナーの「%/秒」の代わりに表示する説明(例「グランビル買い転換」)
 }
 
 // v0.3.35: 横断確認(他資産の同方向確認)を全面削除。日経単独の急変を握り潰す原因だったため

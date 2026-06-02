@@ -4,7 +4,7 @@ import {
   DEFAULT_PARAMS, type AlertEvent,
 } from '../alertDetector.js';
 import { emitAlert } from '../alertHistory.js';
-import { detectGranvilleReversal } from '../granville.js';
+import { detectGranvilleReversal, detectGranvilleContinuation } from '../granville.js';
 import { INSTRUMENTS } from '../config.js';
 import { canFire, markFired } from '../alertCooldown.js';
 import { getRealtimeBars, isRealtimeBarsReady, getRollingReturn } from '../feedBars.js';
@@ -60,27 +60,35 @@ function evaluateAndFire(): void {
     const meta = META_BY_SYM.get(sym);
     if (!meta) continue;
 
-    // グランビル①(トレンド転換)。MA(75本)が下げ止まり/頭打ちに転じ価格が MA を抜けた時に発火。
-    // 日経のみ・共有クールダウン使用。先に評価し、発火したらこのtickの burst/trend は同方向で抑制される。
+    // グランビル(MA(75本)ベース)。①転換、②③継続(戻り売り/押し目買い)。日経のみ・共有クールダウン使用。
+    // 先に評価し、発火したらこのtickの burst/trend は同方向で抑制される。
     if (sym === 'NIY=F') {
-      const g = detectGranvilleReversal(bars.map(b => b.close));
+      const closes = bars.map(b => b.close);
+      const rev = detectGranvilleReversal(closes);
+      const cont = detectGranvilleContinuation(closes);
+      const g = rev
+        ? { sig: rev, note: `グランビル${rev.dir === 'up' ? '買い' : '売り'}転換` }
+        : cont
+          ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い' : 'グランビル戻り売り' }
+          : null;
       const gPrice = bars[bars.length - 1]!.close;
-      if (g && canFire(sym, g.dir, gPrice, now)) {
+      if (g && canFire(sym, g.sig.dir, gPrice, now)) {
         const ctx = computeContext(bars);
-        markFired(sym, g.dir, gPrice, now);
-        console.log(`[alertLoop] ${sym} granville ${g.dir} dev=${g.deviation.toFixed(2)}% (MA=${Math.round(g.ma)})`);
+        markFired(sym, g.sig.dir, gPrice, now);
+        console.log(`[alertLoop] ${sym} ${g.note} dev=${g.sig.deviation.toFixed(2)}% (MA=${Math.round(g.sig.ma)})`);
         emitAlert({
           symbol: sym,
-          symbolLabel: `${meta.labelJa} (グランビル${g.dir === 'up' ? '買い' : '売り'}転換)`,
-          changePercent: g.deviation,
+          symbolLabel: meta.labelJa,
+          changePercent: g.sig.deviation,
           windowSeconds: 75 * 60,
           detectionKind: 'granville',
-          direction: g.dir,
+          direction: g.sig.dir,
           triggeredAt: bars[bars.length - 1]!.t,
           change15min: ctx.change15min,
           pa15min: ctx.pa15min,
           range1h: ctx.range1h,
           zscore: 0,
+          note: g.note,
         });
       }
     }

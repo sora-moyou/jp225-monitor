@@ -50,6 +50,7 @@ export interface AlertEventPayload {
   pa15min: { open: number; high: number; low: number; current: number } | null;
   range1h: { high: number; low: number } | null;
   zscore: number;
+  note?: string;   // 任意: バナーで「%/秒」の代わりに表示する説明(グランビル等)
 }
 
 export type SSEEvent =

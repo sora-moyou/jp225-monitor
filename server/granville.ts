@@ -45,3 +45,40 @@ export function detectGranvilleReversal(closes: number[], p: GranvilleParams = D
   }
   return null;
 }
+
+export interface GranvilleContParams extends GranvilleParams {
+  retestBack: number;   // 「戻り/押し」を見る直近本数
+  touchBand: number;    // MA に「接近した」とみなす乖離(±比率)
+}
+export const DEFAULT_GRANVILLE_CONT: GranvilleContParams = { maPeriod: 75, slopeBack: 15, retestBack: 10, touchBand: 0.005 };
+
+/** グランビル②③(トレンド継続)。下降MAで戻りがMA手前で否定→売り継続、上昇MAで押しがMA手前で支持→買い継続。
+ *  ユーザー指定の流れ: 価格がMAを割る→傾きが鈍る→戻りでMAを超えられない→MAが下向き→下降継続。 */
+export function detectGranvilleContinuation(closes: number[], p: GranvilleContParams = DEFAULT_GRANVILLE_CONT): GranvilleSignal | null {
+  const need = p.maPeriod + 2 * p.slopeBack + 1;
+  if (closes.length < need) return null;
+  const last = closes.length - 1;
+  const maNow = sma(closes, last, p.maPeriod);
+  const maOld = sma(closes, last - 2 * p.slopeBack, p.maPeriod);   // トレンド方向(直近の戻りに影響されにくい)
+  const cNow = closes[last]!;
+  const cPrev = closes[last - 1]!;
+  const window = closes.slice(last - p.retestBack, last);   // 直近 retestBack 本(現在は含まない)
+  const recentHigh = Math.max(...window);
+  const recentLow = Math.min(...window);
+  const idxHigh = window.indexOf(recentHigh);
+  const idxLow = window.indexOf(recentLow);
+  const deviation = ((cNow - maNow) / maNow) * 100;
+  const nearMA = (x: number): boolean => x >= maNow * (1 - p.touchBand) && x <= maNow * (1 + p.touchBand);
+
+  // 売り継続(戻り売り): 下降トレンド(maNow<maOld)、現値はMA下で下落、直近に「戻り(安値→高値の上昇)」が
+  // あってその高値がMA手前で否定された(単調下落=常にMA近接 を除くため安値が高値より前にあることを要求)。
+  if (maNow < maOld && cNow < maNow && cNow < cPrev && idxLow < idxHigh && nearMA(recentHigh) && recentHigh > cNow) {
+    return { dir: 'down', ma: maNow, deviation };
+  }
+  // 買い継続(押し目買い): 上昇トレンド(maNow>maOld)、現値はMA上で上昇、直近に「押し(高値→安値の下落)」が
+  // あってその安値がMA手前で支持された。
+  if (maNow > maOld && cNow > maNow && cNow > cPrev && idxHigh < idxLow && nearMA(recentLow) && recentLow < cNow) {
+    return { dir: 'up', ma: maNow, deviation };
+  }
+  return null;
+}
