@@ -3,6 +3,7 @@ import { openDb, resolveDbPath, getSessionOHLC, getLatestTick } from '../db/stor
 import { computeLevels, LOOKBACK_SESSIONS, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
+import { getForecastSnapshot } from './forecastLoop.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 8_000;   // 当日H/Lをほぼリアルタイム化(従来60s)。NIY=Fのみで軽い。
@@ -33,7 +34,11 @@ function tick(): void {
     if (!latest) { return; }
     const sessions = getSessionOHLC(db, SYMBOL, FETCH_SESSIONS);
     const cs = classifySession(now);
-    const result = computeLevels(sessions, latest.price, now, cs);
+    const fc = getForecastSnapshot();
+    const extra = fc.targets
+      ? [{ price: fc.targets.projHigh, label: 'ADR上限予測' }, { price: fc.targets.projLow, label: 'ADR下限予測' }]
+      : [];
+    const result = computeLevels(sessions, latest.price, now, cs, extra);
     last = result;
     const sig = levelSignature(result);
     if (sig !== lastSig) {
