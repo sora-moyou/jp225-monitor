@@ -204,6 +204,12 @@ export type DetectionKind = 'slope' | 'magnitude' | 'granville' | 'shock';  // s
   detectionKind: 'slope' | 'magnitude' | 'granville' | 'shock';
 ```
 
+- [ ] **Step 2b: `web/types.ts`** の standalone `DetectionKind` エイリアス(現在 `'magnitude' | 'slope'`)も一貫性のため拡張(現状未使用だが死蔵を避ける):
+
+```ts
+export type DetectionKind = 'magnitude' | 'slope' | 'granville' | 'shock';
+```
+
 - [ ] **Step 3: typecheck**
 
 Run: `npx tsc --noEmit -p tsconfig.json`
@@ -212,7 +218,7 @@ Expected: exit 0(まだ 'shock' を生成する箇所は無いので型エラー
 - [ ] **Step 4: コミット**
 
 ```bash
-git add server/alertDetector.ts server/types.ts
+git add server/alertDetector.ts server/types.ts web/types.ts
 git commit -m "feat(alerts): add 'shock' detection kind"
 ```
 
@@ -268,7 +274,7 @@ function shockMarkFired(symbol: string, bar: number): void { lastShockBar.set(sy
 export function _resetShockCooldown(): void { lastShockBar.clear(); }
 ```
 
-  `import { detectShock, DEFAULT_SHOCK_PARAMS } from './shockDetector.js';` を追加。不要になった import(`detectBurst`,`detectTrend`,`returns`,`returns5m`,`stdDev`,`getRollingReturn`)を整理。`computeContext`,`detectGranville*`,`canFire`,`markFired`(granville 用)は残す。
+  `import { detectShock, DEFAULT_SHOCK_PARAMS } from './shockDetector.js';` を追加。不要になった import(`detectBurst`,`detectTrend`,`returns`,`returns5m`,`stdDev`,`getRollingReturn`)を整理。`computeContext`,`detectGranville*`,`canFire`,`markFired`(granville 用)は残す。**`evaluateRealtimeNiy` 削除後に死蔵になる private `median()` 関数も削除**し、`evaluateRealtimeNiy` を指す "Mirrors alertLoop.evaluateRealtime" 等の宙ぶらりんコメントも整理する。
 
 - [ ] **Step 3: `evaluateRealtimeNiy` を削除**(関数本体とエクスポートごと撤去)。これは短期/長期の realtime z-score 専用だったため、shock 方式では不要。
 
@@ -323,7 +329,7 @@ READ 各ファイルを先に読むこと。
   }
 ```
 
-- [ ] **Step 4: テスト更新。** `collector/alertCollector.test.ts` の burst テストは「onPrice を分ごとに与え、onMinute で shock 発火」を確認する形に調整(detectionKind==='shock')。`evaluateRealtime`/`evaluateRealtimeNiy` を参照する既存テスト(alertLoop 系)があれば削除/更新。
+- [ ] **Step 4: テスト更新。** `collector/alertCollector.test.ts` の burst テストは「onPrice を分ごとに与え、onMinute で shock 発火」を確認する形に調整(detectionKind==='shock')。**重要(評価指摘)**: shock は完成足のみで評価し、`evaluateBarsNiy` は `bars.slice(0,-1)`(末尾=進行中バーを除外)を見る。よって**ジャンプを起こした分足が「進行中」のままだと shock は発火しない**。テストは**ジャンプ足の後にもう1分ぶんの `onPrice`/`onMinute`(例 `jumpT + 60_000`)を追加**して、ジャンプ足を確定させてから評価すること。`beforeEach` で `_resetShockCooldown()` も呼ぶ。`evaluateRealtime`/`evaluateRealtimeNiy` を参照する既存テスト(alertLoop 系)があれば削除/更新。
 
 - [ ] **Step 5: 全スイート + typecheck**
 
@@ -385,7 +391,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
       || (body.detectionKind !== 'magnitude' && body.detectionKind !== 'slope' && body.detectionKind !== 'shock')) {
 ```
 
-- [ ] **Step 5: `web/lib/api.ts`** — explain リクエストの detectionKind 型に 'shock' を追加(READ して該当 union を更新)。
+- [ ] **Step 5: `web/lib/api.ts`** — READ して確認。評価により**ここはリテラル union を持たず `alert.detectionKind`(値)をそのまま転送している**だけと判明。型は `AlertEvent`(=`AlertEventPayload`、Step 2 で拡張済み)経由なので**実コード変更は不要**な見込み。もし明示 union narrow があれば 'shock' を追加、無ければ変更なしでよい。
 
 - [ ] **Step 6: 全スイート + typecheck + web ビルド**
 
@@ -401,9 +407,94 @@ git commit -m "feat(alerts): surface 'shock' kind in banner/history/LLM/explain"
 
 ---
 
-## Task 6: ドキュメント + バージョン + リリース(LEADER 主導、評価通過後)
+## Task 6: 寄りから3本のオープンガード(全アラート抑制)
 
-- [ ] **Step 1:** `USER_GUIDE.md` / `docs/USER_GUIDE.html` のアラート説明を更新: 短期/長期 z-score → 「急変(価格変化スコア方式、確定1分足、バー数クールダウン)」。超短期フラッシュ/グランビルは不変。
+寄付(セッション開始)直後の窓は値が荒れやすく偽アラートが出やすいので、**寄りから3本(=最初の3分)までは全種別(グランビル/超短期/急変)のアラートを出さない**。時刻ベース(立会開始からの分オフセット)で判定し、データ欠損に依らない。Day 寄付=8:45、Night 寄付=17:00。夜間立会の早朝継続(00:00-06:00)は「寄付」ではないので抑制しない。
+
+**Files:** Modify `collector/session.ts`(ヘルパ追加), `server/alertHistory.ts`(emitAlert), `collector/alertCollector.ts`(sink)。Create test `collector/openGuard.test.ts`。
+
+- [ ] **Step 1: 失敗するテストを書く** — `collector/openGuard.test.ts`
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { isWithinOpenGuard } from './session.js';
+
+// JST 壁時計 → epoch ms (JST=UTC+9)
+const jst = (y: number, mo: number, d: number, h: number, mi: number): number =>
+  Date.UTC(y, mo - 1, d, h - 9, mi, 0);
+
+describe('isWithinOpenGuard (寄りから3本)', () => {
+  it('suppresses the first 3 bars of the Day session (8:45, 8:46, 8:47)', () => {
+    expect(isWithinOpenGuard(jst(2026, 6, 3, 8, 45))).toBe(true);
+    expect(isWithinOpenGuard(jst(2026, 6, 3, 8, 47))).toBe(true);
+  });
+  it('allows from the 4th Day bar (8:48)', () => {
+    expect(isWithinOpenGuard(jst(2026, 6, 3, 8, 48))).toBe(false);
+  });
+  it('suppresses the first 3 bars of the Night session (17:00-17:02)', () => {
+    expect(isWithinOpenGuard(jst(2026, 6, 3, 17, 0))).toBe(true);
+    expect(isWithinOpenGuard(jst(2026, 6, 3, 17, 2))).toBe(true);
+    expect(isWithinOpenGuard(jst(2026, 6, 3, 17, 3))).toBe(false);
+  });
+  it('does NOT suppress the early-morning night continuation (e.g. 02:00)', () => {
+    expect(isWithinOpenGuard(jst(2026, 6, 4, 2, 0))).toBe(false);
+  });
+  it('returns false outside any session (e.g. Sunday 12:00)', () => {
+    expect(isWithinOpenGuard(jst(2026, 6, 7, 12, 0))).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: 失敗を確認** — Run: `npx vitest run collector/openGuard.test.ts` → FAIL(未実装)。
+
+- [ ] **Step 3: `collector/session.ts` にヘルパを追加。** 既存の `jstParts`/`classifySession`/`DAY_OPEN`/`NIGHT_OPEN`(8*60+45, 17*60)を再利用。立会開始からの分オフセットを返し、`< OPEN_GUARD_BARS` なら抑制。
+
+```ts
+export const OPEN_GUARD_BARS = 3;   // 寄りから3本(=3分)は抑制
+
+/** 立会開始(寄付)からの分オフセット。非取引時間は null。
+ *  Day=8:45起点、Night=17:00起点。早朝継続(00:00-06:00)は前日Nightの大きなオフセットになり寄付近傍にならない。 */
+export function minutesFromOpen(epochMs: number): number | null {
+  const s = classifySession(epochMs);
+  if (!s) return null;
+  const { mod } = jstParts(epochMs);
+  if (s.session === 'Day') return mod - DAY_OPEN;            // 8:45起点 (525)
+  if (mod >= NIGHT_OPEN) return mod - NIGHT_OPEN;            // 当日 17:00起点 (1020)
+  return (24 * 60 - NIGHT_OPEN) + mod;                       // 早朝継続 = 420 + mod (寄付から十分離れる)
+}
+
+/** 寄りから OPEN_GUARD_BARS 本以内か(=最初の3分。trueなら全アラート抑制)。 */
+export function isWithinOpenGuard(epochMs: number, nBars: number = OPEN_GUARD_BARS): boolean {
+  const off = minutesFromOpen(epochMs);
+  return off !== null && off >= 0 && off < nBars;
+}
+```
+  > `jstParts` は現在 module-private。`mod` を使うため、`jstParts` を `export` するか、`minutesFromOpen` 内で同等計算(`new Date(epochMs + 9h).getUTCHours()*60 + getUTCMinutes()`)をインラインで行う。既存の private を壊さないよう **インライン計算**を推奨(session.ts 内で完結)。
+
+- [ ] **Step 4: テスト通過を確認** — Run: `npx vitest run collector/openGuard.test.ts` → PASS(5 tests)。
+
+- [ ] **Step 5: 出口2か所でガード適用。**
+  - `server/alertHistory.ts` の `emitAlert` 冒頭(broadcast の**前**)に: `import { isWithinOpenGuard } from '../collector/session.js';` を追加し、`if (isWithinOpenGuard(p.triggeredAt)) return;`(寄り直後は UI バナーも記録も出さない)。
+  - `collector/alertCollector.ts` の `sink` 冒頭に: `if (isWithinOpenGuard(e.triggeredAt)) return;`(collector 側記録も抑制)。`isWithinOpenGuard` を `./session.js` から import。
+  > これで shock/granville(engine 経由)も 超短期(tickDetector→emitAlert 経由)も、モニター・collector 両方で寄り3本が抑制される。
+
+- [ ] **Step 6: 全スイート + typecheck + collector バンドル**
+
+Run: `npx vitest run && npx tsc --noEmit -p tsconfig.json && npm run build:collector`
+Expected: 全 PASS、tsc exit 0、build exit 0。既存 emitAlert テストは triggeredAt が寄り時間帯でなければ影響なし(影響あれば triggeredAt を確認)。
+
+- [ ] **Step 7: コミット**
+
+```bash
+git add collector/session.ts collector/openGuard.test.ts server/alertHistory.ts collector/alertCollector.ts
+git commit -m "feat(alerts): suppress all alerts for first 3 bars from session open"
+```
+
+---
+
+## Task 7: ドキュメント + バージョン + リリース(LEADER 主導、評価通過後)
+
+- [ ] **Step 1:** `USER_GUIDE.md` / `docs/USER_GUIDE.html` のアラート説明を更新: 短期/長期 z-score → 「急変(価格変化スコア方式、確定1分足、バー数クールダウン)」。**寄りから3本は全アラート抑制**を明記。超短期フラッシュ/グランビルは不変。
 - [ ] **Step 2:** バージョン bump `package.json` + `src-tauri/tauri.conf.json`(0.4.23 → 0.4.24)。
 - [ ] **Step 3:** `feat`/`docs` コミット + `chore(release): bump version to 0.4.24`。push。
 - [ ] **Step 4:** 署名ビルド + リリース: `npm run release:build` → `release:latest-json`(Bash で RELEASE_NOTES=... を UTF-8 保持) → `gh release create v0.4.24 --target master` で .exe+.sig+latest.json。公開 latest.json を再DL検証。
