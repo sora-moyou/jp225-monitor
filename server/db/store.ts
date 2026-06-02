@@ -33,6 +33,14 @@ export function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (symbol, t)
     );
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL, triggered_at INTEGER NOT NULL,
+      direction TEXT, detection_kind TEXT, window_seconds INTEGER,
+      change_percent REAL, price REAL,
+      session_date TEXT, session TEXT,
+      ret5 REAL, ret15 REAL, ret30 REAL
+    );
   `);
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
@@ -107,6 +115,51 @@ export interface SessionOHLC {
   session: 'Day' | 'Night';
   open: number; high: number; low: number; close: number;
   highT: number; lowT: number;
+}
+
+export interface AlertRow {
+  id: number; symbol: string; triggered_at: number; direction: string | null;
+  detection_kind: string | null; window_seconds: number | null;
+  change_percent: number | null; price: number | null;
+  session_date: string | null; session: string | null;
+  ret5: number | null; ret15: number | null; ret30: number | null;
+}
+export interface AlertInsert {
+  symbol: string; triggeredAt: number; direction: string; detectionKind: string;
+  windowSeconds: number; changePercent: number; price: number;
+  sessionDate: string | null; session: string | null;
+}
+
+export function insertAlert(db: DatabaseSync, a: AlertInsert): void {
+  db.prepare(`
+    INSERT INTO alerts (symbol, triggered_at, direction, detection_kind, window_seconds,
+      change_percent, price, session_date, session)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(a.symbol, a.triggeredAt, a.direction, a.detectionKind, a.windowSeconds,
+    a.changePercent, a.price, a.sessionDate, a.session);
+}
+
+/** t 以下で最も新しい bar の close。無ければ null。 */
+export function getBarCloseAt(db: DatabaseSync, symbol: string, t: number): number | null {
+  const row = db.prepare('SELECT c FROM bars_1m WHERE symbol = ? AND t <= ? ORDER BY t DESC LIMIT 1')
+    .get(symbol, t) as { c: number } | undefined;
+  return row ? row.c : null;
+}
+
+/** ret30 が未確定で、発火から30分以上経過したアラート(事後値動きを埋める対象)。 */
+export function getAlertsNeedingFollowup(db: DatabaseSync, now: number): AlertRow[] {
+  return db.prepare('SELECT * FROM alerts WHERE ret30 IS NULL AND triggered_at + ? <= ? ORDER BY triggered_at ASC')
+    .all(30 * 60_000, now) as unknown as AlertRow[];
+}
+
+export function updateAlertReturns(db: DatabaseSync, id: number,
+  ret5: number | null, ret15: number | null, ret30: number | null): void {
+  db.prepare('UPDATE alerts SET ret5 = ?, ret15 = ?, ret30 = ? WHERE id = ?').run(ret5, ret15, ret30, id);
+}
+
+export function getRecentAlerts(db: DatabaseSync, limit: number): AlertRow[] {
+  return db.prepare('SELECT * FROM alerts ORDER BY triggered_at DESC LIMIT ?')
+    .all(limit) as unknown as AlertRow[];
 }
 
 /** セッション(session_date+session)別の OHLC と H/L 発生時刻。新しい順(直近が先)、最大 limit 件。 */
