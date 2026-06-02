@@ -45,7 +45,7 @@ function sessionOpenEpoch(sd: string, ses: 'Day' | 'Night'): number {
   return Date.UTC(y!, m! - 1, d!, Math.floor(min / 60), min % 60) - 9 * 3600_000;   // JST壁時計→UTC
 }
 /** セッションのデータが寄りから揃っているか(収集開始が遅れて寄り欠けのセッションは高安が不正確)。 */
-function isSessionComplete(s: SessionOHLC): boolean {
+export function isSessionComplete(s: SessionOHLC): boolean {
   return s.openT <= sessionOpenEpoch(s.sessionDate, s.session) + COMPLETE_TOL_MS;
 }
 
