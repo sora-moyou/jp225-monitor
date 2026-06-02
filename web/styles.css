@@ -11,11 +11,13 @@
 }
 
 * { box-sizing: border-box; }
+html { overflow: hidden; }                 /* ズーム時もウィンドウ自体はスクロールさせない */
 body {
   margin: 0;
   font-family: 'Segoe UI', 'Hiragino Sans', sans-serif;
   background: var(--bg);
   color: var(--text);
+  overflow: hidden;
   zoom: var(--ui-zoom, 1);                 /* Ctrl+/- でUI全体を拡縮 (③) */
 }
 /* チャートだけは逆zoomで実寸を維持 (チャートを除く=テキストUIのみ拡縮) */
@@ -135,7 +137,11 @@ body {
   grid-template-columns: var(--left-fr, 1fr) 6px var(--right-fr, 2fr);   /* 左 | 境界ハンドル | 右 (既定 1:2, D&D可) */
   gap: 14px;
   padding: 14px 18px;
-  height: calc(100vh - 56px);       /* topbar 約56px を引いて画面いっぱい */
+  /* body の zoom(z)で全体が z 倍になるため、グリッド高さを z で割って
+     ウィンドウにぴったり収める(zoom してもはみ出さない=ウィンドウサイズ不変)。
+     topbar も z 倍になるので、56px は割らずそのまま引く: 描画高 = z×(100vh/z - 56) = 100vh - 56z、
+     topbar 描画高 = 56z → 合計 100vh。 */
+  height: calc(100vh / var(--ui-zoom, 1) - 56px);
   box-sizing: border-box;
   overflow: hidden;
 }
