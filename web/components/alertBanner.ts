@@ -114,7 +114,17 @@ export function restoreSavedBanners(container: HTMLElement): void {
   if (!Array.isArray(saved)) return;
   for (const s of saved) {
     if (!s?.alert?.symbol || typeof s.alert.triggeredAt !== 'number') continue;
+    if (isLegacyAlert(s.alert)) continue;   // 旧仕様(短期/長期 z-score)は現仕様に無いので復元しない
     const item = addBanner(container, s.alert);
     if (s.explanation) setExplanation(item, s.explanation);
   }
+  persist();   // 旧仕様を除外した結果で localStorage を上書き(クリーンアップ)
+}
+
+/** 旧仕様アラート判定。現仕様(急変 shock / グランビル / 超短期フラッシュ)に無い形は除外する。
+ *  旧: 長期トレンド(detectionKind=magnitude) / 短期1分・長期5分の z-score(symbolLabel の接尾辞)。 */
+function isLegacyAlert(a: AlertEvent): boolean {
+  if (a.detectionKind === 'magnitude') return true;
+  const label = typeof a.symbolLabel === 'string' ? a.symbolLabel : '';
+  return label.includes('短期1分') || label.includes('長期5分');
 }
