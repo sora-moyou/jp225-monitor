@@ -35,9 +35,13 @@ function render(): void {
     bodyEl.innerHTML = '<div class="levels-empty">蓄積中…</div>';
     return;
   }
-  const up = [...latest.up].sort((a, b) => b.price - a.price);
-  const down = [...latest.down].sort((a, b) => b.price - a.price);
+  // サーバの up/down 分割は計算時点(最大60秒前)の価格基準。ライブ現値が動くと、
+  // 例「+15 当日安」が現値線の下に出る等のズレが起きるため、ここで全レベルを
+  // ライブ現値で再分割し、価格と現値線の位置を常に一致させる。
+  const all = [...latest.up, ...latest.down];
+  const above = all.filter(l => l.price > cur).sort((a, b) => b.price - a.price);   // 上値 (高い順)
+  const below = all.filter(l => l.price <= cur).sort((a, b) => b.price - a.price);  // 下値 (高い順)
   const curLine = `<div class="levels-cur">― 現値 ${fmtPrice(cur)} ―</div>`;
   bodyEl.innerHTML =
-    up.map(l => rowHtml(l, cur)).join('') + curLine + down.map(l => rowHtml(l, cur)).join('');
+    above.map(l => rowHtml(l, cur)).join('') + curLine + below.map(l => rowHtml(l, cur)).join('');
 }
