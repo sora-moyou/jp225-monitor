@@ -127,10 +127,10 @@ function setupColResize(handleId: string, gridSelector: string, storageKey: stri
   });
 }
 
-// チャット高さ: ハンドルはチャットの上にある (上ドラッグでチャット拡大)
-setupResize('chat-resize', '.chat-board', 'chat-height', 120);
 // アラート高さ: ハンドルはアラートの下にある (下ドラッグでアラート拡大)
 setupResize('alerts-resize', '.alerts-pane', 'alerts-height', 100);
+// ニュース高さ: ハンドルはニュースの上(チャートとの境界)にある (上ドラッグでニュース拡大)
+setupResize('news-resize', '.news-feed', 'news-height', 80);
 // 主要レベル高さ: ハンドルはレベルパネルの下にある (下ドラッグで拡大)
 setupResize('levels-resize', '.levels-panel', 'levels-height', 60);
 // 左右の幅: 中央線を左右ドラッグ

@@ -142,7 +142,7 @@
   </div>
 
   <main class="main-grid">
-    <!-- 左 1/3: 価格カード → チャート → AIチャット -->
+    <!-- 左 1/3: 価格カード → 主要レベル → AIチャット -->
     <div class="left-col">
       <section id="price-grid" class="price-grid"></section>
 
@@ -151,12 +151,6 @@
       </section>
 
       <div class="resize-handle" id="levels-resize" title="ドラッグで主要レベルの高さを変更"></div>
-
-      <section class="chart-panel">
-        <div id="tradingview-chart"></div>
-      </section>
-
-      <div class="resize-handle" id="chat-resize" title="ドラッグでAIチャットの高さを変更"></div>
 
       <section class="chat-board">
         <div class="chat-header">
@@ -180,7 +174,7 @@
     <!-- 左右の境界: ドラッグで幅変更 (ダブルクリックで1:2にリセット) -->
     <div class="col-resize-handle" id="col-resize" title="ドラッグで左右の幅を変更 (ダブルクリックで初期化)"></div>
 
-    <!-- 右 2/3: アラート → ニュース -->
+    <!-- 右 2/3: アラート → チャート → ニュース -->
     <div class="right-col">
       <section class="alerts-pane">
         <h2>Alerts</h2>
@@ -188,6 +182,12 @@
       </section>
 
       <div class="resize-handle" id="alerts-resize" title="ドラッグでアラート欄の高さを変更"></div>
+
+      <section class="chart-panel">
+        <div id="tradingview-chart"></div>
+      </section>
+
+      <div class="resize-handle" id="news-resize" title="ドラッグでニュース欄の高さを変更"></div>
 
       <aside id="news-feed" class="news-feed">
         <h2>News</h2>

@@ -147,11 +147,10 @@ body {
   min-height: 0;                    /* flex子のスクロールを有効化 */
 }
 
-/* 左列のブロック高さ配分 */
+/* 左列のブロック高さ配分 (価格カード → 主要レベル → AIチャット。チャートは右へ移動) */
 .left-col .price-grid { flex: 0 0 auto; }                              /* 内容ぶん */
 .left-col .levels-panel { flex: 0 0 auto; height: 150px; min-height: 40px; }  /* D&Dで高さ可変・内部スクロール */
-.left-col .chart-panel { flex: 1 1 auto; min-height: 150px; }           /* 残り */
-.left-col .chat-board { flex: 0 0 auto; height: 280px; min-height: 120px; }  /* ユーザー指定 (D&D可) */
+.left-col .chat-board { flex: 1 1 auto; min-height: 120px; }           /* 残りを占有 */
 
 /* リサイズハンドル: チャートとチャットの境界をドラッグ */
 .resize-handle {
@@ -206,7 +205,7 @@ body {
   background: var(--panel);
 }
 
-/* 右列: アラート (D&D可変、内部スクロール) → ニュース (残り全部) */
+/* 右列: アラート (D&D可変) → チャート (残り) → ニュース (D&D可変、内部スクロール) */
 .right-col .alerts-pane {
   flex: 0 0 auto;
   height: 260px;                     /* ユーザー指定 (D&D可、localStorageで永続) */
@@ -226,7 +225,8 @@ body {
   padding-right: 4px;
   min-height: 0;                     /* スクロール有効化 */
 }
-.right-col .news-feed { flex: 1 1 auto; min-height: 0; max-height: none; }
+.right-col .chart-panel { flex: 1 1 auto; min-height: 150px; }            /* 右の中段にチャート (大きく) */
+.right-col .news-feed { flex: 0 0 auto; height: 220px; min-height: 80px; overflow-y: auto; }  /* D&Dで高さ可変 */
 
 .price-grid {
   display: grid;
