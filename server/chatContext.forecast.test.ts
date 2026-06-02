@@ -45,4 +45,12 @@ describe('buildNikkeiTechnical (levels path + forecast block)', () => {
     expect(out).toContain('13:00');   // 現スロット
     expect(out).toContain('60');      // 上昇率 60%
   });
+
+  it('uses the live fallbackPrice (price card value) for 現値, not the lagging bar close', () => {
+    // バー終値 66,900 はラグ。ライブ価格(価格カード) 66,745 を AI に渡すべき。
+    const getBars = (sym: string) => (sym === 'NIY=F' ? [{ t: 0, close: 66900 }] : []);
+    const out = buildNikkeiTechnical(getBars, 66745)!;
+    expect(out).toContain('現値 66,745円');
+    expect(out).not.toContain('現値 66,900円');
+  });
 });

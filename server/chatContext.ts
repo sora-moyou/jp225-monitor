@@ -35,8 +35,10 @@ export function buildNikkeiTechnical(
   // SP2: levelsLoop が算出した多時間軸レベルがあれば、それを上値/下値メドとして使う。
   const lv = formatLevelsBlock(getLevelsSnapshot());
   if (lv) {
+    // 現値はライブ価格(fallbackPrice = getPrices() の現値, 価格カードと同一)を優先。
+    // バー終値はラグするため、これを使うと AI 表示が価格カードとズレていた。
     const headBars = getBars(NIKKEI);
-    const cur = headBars.length ? headBars[headBars.length - 1]!.close : fallbackPrice;
+    const cur = fallbackPrice ?? (headBars.length ? headBars[headBars.length - 1]!.close : undefined);
     const head = cur ? `現値 ${Math.round(cur).toLocaleString('en-US')}円\n` : '';
     const fc = formatForecastBlock();
     return `■ 日経225先物 (NIY=F) テクニカル(セッションH/L・フィボ):\n${head}${lv}${fc ? `\n${fc}` : ''}`;
