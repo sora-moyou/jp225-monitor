@@ -44,7 +44,7 @@ const WEIGHTS = {
   sessHL: 1.0, todayHL: 1.0, open: 0.8,
   grid250: 0.4, grid500: 0.7, grid1000: 1.2,
   prevClose: 1.3, longHL: 1.6, adr: 0.7,
-  fibRetr: 0.9, fibExt: 0.5, fibToday: 0.5,
+  fibRetr: 1.0, fibExt: 0.5, fibToday: 0.5,
 } as const;
 
 interface Cand {
