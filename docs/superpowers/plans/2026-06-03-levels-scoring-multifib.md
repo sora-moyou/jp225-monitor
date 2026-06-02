@@ -16,10 +16,15 @@
 - **比率**: 戻し `[0.236,0.382,0.5,0.618,0.786]`、拡張 `[1.272,1.618]`。50% は reversalLine(維持)。
   - 戻し: up脚 `high - r*range` / down脚 `low + r*range`。
   - 拡張: up脚 `high + (e-1)*range` / down脚 `low - (e-1)*range`。
-- **スコア = クラスタ内重み合計 × (1 + testBonus) × recency, さらに合流ボーナス**。二値 `strong` は後方互換で残しつつ `score:number` と `tier:0|1|2` を追加。
-- **合流帯ボーナス**: クラスタに「異なるスイングスケール由来の Fib が2件以上」または「Fib + 非Fib構造水準」が含まれれば ×CONFLUENCE_BONUS(既定1.6)。これが日経で効く重なり帯。
-- **選抜**: 近接窓(現値から ±SELECT_WINDOW_YEN、既定 1200円)内の clustered をスコア降順で上下 N 本。さらに**現値直近の上下各1本は必ず含める**(窓外でも)。
-- **可変ノブ(🎛️)**: `levelTol`(束ね許容, 既定30) / `levelShowN`(上下表示数, 既定5) / `levelSelectWindowYen`(既定1200) / `fibConfluenceBonus`(既定1.6) / `levelTestBonus`(被テスト1回あたり加点, 既定0.15)。比率セット自体は定数(誤設定リスク回避、要望あれば後日)。
+- **合算幅 = 約25円**(ユーザー指定)。`levelTol` 既定 **25**。この幅で候補を束ねてスコアを合算する。
+- **代表価格 = 意味のある実価格**(ユーザー指定)。クラスタ代表は中央値ではなく **最高重みメンバーの実価格**(節目/セッション高安/前日終値など実際に意識される価格)。同点は (1) 節目(100/500/1000の倍数)優先 → (2) 中央値に最も近いメンバー。最後に5円丸め。
+- **タイプ別重み(評価指摘で再調整)**: longHL 1.6 / prevClose 1.3 / round1000 1.2 / sessHL・todayHL 1.0 / **fib戻し 0.9** / round500 0.7 / **fib拡張 0.5** / **当日スイングfib 0.5** / open 0.8 / round250 0.4 / adr 0.7。(フィボ戻しを 0.6→**0.9** に上げ、2本フィボ合流が偶然の構造クラスタに負けないように。拡張・当日は established 不足のため低め。)
+- **スコア = Σ(member.weight) × (1 + testBonus) × 合流倍率**。二値 `strong` は後方互換で残しつつ `score:number` と `tier:0|1|2` を追加。
+- **被テスト(自己カウント除外・評価指摘)**: 代表価格 P に対し、**そのクラスタのメンバーでないセッション**の high/low/close が P±tol に入った回数 count を数え `× (1 + LEVEL_TEST_BONUS × min(count,5))`(既定0.15)。自分のメンバー(=既に Σweight 済み)は数えない＝独立した再テストのみ加点。
+- **合流倍率(段階化・評価指摘)**: クラスタ内の**異なるスイングスケール由来 fib の種類数** s(5S/10S/20S/当日、当日は0.5扱い)と非fib構造水準の有無 b。`mult=1`; (s≥2) または (fib有 かつ b) → `mult=fibConfluenceBonus`(既定1.5); さらに s≥3 で `×1.25`。これが日経で効く重なり帯。
+- **ティア = 相対ランク(評価指摘・絶対閾値廃止)**: 表示集合内で score を最大値で正規化。`norm≥0.66 かつ mult>1` → **tier2(合流帯)**; `norm≥0.40` → tier1; else 0。絶対定数は使わない(ボラ局面で破綻しないため)。
+- **選抜**: 近接窓(現値 ±`levelSelectWindowYen`、既定 **1500円**)内の clustered をスコア降順で上下各 `levelShowN` 本。さらに **(a) 現値直近の上下各1本** と **(b) スコア最上位の上下各1本(窓外でも)** は必ず含める(強い遠方水準を埋もれさせない)。fib50(reversalLine)強制追加は維持。
+- **可変ノブ(🎛️)**: `levelTol`(束ね許容, 既定 **25**) / `levelShowN`(既定5) / `levelSelectWindowYen`(既定 **1500**) / `fibConfluenceBonus`(既定 **1.5**) / `levelTestBonus`(既定0.15)。タイプ別重み・比率セットは定数(誤設定リスク回避、要望あれば後日)。
 
 ---
 
@@ -106,8 +111,7 @@ export interface FibLevel { price: number; ratio: number; reversalLine: boolean;
 /** 完了(寄り揃い)セッション先頭 n 本の極大→極小スイング。脚= newer 極値の向き。n 本未満は null。 */
 export function deriveSwing(completed: SessionOHLC[], n: number): Swing | null {
   const use = completed.filter(isSessionComplete).slice(0, n);
-  if (use.length < Math.min(n, 2)) return null;            // 最低2本
-  if (use.length < n) return null;                          // 窓に満たないスケールは出さない
+  if (use.length < n) return null;                          // 窓を満たすスケールのみ出す(20S は20本揃ってから)
   const hi = use.reduce((a, b) => (b.high > a.high ? b : a));
   const lo = use.reduce((a, b) => (b.low < a.low ? b : a));
   if (!(hi.high > lo.low)) return null;
@@ -137,7 +141,12 @@ export function currentSessionSwing(inProgress: SessionOHLC | null, current: num
   const high = Math.max(inProgress.high, current);
   const low = Math.min(inProgress.low, current);
   if (!(high > low)) return null;
-  const leg: 'up' | 'down' = inProgress.lowT > inProgress.highT ? 'down' : 'up';
+  // ライブ現値が新高値/新安値を作った場合、その時刻が最新 → 脚向きを現値で決める。
+  // どちらも更新していなければ保存済みの highT/lowT(新しい極値)で決定。
+  let leg: 'up' | 'down';
+  if (current >= inProgress.high) leg = 'up';
+  else if (current <= inProgress.low) leg = 'down';
+  else leg = inProgress.lowT > inProgress.highT ? 'down' : 'up';
   return { high, low, leg, scaleLabel: '当日' };
 }
 ```
@@ -169,21 +178,31 @@ function mk(date: string, ses: 'Day'|'Night', o: number, h: number, l: number, c
 }
 
 describe('computeLevels scoring', () => {
-  it('assigns a numeric score and tier; confluence zone outranks an isolated nearby level', () => {
-    // 多数のセッション高安を同価格付近(67500)に集めて合流帯を作る
+  it('numeric score+tier; heavy cluster at a meaningful round price outranks an isolated level; representative = real member price', () => {
+    // 散らばった20セッション。高値の多くを 67500(=最大高=round500=longHL)に寄せ、
+    // 安値・始値は散らす(病的な全同一系列にしない)。現値は 67000。
     const sessions: SessionOHLC[] = [];
-    for (let i = 0; i < 22; i++) {
-      const dd = String(2 + (i % 20)).padStart(2, '0');
-      sessions.push(mk(`2026-05-${dd}`, i % 2 ? 'Day' : 'Night', 67000, 67500, 66500, 67100));
+    const highs = [67500, 67500, 67500, 67480, 67320, 67500, 67210, 67500, 67390, 67500,
+                   67260, 67500, 67180, 67450, 67500, 67340, 67500, 67220, 67410, 67500];
+    const lows  = [66480, 66510, 66200, 66620, 66380, 66540, 66700, 66260, 66590, 66440,
+                   66660, 66300, 66720, 66520, 66360, 66600, 66280, 66640, 66460, 66340];
+    for (let i = 0; i < 20; i++) {
+      const dd = String(2 + i).padStart(2, '0');
+      sessions.push(mk(`2026-05-${dd}`, i % 2 ? 'Day' : 'Night', 67000, highs[i]!, lows[i]!, 67000 + (i % 5) * 20));
     }
     const r = computeLevels(sessions, 67000, Date.now(), null, []);
     const all = [...r.up, ...r.down];
     expect(all.length).toBeGreaterThan(0);
-    expect(all.every(l => typeof l.score === 'number')).toBe(true);
-    // 67500 付近(多数の高値が集中)は最高ティアになるはず
-    const conf = all.find(l => Math.abs(l.price - 67500) <= 40);
+    expect(all.every(l => typeof l.score === 'number' && (l.tier === 0 || l.tier === 1 || l.tier === 2))).toBe(true);
+    // 67500: 最大高(longHL)+多数のsessHL+round500 が集中 → 高スコア・tier>=1
+    const conf = all.find(l => Math.abs(l.price - 67500) <= 12);
     expect(conf).toBeDefined();
     expect(conf!.tier).toBeGreaterThanOrEqual(1);
+    // 代表価格は中央値の平均値ではなく、意味のある実価格(67500=最大高/round500)であること
+    expect(conf!.price).toBe(67500);
+    // 67500 のスコアは、孤立した節目(例 67000近傍の grid)より高い
+    const isolated = all.filter(l => l !== conf).map(l => l.score);
+    expect(Math.max(...isolated)).toBeLessThan(conf!.score);
   });
 });
 ```
@@ -191,43 +210,46 @@ describe('computeLevels scoring', () => {
 - [ ] **Step 2: 失敗確認** — `npx vitest run server/levelsScoring.test.ts` → FAIL(score/tier 未実装)。
 
 - [ ] **Step 3: 実装** — `server/levels.ts` を以下方針で拡張(既存構造を保ちつつ):
-  - `Cand` に `weight: number; kind: string;` を追加。各 push 箇所で kind/weight を付与:
+  - `Cand` に `weight: number; kind: string; fibScale?: string;` を追加。各 push 箇所で kind/weight を付与(重みは設計判断の表どおり):
     - セッション高安 `kind:'sessHL' weight:1.0`、当日高安 `kind:'todayHL' weight:1.0`、当日始 `kind:'open' weight:0.8`
     - 直近高安マーク: 既存候補に併記(weight は触らない)
     - 節目: 250 `kind:'grid250' weight:0.4` に加え **500 `weight:0.7` / 1000 `weight:1.2`** を現値の上下最近1本ずつ追加
-    - **前日終値**: 直近の完了 Day と Night の `close` を `kind:'prevClose' weight:1.3`(ラベル「前日Day終値」等)で追加
-    - **長期高安**: 取得セッション全体(寄り揃い)の最大高・最小安を `kind:'longHL' weight:1.6`(ラベル「長期高/安」)で追加
+    - **前日終値**: 直近の完了 Day と Night の `close` を `kind:'prevClose' weight:1.3`(ラベル「前日Day終値」等)
+    - **長期高安**: 取得セッション全体(寄り揃い)の最大高・最小安を `kind:'longHL' weight:1.6`(ラベル「長期高/安」)
     - ADR予測(extraLevels): `kind:'adr' weight:0.7`
-    - **多スイングFib**: `import { deriveSwing, fibLevelsForSwing, currentSessionSwing, DEFAULT_SWING_WINDOWS } from './fibLevels.js';`。`completed` から各窓のスイング + 当日スイングを集め、各 FibLevel を `kind:'fib' weight:0.6`(reversalLine は保持、ラベル「Fib{ratio}%({scale})」)で push。`fib` は `scaleLabel` も Cand に保持してスコア集計で「異スケール合流」を見るため、Cand に任意 `fibScale?: string` を足す。
-  - `cluster` を**スコア集計**に拡張: クラスタ score の基本 = Σ(member.weight)。さらに:
-    - **被テスト** `testBonus`: クラスタ価格 P に対し、全取得セッションの high/low/close が P±tol に入った回数を数え、`score *= (1 + LEVEL_TEST_BONUS * min(count, 5))`。(高安/終値の素の値配列を cluster に渡す)
-    - **リーセンシー**: 省略可(セッション由来は概ね新しいので v1 は無し、定数で将来対応)。
-    - **合流ボーナス**: クラスタ内に (a) 異なる `fibScale` を持つ fib が2件以上、または (b) fib と非fib(sessHL/longHL/prevClose/grid系) が共存 する場合 `score *= FIB_CONFLUENCE_BONUS`。
-  - `Level` に `score:number; tier:0|1|2;` を追加。`tier` = score 閾値(`>=TIER2_MIN`→2, `>=TIER1_MIN`→1, else 0)。`strong` は後方互換で `tier>=1` を流用(または members>=2 のまま)。
-  - **選抜変更**: clustered を「現値から ±SELECT_WINDOW_YEN 内」に絞り、`up`=dist>0 をスコア降順、`down`=dist<0 をスコア降順で各 NEAR_N 本。**さらに現値直近の上下各1本(窓内最近接)は必ず含める**(スコア低くても“今そこ”の水準を落とさない)。fib50(reversalLine)強制追加ロジックは維持。
-  - 調整ノブ定数を追加: `SELECT_WINDOW_YEN=1200`, `FIB_CONFLUENCE_BONUS=1.6`, `LEVEL_TEST_BONUS=0.15`, `TIER1_MIN`, `TIER2_MIN`(実値はテストで妥当域に調整)。
+    - **多スイングFib**: `import { deriveSwing, fibLevelsForSwing, currentSessionSwing, DEFAULT_SWING_WINDOWS } from './fibLevels.js';`。`completed` から各窓スイング + 当日スイングを集め、各 FibLevel を push。**戻し weight:0.9 / 拡張 weight:0.5 / 当日由来は 0.5**(reversalLine 保持、ラベル「Fib{ratio}%({scale})」)。`fibScale = sw.scaleLabel` を Cand に保持(合流判定用)。
+  - `cluster` を**スコア集計+代表価格**に拡張。`tol` は引数(`resolveLevelsConfig().levelTol`、既定25)で渡す:
+    - **代表価格(ユーザー指定)** = クラスタ内**最高 weight メンバーの実価格**。同 weight 複数なら (1)節目(100/500/1000の倍数)優先 → (2)中央値に最も近いメンバー、を選ぶ。最後に `round5`。中央値は使わない。
+    - **score = Σ(member.weight)**。
+    - **被テスト(自己除外)**: 代表価格 P に対し、**そのクラスタのメンバーになっていない**セッションの high/low/close が P±tol に入った回数 count → `score *= (1 + LEVEL_TEST_BONUS * min(count,5))`。メンバー判定は「その session 由来の sessHL/longHL/prevClose/todayHL が当クラスタに含まれるか」で行う(素の session 配列とクラスタ member の由来を突き合わせ。実装簡易化のため、cluster に `sessions` 配列と「クラスタが含む sessionDate+session の集合」を渡し、集合外のセッションのみ count)。
+    - **合流倍率**: クラスタ内の異なる `fibScale` 種類数 s(当日は0.5換算)、非fib構造水準の有無 b。`mult=1`; (s>=2 || (fib有 && b)) → `mult=fibConfluenceBonus`(既定1.5); s>=3 でさらに `*=1.25`。`score *= mult`。`mult>1` を Level に `confluence:boolean` で持つ(tier 判定に使う)。
+  - `Level` に `score:number; tier:0|1|2; confluence:boolean;` を追加。`strong` は後方互換で `tier>=1` を流用。
+  - **ティア=相対ランク**: 選抜後の表示集合(up+down)で `maxScore` を取り、各 level の `norm=score/maxScore`。`norm>=0.66 && confluence` → tier2、`norm>=0.40` → tier1、else 0。絶対閾値定数は作らない。
+  - **選抜変更**: clustered を「現値 ±`levelSelectWindowYen`(既定1500)内」に絞り、up(dist>0)/down(dist<0) をスコア降順で各 `levelShowN` 本。**さらに (a) 現値直近の上下各1本(窓内最近接)** と **(b) スコア最上位の上下各1本(窓外でも)** を必ず含める。fib50(reversalLine)強制追加は維持。重複は price で排除。
+  - 調整ノブ定数(既定値): `LEVEL_TOL=25`, `LEVEL_SHOW_N=5`, `SELECT_WINDOW_YEN=1500`, `FIB_CONFLUENCE_BONUS=1.5`, `LEVEL_TEST_BONUS=0.15`(Task5 で config から上書き、ここでは定数を既定にして computeLevels 内で参照)。
 
-- [ ] **Step 4: 通過確認 + 全スイート** — `npx vitest run && npx tsc --noEmit -p tsconfig.json` → PASS。合流帯テストの閾値(TIER*_MIN)は、合流帯が tier>=1、孤立節目が tier=0 程度になるよう調整(検知の意味は変えない)。
+- [ ] **Step 4: 通過確認 + 全スイート** — `npx vitest run && npx tsc --noEmit -p tsconfig.json` → PASS。テストの合成系列(Step1 の散らばり系列)で「合流帯 tier=2、孤立節目 tier=0」になることを確認。閾値は相対(0.66/0.40)なので絶対調整は不要だが、合成データで合流が最上位になるよう重みバランスのみ確認(検知の意味は変えない)。
 
 - [ ] **Step 5: コミット** — `git add server/levels.ts server/levelsScoring.test.ts && git commit -m "feat(levels): consciousness scoring + multi-timescale candidates + score-ranked selection"`
 
 ---
 
-## Task 3: 型 + 表示(スコア/ティア)を UI に出す
+## Task 3: 表示(スコア/ティア)を UI に出す
 
-**Files:** Modify `server/types.ts`, `web/types.ts`(Level 型), `web/components/levelsPanel.ts`
+**Files:** Modify `web/components/levelsPanel.ts`, `web/styles.css`(型は Task 2 で `server/levels.ts` の Level に追加済み)
 
-- [ ] **Step 1: `Level` 型に `score:number; tier:0|1|2;` を追加。** `server/types.ts` に Level 型があるか確認(無ければ levels.ts の Level が唯一の定義で、web は別途 import)。READ して、UI が参照する Level 型(web/types.ts 経由 or 直 import)に score/tier を反映。
+> **重要(評価指摘)**: `Level` 型は **`server/levels.ts` のみで定義**。`server/types.ts` は `LevelsResult` を、`web/types.ts` は `Level`/`LevelsResult` を **`../server/levels.js` から再export しているだけ**(再宣言ではない)。よって Task 2 で `server/levels.ts` の `Level` に `score/tier/confluence` を足せば、再export 経由で `web/components/levelsPanel.ts`(`import { Level } from '../types.js'`)まで自動で届く。**`server/types.ts` と `web/types.ts` は編集しないこと**(編集すると no-op か、最悪 web 側に drift する重複宣言を生む)。`chatContext.ts` は `l.strong` 等を使うので `strong` は Task 2 で残す(編集不要)。
 
-- [ ] **Step 2: `web/components/levelsPanel.ts` の `rowHtml` を更新:**
-  - `tier===2` → `★★`(合流帯, クラス `confluence`)、`tier===1` → `★`、`tier===0` → 無印(既存 strong★ の置換)。
-  - 数値スコアを淡色で併記(例 `<span class="lv-score">スコア${l.score.toFixed(1)}</span>`)。
-  - reversalLine の ⚑転換 は維持。ラベルは `labels.join('・')` のまま(Fibスケールや要因が入る)。
-  - `styles.css` に `.levels-row.confluence`(強調色/太字)と `.lv-score`(淡色・小)を追加。
+- [ ] **Step 1: `web/components/levelsPanel.ts` の `rowHtml` を更新:**
+  - `tier===2` → `★★`(合流帯, 行に class `confluence`)、`tier===1` → `★`、`tier===0` → 無印(既存 strong★ の置換)。
+  - 数値スコアを淡色で併記(例 `<span class="lv-score">${l.score.toFixed(1)}</span>`)。
+  - reversalLine の ⚑転換 は維持。ラベルは `labels.join('・')` のまま(Fibスケール/要因が入る)。
+
+- [ ] **Step 2: `web/styles.css`** に `.levels-row.confluence`(強調色/太字)と `.lv-score`(淡色・小)を追加(既存 `.levels-row.strong` のスタイルに倣う)。
 
 - [ ] **Step 3: ビルド + 型 + テスト** — `npx vite build && npx tsc --noEmit -p tsconfig.json && npx vitest run` → exit 0 / PASS。
 
-- [ ] **Step 4: コミット** — `git add server/types.ts web/types.ts web/components/levelsPanel.ts web/styles.css && git commit -m "feat(levels): show consciousness score/tier (★/★★ 合流帯) in panel"`
+- [ ] **Step 4: コミット** — `git add web/components/levelsPanel.ts web/styles.css && git commit -m "feat(levels): show consciousness score/tier (★/★★ 合流帯) in panel"`
 
 ---
 
@@ -235,7 +257,7 @@ describe('computeLevels scoring', () => {
 
 **Files:** Modify `server/loops/levelsLoop.ts`, `server/levels.ts`(export 定数)
 
-- [ ] **Step 1:** `levelsLoop.ts` の `FETCH_SESSIONS` を長期高安/20Sスイングを賄えるよう拡大(例 `Math.max(LOOKBACK_SESSIONS, 20) + 4`)。`computeLevels` 呼び出しは不変(同シグネチャ)。`levelSignature` は up/down 価格 + swing で署名しているが、tier/score が変わっても価格が同じなら再配信されない問題に注意 → 署名に各 level の `tier` も含める(`price:tier` 形)。
+- [ ] **Step 1:** `levelsLoop.ts` の `FETCH_SESSIONS` を長期高安/20Sスイングを賄えるよう拡大(例 `Math.max(LOOKBACK_SESSIONS, 20) + 4`)。`computeLevels` 呼び出しは不変(同シグネチャ)。`levelSignature` は up/down 価格 + swing で署名しているが、tier/score が変わっても価格が同じなら再配信されない問題に注意 → **署名に各 level の `tier` と丸めた `score`(0.5刻み)も含める**(`price:tier:scoreRounded` 形)。価格が同じでも強さ/スコアが変わったら UI 更新されるようにする。
 - [ ] **Step 2: 全スイート + 型** — `npx vitest run && npx tsc --noEmit -p tsconfig.json` → PASS。
 - [ ] **Step 3: コミット** — `git add server/loops/levelsLoop.ts server/levels.ts && git commit -m "feat(levels): deepen session fetch + include tier in SSE signature"`
 
@@ -245,10 +267,10 @@ describe('computeLevels scoring', () => {
 
 **Files:** Modify `server/configStore.ts`, `server/routes/settings.ts`, `web/components/paramsModal.ts`, `web/index.html`, `server/levels.ts`
 
-公開ノブ: `levelTol`(束ね許容円, 既定30, 5-200) / `levelShowN`(上下表示数, 既定5, 1-12) / `levelSelectWindowYen`(既定1200, 100-10000) / `fibConfluenceBonus`(既定1.6, 1.0-5.0, step0.1) / `levelTestBonus`(既定0.15, 0-1, step0.05)。
+公開ノブ: `levelTol`(束ね許容円, 既定 **25**, 5-200) / `levelShowN`(上下表示数, 既定5, 1-12) / `levelSelectWindowYen`(既定 **1500**, 100-10000) / `fibConfluenceBonus`(既定 **1.5**, 1.0-5.0, step0.1) / `levelTestBonus`(既定0.15, 0-1, step0.05)。
 
 - [ ] **Step 1: `configStore.ts`** に5ノブの `UserConfig` フィールド + `PARAM_BOUNDS` + `resolveLevelsConfig()`(これらをまとめて返す)を追加(既存 resolver パターン踏襲、mtimeキャッシュは既存)。
-- [ ] **Step 2: `server/levels.ts`** の該当定数(`CONFLUENCE_TOL`,`NEAR_N`,`SELECT_WINDOW_YEN`,`FIB_CONFLUENCE_BONUS`,`LEVEL_TEST_BONUS`)を、`computeLevels` 内で `resolveLevelsConfig()` から読む形に(定数は既定値として残す)。**注意**: levels.ts が configStore を import すると循環の有無を確認(configStore→shockDetector のみ。levels.ts→configStore→shockDetector で levels は configStore に依存、configStore は levels に依存しない=非循環。ただし fibLevels/forecast は levels を import するので、configStore が levels を import しないこと)。**configStore は levels を import しない**設計を厳守(resolveLevelsConfig は数値を返すだけ、Level 型に依存しない)。
+- [ ] **Step 2: `server/levels.ts`** の該当定数(`LEVEL_TOL`(既存 CONFLUENCE_TOL),`LEVEL_SHOW_N`(既存 NEAR_N),`SELECT_WINDOW_YEN`,`FIB_CONFLUENCE_BONUS`,`LEVEL_TEST_BONUS`)を、`computeLevels` 内で `resolveLevelsConfig()` から読む形に(定数は既定値として残す)。**注意**: levels.ts が configStore を import すると循環の有無を確認(configStore→shockDetector のみ。levels.ts→configStore→shockDetector で levels は configStore に依存、configStore は levels に依存しない=非循環。ただし fibLevels/forecast は levels を import するので、configStore が levels を import しないこと)。**configStore は levels を import しない**設計を厳守(resolveLevelsConfig は数値を返すだけ、Level 型に依存しない)。
 - [ ] **Step 3: `settings.ts`** の `NUMERIC_PARAM_KEYS` に5キー追加(Task4方式の DRY ループにそのまま乗る)。restart 不要(levels は毎tick resolver 読み)。
 - [ ] **Step 4: `paramsModal.ts` PARAMS + `index.html`** に「主要レベル」セクションの入力5つを追加(Task5方式: PARAMS 1行 + input 1個 ずつ)。
 - [ ] **Step 5: 全スイート + 型 + ビルド** — `npx vitest run && npx tsc --noEmit -p tsconfig.json && npx vite build && npm run build:collector` → PASS/exit0。
@@ -266,8 +288,10 @@ describe('computeLevels scoring', () => {
 ---
 
 ## Risks & Decisions(リーダー注記)
-1. **スコア閾値(TIER*_MIN)** は合成データテストで「合流帯=tier≥1、孤立節目=0」になるよう調整。実データで体感とズレたら 🎛️ の重み/ボーナスで追従(将来、閾値も config 化可)。
+1. **ティアは相対ランク**(maxScore で正規化、norm≥0.66&合流→2 / ≥0.40→1)。絶対閾値(TIER*_MIN)は廃止 — 実データのボラ局面でスコア絶対値が変動しても破綻しないため。体感とズレたら 🎛️ の tol/重み/合流ボーナスで追従。
 2. **多スイング×多比率で候補が増える** → cluster がO(n log n)、n は数十〜百程度で軽い(levelsLoop 8秒間隔・NIY=Fのみ)。負荷問題なし。
+6. **`SessionOHLC` は store.ts にも別定義あり(store.ts:113)** — これは**意図的に分離**(構造的型互換で levelsLoop が store→levels に渡せている)。`server/sessionOHLC.ts` 切り出し時に **store.ts の定義を統合しない**こと(`store → sessionOHLC` の依存辺を作らない)。新 `sessionOHLC.ts` の interface は store.ts の8フィールドと同一構造を保つ。
+7. **代表価格=実価格**(最高重みメンバー)なので、被テスト count はその実価格 P 基準。自己メンバー除外で独立再テストのみ加点(自己二重計上を回避)。
 3. **拡張Fib(127.2/161.8%)は上値/下値メドの“先”** を出す。現値から遠いものは SELECT_WINDOW で間引かれるが、合流すれば残る(意図的)。
 4. **循環import回避**: configStore は levels/fibLevels を import しない(数値ノブのみ返す)。fibLevels は levels の型のみ import(値依存は isSessionComplete のみ=非循環: levels→fibLevels ではなく fibLevels→levels だが levels も fibLevels を import するため**相互参照**になる。回避策: `isSessionComplete` と `SessionOHLC` 型を fibLevels が使うが、levels も fibLevels を使う → 循環。**対策**: `SessionOHLC` 型と `isSessionComplete` を新ファイル `server/sessionOHLC.ts` に切り出し、levels.ts と fibLevels.ts の両方がそこから import する(循環解消)。Task 1 でこの切り出しを先に行う。)
 5. **署名(SSE再配信)**: tier/score を署名に含め、価格同じでも強さが変わったら UI 更新。
