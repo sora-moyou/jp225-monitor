@@ -56,14 +56,13 @@ export function evaluateBarsNiy(
   // グランビルはクールダウンを完全無視(ユーザー指定):ブロックされず、共有クールダウンも発生させない。
   for (const g of byNote.values()) {
     const ctx = computeContext(bars);
-    const maTag = g.labels.join('・');   // 中期 / 長期 / 中期・長期(両一致=強)
-    const note = `${g.note}(${maTag})`;
-    console.log(`[alertEngine] ${sym} ${note} dev=${g.sig.deviation.toFixed(2)}%`);
+    const maTag = g.labels.join('・');   // 中期/長期/中期・長期(ログ用。表示には出さない=ユーザー指定)
+    console.log(`[alertEngine] ${sym} ${g.note}(${maTag}) dev=${g.sig.deviation.toFixed(2)}%`);
     sink({
       symbol: sym, symbolLabel: meta.labelJa, changePercent: g.sig.deviation,
       windowSeconds: 75 * 60, detectionKind: 'granville', direction: g.sig.dir,
       triggeredAt: bars[bars.length - 1]!.t, change15min: ctx.change15min,
-      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0, note,
+      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0, note: g.note,   // MAラベルは表示しない
       level: Math.round(g.sig.origin),   // 起点価格(1つ以上前の足: 転換=クロス前 / 継続=押し安値・戻り高値)
     });
   }

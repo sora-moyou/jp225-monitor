@@ -90,9 +90,10 @@ describe('evaluateBarsNiy', () => {
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(gradualReversalUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
     expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
-    // 中期/長期2本MA併用 → note にどのMAで出たか併記(中期/長期/中期・長期)。
+    // 中期/長期2本MA併用で検知するが、表示(note)に MA ラベルは出さない(ユーザー指定)。
     const g = fired.find(e => e.detectionKind === 'granville')!;
-    expect(g.note).toMatch(/中期|長期/);
+    expect(g.note).toMatch(/転換|押し目買い|戻り売り/);
+    expect(g.note).not.toMatch(/中期|長期/);
   });
 
   it('グランビルは発火しても共有クールダウンを発生させない(シグナルは急変のみ)', () => {
