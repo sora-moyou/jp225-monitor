@@ -91,14 +91,19 @@ export function evaluateBarsNiy(
       const ctx = computeContext(bars);
       const prevClose = completed[completed.length - 2] ?? lastCompleted.close;
       console.log(`[alertEngine] ${sym} shock ${shock.dir} d1=${Math.round(shock.d1)}円 score=${shock.score}/6`);
+      // 表示は価格を先頭に(グランビル/ダブルと統一)。方向は「急上昇/急落」で示し、値幅は符号付き。
+      // 「急変」の語は使わない(ユーザー指定)。価格=発火した完成足の終値。
+      const price = Math.round(lastCompleted.close).toLocaleString('ja-JP');
+      const word = shock.dir === 'up' ? '急上昇' : '急落';
+      const sgn = (n: number): string => `${n >= 0 ? '+' : ''}${Math.round(n)}`;
       sink({
-        symbol: sym, symbolLabel: meta.labelJa + ' (急変)',
+        symbol: sym, symbolLabel: meta.labelJa,
         changePercent: prevClose > 0 ? (shock.d1 / prevClose) * 100 : 0,
         windowSeconds: 60, detectionKind: 'shock', direction: shock.dir,
         triggeredAt: lastCompleted.t,
         change15min: ctx.change15min, pa15min: ctx.pa15min, range1h: ctx.range1h,
         zscore: 0,
-        note: `${shock.dir === 'up' ? '↑' : '↓'}${Math.round(shock.d1)}円 (1分) / 2分 ${Math.round(shock.d2)}円 / score ${shock.score}/6`,
+        note: `${price}${word} / ${sgn(shock.d1)}円 (1分) / 2分 ${sgn(shock.d2)}円 / score ${shock.score}/6`,
       });
     }
   }

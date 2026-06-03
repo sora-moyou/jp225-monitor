@@ -33,10 +33,13 @@ describe('evaluateBarsNiy', () => {
     const shock = fired.find(e => e.detectionKind === 'shock')!;
     expect(shock.symbol).toBe('NIY=F');
     expect(shock.direction).toBe('up');
-    // note は値幅データに専念(種別「急変」はタグ側に一本化したので含まない)。
+    // note は価格を先頭に、方向は「急上昇/急落」、値幅は符号付き。「急変」「↑/↓」の語は使わない。
     expect(shock.note).toContain('1分');
-    expect(shock.note).toContain('↑');
+    expect(shock.note).toContain('急上昇');           // 方向は語で表現
+    expect(shock.note).toContain('+');                // 値幅は符号付き
+    expect(shock.note).toMatch(/^[\d,]+急上昇/);       // 価格(カンマ区切り)が先頭
     expect(shock.note).not.toContain('急変');
+    expect(shock.note).not.toContain('↑');
   });
 
   it('does not fire on a flat series', () => {

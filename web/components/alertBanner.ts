@@ -42,9 +42,12 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
   // 用語重複を避ける: グランビル/ダブルは固定説明文「価格xxxで…」が要点を伝えるので mid(note)を省略。
-  // 急変/フラッシュは note に値幅等の情報があるので表示。symbolLabel(日経225先物/接尾辞)はタグと重複するため非表示。
+  // 急変/超短期は note が価格+方向(急上昇/急落)+値幅を伝えるので表示。symbolLabel はタグと重複するため非表示。
   const isTech = isTechKind;
   const mid = isTech ? '' : (alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`);
+  // 種別タグは表示しない: テクニカルは説明文で、急変/超短期は note 先頭の「急上昇/急落」で種別が伝わる。
+  // 「急変」「フラッシュ」の語は使わない(ユーザー指定)。レガシー(magnitude/trend)のみタグを残す。
+  const showKindTag = !isTech && alert.detectionKind !== 'shock' && alert.detectionKind !== 'slope';
   // 直近15分コンテキスト（参考、発火窓と分離）
   const ctx15 = alert.change15min !== null
     ? `<span class="ctx-15min">15分: ${alert.change15min >= 0 ? '+' : ''}${alert.change15min.toFixed(2)}%</span>`
@@ -57,7 +60,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     `<span class="alert-time">${time}</span> ` +
     `${arrow}${mid ? ' ' + mid : ''} ` +
     // テクニカル(グランビル/ダブル)は説明文「価格xxxで…」で種別が分かるので種別タグも15分も省き1行に。
-    `${isTech ? '' : `<span class="kind-tag">[${kindLabel}]</span> `}` +
+    `${showKindTag ? `<span class="kind-tag">[${kindLabel}]</span> ` : ''}` +
     `${isTech ? '' : ctx15 + ' '}` +
     `<span class="explanation">${isTech ? '' : UI.ja.explanationLoading}</span>`;
   const btnGroup = document.createElement('div');
