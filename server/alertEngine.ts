@@ -92,8 +92,8 @@ export function evaluateBarsNiy(
       const prevClose = completed[completed.length - 2] ?? lastCompleted.close;
       console.log(`[alertEngine] ${sym} shock ${shock.dir} d1=${Math.round(shock.d1)}円 score=${shock.score}/6`);
       // 表示は価格を先頭に(グランビル/ダブルと統一)。方向は「急上昇/急落」で示し、値幅は符号付き。
-      // 「急変」の語は使わない(ユーザー指定)。価格=発火した完成足の終値。
-      const price = Math.round(lastCompleted.close).toLocaleString('ja-JP');
+      // 「急変」の語は使わない(ユーザー指定)。価格=動きの起点(1分前の終値=prevClose)。
+      const price = Math.round(prevClose).toLocaleString('ja-JP');
       const word = shock.dir === 'up' ? '急上昇' : '急落';
       const sgn = (n: number): string => `${n >= 0 ? '+' : ''}${Math.round(n)}`;
       sink({
