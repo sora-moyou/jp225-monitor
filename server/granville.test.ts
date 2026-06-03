@@ -12,6 +12,8 @@ describe('detectGranvilleReversal (グランビル①トレンド転換)', () =>
     const sig = detectGranvilleReversal([...down, ...up], P);
     expect(sig?.dir).toBe('up');
     expect(sig!.deviation).toBeGreaterThan(0);
+    // 起点 = slopeBack(5)本前の終値(クロス前)= closes[19]=81。現値(112)ではなく1つ以上前の足。
+    expect(sig!.origin).toBe(81);
   });
 
   it('売り転換: MAが上昇→下向き＋価格が上から下抜け', () => {
@@ -59,6 +61,7 @@ describe('detectGranvilleContinuation (グランビル②③トレンド継続)'
     const fail = [84, 85, 85, 84, 83];                            // MA手前まで戻すが超えられず下落
     const sig = detectGranvilleContinuation([...down, ...fail], PC);
     expect(sig?.dir).toBe('down');
+    expect(sig!.origin).toBe(85);   // 起点 = 戻りの高値(直近窓の最高値)
   });
 
   it('買い継続(押し目買い): 上昇MOで押しがMA手前で支持→上昇再開', () => {
@@ -66,6 +69,7 @@ describe('detectGranvilleContinuation (グランビル②③トレンド継続)'
     const hold = [96, 95, 95, 96, 97];                           // MA手前まで押すが割らず上昇
     const sig = detectGranvilleContinuation([...up, ...hold], PC);
     expect(sig?.dir).toBe('up');
+    expect(sig!.origin).toBe(95);   // 起点 = 押しの安値(直近窓の最安値)
   });
 
   it('単調トレンド(戻り/押しなし)は null', () => {
