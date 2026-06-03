@@ -24,6 +24,8 @@ export interface LevelsResult {
   swing: { high: number; low: number; leg: 'up' | 'down' } | null;
   reversalSatisfied: boolean;
   asOf: number;
+  // 高安関係の全水準(クラスタ/上位N選抜・スコア合計によらず全件)。ダブルトップ/ボトム検知用に露出。
+  hlLevels?: { price: number; label: string }[];
 }
 
 // ── 調整ノブ(Task5 で config 化予定。ここでは定数を既定値として参照)──
@@ -281,6 +283,17 @@ export function computeLevels(
     }
   }
 
+  // 高安関係の全水準(クラスタ/上位N選抜前)。ダブルトップ/ボトム検知が「スコア合計によらず
+  // すべての高安水準」を対象にするため露出(ユーザー指定)。価格で重複排除。
+  const hlSeen = new Set<number>();
+  const hlLevels: { price: number; label: string }[] = [];
+  for (const c of cands) {
+    if (c.kind !== 'sessHL' && c.kind !== 'todayHL' && c.kind !== 'longHL') continue;
+    if (!(c.price > 0) || hlSeen.has(c.price)) continue;
+    hlSeen.add(c.price);
+    hlLevels.push({ price: c.price, label: c.label });
+  }
+
   const clustered = cluster(cands, current, {
     tol,
     sessions: completedComplete,
@@ -341,5 +354,5 @@ export function computeLevels(
     l.strong = l.tier >= 1;   // 後方互換
   }
 
-  return { current, up, down, swing, reversalSatisfied, asOf };
+  return { current, up, down, swing, reversalSatisfied, asOf, hlLevels };
 }

@@ -23,6 +23,35 @@ describe('detectDoubleTopBottom', () => {
     expect(sigs[0]!.level).toBe(L);
   });
 
+  it('左の山が水準まで手前5(到達せず5円手前)でも成立(touchTol=5)', () => {
+    const b = bars([
+      [67495, 67450],   // 左=L-5(手前5、到達せず)→ touchTol=5 でタッチ成立
+      [67460, 67390],   // 押し戻し
+      [67470, 67440],
+    ]);
+    expect(detectDoubleTopBottom(levels, b, 67495, DEFAULT_DOUBLE_PARAMS).length).toBe(1);
+  });
+
+  it('左の山が手前6(5円超手前)なら不成立(touchTol=5 の境界)', () => {
+    const b = bars([
+      [67494, 67450],   // 左=L-6(手前6)→ touch しない
+      [67460, 67390],
+      [67470, 67440],
+    ]);
+    expect(detectDoubleTopBottom(levels, b, 67495, DEFAULT_DOUBLE_PARAMS).length).toBe(0);
+  });
+
+  it('ダブルボトム: 左の谷が水準まで手前5でも成立', () => {
+    const Llow = 66200;
+    const lv = [{ price: Llow, label: '長期安' }];
+    const b = bars([
+      [66260, 66205],   // 左=L+5(手前5、到達せず)→ タッチ成立
+      [66330, 66250],   // 戻り(L+pullback=66210 を上抜け)
+      [66280, 66230],
+    ]);
+    expect(detectDoubleTopBottom(lv, b, 66205, DEFAULT_DOUBLE_PARAMS).length).toBe(1);
+  });
+
   it('髭がレベルを超えたら不成立(ブレイク)', () => {
     const b = bars([
       [67520, 67450],   // 髭が L+breakTol を超えた → INVALID

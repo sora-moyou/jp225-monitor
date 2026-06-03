@@ -302,16 +302,24 @@ function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<type
     .catch(() => setExplanation(banner, UI.ja.explanationFailed));
 }
 
-// チャートパターン由来(グランビル/ダブルトップ・ボトム)はニュースAI説明ではなく固定文「テクニカル要因」。
+// チャートパターン由来(グランビル/ダブルトップ・ボトム)はニュースAI説明ではなく固定文を表示。
 function isTechnicalPattern(alert: import('./types.js').AlertEvent): boolean {
   return alert.detectionKind === 'granville' || alert.detectionKind === 'dtb';
+}
+// ダブルは方向別にパターン名(トップ=下方向/ボトム=上方向)、グランビル等は「テクニカル要因」。
+function technicalExplanation(alert: import('./types.js').AlertEvent): string {
+  if (alert.detectionKind === 'dtb') {
+    return alert.direction === 'down' ? UI.ja.doubleTopMaybe : UI.ja.doubleBottomMaybe;
+  }
+  return UI.ja.technicalReason;
 }
 
 function scheduleExplanation(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {
   // テクニカル系は LLM を呼ばず固定文。🔄 でも同じ文を出す(API消費なし)。
   if (isTechnicalPattern(alert)) {
-    banner.refresh = () => setExplanation(banner, UI.ja.technicalReason);
-    setExplanation(banner, UI.ja.technicalReason);
+    const text = technicalExplanation(alert);
+    banner.refresh = () => setExplanation(banner, text);
+    setExplanation(banner, text);
     return;
   }
 

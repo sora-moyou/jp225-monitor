@@ -38,12 +38,10 @@ export function evaluateBarsNiy(
     : cont
       ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い' : 'グランビル戻り売り' }
       : null;
-  const gPrice = bars[bars.length - 1]!.close;
-  // グランビルはクールダウンで抑制しない(取りこぼし防止・ユーザー指定)。ただし発火時は
-  // 共有クールダウンを発生させ、その後の急変(shock)を抑制する。
+  // グランビルはクールダウンを完全無視(ユーザー指定):自身はブロックされず、共有クールダウンも
+  // 発生させない(クールダウンシグナルを出すのは急変のみ)。取りこぼし防止。
   if (g) {
     const ctx = computeContext(bars);
-    markFired(sym, g.sig.dir, gPrice, now);
     console.log(`[alertEngine] ${sym} ${g.note} dev=${g.sig.deviation.toFixed(2)}%`);
     sink({
       symbol: sym, symbolLabel: meta.labelJa, changePercent: g.sig.deviation,
@@ -59,9 +57,11 @@ export function evaluateBarsNiy(
   if (shock) {
     const lastCompleted = bars[bars.length - 2]!;        // 評価対象の完成足
     const bar = Math.floor(lastCompleted.t / 60_000);    // 「バーインデックス」=分インデックス
-    // 急変は自身のバー数クールダウンに加え、共有クールダウン(グランビル/超短期が発生させる)でも抑制。
+    // クールダウンシグナルを出すのは急変のみ。発火時に markFired で共有クールダウンを発生させ、
+    // 自身のバー数クールダウンと併せて連続表示を抑制する(テクニカル系は一切関与しない)。
     if (shockCanFire(sym, bar) && canFire(sym, shock.dir, lastCompleted.close, now)) {
       shockMarkFired(sym, bar);
+      markFired(sym, shock.dir, lastCompleted.close, now);
       const ctx = computeContext(bars);
       const prevClose = completed[completed.length - 2] ?? lastCompleted.close;
       console.log(`[alertEngine] ${sym} shock ${shock.dir} d1=${Math.round(shock.d1)}円 score=${shock.score}/6`);

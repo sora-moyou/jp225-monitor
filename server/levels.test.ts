@@ -28,6 +28,26 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     expect(r.up.map(l => l.price)).toEqual([...r.up.map(l => l.price)].sort((a, b) => a - b));
   });
 
+  it('hlLevels はスコア合計・選抜によらず全高安水準を露出する(選抜窓外も含む)', () => {
+    const sessions = [
+      s('2026-06-01', 'Day', 67100, 66900),
+      s('2026-05-31', 'Day', 67300, 66700),
+      s('2026-05-30', 'Day', 67600, 66400),
+      s('2026-05-29', 'Day', 68000, 66000),
+      s('2026-05-28', 'Day', 68900, 65100),   // 現値67000から1900円(選抜窓1500外)
+    ];
+    const r = computeLevels(sessions, 67000, 0, null);
+    const hl = (r.hlLevels ?? []).map(l => l.price);
+    // 全セッションの高安が含まれる(選抜窓外の 68900/65100 も漏らさない)
+    expect(hl).toContain(68900);
+    expect(hl).toContain(65100);
+    expect(hl).toContain(67100);
+    expect(hl).toContain(66900);
+    expect(hl.length).toBeGreaterThanOrEqual(10);   // 5高+5安(価格重複なし)
+    // 高安以外(節目/fib/前日終値)は含まれない
+    expect(r.hlLevels!.every(l => /高|安/.test(l.label))).toBe(true);
+  });
+
   it('±30円以内で重なる H/L を強レベル(★)に束ね、ラベルを連結する', () => {
     const sessions = [
       s('2026-06-01', 'Night', 67410, 66000),

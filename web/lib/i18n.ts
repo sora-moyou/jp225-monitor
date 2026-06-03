@@ -20,6 +20,8 @@ export const UI = {
     explanationLoading: '(説明取得中…)',
     explanationFailed: '(説明取得失敗)',
     technicalReason: 'テクニカル要因',
+    doubleTopMaybe: 'ダブルトップの可能性あり',
+    doubleBottomMaybe: 'ダブルボトムの可能性あり',
     flash: 'フラッシュ',
     trend: 'トレンド',
     enableSound: '🔔 サウンドを有効化',

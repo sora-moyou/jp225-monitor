@@ -78,8 +78,10 @@ function tick(): void {
     try {
       const sinceT = now - DEFAULT_DOUBLE_PARAMS.lookbackBars * 60_000;
       const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
-      const allLevels = [...result.up, ...result.down].map(l => ({ price: l.price, label: l.labels.join('・') }));
-      for (const dsig of detectDoubleTopBottom(allLevels, recent, latest.price)) {
+      // ダブルは高安関係の全水準が対象。スコア合計・上位N選抜によらず、computeLevels が露出する
+      // 全高安水準(各セッション高安・当日高安・直近高安・長期高安)を漏れなくチェック(ユーザー指定)。
+      const hlLevels = result.hlLevels ?? [];
+      for (const dsig of detectDoubleTopBottom(hlLevels, recent, latest.price)) {
         const key = `${dsig.kind}@${dsig.level.toFixed(1)}`;
         if (now - (lastDtbFire.get(key) ?? -Infinity) <= DTB_COOLDOWN_MS) continue;
         lastDtbFire.set(key, now);
