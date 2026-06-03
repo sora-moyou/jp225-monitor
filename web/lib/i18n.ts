@@ -22,6 +22,7 @@ export const UI = {
     technicalReason: 'テクニカル要因',
     doubleTopMaybe: 'ダブルトップの可能性あり',
     doubleBottomMaybe: 'ダブルボトムの可能性あり',
+    levelBreakMaybe: '水準抜けの可能性あり',
     flash: 'フラッシュ',
     trend: 'トレンド',
     enableSound: '🔔 サウンドを有効化',

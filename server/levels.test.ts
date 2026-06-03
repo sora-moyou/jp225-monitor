@@ -48,6 +48,19 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     expect(r.hlLevels!.every(l => /高|安/.test(l.label))).toBe(true);
   });
 
+  it('直近高安2: 少し長い期間(既定20S)の高安が直近高2/安2として露出される', () => {
+    // 16セッション。突出した高値をインデックス12(直近10の外・直近20の内)に置く。
+    const sessions: SessionOHLC[] = [];
+    for (let i = 0; i < 16; i++) {
+      const d = `2026-06-${String(16 - i).padStart(2, '0')}`;   // 降順(最新が先頭)
+      const high = i === 12 ? 70000 : 67000 + i;                // index12 のみ突出
+      sessions.push(s(d, 'Day', high, 66000 - i));
+    }
+    const r = computeLevels(sessions, 68000, 0, null);
+    const lbl = (r.hlLevels ?? []).find(l => l.price === 70000)?.label ?? '';
+    expect(lbl).toContain('直近高2');   // 直近10外・直近20内の高値が直近高2として拾われる
+  });
+
   it('±30円以内で重なる H/L を強レベル(★)に束ね、ラベルを連結する', () => {
     const sessions = [
       s('2026-06-01', 'Night', 67410, 66000),

@@ -18,6 +18,7 @@ const NUMERIC_PARAM_KEYS = [
   'shockAvgMult', 'shockScoreNeed', 'shockCooldownBars', 'openGuardBars', 'flashYen',
   'granvilleMaMid', 'granvilleMaLong',
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
+  'levelLookbackSessions', 'levelLookbackSessions2',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
 
 export function getSettingsHandler(_req: Request, res: Response): void {

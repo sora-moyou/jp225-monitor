@@ -28,6 +28,8 @@ const PARAMS: ParamSpec[] = [
   { key: 'levelSelectWindowYen', inputId: 'params-level-window' },
   { key: 'fibConfluenceBonus',   inputId: 'params-fib-confluence' },
   { key: 'levelTestBonus',       inputId: 'params-level-testbonus' },
+  { key: 'levelLookbackSessions',  inputId: 'params-level-lookback' },
+  { key: 'levelLookbackSessions2', inputId: 'params-level-lookback2' },
 ];
 
 export interface ParamsElements {

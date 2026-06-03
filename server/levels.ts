@@ -29,7 +29,8 @@ export interface LevelsResult {
 }
 
 // ── 調整ノブ(Task5 で config 化予定。ここでは定数を既定値として参照)──
-export const LOOKBACK_SESSIONS = 10;
+// 直近高安(直近2)の対象セッション数は config パラメータ(levelLookbackSessions / levelLookbackSessions2)。
+// 既定は 10 / 20。PARAM_BOUNDS とUIノブ「直近高安の範囲」で可変。
 export const CONFLUENCE_TOL = 30;   // 円(後方互換 export)
 export const GRID = 250;            // 節目グリッド
 export const NEAR_N = 4;            // 後方互換 export
@@ -191,7 +192,7 @@ export function computeLevels(
   const cands: Cand[] = [];
   // 寄りから揃っているセッションだけ高安を水準に使う(寄り欠け=収集途中のセッションは高安が不正確)。
   const completedComplete = completed.filter(isSessionComplete);
-  const recent = completedComplete.slice(0, LOOKBACK_SESSIONS);
+  const recent = completedComplete.slice(0, cfg.lookbackSessions);
   for (const s of recent) {
     const tag = fmtSession(s.sessionDate, s.session);
     cands.push({ price: s.high, label: `${tag}高`, weight: WEIGHTS.sessHL, kind: 'sessHL', srcDate: s.sessionDate, srcSession: s.session });
@@ -203,18 +204,23 @@ export function computeLevels(
     cands.push({ price: Math.min(inProgress.low, current), label: '当日安', weight: WEIGHTS.todayHL, kind: 'todayHL', srcDate: inProgress.sessionDate, srcSession: inProgress.session });
     cands.push({ price: inProgress.open, label: '当日始', weight: WEIGHTS.open, kind: 'open' });
   }
+  // 直近高/安は通常いずれかのセッション高安と一致する。重複時は新規候補にせず
+  // 既存候補のラベルに併記する（同一価格をコンフルエンス本数に水増ししないため）。
+  const mark = (price: number, label: string): void => {
+    const ex = cands.find(c => c.price === price);
+    if (ex) ex.label += `・${label}`;
+    else cands.push({ price, label, weight: WEIGHTS.sessHL, kind: 'sessHL' });
+  };
   if (recent.length) {
-    const recentHigh = Math.max(...recent.map(s => s.high));
-    const recentLow  = Math.min(...recent.map(s => s.low));
-    // 直近高/安は通常いずれかのセッション高安と一致する。重複時は新規候補にせず
-    // 既存候補のラベルに併記する（同一価格をコンフルエンス本数に水増ししないため）。
-    const mark = (price: number, label: string): void => {
-      const ex = cands.find(c => c.price === price);
-      if (ex) ex.label += `・${label}`;
-      else cands.push({ price, label, weight: WEIGHTS.sessHL, kind: 'sessHL' });
-    };
-    mark(recentHigh, '直近高');
-    mark(recentLow, '直近安');
+    mark(Math.max(...recent.map(s => s.high)), '直近高');
+    mark(Math.min(...recent.map(s => s.low)), '直近安');
+  }
+  // 直近高安2: 少し長い期間(cfg.lookbackSessions2)のスイング高安。扱いは直近高安と同じ
+  // (weight=sessHL / kind=sessHL → hlLevels に露出し、ダブル・水準抜けの監視対象になる)。
+  const recent2 = completedComplete.slice(0, cfg.lookbackSessions2);
+  if (recent2.length) {
+    mark(Math.max(...recent2.map(s => s.high)), '直近高2');
+    mark(Math.min(...recent2.map(s => s.low)), '直近安2');
   }
   if (completed.length) {
     // グリッド節目（履歴データがあれば現値から。寄り欠け判定とは独立）。

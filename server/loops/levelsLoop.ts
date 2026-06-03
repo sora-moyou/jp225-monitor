@@ -1,15 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars } from '../db/store.js';
-import { computeLevels, LOOKBACK_SESSIONS, type LevelsResult } from '../levels.js';
+import { computeLevels, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
 import { getForecastSnapshot } from './forecastLoop.js';
 import { emitAlert } from '../alertHistory.js';
 import { detectDoubleTopBottom, DEFAULT_DOUBLE_PARAMS } from '../doublePattern.js';
+import { detectLevelBreak } from '../levelBreak.js';
+import { resolveLevelsConfig } from '../configStore.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 8_000;   // 当日H/Lをほぼリアルタイム化(従来60s)。NIY=Fのみで軽い。
-const FETCH_SESSIONS = Math.max(LOOKBACK_SESSIONS, 20) + 4;   // 20Sスイング + 長期高安 + 余裕
+// 取得セッション数: 直近高安2(可変) / 20Sフィボ / 長期高安 を賄える数 + 余裕。
+const fetchSessionsFor = (lookback: number, lookback2: number): number => Math.max(lookback, lookback2, 20) + 4;
 
 let db: DatabaseSync | null = null;
 let timer: NodeJS.Timeout | null = null;
@@ -22,6 +25,9 @@ let warnedNoTick = false;
 // 8秒ループでゾーン内に留まる間の連発を防ぐ。共有クールダウン(alertCooldown)とは独立。
 const DTB_COOLDOWN_MS = 15 * 60_000;
 const lastDtbFire = new Map<string, number>();
+// 水準抜けの per-level クールダウン(DTB と同様 15分・別マップ)。
+const BREAK_COOLDOWN_MS = 15 * 60_000;
+const lastBreakFire = new Map<string, number>();
 // 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
 // DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
 
@@ -55,7 +61,8 @@ function tick(): void {
     }
     warnedNoTick = false;
     const tDb = Date.now();
-    const sessions = getSessionOHLC(db, SYMBOL, FETCH_SESSIONS);
+    const lc = resolveLevelsConfig();
+    const sessions = getSessionOHLC(db, SYMBOL, fetchSessionsFor(lc.lookbackSessions, lc.lookbackSessions2));
     const dbMs = Date.now() - tDb;
     const cs = classifySession(now);
     const fc = getForecastSnapshot();
@@ -96,8 +103,25 @@ function tick(): void {
           note: `${name} ${Math.round(dsig.level)}円(${dsig.label})に接近`,
         });
       }
+      // ── 水準抜け検知(DTBの補集合: 反転せず抜けた/ネック未達で再度抜けた)──
+      // 同じ hlLevels・同じ直近1分足を対象。per-level クールダウンで連発抑制。
+      for (const bsig of detectLevelBreak(hlLevels, recent, latest.price)) {
+        const key = `${bsig.kind}@${bsig.level.toFixed(1)}`;
+        if (now - (lastBreakFire.get(key) ?? -Infinity) <= BREAK_COOLDOWN_MS) continue;
+        lastBreakFire.set(key, now);
+        const lvl = Math.round(bsig.level);
+        console.log(`[levelsLoop] 水準抜け ${bsig.kind} @${lvl} (${bsig.label})`);
+        emitAlert({
+          symbol: SYMBOL, symbolLabel: '日経225先物',
+          changePercent: 0, windowSeconds: 60, detectionKind: 'break',
+          direction: bsig.kind === 'up' ? 'up' : 'down',
+          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: lvl,
+          note: `${lvl.toLocaleString('ja-JP')}水準抜けの可能性あり`,
+        });
+      }
     } catch (err) {
-      console.warn('[levelsLoop] dtb detect failed:', err instanceof Error ? err.message : err);
+      console.warn('[levelsLoop] dtb/break detect failed:', err instanceof Error ? err.message : err);
     }
     // 診断ログ: 最初の3tick / 遅い時(DB>500ms or compute>150ms) / 水準が空の時 に出す。
     // 通常は無音。これを見れば「どのステージで詰まるか」「水準が空になっていないか」が分かる。

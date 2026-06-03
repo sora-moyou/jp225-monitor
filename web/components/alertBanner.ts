@@ -34,7 +34,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
 
   const el = document.createElement('div');
   // isTech は下で定義するが className に使うため先に判定。
-  const isTechKind = alert.detectionKind === 'granville' || alert.detectionKind === 'dtb';
+  const isTechKind = alert.detectionKind === 'granville' || alert.detectionKind === 'dtb' || alert.detectionKind === 'break';
   el.className = `alert ${alert.direction}${isTechKind ? ' tech' : ''}`;
   const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
     : alert.detectionKind === 'shock' ? '急変'

@@ -34,6 +34,8 @@ export interface UserConfig {
   levelSelectWindowYen?: number;
   fibConfluenceBonus?: number;
   levelTestBonus?: number;
+  levelLookbackSessions?: number;    // 直近高安の対象セッション数
+  levelLookbackSessions2?: number;   // 直近高安2(少し長い期間)の対象セッション数
 }
 
 type ProviderName = 'gemini' | 'groq' | 'openai';
@@ -61,6 +63,8 @@ export const PARAM_BOUNDS = {
   levelSelectWindowYen:  { min: 100, max: 10000, default: 1500 },
   fibConfluenceBonus:    { min: 1.0, max: 5.0, default: 1.5 },
   levelTestBonus:        { min: 0, max: 1, default: 0.15 },
+  levelLookbackSessions:  { min: 2, max: 60,  default: 10 },
+  levelLookbackSessions2: { min: 2, max: 120, default: 20 },
 } as const;
 
 let cached: UserConfig | null = null;
@@ -179,6 +183,8 @@ export function resolveLevelsConfig(): {
   selectWindowYen: number;
   fibConfluenceBonus: number;
   levelTestBonus: number;
+  lookbackSessions: number;
+  lookbackSessions2: number;
 } {
   return {
     tol: resolveNumeric('levelTol'),
@@ -186,6 +192,8 @@ export function resolveLevelsConfig(): {
     selectWindowYen: resolveNumeric('levelSelectWindowYen'),
     fibConfluenceBonus: resolveNumeric('fibConfluenceBonus'),
     levelTestBonus: resolveNumeric('levelTestBonus'),
+    lookbackSessions: resolveNumeric('levelLookbackSessions'),
+    lookbackSessions2: resolveNumeric('levelLookbackSessions2'),
   };
 }
 
