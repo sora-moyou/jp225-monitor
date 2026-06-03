@@ -46,7 +46,8 @@ export function emitAlert(p: AlertEventPayload): void {
   // 未来日時のアラートは出さない(UI・記録とも)。基礎データ取り込み等で未来バーが feed に混じると
   // triggeredAt が未来になる。現在より2分以上未来なら破棄。
   if (p.triggeredAt > Date.now() + 2 * 60_000) {
-    console.warn(`[alertHistory] future-dated alert dropped: ${new Date(p.triggeredAt).toISOString()} (${p.detectionKind})`);
+    console.error(`[alertHistory] ERROR: future-dated alert dropped: ${new Date(p.triggeredAt).toISOString()} `
+      + `(${p.detectionKind} ${p.symbol}), now ${new Date().toISOString()}. 基礎データ取り込みの未来バー由来の可能性。`);
     return;
   }
   if (isWithinOpenGuard(p.triggeredAt, resolveOpenGuardBars())) return;   // 寄りから3本は全アラート抑制(UIバナーも記録も出さない)

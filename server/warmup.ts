@@ -22,16 +22,27 @@ export function selectWarmup(db: DatabaseSync, now: number): WarmupData | null {
   const latest = getLatestTick(db, 'NIY=F');
   if (!latest || now - latest.t > FRESH_MS) return null;
   const barsBySymbol = new Map<string, Bar[]>();
+  let futureBars = 0, futureSample = 0;
   for (const inst of INSTRUMENTS) {
     const sym = inst.symbol as string;
-    // 未来日時のバーは種付けしない。基礎データ取り込みで夜間セッション翌朝(取り込み時点では未来)の
-    // バーが DB に入ると、それを feed に積んで未来時刻のアラートを出してしまうため t<=now に限定。
-    const bars = getRecentBars(db, sym, now - BARS_LOOKBACK_MS)
-      .filter(b => b.t <= now).map(b => ({ t: b.t, close: b.c }));
+    // 未来日時のバーは種付けしない(feed に積むと未来時刻のアラートが出る)。t<=now に限定。
+    // ただし黙って捨てない: 未来バーは基礎データ取り込みの日付解析バグの兆候なので必ずログに残す
+    // (取り込みが正しければ未来バーは存在しないはず)。
+    const all = getRecentBars(db, sym, now - BARS_LOOKBACK_MS);
+    const bars = all.filter(b => b.t <= now).map(b => ({ t: b.t, close: b.c }));
+    const dropped = all.length - bars.length;
+    if (dropped > 0) { futureBars += dropped; futureSample = Math.max(futureSample, ...all.filter(b => b.t > now).map(b => b.t)); }
     if (bars.length > 0) barsBySymbol.set(sym, bars);
   }
-  const niyTicks = getRecentTicks(db, 'NIY=F', now - TICKS_LOOKBACK_MS)
-    .filter(t => t.t <= now).map(t => ({ t: t.t, price: t.price }));
+  const allTicks = getRecentTicks(db, 'NIY=F', now - TICKS_LOOKBACK_MS);
+  const niyTicks = allTicks.filter(t => t.t <= now).map(t => ({ t: t.t, price: t.price }));
+  const futureTicks = allTicks.length - niyTicks.length;
+  if (futureBars > 0 || futureTicks > 0) {
+    const latest = futureBars > 0 ? `, latest future bar ${new Date(futureSample).toISOString()}` : '';
+    console.error(`[warmup] ERROR: future-dated rows in DB — dropped ${futureBars} bars / ${futureTicks} ticks `
+      + `(now ${new Date(now).toISOString()}${latest}). `
+      + `基礎データ取り込みの日付解析バグの可能性。importBars/rowToBar を確認すること。`);
+  }
   return { barsBySymbol, niyTicks };
 }
 

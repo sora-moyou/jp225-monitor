@@ -59,4 +59,14 @@ describe('importBars', () => {
     expect(r.inserted + r.updated).toBe(0);
     db.close();
   });
+
+  it('未来日時のバーは DB に入れない(黙殺せずドロップ)', () => {
+    const db = new DatabaseSync(':memory:'); initSchema(db);
+    const future = Date.now() + 24 * 3600_000;   // 1日先
+    const r = importBars(db, [{ t: future, o: 1, h: 1, l: 1, c: 1, v: 1 }]);
+    expect(r.inserted + r.updated).toBe(0);
+    const cnt = (db.prepare('SELECT COUNT(*) n FROM bars_1m').get() as any).n;
+    expect(cnt).toBe(0);
+    db.close();
+  });
 });

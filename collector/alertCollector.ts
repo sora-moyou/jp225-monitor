@@ -29,7 +29,11 @@ export class AlertCollector {
 
   /** DB-only sink: persist the alert with a near-duplicate guard. No SSE (collector has no UI). */
   private sink: AlertSink = (e: AlertEventPayload) => {
-    if (e.triggeredAt > Date.now() + 2 * 60_000) return;   // 未来日時(基礎データ取り込みの未来バー由来)は記録しない
+    if (e.triggeredAt > Date.now() + 2 * 60_000) {   // 未来日時のアラートは記録しない。黙殺せず必ずログに残す
+      console.error(`[alertCollector] ERROR: future-dated alert dropped: ${new Date(e.triggeredAt).toISOString()} `
+        + `(${e.detectionKind} ${e.symbol}), now ${new Date().toISOString()}. 基礎データ取り込みの未来バー由来の可能性。`);
+      return;
+    }
     if (isWithinOpenGuard(e.triggeredAt, resolveOpenGuardBars())) return;   // 寄りから3本は collector 側記録も抑制
     const latest = getLatestTick(this.db, e.symbol);
     const price = latest ? latest.price : (e.pa15min ? e.pa15min.current : 0);

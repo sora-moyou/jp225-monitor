@@ -37,10 +37,14 @@ export interface ImportResult { inserted: number; updated: number; skipped: numb
 /** bars を session 付与して upsert。session=null(休場/場外)はスキップ。削除はしない。
  *  ~13万行を1トランザクションで一括コミット(行ごとの autocommit だと WAL の fsync で激遅)。 */
 export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
-  let applied = 0, skipped = 0, from = Infinity, to = -Infinity;
+  let applied = 0, skipped = 0, futureDropped = 0, latestFuture = 0, from = Infinity, to = -Infinity;
+  const futureCutoff = Date.now() + 2 * 60_000;
   db.exec('BEGIN');
   try {
     for (const b of bars) {
+      // 未来日時のバーは DB に入れない。黙って捨てると日付解析バグが隠れるのでエラーログに残す
+      // (取り込み元が正しければ未来バーは存在しないはず)。
+      if (b.t > futureCutoff) { futureDropped++; if (b.t > latestFuture) latestFuture = b.t; continue; }
       const s = classifySession(b.t);
       if (!s) { skipped++; continue; }
       upsertBar(db, SYMBOL, b.t, b.o, b.h, b.l, b.c, b.v, s.sessionDate, s.session);
@@ -50,6 +54,11 @@ export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
+  }
+  if (futureDropped > 0) {
+    console.error(`[basedata] ERROR: dropped ${futureDropped} future-dated bars on import `
+      + `(latest ${new Date(latestFuture).toISOString()}, now ${new Date().toISOString()}). `
+      + `日付解析バグ or ソースデータ異常の可能性。rowToBar/publish を確認すること。`);
   }
   return { inserted: applied, updated: 0, skipped, from: from === Infinity ? 0 : from, to: to === -Infinity ? 0 : to, total: bars.length };
 }
