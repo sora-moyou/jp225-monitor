@@ -23,6 +23,12 @@ function shockCanFire(symbol: string, bar: number): boolean {
 function shockMarkFired(symbol: string, bar: number): void { lastShockBar.set(symbol, bar); }
 export function _resetShockCooldown(): void { lastShockBar.clear(); }
 
+// グランビルのエッジ抑制: 前 tick でも出ていた同一シグナル(同 note)は「過去の転換/継続の再表示」=
+// エコーなので発火しない。シグナルが一旦消えてから再度現れた時だけ発火する(立ち上がりエッジ)。
+// クールダウンとは別物(時間で抑えるのでなく「状態変化」で1回化する)。
+let lastGranvilleNotes = new Set<string>();
+export function _resetGranvilleDedup(): void { lastGranvilleNotes = new Set(); }
+
 /** Bar-confirmed detection for NIY=F: Granville (reversal/continuation) first, then shock (完成1分足).
  *  Routes events to `sink`. */
 export function evaluateBarsNiy(
@@ -54,7 +60,10 @@ export function evaluateBarsNiy(
     else byNote.set(g.note, { sig: g.sig, note: g.note, labels: [label] });
   }
   // グランビルはクールダウンを完全無視(ユーザー指定):ブロックされず、共有クールダウンも発生させない。
+  // ただしエコー(前tickと同一シグナルが出続ける=過去の転換/継続の再表示)はエッジ抑制で1回化する。
+  const currentNotes = new Set(byNote.keys());
   for (const g of byNote.values()) {
+    if (lastGranvilleNotes.has(g.note)) continue;   // 前tickでも出ていた→エコー、発火しない
     const ctx = computeContext(bars);
     const maTag = g.labels.join('・');   // 中期/長期/中期・長期(ログ用。表示には出さない=ユーザー指定)
     console.log(`[alertEngine] ${sym} ${g.note}(${maTag}) dev=${g.sig.deviation.toFixed(2)}%`);
@@ -66,6 +75,7 @@ export function evaluateBarsNiy(
       level: Math.round(g.sig.origin),   // 起点価格(1つ以上前の足: 転換=クロス前 / 継続=押し安値・戻り高値)
     });
   }
+  lastGranvilleNotes = currentNotes;   // 次tickのエッジ判定用に今tickのシグナル集合を記録
 
   // 急変(価格変化スコア方式)。完成足のみ(末尾=進行中バーを除外)。バー数クールダウンで間引く。
   const completed = bars.slice(0, -1).map(b => b.close);

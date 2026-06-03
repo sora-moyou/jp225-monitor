@@ -5,23 +5,38 @@ import { detectGranvilleReversal, detectGranvilleContinuation,
 const P: GranvilleParams = { maPeriod: 10, slopeBack: 5 };
 const PC: GranvilleContParams = { maPeriod: 10, slopeBack: 5, retestBack: 5, touchBand: 0.02 };
 
+// 系列を末尾1本ずつ伸ばして評価し、転換が「何回」発火したか(=クロスの瞬間だけか)を数える。
+// 旧実装は cBack(15本前)基準で、クロス後も約slopeBack本ぶん毎足発火していた(過去の転換を新規表示)。
+// 現実装はエッジ検知で「ちょうど1回」が期待値。
+function scanReversal(closes: number[], p: GranvilleParams): { fires: number; sig: ReturnType<typeof detectGranvilleReversal> } {
+  let fires = 0; let sig: ReturnType<typeof detectGranvilleReversal> = null;
+  const need = p.maPeriod + 2 * p.slopeBack + 1;
+  for (let n = need; n <= closes.length; n++) {
+    const s = detectGranvilleReversal(closes.slice(0, n), p);
+    if (s) { fires++; sig = s; }
+  }
+  return { fires, sig };
+}
+
 describe('detectGranvilleReversal (グランビル①トレンド転換)', () => {
-  it('買い転換: MAが下落→上向き＋価格が下から上抜け', () => {
+  it('買い転換: 上抜けの瞬間に1度だけ発火(エコーしない)', () => {
     const down = Array.from({ length: 20 }, (_, i) => 100 - i);   // 100..81
     const up = [85, 95, 105, 110, 112];                           // 反発して MA を上抜け
-    const sig = detectGranvilleReversal([...down, ...up], P);
-    expect(sig?.dir).toBe('up');
-    expect(sig!.deviation).toBeGreaterThan(0);
-    // 起点 = slopeBack(5)本前の終値(クロス前)= closes[19]=81。現値(112)ではなく1つ以上前の足。
-    expect(sig!.origin).toBe(81);
+    const r = scanReversal([...down, ...up], P);
+    expect(r.fires).toBe(1);                       // クロスは1回 → 発火も1回(過去転換の再発火なし)
+    expect(r.sig!.dir).toBe('up');
+    expect(r.sig!.deviation).toBeGreaterThan(0);
+    expect(r.sig!.origin).toBeLessThan(r.sig!.ma); // 起点は転換前(MA下)の1つ以上前の足の価格
   });
 
-  it('売り転換: MAが上昇→下向き＋価格が上から下抜け', () => {
+  it('売り転換: 下抜けの瞬間に1度だけ発火(エコーしない)', () => {
     const upTrend = Array.from({ length: 20 }, (_, i) => 80 + i);  // 80..99
     const down = [95, 85, 75, 70, 68];                            // 反落して MA を下抜け
-    const sig = detectGranvilleReversal([...upTrend, ...down], P);
-    expect(sig?.dir).toBe('down');
-    expect(sig!.deviation).toBeLessThan(0);
+    const r = scanReversal([...upTrend, ...down], P);
+    expect(r.fires).toBe(1);
+    expect(r.sig!.dir).toBe('down');
+    expect(r.sig!.deviation).toBeLessThan(0);
+    expect(r.sig!.origin).toBeGreaterThan(r.sig!.ma);
   });
 
   it('単調下落(転換なし)は null', () => {
@@ -33,25 +48,26 @@ describe('detectGranvilleReversal (グランビル①トレンド転換)', () =>
     expect(detectGranvilleReversal([1, 2, 3], P)).toBeNull();
   });
 
-  // 遅行MAの取りこぼし回帰テスト: 75本MAは反転に遅れるため、価格がMAを上抜けた時点では
-  // MAはまだ下向き(slopeRecentは負)。旧条件 slopeRecent>=0 だとこの局面で永遠に発火せず
-  // チャンスを逃す。減速(slopeRecent>slopePrior)で発火するよう修正。既定パラメータ(75/15)で検証。
-  it('買い転換(遅行MA): 価格がMAを上抜けた時点で、MAが下げ渋り(減速)なら転換を捉える', () => {
+  // 遅行MAの取りこぼし回帰: 75本MAは反転に遅行するため、価格がMAを上抜けた時点ではMAはまだ下向き
+  // (slopeRecentは負)。減速(slopeRecent>slopePrior)で「クロスの瞬間に1度だけ」発火することを検証。
+  it('買い転換(遅行MA75): クロス時に1度だけ発火', () => {
     const closes: number[] = [];
-    for (let i = 0; i < 90; i++) closes.push(67500 - 1500 * (i / 89));   // 67500→66000 緩やか下降
+    for (let i = 0; i < 130; i++) closes.push(68000 - 2000 * (i / 129));   // 緩やか下降
     const b = closes[closes.length - 1]!;
-    for (let i = 1; i <= 20; i++) closes.push(b + 30 * i);               // 反転上昇(MA上抜け直後)
-    const sig = detectGranvilleReversal(closes, { maPeriod: 75, slopeBack: 15 });   // 長期75
-    expect(sig?.dir).toBe('up');
+    for (let k = 1; k <= 40; k++) closes.push(b + 40 * k);                 // 反転上昇でMA上抜け
+    const r = scanReversal(closes, { maPeriod: 75, slopeBack: 15 });
+    expect(r.fires).toBe(1);
+    expect(r.sig!.dir).toBe('up');
   });
 
-  it('売り転換(遅行MA): 価格がMAを下抜けた時点で、MAが上げ渋り(減速)なら転換を捉える', () => {
+  it('売り転換(遅行MA75): クロス時に1度だけ発火', () => {
     const closes: number[] = [];
-    for (let i = 0; i < 90; i++) closes.push(66000 + 1500 * (i / 89));   // 66000→67500 緩やか上昇
+    for (let i = 0; i < 130; i++) closes.push(66000 + 2000 * (i / 129));   // 緩やか上昇
     const t = closes[closes.length - 1]!;
-    for (let i = 1; i <= 20; i++) closes.push(t - 30 * i);               // 反落(MA下抜け直後)
-    const sig = detectGranvilleReversal(closes, { maPeriod: 75, slopeBack: 15 });   // 長期75
-    expect(sig?.dir).toBe('down');
+    for (let k = 1; k <= 40; k++) closes.push(t - 40 * k);                 // 反落でMA下抜け
+    const r = scanReversal(closes, { maPeriod: 75, slopeBack: 15 });
+    expect(r.fires).toBe(1);
+    expect(r.sig!.dir).toBe('down');
   });
 });
 

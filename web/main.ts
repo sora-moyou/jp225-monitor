@@ -309,7 +309,7 @@ function isTechnicalPattern(alert: import('./types.js').AlertEvent): boolean {
 // テクニカル系の固定文。ダブル=「価格xxxでダブルトップ/ボトムの可能性あり」、
 // グランビル=「価格xxxで押し目買い/戻り売り/買い転換/売り転換」。それ以外は「テクニカル要因」。
 function technicalExplanation(alert: import('./types.js').AlertEvent): string {
-  const yen = (p?: number): string => (p ? `価格${p.toLocaleString('ja-JP')}で` : '');
+  const yen = (p?: number): string => (p ? `${p.toLocaleString('ja-JP')}で` : '');
   if (alert.detectionKind === 'dtb') {
     const kind = alert.direction === 'down' ? UI.ja.doubleTopMaybe : UI.ja.doubleBottomMaybe;
     return `${yen(alert.level)}${kind}`;

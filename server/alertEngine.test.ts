@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { evaluateBarsNiy, _resetShockCooldown } from './alertEngine.js';
+import { evaluateBarsNiy, _resetShockCooldown, _resetGranvilleDedup } from './alertEngine.js';
 import { DEFAULT_PARAMS } from './alertDetector.js';
 import { INSTRUMENTS } from './config.js';
 import { _reset as resetCooldown, markFired, canFire } from './alertCooldown.js';
@@ -23,7 +23,7 @@ function quietThenJump(): Bar[] {
 }
 
 describe('evaluateBarsNiy', () => {
-  beforeEach(() => { resetCooldown(); _resetShockCooldown(); });
+  beforeEach(() => { resetCooldown(); _resetShockCooldown(); _resetGranvilleDedup(); });
 
   it('fires a shock alert through the sink on a quiet-then-jump series', () => {
     const fired: AlertEventPayload[] = [];
@@ -46,24 +46,24 @@ describe('evaluateBarsNiy', () => {
     expect(fired.length).toBe(0);
   });
 
-  // 緩やかな反転(下降→上昇)。グランビル買い転換が出る系列(granville.test.ts と同形)。
+  // 緩やかな反転(下降→上昇)で「最後の足がMAを上抜ける(クロスする)」系列。
+  // エッジ検知のグランビルはクロスの足でだけ発火するので、クロスする足で系列を終える(len=95, probe確認)。
   function gradualReversalUp(): Bar[] {
     const bars: Bar[] = [];
     let i = 0;
     for (; i < 90; i++) bars.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
     const b = bars[bars.length - 1]!.close;
-    for (let k = 1; k <= 20; k++, i++) bars.push({ t: i * 60_000, close: b + 30 * k });
+    for (let k = 1; k <= 5; k++, i++) bars.push({ t: i * 60_000, close: b + 30 * k });
     return bars;
   }
 
-  // グランビルのみ発火し急変は出ない系列。末尾を +3 で平坦化し最終足の急変を回避(probe で確認)。
+  // グランビルのみ発火し急変は出ない系列。緩やかな +15/本 上昇でクロスさせる(len=98, shock閾値未満, probe確認)。
   function granvilleOnlyUp(): Bar[] {
     const bars: Bar[] = [];
     let i = 0;
     for (; i < 90; i++) bars.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
-    let c = bars[bars.length - 1]!.close;
-    for (let k = 0; k < 20; k++, i++) { c += 30; bars.push({ t: i * 60_000, close: c }); }
-    for (let k = 0; k < 6; k++, i++) { c += 3; bars.push({ t: i * 60_000, close: c }); }
+    const b = bars[bars.length - 1]!.close;
+    for (let k = 1; k <= 8; k++, i++) bars.push({ t: i * 60_000, close: b + 15 * k });
     return bars;
   }
 
@@ -85,7 +85,7 @@ describe('evaluateBarsNiy', () => {
   });
 
   it('グランビルは共有クールダウンが有効でも発火する(クールダウン完全無視)', () => {
-    const now = 110 * 60_000;
+    const now = 95 * 60_000;
     markFired('NIY=F', 'up', 67000, now);   // クールダウンを発火状態にしてもブロックされない
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(gradualReversalUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
@@ -97,12 +97,29 @@ describe('evaluateBarsNiy', () => {
   });
 
   it('グランビルは発火しても共有クールダウンを発生させない(シグナルは急変のみ)', () => {
-    const now = 116 * 60_000;
+    const now = 98 * 60_000;
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(granvilleOnlyUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
     expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
     expect(fired.some(e => e.detectionKind === 'shock')).toBe(false);   // この系列は急変を出さない
     // グランビルは markFired を呼ばない → 共有クールダウンは未発生(canFire は true のまま)
     expect(canFire('NIY=F', 'up', 67000, now + 1000)).toBe(true);
+  });
+
+  // 回帰: 「過去の転換が毎分 新規アラートされる」エコーバグ。alertLoop の毎分評価を模し、
+  // 系列を1本ずつ伸ばして連続評価しても、1回のクロスにつきグランビルは1回だけ発火する。
+  it('連続評価しても1クロスにつき転換は1回だけ(エコーで過去転換を再表示しない)', () => {
+    const full: Bar[] = [];
+    let i = 0;
+    for (; i < 90; i++) full.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
+    const b = full[full.length - 1]!.close;
+    for (let k = 1; k <= 20; k++, i++) full.push({ t: i * 60_000, close: b + 30 * k });
+    let granvilleCount = 0;
+    for (let n = 66; n <= full.length; n++) {   // dedup はリセットせず連続評価(= 本番の毎分評価)
+      evaluateBarsNiy(full.slice(0, n), META, DEFAULT_PARAMS, n * 60_000, (e) => {
+        if (e.detectionKind === 'granville') granvilleCount++;
+      });
+    }
+    expect(granvilleCount).toBe(1);
   });
 });

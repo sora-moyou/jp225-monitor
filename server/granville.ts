@@ -33,18 +33,19 @@ export function detectGranvilleReversal(closes: number[], p: GranvilleParams = D
   const slopePrior = maMid - maOld;     // 以前の傾き
   const slopeRecent = maNow - maMid;    // 直近の傾き
   const cNow = closes[last]!;
-  const cBack = closes[last - p.slopeBack]!;   // slopeBack 本前の終値(クロス前の位置確認用)
+  const cPrev = closes[last - 1]!;                 // 1本前の終値
+  const maPrev = sma(closes, last - 1, p.maPeriod);// 1本前の MA
+  const cBack = closes[last - p.slopeBack]!;       // slopeBack 本前の終値(起点表示用)
   const deviation = ((cNow - maNow) / maNow) * 100;
 
-  // 買い転換: 下落していた MA が「下げ渋り(減速)」に転じ、かつ価格が MA を下(過去)→上(現在)へ抜けた。
-  // 旧: slopeRecent>=0(MAが完全に上向き)を要求していたが、長期MA(75本)は反転に遅行するため
-  // 価格がMAを抜ける時点ではMAはまだ下落中。よって減速(slopeRecent>slopePrior)で発火し、
-  // クロス時点で転換を捉える(古典的グランビル①=下落停止+上抜け に忠実)。
-  if (slopePrior < 0 && slopeRecent > slopePrior && cBack < maMid && cNow > maNow) {
+  // 買い転換: 下落していた MA が「下げ渋り(減速)」に転じ、かつ価格が MA を「下→上」へ抜けた
+  // 「その瞬間(クロスした足)」だけ発火。エッジ(cPrev≤maPrev かつ cNow>maNow)で判定し、
+  // クロス後も毎足出続ける(過去の転換を新規表示する)エコーを防ぐ。
+  if (slopePrior < 0 && slopeRecent > slopePrior && cPrev <= maPrev && cNow > maNow) {
     return { dir: 'up', ma: maNow, deviation, origin: cBack };
   }
-  // 売り転換: 上昇していた MA が「上げ渋り(減速)」に転じ、かつ価格が MA を上(過去)→下(現在)へ抜けた。
-  if (slopePrior > 0 && slopeRecent < slopePrior && cBack > maMid && cNow < maNow) {
+  // 売り転換: 上昇していた MA が「上げ渋り(減速)」に転じ、かつ価格が MA を「上→下」へ抜けた瞬間だけ発火。
+  if (slopePrior > 0 && slopeRecent < slopePrior && cPrev >= maPrev && cNow < maNow) {
     return { dir: 'down', ma: maNow, deviation, origin: cBack };
   }
   return null;
