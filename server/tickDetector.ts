@@ -76,7 +76,7 @@ function handleOne(price: Price): void {
     range1h: ctx.range1h,
     zscore: 0,    // 絶対閾値方式のため未使用 (alertLoop の z-score 検知と区別)
     // 表示は価格を先頭に。方向は「急上昇/急落」、値幅は符号付き(円)。「超短期/フラッシュ」の語は使わない。
-    note: `${Math.round(price.price).toLocaleString('ja-JP')}${fired.yen >= 0 ? '急上昇' : '急落'} / ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円（${fired.window}秒）`,
+    note: `${Math.round(price.price).toLocaleString('ja-JP')} ${fired.yen >= 0 ? '急上昇' : '急落'} / ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円（${fired.window}秒）`,
   };
   console.log(`[tickDetector] ${price.symbol} ${fired.window}s ${fired.yen >= 0 ? '+' : ''}${Math.round(fired.yen)}円 (threshold ${threshold}円)`);
   emitAlert(alert);

@@ -37,7 +37,7 @@ describe('evaluateBarsNiy', () => {
     expect(shock.note).toContain('1分');
     expect(shock.note).toContain('急上昇');           // 方向は語で表現
     expect(shock.note).toContain('+');                // 値幅は符号付き
-    expect(shock.note).toMatch(/^[\d,]+急上昇/);       // 価格(カンマ区切り)が先頭
+    expect(shock.note).toMatch(/^[\d,]+ 急上昇/);       // 価格(カンマ区切り)+半角スペース+方向語が先頭
     expect(shock.note).not.toContain('急変');
     expect(shock.note).not.toContain('↑');
   });
