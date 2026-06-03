@@ -39,10 +39,10 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     : alert.detectionKind === 'dtb' ? 'Wパターン'
     : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
-  // アラートは全て日経225先物(NIY=F)単独なので「日経225先物」表記は冗長。表示から除去し接尾辞(急変/Wトップ等)だけ残す。
-  const label = alert.symbolLabel.replace('日経225先物', '').trim();
-  // note があれば「%/秒」の代わりにそれを表示(グランビル等)。
-  const mid = alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`;
+  // 用語重複を避ける: グランビル/ダブルは固定説明文「価格xxxで…」が要点を伝えるので mid(note)を省略。
+  // 急変/フラッシュは note に値幅等の情報があるので表示。symbolLabel(日経225先物/接尾辞)はタグと重複するため非表示。
+  const isTech = alert.detectionKind === 'granville' || alert.detectionKind === 'dtb';
+  const mid = isTech ? '' : (alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`);
   // 直近15分コンテキスト（参考、発火窓と分離）
   const ctx15 = alert.change15min !== null
     ? `<span class="ctx-15min">15分: ${alert.change15min >= 0 ? '+' : ''}${alert.change15min.toFixed(2)}%</span>`
@@ -53,8 +53,8 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   const main = document.createElement('div');
   main.innerHTML =
     `<span class="alert-time">${time}</span> ` +
-    `<strong>⚡${label ? ' ' + label : ''}</strong> ` +
-    `${arrow} ${mid} ` +
+    `<strong>⚡</strong> ` +
+    `${arrow}${mid ? ' ' + mid : ''} ` +
     `<span class="kind-tag">[${kindLabel}]</span> ` +
     `${ctx15} ` +
     `<span class="explanation">${UI.ja.explanationLoading}</span>`;
