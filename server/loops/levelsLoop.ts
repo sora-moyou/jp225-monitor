@@ -1,9 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, getSessionOHLC, getLatestTick } from '../db/store.js';
+import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars } from '../db/store.js';
 import { computeLevels, LOOKBACK_SESSIONS, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
 import { getForecastSnapshot } from './forecastLoop.js';
+import { emitAlert } from '../alertHistory.js';
+import { detectDoubleTopBottom, DEFAULT_DOUBLE_PARAMS } from '../doublePattern.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 8_000;   // 当日H/Lをほぼリアルタイム化(従来60s)。NIY=Fのみで軽い。
@@ -16,6 +18,10 @@ let last: LevelsResult = { current: 0, up: [], down: [], swing: null, reversalSa
 let lastSig = '';
 let tickCount = 0;
 let warnedNoTick = false;
+// ダブルトップ/ボトムの per-level クールダウン。同一レベル(種別+価格)を15分は再発火しない。
+// 8秒ループでゾーン内に留まる間の連発を防ぐ。共有クールダウン(alertCooldown)とは独立。
+const DTB_COOLDOWN_MS = 15 * 60_000;
+const lastDtbFire = new Map<string, number>();
 // 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
 // DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
 
@@ -66,6 +72,29 @@ function tick(): void {
       lastSig = sig;
       broadcast({ type: 'levels', payload: result });
       sent = true;
+    }
+    // ── ダブルトップ/ボトム検知(全レベル対象・手前10円・髭タッチ・ネック不要)──
+    // 直近 lookbackBars 分の1分足(髭=h/l)を取り、全レベルに対し検知。per-level クールダウンで間引く。
+    try {
+      const sinceT = now - DEFAULT_DOUBLE_PARAMS.lookbackBars * 60_000;
+      const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const allLevels = [...result.up, ...result.down].map(l => ({ price: l.price, label: l.labels.join('・') }));
+      for (const dsig of detectDoubleTopBottom(allLevels, recent, latest.price)) {
+        const key = `${dsig.kind}@${dsig.level.toFixed(1)}`;
+        if (now - (lastDtbFire.get(key) ?? -Infinity) <= DTB_COOLDOWN_MS) continue;
+        lastDtbFire.set(key, now);
+        const name = dsig.kind === 'top' ? 'Wトップ' : 'Wボトム';
+        console.log(`[levelsLoop] ${name} @${Math.round(dsig.level)} (${dsig.label})`);
+        emitAlert({
+          symbol: SYMBOL, symbolLabel: `日経225先物 (${name})`,
+          changePercent: 0, windowSeconds: 60, detectionKind: 'dtb',
+          direction: dsig.kind === 'top' ? 'down' : 'up',
+          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          note: `${name} ${Math.round(dsig.level)}円(${dsig.label})に接近`,
+        });
+      }
+    } catch (err) {
+      console.warn('[levelsLoop] dtb detect failed:', err instanceof Error ? err.message : err);
     }
     // 診断ログ: 最初の3tick / 遅い時(DB>500ms or compute>150ms) / 水準が空の時 に出す。
     // 通常は無音。これを見れば「どのステージで詰まるか」「水準が空になっていないか」が分かる。
