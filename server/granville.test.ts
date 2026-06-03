@@ -41,7 +41,7 @@ describe('detectGranvilleReversal (グランビル①トレンド転換)', () =>
     for (let i = 0; i < 90; i++) closes.push(67500 - 1500 * (i / 89));   // 67500→66000 緩やか下降
     const b = closes[closes.length - 1]!;
     for (let i = 1; i <= 20; i++) closes.push(b + 30 * i);               // 反転上昇(MA上抜け直後)
-    const sig = detectGranvilleReversal(closes);                         // 既定 75/15
+    const sig = detectGranvilleReversal(closes, { maPeriod: 75, slopeBack: 15 });   // 長期75
     expect(sig?.dir).toBe('up');
   });
 
@@ -50,7 +50,7 @@ describe('detectGranvilleReversal (グランビル①トレンド転換)', () =>
     for (let i = 0; i < 90; i++) closes.push(66000 + 1500 * (i / 89));   // 66000→67500 緩やか上昇
     const t = closes[closes.length - 1]!;
     for (let i = 1; i <= 20; i++) closes.push(t - 30 * i);               // 反落(MA下抜け直後)
-    const sig = detectGranvilleReversal(closes);
+    const sig = detectGranvilleReversal(closes, { maPeriod: 75, slopeBack: 15 });   // 長期75
     expect(sig?.dir).toBe('down');
   });
 });

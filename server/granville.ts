@@ -7,7 +7,7 @@ export interface GranvilleParams {
   maPeriod: number;   // 移動平均の本数(1分足)
   slopeBack: number;  // 傾きを測る本数
 }
-export const DEFAULT_GRANVILLE: GranvilleParams = { maPeriod: 75, slopeBack: 15 };
+export const DEFAULT_GRANVILLE: GranvilleParams = { maPeriod: 25, slopeBack: 15 };
 
 export interface GranvilleSignal {
   dir: 'up' | 'down';
@@ -54,7 +54,7 @@ export interface GranvilleContParams extends GranvilleParams {
   retestBack: number;   // 「戻り/押し」を見る直近本数
   touchBand: number;    // MA に「接近した」とみなす乖離(±比率)
 }
-export const DEFAULT_GRANVILLE_CONT: GranvilleContParams = { maPeriod: 75, slopeBack: 15, retestBack: 10, touchBand: 0.005 };
+export const DEFAULT_GRANVILLE_CONT: GranvilleContParams = { maPeriod: 25, slopeBack: 15, retestBack: 10, touchBand: 0.005 };
 
 /** グランビル②③(トレンド継続)。下降MAで戻りがMA手前で否定→売り継続、上昇MAで押しがMA手前で支持→買い継続。
  *  ユーザー指定の流れ: 価格がMAを割る→傾きが鈍る→戻りでMAを超えられない→MAが下向き→下降継続。 */

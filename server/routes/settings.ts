@@ -16,6 +16,7 @@ const NUMERIC_PARAM_KEYS = [
   'pricePollMs', 'newsPollMs', 'port', 'cooldownMin',
   'shockMove1Yen', 'shockMove2Yen', 'shock1Yen', 'shock2Yen', 'shockAccelYen',
   'shockAvgMult', 'shockScoreNeed', 'shockCooldownBars', 'openGuardBars', 'flashYen',
+  'granvilleMaMid', 'granvilleMaLong',
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
 

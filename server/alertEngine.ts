@@ -3,10 +3,12 @@ import {
   computeContext,
   type DetectorParams,
 } from './alertDetector.js';
-import { detectGranvilleReversal, detectGranvilleContinuation } from './granville.js';
+import { detectGranvilleReversal, detectGranvilleContinuation,
+  DEFAULT_GRANVILLE, DEFAULT_GRANVILLE_CONT, type GranvilleSignal } from './granville.js';
 import { canFire, markFired } from './alertCooldown.js';
 import { detectShock } from './shockDetector.js';
-import { resolveShockParams, resolveShockCooldownBars } from './configStore.js';
+import { resolveShockParams, resolveShockCooldownBars,
+  resolveGranvilleMaMid, resolveGranvilleMaLong } from './configStore.js';
 import type { InstrumentMeta, AlertEventPayload } from './types.js';
 
 export type AlertSink = (e: AlertEventPayload) => void;
@@ -29,25 +31,39 @@ export function evaluateBarsNiy(
   if (!bars || bars.length < 65) return;
   const sym = 'NIY=F';
 
-  // Granville (MA(75)) — evaluated first; shared cooldown suppresses same-dir re-fire.
+  // グランビル: 中期(既定25)・長期(既定75)の2本MAを併用(🎛️ で可変)。両MAで検知し、
+  // 同一シグナル(同 note=同方向・同種別)が両方で出たら「中期・長期」一致として1本にまとめる。
   const closes = bars.map(b => b.close);
-  const rev = detectGranvilleReversal(closes);
-  const cont = detectGranvilleContinuation(closes);
-  const g = rev
-    ? { sig: rev, note: `グランビル${rev.dir === 'up' ? '買い' : '売り'}転換` }
-    : cont
-      ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い' : 'グランビル戻り売り' }
-      : null;
-  // グランビルはクールダウンを完全無視(ユーザー指定):自身はブロックされず、共有クールダウンも
-  // 発生させない(クールダウンシグナルを出すのは急変のみ)。取りこぼし防止。
-  if (g) {
+  const maMid = resolveGranvilleMaMid();
+  const maLong = resolveGranvilleMaLong();
+  const periods: { ma: number; label: string }[] = [
+    { ma: maMid, label: '中期' }, { ma: maLong, label: '長期' },
+  ].filter((p, i, a) => a.findIndex(q => q.ma === p.ma) === i);   // 中期==長期なら1本に
+  const byNote = new Map<string, { sig: GranvilleSignal; note: string; labels: string[] }>();
+  for (const { ma, label } of periods) {
+    const rev = detectGranvilleReversal(closes, { ...DEFAULT_GRANVILLE, maPeriod: ma });
+    const cont = detectGranvilleContinuation(closes, { ...DEFAULT_GRANVILLE_CONT, maPeriod: ma });
+    const g = rev
+      ? { sig: rev, note: `グランビル${rev.dir === 'up' ? '買い' : '売り'}転換` }
+      : cont
+        ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い' : 'グランビル戻り売り' }
+        : null;
+    if (!g) continue;
+    const e = byNote.get(g.note);
+    if (e) e.labels.push(label);
+    else byNote.set(g.note, { sig: g.sig, note: g.note, labels: [label] });
+  }
+  // グランビルはクールダウンを完全無視(ユーザー指定):ブロックされず、共有クールダウンも発生させない。
+  for (const g of byNote.values()) {
     const ctx = computeContext(bars);
-    console.log(`[alertEngine] ${sym} ${g.note} dev=${g.sig.deviation.toFixed(2)}%`);
+    const maTag = g.labels.join('・');   // 中期 / 長期 / 中期・長期(両一致=強)
+    const note = `${g.note}(${maTag})`;
+    console.log(`[alertEngine] ${sym} ${note} dev=${g.sig.deviation.toFixed(2)}%`);
     sink({
       symbol: sym, symbolLabel: meta.labelJa, changePercent: g.sig.deviation,
       windowSeconds: 75 * 60, detectionKind: 'granville', direction: g.sig.dir,
       triggeredAt: bars[bars.length - 1]!.t, change15min: ctx.change15min,
-      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0, note: g.note,
+      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0, note,
       level: Math.round(g.sig.origin),   // 起点価格(1つ以上前の足: 転換=クロス前 / 継続=押し安値・戻り高値)
     });
   }

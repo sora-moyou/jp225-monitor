@@ -21,6 +21,8 @@ const PARAMS: ParamSpec[] = [
   { key: 'shockCooldownBars', inputId: 'params-shock-cooldown-bars' },
   { key: 'openGuardBars',     inputId: 'params-open-guard-bars' },
   { key: 'flashYen',          inputId: 'params-flash-yen' },
+  { key: 'granvilleMaMid',    inputId: 'params-granville-ma-mid' },
+  { key: 'granvilleMaLong',   inputId: 'params-granville-ma-long' },
   { key: 'levelTol',             inputId: 'params-level-tol' },
   { key: 'levelShowN',           inputId: 'params-level-shown' },
   { key: 'levelSelectWindowYen', inputId: 'params-level-window' },

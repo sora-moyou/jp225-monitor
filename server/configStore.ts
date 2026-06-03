@@ -27,6 +27,8 @@ export interface UserConfig {
   shockCooldownBars?: number;
   openGuardBars?: number;
   flashYen?: number;
+  granvilleMaMid?: number;    // グランビル 中期MA 本数(1分足)
+  granvilleMaLong?: number;   // グランビル 長期MA 本数(1分足)
   levelTol?: number;
   levelShowN?: number;
   levelSelectWindowYen?: number;
@@ -52,6 +54,8 @@ export const PARAM_BOUNDS = {
   shockCooldownBars:{ min: 0, max: 120,  default: 3 },
   openGuardBars:    { min: 0, max: 60,   default: 3 },
   flashYen:         { min: 1, max: 1000, default: 80 },
+  granvilleMaMid:   { min: 5, max: 200,  default: 25 },
+  granvilleMaLong:  { min: 5, max: 400,  default: 75 },
   levelTol:              { min: 5, max: 200, default: 25 },
   levelShowN:            { min: 1, max: 12, default: 5 },
   levelSelectWindowYen:  { min: 100, max: 10000, default: 1500 },
@@ -164,6 +168,8 @@ export function resolveShockParams(): ShockParams {
 export function resolveShockCooldownBars(): number { return resolveNumeric('shockCooldownBars'); }
 export function resolveOpenGuardBars(): number { return resolveNumeric('openGuardBars'); }
 export function resolveFlashYen(): number { return resolveNumeric('flashYen'); }
+export function resolveGranvilleMaMid(): number { return resolveNumeric('granvilleMaMid'); }
+export function resolveGranvilleMaLong(): number { return resolveNumeric('granvilleMaLong'); }
 
 // 主要レベル(意識される水準)のノブをまとめて解決。
 // 数値のみ返す(Level 型に依存しない＝levels を import しない＝循環回避)。

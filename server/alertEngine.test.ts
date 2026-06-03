@@ -90,6 +90,9 @@ describe('evaluateBarsNiy', () => {
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(gradualReversalUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
     expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
+    // 中期/長期2本MA併用 → note にどのMAで出たか併記(中期/長期/中期・長期)。
+    const g = fired.find(e => e.detectionKind === 'granville')!;
+    expect(g.note).toMatch(/中期|長期/);
   });
 
   it('グランビルは発火しても共有クールダウンを発生させない(シグナルは急変のみ)', () => {
