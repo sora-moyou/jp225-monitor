@@ -48,6 +48,7 @@ export function evaluateBarsNiy(
       windowSeconds: 75 * 60, detectionKind: 'granville', direction: g.sig.dir,
       triggeredAt: bars[bars.length - 1]!.t, change15min: ctx.change15min,
       pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0, note: g.note,
+      level: Math.round(bars[bars.length - 1]!.close),   // 発火時の現値(「価格xxxで押し目買い」表示用)
     });
   }
 
