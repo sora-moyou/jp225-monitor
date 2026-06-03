@@ -11,12 +11,14 @@ export const INSTRUMENTS: InstrumentMeta[] = [
   { symbol: 'JPY=X', labelJa: 'ドル円',          labelEn: 'USD/JPY',        magnitudeThreshold: 0.20, slopeThreshold: 0.10, unit: 'percent', category: 'main' },
   { symbol: 'CL=F',  labelJa: 'WTI原油',        labelEn: 'WTI Crude',      magnitudeThreshold: 0.50, slopeThreshold: 0.30, unit: 'percent', category: 'main' },
   { symbol: '^TNX',  labelJa: '米10年債利回り',   labelEn: 'US 10Y Yield',   magnitudeThreshold: 2.00, slopeThreshold: 1.50, unit: 'bp',      category: 'main' },
-  // 値がさ株/主力（東証、時価総額上位5）— AI説明の連動材料用、カード非表示
-  { symbol: '9984.T', labelJa: 'ソフトバンクグループ', labelEn: 'SoftBank Group',     magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
-  { symbol: '7203.T', labelJa: 'トヨタ自動車',         labelEn: 'Toyota Motor',       magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
-  { symbol: '285A.T', labelJa: 'キオクシアHD',         labelEn: 'Kioxia Holdings',    magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
-  { symbol: '8306.T', labelJa: '三菱UFJFG',            labelEn: 'Mitsubishi UFJ FG',  magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
-  { symbol: '8035.T', labelJa: '東京エレクトロン',     labelEn: 'Tokyo Electron',     magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  // 値がさ株（東証、高株価・日経寄与上位7）— AI説明の連動材料用、カード非表示
+  { symbol: '6861.T', labelJa: 'キーエンス',           labelEn: 'Keyence',         magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  { symbol: '9983.T', labelJa: 'ファーストリテイリング', labelEn: 'Fast Retailing',  magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  { symbol: '6146.T', labelJa: 'ディスコ',             labelEn: 'Disco',           magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  { symbol: '6273.T', labelJa: 'SMC',                 labelEn: 'SMC',             magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  { symbol: '8035.T', labelJa: '東京エレクトロン',     labelEn: 'Tokyo Electron',   magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  { symbol: '9984.T', labelJa: 'ソフトバンクグループ', labelEn: 'SoftBank Group',   magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
+  { symbol: '285A.T', labelJa: 'キオクシアHD',         labelEn: 'Kioxia Holdings',  magnitudeThreshold: 1.50, slopeThreshold: 0.90, unit: 'percent', category: 'heavyweight' },
 ];
 
 export const RSS_FEEDS = {
@@ -82,8 +84,9 @@ export const FINANCE_RELEVANCE_KEYWORDS: string[] = [
   // 主要企業 (Nikkei 値がさ・米テック)
   'apple', 'microsoft', 'tesla', 'nvidia', 'amazon', 'google', 'meta', 'netflix',
   'aapl', 'msft', 'tsla', 'nvda', 'amzn', 'googl', 'broadcom', 'avgo', 'arm',
-  'ソフトバンクグループ', 'ソフトバンク', '東京エレクトロン', 'キオクシア', 'kioxia',
-  'トヨタ', 'トヨタ自動車', '三菱ufj', 'mufg', 'ホンダ', 'ソニー', '任天堂', '日立', 'ntt', 'kddi', 'みずほ',
+  'キーエンス', 'keyence', 'ファーストリテイリング', 'ユニクロ', 'ディスコ', 'disco', 'smc',
+  '東京エレクトロン', 'ソフトバンクグループ', 'ソフトバンク', 'キオクシア', 'kioxia',
+  'トヨタ', '三菱ufj', 'ホンダ', 'ソニー', '任天堂', '日立', 'ntt', 'kddi', 'みずほ',
   // マクロ
   '景気', '経済', '物価', 'インフレ', 'デフレ', '雇用', '失業', 'gdp', '貿易', '輸出', '輸入',
   '金融政策', '財政', '緩和', '引き締め', 'マネーサプライ',
@@ -176,12 +179,14 @@ export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
   'JPY=X': ['ドル円', '為替', '日銀', 'boj', 'frb', '介入', '円安', '円高', '為替介入', 'usdjpy', 'usd/jpy', 'yen', 'dollar', 'intervention', 'kanda', '神田'],
   'CL=F': ['原油', 'opec', 'ガソリン', '石油', 'oil', 'crude', 'wti', 'brent', 'gasoline', 'petroleum', 'iran', 'saudi', 'russia'],
   '^TNX': ['米10年', '国債', '利回り', '利上げ', '利下げ', 'yield', 'treasury', '10-year', '10y', 't-note', 'bond', 'fed funds', 'powell', 'cpi'],
-  // 値がさ株/主力（個別株、関連業界キーワードも）
-  '9984.T': ['ソフトバンクグループ', 'ソフトバンク', 'softbank', 'sbg', 'arm', '孫正義', 'masa', 'vision fund', 'ai投資'],
-  '7203.T': ['トヨタ', 'トヨタ自動車', 'toyota', '自動車', '自動車株', 'automaker', 'ev', 'ハイブリッド', 'auto'],
-  '285A.T': ['キオクシア', 'キオクシアhd', 'kioxia', 'nand', 'フラッシュメモリ', 'flash memory', '半導体メモリ', 'メモリ'],
-  '8306.T': ['三菱ufj', '三菱ufjfg', 'mufg', 'mitsubishi ufj', '銀行', 'メガバンク', 'bank', '金利', '長期金利', '日銀'],
+  // 値がさ株（個別株、関連業界キーワードも）
+  '6861.T': ['キーエンス', 'keyence', 'fa', '工場自動化', 'factory automation', 'センサー', '計測', 'sensor'],
+  '9983.T': ['ファーストリテイリング', 'ユニクロ', 'fast retailing', 'uniqlo', 'gu', '小売', 'apparel'],
+  '6146.T': ['ディスコ', 'disco', 'ダイシング', 'dicing', '半導体製造装置', 'grinder', 'semiconductor equipment'],
+  '6273.T': ['smc', '空圧', '空気圧', 'pneumatic', 'fa', '工場自動化', 'factory automation'],
   '8035.T': ['東京エレクトロン', 'tokyo electron', '半導体製造装置', 'semiconductor equipment', 'asml', 'tsmc'],
+  '9984.T': ['ソフトバンクグループ', 'ソフトバンク', 'softbank', 'sbg', 'arm', '孫正義', 'vision fund', 'ai投資'],
+  '285A.T': ['キオクシア', 'キオクシアhd', 'kioxia', 'nand', 'フラッシュメモリ', 'flash memory', '半導体メモリ', 'メモリ'],
 };
 
 export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。直近4時間のニュース（関連性スコア順）から、相場急変の最有力材料を簡潔に示してください。

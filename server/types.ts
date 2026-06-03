@@ -3,7 +3,8 @@ import type { LevelsResult } from './levels.js';
 export type Symbol =
   | 'NIY=F' | 'NQ=F' | 'YM=F' | '^HSI'
   | 'JPY=X' | 'CL=F' | '^TNX'
-  | '9984.T' | '7203.T' | '285A.T' | '8306.T' | '8035.T';   // 値がさ株/主力5(時価総額上位)
+  | '6861.T' | '9983.T' | '6146.T' | '6273.T'
+  | '8035.T' | '9984.T' | '285A.T';   // 値がさ株7(高株価・日経寄与上位)
 
 export interface Price {
   symbol: Symbol;
