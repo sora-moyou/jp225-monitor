@@ -27,6 +27,7 @@ export function kindLabel(windowSeconds: number | null): string {
 export function rowKind(detectionKind: string | null, windowSeconds: number | null): string {
   if (detectionKind === 'granville') return 'グランビル';
   if (detectionKind === 'shock') return '急変';
+  if (detectionKind === 'dtb') return 'Wトップ/ボトム';
   return kindLabel(windowSeconds);
 }
 

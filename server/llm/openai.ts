@@ -129,7 +129,7 @@ export interface ExplainInput {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  detectionKind: 'magnitude' | 'slope' | 'shock';
+  detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
   range1h: { high: number; low: number } | null;
@@ -192,7 +192,8 @@ function rankAndFormatNews(input: ExplainInput, now: number): string {
 export async function explain(input: ExplainInput): Promise<string> {
   const now = Date.now();
   const kindLabel = input.detectionKind === 'slope' ? 'フラッシュ'
-    : input.detectionKind === 'shock' ? '急変' : 'トレンド';
+    : input.detectionKind === 'shock' ? '急変'
+    : input.detectionKind === 'dtb' ? 'ダブル天井/大底' : 'トレンド';
   const dirJa = input.changePercent >= 0 ? '上昇' : '下落';
   const windowHours = Math.round(NEWS_RECENT_WINDOW_MS / 3600_000);
   const ctx15Line = input.change15min !== null
