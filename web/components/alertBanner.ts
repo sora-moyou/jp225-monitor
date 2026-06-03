@@ -39,6 +39,8 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     : alert.detectionKind === 'dtb' ? 'Wパターン'
     : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
   const arrow = alert.direction === 'up' ? '▲' : '▼';
+  // アラートは全て日経225先物(NIY=F)単独なので「日経225先物」表記は冗長。表示から除去し接尾辞(急変/Wトップ等)だけ残す。
+  const label = alert.symbolLabel.replace('日経225先物', '').trim();
   // note があれば「%/秒」の代わりにそれを表示(グランビル等)。
   const mid = alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`;
   // 直近15分コンテキスト（参考、発火窓と分離）
@@ -51,7 +53,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   const main = document.createElement('div');
   main.innerHTML =
     `<span class="alert-time">${time}</span> ` +
-    `<strong>⚡ ${alert.symbolLabel}</strong> ` +
+    `<strong>⚡${label ? ' ' + label : ''}</strong> ` +
     `${arrow} ${mid} ` +
     `<span class="kind-tag">[${kindLabel}]</span> ` +
     `${ctx15} ` +
