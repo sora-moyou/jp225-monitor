@@ -52,6 +52,7 @@ export interface AlertEventPayload {
   range1h: { high: number; low: number } | null;
   zscore: number;
   note?: string;   // 任意: バナーで「%/秒」の代わりに表示する説明(グランビル等)
+  level?: number;  // 任意: 対象の価格水準(ダブルトップ/ボトムの水準価格など)
 }
 
 export type SSEEvent =

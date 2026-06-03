@@ -306,10 +306,11 @@ function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<type
 function isTechnicalPattern(alert: import('./types.js').AlertEvent): boolean {
   return alert.detectionKind === 'granville' || alert.detectionKind === 'dtb';
 }
-// ダブルは方向別にパターン名(トップ=下方向/ボトム=上方向)、グランビル等は「テクニカル要因」。
+// ダブルは方向別にパターン名(トップ=下方向/ボトム=上方向)＋水準価格、グランビル等は「テクニカル要因」。
 function technicalExplanation(alert: import('./types.js').AlertEvent): string {
   if (alert.detectionKind === 'dtb') {
-    return alert.direction === 'down' ? UI.ja.doubleTopMaybe : UI.ja.doubleBottomMaybe;
+    const kind = alert.direction === 'down' ? UI.ja.doubleTopMaybe : UI.ja.doubleBottomMaybe;
+    return alert.level ? `価格${alert.level.toLocaleString('ja-JP')}で${kind}` : kind;
   }
   return UI.ja.technicalReason;
 }

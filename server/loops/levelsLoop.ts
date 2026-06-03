@@ -92,6 +92,7 @@ function tick(): void {
           changePercent: 0, windowSeconds: 60, detectionKind: 'dtb',
           direction: dsig.kind === 'top' ? 'down' : 'up',
           triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: Math.round(dsig.level),
           note: `${name} ${Math.round(dsig.level)}円(${dsig.label})に接近`,
         });
       }
