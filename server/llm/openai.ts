@@ -130,6 +130,7 @@ export interface ExplainInput {
   changePercent: number;
   windowSeconds: number;
   detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb';
+  direction?: 'up' | 'down';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
   range1h: { high: number; low: number } | null;
@@ -194,7 +195,9 @@ export async function explain(input: ExplainInput): Promise<string> {
   const kindLabel = input.detectionKind === 'slope' ? 'フラッシュ'
     : input.detectionKind === 'shock' ? '急変'
     : input.detectionKind === 'dtb' ? 'ダブル天井/大底' : 'トレンド';
-  const dirJa = input.changePercent >= 0 ? '上昇' : '下落';
+  // 方向は direction を真の源とし(dtb は changePercent=0 のため符号では判定不可)、無ければ符号で代替。
+  const dir = input.direction ?? (input.changePercent >= 0 ? 'up' : 'down');
+  const dirJa = dir === 'up' ? '上昇' : '下落';
   const windowHours = Math.round(NEWS_RECENT_WINDOW_MS / 3600_000);
   const ctx15Line = input.change15min !== null
     ? `【15分変化率】${input.change15min >= 0 ? '+' : ''}${input.change15min.toFixed(2)}%\n`
@@ -205,12 +208,17 @@ export async function explain(input: ExplainInput): Promise<string> {
   const range1hLine = input.range1h
     ? `【1時間レンジ】高値 ${fmt(input.range1h.high)} / 安値 ${fmt(input.range1h.low)}\n`
     : '';
-  const dirEmphasis = input.changePercent >= 0 ? '⬆ 上昇方向' : '⬇ 下落方向';
-  const magnitudeNote = Math.abs(input.changePercent) <= 0.15
+  const dirEmphasis = dir === 'up' ? '⬆ 上昇方向' : '⬇ 下落方向';
+  // dtb は値幅(%)ではなくパターン接近なので、ノイズ注記(急変幅判定)を出さない。
+  const magnitudeNote = input.detectionKind !== 'dtb' && Math.abs(input.changePercent) <= 0.15
     ? '※ 急変幅が小さい (≤0.15%)。ノイズの可能性も考慮し、無理に材料を結びつけない。'
     : '';
+  // dtb は「X秒でY%」の急変文ではなく、主要水準へのパターン接近として導入する。
+  const headline = input.detectionKind === 'dtb'
+    ? `【${kindLabel}】${input.symbolLabel} が主要な価格水準に ${dirEmphasis}(反転狙い)で接近しました(ダブルトップ/ボトム形成・ネック未達)。\n`
+    : `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n`;
   const userPrompt =
-    `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n` +
+    headline +
     (magnitudeNote ? magnitudeNote + '\n' : '') +
     ctx15Line + pa15Line + range1hLine +
     `\n${formatCrossAsset(input.crossAsset ?? [])}\n` +

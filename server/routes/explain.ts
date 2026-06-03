@@ -13,6 +13,7 @@ interface ExplainBody {
   changePercent?: number;
   windowSeconds?: number;
   detectionKind?: 'magnitude' | 'slope' | 'shock' | 'dtb';
+  direction?: 'up' | 'down';
   change15min?: number | null;
   pa15min?: PriceActionBody | null;
   range1h?: { high: number; low: number } | null;
@@ -35,6 +36,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       changePercent: body.changePercent,
       windowSeconds: body.windowSeconds,
       detectionKind: body.detectionKind,
+      direction: body.direction === 'up' || body.direction === 'down' ? body.direction : undefined,
       change15min: typeof body.change15min === 'number' ? body.change15min : null,
       pa15min: body.pa15min ?? null,
       range1h: body.range1h ?? null,

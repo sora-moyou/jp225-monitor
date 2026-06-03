@@ -11,6 +11,7 @@ export async function fetchExplanation(alert: AlertEvent): Promise<string> {
       changePercent: alert.changePercent,
       windowSeconds: alert.windowSeconds,
       detectionKind: alert.detectionKind,
+      direction: alert.direction,
       change15min: alert.change15min,
       pa15min: alert.pa15min,
       range1h: alert.range1h,
