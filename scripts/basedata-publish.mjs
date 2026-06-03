@@ -11,9 +11,10 @@ if (!xlsxPath) { console.error('usage: npm run basedata:publish -- <path-to-xlsx
 
 const EXCEL_1970 = 25569, JST = 9 * 3600_000;   // 25569 = 1970-01-01 の Excel シリアル(標準1900日付系)
 function rowToBar(serial, frac, o, h, l, c, v) {
-  // 日付列はセッション開始日。夜間立会の翌朝(< 7:00)は実カレンダー日が翌日 → +1日補正。
-  const carryDay = frac < 7 / 24 ? 86400_000 : 0;
-  const dayMs = (serial - EXCEL_1970) * 86400_000 + carryDay;
+  // A列の日付は「実カレンダー日付」(セッション日付ではない)。B列は時刻。1minシートは日時でソート済み。
+  // よって日付シフト補正は一切不要。serial(日付)+ frac(時刻)を JST として UTC epoch に変換するだけ。
+  // (旧実装は A列をセッション日として扱い早朝(<7:00)に+1日していたため、夜間バーが翌日=未来へずれていた)
+  const dayMs = (serial - EXCEL_1970) * 86400_000;
   const minMs = Math.round((frac * 86400_000) / 60_000) * 60_000;
   return { t: dayMs + minMs - JST, o, h, l, c, v: typeof v === 'number' ? v : null };
 }
@@ -33,16 +34,19 @@ for (let i = 1; i < rows.length; i++) {
 bars.sort((a, b) => a.t - b.t);
 if (bars.length === 0) { console.error('no data rows parsed'); process.exit(1); }
 
-// 未来日時のバーを除外。N225mini の Excel は夜間セッションの最後(06:00)まで枠を確保し、未到来ぶんを
-// 最終値で埋めている(プレースホルダ)。これを取り込むと feed に未来バーが入り未来時刻のアラートが出る。
+// 未来日時のバーがあれば「取り込みエラー」として扱う(黙って無視しない=バグやデータ異常を顕在化)。
+// A列を実日付として正しくパースできていれば未来バーは出ないはず。出たらエラーをログに残して中止。
 const nowT = Date.now();
-const futureCount = bars.length - bars.filter(b => b.t <= nowT).length;
-const real = bars.filter(b => b.t <= nowT);
-if (futureCount > 0) console.log(`dropped ${futureCount} future-dated (placeholder) bars beyond now`);
-if (real.length === 0) { console.error('all bars are future-dated?'); process.exit(1); }
-console.log(`parsed ${real.length} bars (${new Date(real[0].t + JST).toISOString().slice(0,10)} .. ${new Date(real.at(-1).t + JST).toISOString().slice(0,16)})`);
+const future = bars.filter(b => b.t > nowT + 2 * 60_000);
+if (future.length > 0) {
+  const sample = future.slice(0, 3).map(b => new Date(b.t + JST).toISOString().replace('T', ' ').slice(0, 16)).join(', ');
+  console.error(`[basedata] ERROR: ${future.length} future-dated bars detected (e.g. ${sample} JST). `
+    + `Aborting publish. A列は実カレンダー日付として解釈すること。日付解析 or ソースデータを確認してください。`);
+  process.exit(1);
+}
+console.log(`parsed ${bars.length} bars (${new Date(bars[0].t + JST).toISOString().slice(0,10)} .. ${new Date(bars.at(-1).t + JST).toISOString().replace('T', ' ').slice(0,16)})`);
 
-const out_bars = real;
+const out_bars = bars;
 const ndjson = out_bars.map(b => JSON.stringify(b)).join('\n') + '\n';
 mkdirSync('dist', { recursive: true });
 const out = 'dist/basedata-1min.ndjson.gz';
