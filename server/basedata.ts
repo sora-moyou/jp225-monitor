@@ -5,18 +5,18 @@ import { classifySession } from '../collector/session.js';
 const SYMBOL = 'NIY=F';
 const EXCEL_1970 = 25569;          // 1970-01-01 の Excel シリアル(1900日付系)。(serial-25569)*86400_000 = UTC epoch ms
 const JST_OFFSET_MS = 9 * 3600_000;
-const NIGHT_MORNING_CUTOFF = 7 / 24;   // この時刻(7:00)より前は夜間立会の翌朝portion
 
 export interface BaseBar { t: number; o: number; h: number; l: number; c: number; v: number | null; }
 
 /** Excel シリアル日付 + 1日小数の時間 → bar(JST 壁時計→UTC epoch, 分床)。
- *  Excel の日付列はセッション開始日。夜間立会の翌朝(00:00-06:00)も開始日でラベルされるため、
- *  早朝(< 7:00)のバーは実カレンダー日が翌日 → +1日して正しい時刻にする(でないと夜間立会の
- *  翌朝portionが1日前にずれ、Day open前として休場扱い=skip されてしまう)。 */
+ *  日付列(A)は「実カレンダー日付」(セッション開始日ではない)。夜間立会の翌朝(00:00-06:00)の
+ *  バーも実日付=翌日のシリアルでラベルされる。よって日付シフト補正は一切不要で、
+ *  serial(日付)+ frac(時刻)を JST として UTC epoch に変換するだけでよい。
+ *  早朝portionの Night セッション帰属は classifySession が前日始まりとして正しく処理する。
+ *  (旧実装は A列をセッション日と誤認し早朝(<7:00)に+1日していたため夜間バーが翌日=未来へずれていた) */
 export function rowToBar(serialDate: number, timeFrac: number,
   o: number, h: number, l: number, c: number, v: number | null): BaseBar {
-  const carryDay = timeFrac < NIGHT_MORNING_CUTOFF ? 86400_000 : 0;
-  const dayMs = (serialDate - EXCEL_1970) * 86400_000 + carryDay;
+  const dayMs = (serialDate - EXCEL_1970) * 86400_000;
   const minMs = Math.round((timeFrac * 86400_000) / 60_000) * 60_000;
   const t = dayMs + minMs - JST_OFFSET_MS;
   return { t, o, h, l, c, v };
