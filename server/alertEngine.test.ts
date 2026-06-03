@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { evaluateBarsNiy, _resetShockCooldown } from './alertEngine.js';
 import { DEFAULT_PARAMS } from './alertDetector.js';
 import { INSTRUMENTS } from './config.js';
-import { _reset as resetCooldown } from './alertCooldown.js';
+import { _reset as resetCooldown, markFired } from './alertCooldown.js';
 import type { Bar } from './correlation.js';
 import type { AlertEventPayload } from './types.js';
 
@@ -41,5 +41,31 @@ describe('evaluateBarsNiy', () => {
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(flat, META, DEFAULT_PARAMS, 70 * 60_000, (e) => fired.push(e));
     expect(fired.length).toBe(0);
+  });
+
+  // 緩やかな反転(下降→上昇)。グランビル買い転換が出る系列(granville.test.ts と同形)。
+  function gradualReversalUp(): Bar[] {
+    const bars: Bar[] = [];
+    let i = 0;
+    for (; i < 90; i++) bars.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
+    const b = bars[bars.length - 1]!.close;
+    for (let k = 1; k <= 20; k++, i++) bars.push({ t: i * 60_000, close: b + 30 * k });
+    return bars;
+  }
+
+  it('急変は共有クールダウンが有効なら抑制される(グランビル/超短期からのクールダウン)', () => {
+    const now = 65 * 60_000;
+    markFired('NIY=F', 'up', 30000, now);   // グランビル/超短期が直前に発火した想定
+    const fired: AlertEventPayload[] = [];
+    evaluateBarsNiy(quietThenJump(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
+    expect(fired.some(e => e.detectionKind === 'shock')).toBe(false);   // 抑制
+  });
+
+  it('グランビルは共有クールダウンが有効でも発火する(クールダウンから外す)', () => {
+    const now = 110 * 60_000;
+    markFired('NIY=F', 'up', 67000, now);   // クールダウンを発火状態にしてもブロックされない
+    const fired: AlertEventPayload[] = [];
+    evaluateBarsNiy(gradualReversalUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
+    expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
   });
 });

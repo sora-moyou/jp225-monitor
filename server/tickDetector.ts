@@ -3,7 +3,7 @@ import { computeContext, type AlertEvent } from './alertDetector.js';
 import { getCachedBars } from './loops/alertLoop.js';
 import { emitAlert } from './alertHistory.js';
 import { INSTRUMENTS } from './config.js';
-import { canFire, markFired } from './alertCooldown.js';
+import { markFired } from './alertCooldown.js';
 import { resolveFlashYen } from './configStore.js';
 
 // v0.3.17: 超短期 (5s/10s) フラッシュ検知。NIY=F (日経 225) 専用。
@@ -60,8 +60,8 @@ function handleOne(price: Price): void {
   candidates.sort((a, b) => Math.abs(b.yen) - Math.abs(a.yen));
   const fired = candidates[0]!;
   const dir = fired.yen >= 0 ? 'up' : 'down';
-  // 共有クールダウン (逆方向は起点越えで解禁)
-  if (!canFire(price.symbol, dir, price.price, now)) return;
+  // 超短期はクールダウンで抑制しない(常に発火・ユーザー指定)。ただし発火時は共有クールダウンを
+  // 発生させ、その後の急変(shock)を抑制する。
   markFired(price.symbol, dir, price.price, now);
   const bars = getCachedBars(price.symbol);
   const ctx = computeContext(bars);

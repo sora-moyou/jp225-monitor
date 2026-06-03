@@ -39,7 +39,9 @@ export function evaluateBarsNiy(
       ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い' : 'グランビル戻り売り' }
       : null;
   const gPrice = bars[bars.length - 1]!.close;
-  if (g && canFire(sym, g.sig.dir, gPrice, now)) {
+  // グランビルはクールダウンで抑制しない(取りこぼし防止・ユーザー指定)。ただし発火時は
+  // 共有クールダウンを発生させ、その後の急変(shock)を抑制する。
+  if (g) {
     const ctx = computeContext(bars);
     markFired(sym, g.sig.dir, gPrice, now);
     console.log(`[alertEngine] ${sym} ${g.note} dev=${g.sig.deviation.toFixed(2)}%`);
@@ -57,7 +59,8 @@ export function evaluateBarsNiy(
   if (shock) {
     const lastCompleted = bars[bars.length - 2]!;        // 評価対象の完成足
     const bar = Math.floor(lastCompleted.t / 60_000);    // 「バーインデックス」=分インデックス
-    if (shockCanFire(sym, bar)) {
+    // 急変は自身のバー数クールダウンに加え、共有クールダウン(グランビル/超短期が発生させる)でも抑制。
+    if (shockCanFire(sym, bar) && canFire(sym, shock.dir, lastCompleted.close, now)) {
       shockMarkFired(sym, bar);
       const ctx = computeContext(bars);
       const prevClose = completed[completed.length - 2] ?? lastCompleted.close;
