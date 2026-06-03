@@ -33,19 +33,18 @@ export function detectGranvilleReversal(closes: number[], p: GranvilleParams = D
   const slopePrior = maMid - maOld;     // 以前の傾き
   const slopeRecent = maNow - maMid;    // 直近の傾き
   const cNow = closes[last]!;
-  const cPrev = closes[last - 1]!;                 // 1本前の終値
-  const maPrev = sma(closes, last - 1, p.maPeriod);// 1本前の MA
-  const cBack = closes[last - p.slopeBack]!;       // slopeBack 本前の終値(起点表示用)
+  const cBack = closes[last - p.slopeBack]!;   // slopeBack 本前の終値(クロス前の位置確認 + 起点表示)
   const deviation = ((cNow - maNow) / maNow) * 100;
 
-  // 買い転換: 下落していた MA が「下げ渋り(減速)」に転じ、かつ価格が MA を「下→上」へ抜けた
-  // 「その瞬間(クロスした足)」だけ発火。エッジ(cPrev≤maPrev かつ cNow>maNow)で判定し、
-  // クロス後も毎足出続ける(過去の転換を新規表示する)エコーを防ぐ。
-  if (slopePrior < 0 && slopeRecent > slopePrior && cPrev <= maPrev && cNow > maNow) {
+  // 買い転換: 下落していた MA が「下げ渋り(減速)」に転じ、かつ価格が MA を下→上へ抜けた。
+  // cBack(slopeBack本前=クロス前)を基準にするのは、リアルタイム足は末尾が進行中で、エッジ判定だと
+  // 60秒ポーリングがクロスの瞬間を外して取りこぼすため。エコー(クロス後も出続ける)は呼び出し側
+  // (alertEngine のエッジ抑制)で1回化する。
+  if (slopePrior < 0 && slopeRecent > slopePrior && cBack < maMid && cNow > maNow) {
     return { dir: 'up', ma: maNow, deviation, origin: cBack };
   }
-  // 売り転換: 上昇していた MA が「上げ渋り(減速)」に転じ、かつ価格が MA を「上→下」へ抜けた瞬間だけ発火。
-  if (slopePrior > 0 && slopeRecent < slopePrior && cPrev >= maPrev && cNow < maNow) {
+  // 売り転換: 上昇していた MA が「上げ渋り(減速)」に転じ、かつ価格が MA を上→下へ抜けた。
+  if (slopePrior > 0 && slopeRecent < slopePrior && cBack > maMid && cNow < maNow) {
     return { dir: 'down', ma: maNow, deviation, origin: cBack };
   }
   return null;
