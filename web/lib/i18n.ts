@@ -19,6 +19,7 @@ export const UI = {
     offline: '切断',
     explanationLoading: '(説明取得中…)',
     explanationFailed: '(説明取得失敗)',
+    technicalReason: 'テクニカル要因',
     flash: 'フラッシュ',
     trend: 'トレンド',
     enableSound: '🔔 サウンドを有効化',
