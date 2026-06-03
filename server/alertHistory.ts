@@ -43,6 +43,12 @@ export function recordAlert(database: DatabaseSync, p: AlertEventPayload, price:
 
 /** broadcast + DB記録。アラート発火箇所はこれを呼ぶ(記録漏れ防止の単一経路)。記録失敗してもUIは止めない。 */
 export function emitAlert(p: AlertEventPayload): void {
+  // 未来日時のアラートは出さない(UI・記録とも)。基礎データ取り込み等で未来バーが feed に混じると
+  // triggeredAt が未来になる。現在より2分以上未来なら破棄。
+  if (p.triggeredAt > Date.now() + 2 * 60_000) {
+    console.warn(`[alertHistory] future-dated alert dropped: ${new Date(p.triggeredAt).toISOString()} (${p.detectionKind})`);
+    return;
+  }
   if (isWithinOpenGuard(p.triggeredAt, resolveOpenGuardBars())) return;   // 寄りから3本は全アラート抑制(UIバナーも記録も出さない)
   broadcast({ type: 'alert', payload: p });
   try {

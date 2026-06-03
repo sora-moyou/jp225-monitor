@@ -29,6 +29,7 @@ export class AlertCollector {
 
   /** DB-only sink: persist the alert with a near-duplicate guard. No SSE (collector has no UI). */
   private sink: AlertSink = (e: AlertEventPayload) => {
+    if (e.triggeredAt > Date.now() + 2 * 60_000) return;   // 未来日時(基礎データ取り込みの未来バー由来)は記録しない
     if (isWithinOpenGuard(e.triggeredAt, resolveOpenGuardBars())) return;   // 寄りから3本は collector 側記録も抑制
     const latest = getLatestTick(this.db, e.symbol);
     const price = latest ? latest.price : (e.pa15min ? e.pa15min.current : 0);

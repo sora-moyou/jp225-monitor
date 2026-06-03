@@ -24,10 +24,14 @@ export function selectWarmup(db: DatabaseSync, now: number): WarmupData | null {
   const barsBySymbol = new Map<string, Bar[]>();
   for (const inst of INSTRUMENTS) {
     const sym = inst.symbol as string;
-    const bars = getRecentBars(db, sym, now - BARS_LOOKBACK_MS).map(b => ({ t: b.t, close: b.c }));
+    // 未来日時のバーは種付けしない。基礎データ取り込みで夜間セッション翌朝(取り込み時点では未来)の
+    // バーが DB に入ると、それを feed に積んで未来時刻のアラートを出してしまうため t<=now に限定。
+    const bars = getRecentBars(db, sym, now - BARS_LOOKBACK_MS)
+      .filter(b => b.t <= now).map(b => ({ t: b.t, close: b.c }));
     if (bars.length > 0) barsBySymbol.set(sym, bars);
   }
-  const niyTicks = getRecentTicks(db, 'NIY=F', now - TICKS_LOOKBACK_MS).map(t => ({ t: t.t, price: t.price }));
+  const niyTicks = getRecentTicks(db, 'NIY=F', now - TICKS_LOOKBACK_MS)
+    .filter(t => t.t <= now).map(t => ({ t: t.t, price: t.price }));
   return { barsBySymbol, niyTicks };
 }
 

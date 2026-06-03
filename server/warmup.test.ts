@@ -28,4 +28,17 @@ describe('selectWarmup', () => {
     expect(w.niyTicks.length).toBeGreaterThan(0);
     expect(w.barsBySymbol.get('NQ=F')!.length).toBe(1);
   });
+
+  it('未来日時のバー/ティックは種付けしない(基礎データ取り込みの未来バー対策)', () => {
+    const db = memDb();
+    for (let i = 0; i < 65; i++) recordTick(db, 'NIY=F', (100 + i) * M, 67000 + i, '2026-06-01', 'Day');
+    const now = 164 * M + 20_000;
+    // now より未来のバー/ティック(取り込みデータの夜間翌朝ぶん等)を追加
+    recordTick(db, 'NIY=F', 300 * M, 68000, '2026-06-02', 'Night');
+    const w = selectWarmup(db, now)!;
+    const niyBars = w.barsBySymbol.get('NIY=F')!;
+    expect(niyBars.every(b => b.t <= now)).toBe(true);            // 未来バーは含まれない
+    expect(niyBars.some(b => b.t === 300 * M)).toBe(false);
+    expect(w.niyTicks.every(t => t.t <= now)).toBe(true);         // 未来ティックも含まれない
+  });
 });
