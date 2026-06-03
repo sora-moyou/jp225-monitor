@@ -32,9 +32,18 @@ for (let i = 1; i < rows.length; i++) {
 }
 bars.sort((a, b) => a.t - b.t);
 if (bars.length === 0) { console.error('no data rows parsed'); process.exit(1); }
-console.log(`parsed ${bars.length} bars (${new Date(bars[0].t + JST).toISOString().slice(0,10)} .. ${new Date(bars.at(-1).t + JST).toISOString().slice(0,10)})`);
 
-const ndjson = bars.map(b => JSON.stringify(b)).join('\n') + '\n';
+// 未来日時のバーを除外。N225mini の Excel は夜間セッションの最後(06:00)まで枠を確保し、未到来ぶんを
+// 最終値で埋めている(プレースホルダ)。これを取り込むと feed に未来バーが入り未来時刻のアラートが出る。
+const nowT = Date.now();
+const futureCount = bars.length - bars.filter(b => b.t <= nowT).length;
+const real = bars.filter(b => b.t <= nowT);
+if (futureCount > 0) console.log(`dropped ${futureCount} future-dated (placeholder) bars beyond now`);
+if (real.length === 0) { console.error('all bars are future-dated?'); process.exit(1); }
+console.log(`parsed ${real.length} bars (${new Date(real[0].t + JST).toISOString().slice(0,10)} .. ${new Date(real.at(-1).t + JST).toISOString().slice(0,16)})`);
+
+const out_bars = real;
+const ndjson = out_bars.map(b => JSON.stringify(b)).join('\n') + '\n';
 mkdirSync('dist', { recursive: true });
 const out = 'dist/basedata-1min.ndjson.gz';
 writeFileSync(out, gzipSync(Buffer.from(ndjson, 'utf-8')));
@@ -42,7 +51,7 @@ console.log('wrote', out);
 
 // 取り込み版管理用メタ。モニターは generatedAt を比較して「新着」を判定する。
 const metaOut = 'dist/basedata-1min.meta.json';
-const meta = { generatedAt: new Date().toISOString(), firstBar: bars[0].t, lastBar: bars.at(-1).t, count: bars.length };
+const meta = { generatedAt: new Date().toISOString(), firstBar: out_bars[0].t, lastBar: out_bars.at(-1).t, count: out_bars.length };
 writeFileSync(metaOut, JSON.stringify(meta));
 console.log('wrote', metaOut, meta);
 
