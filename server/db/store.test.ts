@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getAlertsNeedingFollowup, updateAlertReturns } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getBarCloseNear, getAlertsNeedingFollowup, updateAlertReturns } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -195,6 +195,21 @@ describe('alerts store', () => {
     expect(getBarCloseAt(db, 'NIY=F', 120000)).toBe(110);
     expect(getBarCloseAt(db, 'NIY=F', 90000)).toBe(100);   // 90000以下の最新=60000の100
     expect(getBarCloseAt(db, 'NIY=F', 30000)).toBeNull();  // それ以前は無し
+    db.close();
+  });
+
+  it('getBarCloseNear: target±許容内の最新 close。範囲外(遠い古い足)へは張り付かず null', () => {
+    const db = openDb(':memory:');
+    const ins = (t: number, c: number) => db.prepare(
+      'INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
+      .run('NIY=F', '2026-06-01', 'Day', t, 1, 1, 1, c);
+    ins(1_000_000, 100);                  // 発火足相当(遠い過去)
+    ins(1_000_000 + 5 * 60_000, 105);     // +5分の足
+    const tol = 3 * 60_000;
+    // target=+5分: ちょうどの足を取得
+    expect(getBarCloseNear(db, 'NIY=F', 1_000_000 + 5 * 60_000, tol)).toBe(105);
+    // target=+15分: 近傍(±3分)に足が無い → null(遠い 100/105 へフォールバックしない)
+    expect(getBarCloseNear(db, 'NIY=F', 1_000_000 + 15 * 60_000, tol)).toBeNull();
     db.close();
   });
 

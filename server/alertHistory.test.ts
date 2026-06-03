@@ -73,7 +73,22 @@ describe('summarize / kindLabel', () => {
     const s = summarize(rows);
     const shortStat = s.find(x => x.label === '短期')!;
     expect(shortStat.count).toBe(2);
-    expect(shortStat.hitRate).toBeCloseTo(0.5, 5);   // up: ret15>=0.1 が1/2
+    expect(shortStat.hitRate).toBeCloseTo(0.5, 5);     // up: 順行ret15>=0.1 が1/2(継続)
+    expect(shortStat.revertRate).toBeCloseTo(0.5, 5);  // 逆行 -0.3 が1/2(戻り)
+    expect(shortStat.avgRet15).toBeCloseTo(0.1, 5);    // 順行平均 (0.5 + -0.3)/2
     db?.close?.();
+  });
+
+  it('down方向は順行正規化される(下げ継続=hit・順行+、上げ戻り=revert・順行−)', () => {
+    const base = { symbol: 'NIY=F', triggered_at: 1, detection_kind: 'slope', window_seconds: 60,
+      change_percent: 0.3, price: 1000, session_date: null, session: null } as const;
+    const rows: AlertRow[] = [
+      { ...base, id: 1, direction: 'down', ret5: -0.5, ret15: -0.5, ret30: -0.5 },   // 下げ継続
+      { ...base, id: 2, direction: 'down', ret5: 0.4, ret15: 0.4, ret30: 0.4 },       // 上げ戻り
+    ];
+    const st = summarize(rows).find(x => x.label === '短期')!;
+    expect(st.hitRate).toBeCloseTo(0.5, 5);      // 下げ継続 1/2
+    expect(st.revertRate).toBeCloseTo(0.5, 5);   // 戻り 1/2
+    expect(st.avgRet15).toBeCloseTo(0.05, 5);    // favor: (+0.5 + -0.4)/2
   });
 });

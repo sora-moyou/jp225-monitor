@@ -5,7 +5,7 @@ interface AlertRow {
   price: number | null; change_percent: number | null;
   ret5: number | null; ret15: number | null; ret30: number | null;
 }
-interface KindStat { label: string; count: number; hitRate: number; avgRet5: number; avgRet15: number; avgRet30: number; }
+interface KindStat { label: string; count: number; hitRate: number; revertRate: number; avgRet5: number; avgRet15: number; avgRet30: number; }
 
 export interface AlertsHistoryElements {
   openBtn: HTMLButtonElement; modal: HTMLElement; backdrop: HTMLElement;
@@ -27,8 +27,9 @@ export function initAlertsHistoryModal(el: AlertsHistoryElements): void {
       const data = await res.json() as { ok: boolean; alerts: AlertRow[]; stats: KindStat[]; error?: string };
       if (!data.ok) { el.summary.innerHTML = `取得失敗: ${data.error ?? ''}`; return; }
       el.summary.innerHTML = data.stats.length
-        ? '<table class="ah-table"><thead><tr><th>種別</th><th>件数</th><th>的中率(15分)</th><th>平均+5分</th><th>平均+15分</th><th>平均+30分</th></tr></thead><tbody>'
+        ? '<table class="ah-table"><thead><tr><th>種別</th><th>件数</th><th>的中率(15分)</th><th>戻り率(15分)</th><th>順行+5分</th><th>順行+15分</th><th>順行+30分</th></tr></thead><tbody>'
           + data.stats.map(s => `<tr><td>${s.label}</td><td>${s.count}</td><td>${(s.hitRate * 100).toFixed(0)}%</td>`
+            + `<td>${(s.revertRate * 100).toFixed(0)}%</td>`
             + `<td class="${retCls(s.avgRet5)}">${fmtRet(s.avgRet5)}</td><td class="${retCls(s.avgRet15)}">${fmtRet(s.avgRet15)}</td>`
             + `<td class="${retCls(s.avgRet30)}">${fmtRet(s.avgRet30)}</td></tr>`).join('')
           + '</tbody></table>'

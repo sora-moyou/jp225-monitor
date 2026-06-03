@@ -171,6 +171,15 @@ export function getBarCloseAt(db: DatabaseSync, symbol: string, t: number): numb
   return row ? row.c : null;
 }
 
+/** target 付近([target - tolBeforeMs, target])で最も新しい bar の close。範囲内に無ければ null。
+ *  followup の +N分リターン用。セッション切れ目/収集欠損で +N分の足が無い時、遠い古い足(最悪は発火足)へ
+ *  フォールバックして見かけ上 0% になるのを防ぐ(=データ未確定として null=集計除外にする)。 */
+export function getBarCloseNear(db: DatabaseSync, symbol: string, t: number, tolBeforeMs: number): number | null {
+  const row = db.prepare('SELECT c FROM bars_1m WHERE symbol = ? AND t <= ? AND t >= ? ORDER BY t DESC LIMIT 1')
+    .get(symbol, t, t - tolBeforeMs) as { c: number } | undefined;
+  return row ? row.c : null;
+}
+
 /** ret30 が未確定で、発火から30分以上経過したアラート(事後値動きを埋める対象)。 */
 export function getAlertsNeedingFollowup(db: DatabaseSync, now: number): AlertRow[] {
   return db.prepare('SELECT * FROM alerts WHERE ret30 IS NULL AND triggered_at + ? <= ? ORDER BY triggered_at ASC')

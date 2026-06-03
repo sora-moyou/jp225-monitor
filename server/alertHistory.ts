@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFollowup,
-  updateAlertReturns, getBarCloseAt, type AlertRow } from './db/store.js';
+  updateAlertReturns, getBarCloseNear, type AlertRow } from './db/store.js';
 import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
 import { classifySession, isWithinOpenGuard } from '../collector/session.js';
@@ -10,6 +10,12 @@ import type { AlertEventPayload } from './types.js';
 const FOLLOWUP_MS = 30_000;
 const HIT_PCT = 0.1;            // 的中判定(発火方向に +0.1% 以上)
 const OFFSETS_MIN = [5, 15, 30] as const;
+const FOLLOWUP_TOL_MS = 3 * 60_000;   // +N分の足は target±この範囲(手前)で探す。無ければ null=集計除外。
+
+/** 順行符号: アラート方向に進んだら +、戻ったら −(down は ret の符号反転)。継続/戻りの比較用。 */
+function favor(direction: string | null, ret: number): number {
+  return direction === 'down' ? -ret : ret;
+}
 
 let db: DatabaseSync | null = null;
 let timer: NodeJS.Timeout | null = null;
@@ -69,16 +75,20 @@ export function followupTick(database: DatabaseSync, now: number): void {
   for (const a of rows) {
     if (a.price == null || a.price <= 0) continue;
     const ret = (offMin: number): number | null => {
-      const c = getBarCloseAt(database, a.symbol, a.triggered_at + offMin * 60_000);
+      // +N分の足を target±許容で取得(セッション切れ目/欠損で遠い足へ張り付かないよう近傍限定)。
+      const c = getBarCloseNear(database, a.symbol, a.triggered_at + offMin * 60_000, FOLLOWUP_TOL_MS);
       return c == null ? null : ((c - a.price!) / a.price!) * 100;
     };
     updateAlertReturns(database, a.id, ret(OFFSETS_MIN[0]), ret(OFFSETS_MIN[1]), ret(OFFSETS_MIN[2]));
   }
 }
 
-export interface KindStat { label: string; count: number; hitRate: number; avgRet5: number; avgRet15: number; avgRet30: number; }
+// avgRet5/15/30 は「順行%」(発火方向に進めば +、戻れば −)。上げ/下げが相殺しないよう方向正規化。
+export interface KindStat { label: string; count: number; hitRate: number; revertRate: number; avgRet5: number; avgRet15: number; avgRet30: number; }
 
-/** 種別(超短期/短期/長期)ごとに、的中率(15分基準)と平均retを集計。ret15 確定分のみ対象。 */
+/** 種別ごとに、継続率(hitRate=順行+0.1%超)・戻り率(revertRate=逆行0.1%超)・順行平均ret を集計。
+ *  すべて 15分基準の確定分(hit/revert)。avgRet は各オフセットの確定分。「急落後にさらに下げたか
+ *  /戻ったか」を方向正規化して測り、戻り率が高ければ閾値見直しの判断材料にする。 */
 export function summarize(rows: AlertRow[]): KindStat[] {
   const groups = new Map<string, AlertRow[]>();
   for (const r of rows) {
@@ -87,16 +97,22 @@ export function summarize(rows: AlertRow[]): KindStat[] {
     groups.get(k)!.push(r);
   }
   const avg = (xs: number[]): number => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+  const favAvg = (rs: AlertRow[], get: (r: AlertRow) => number | null): number =>
+    avg(rs.map(r => { const v = get(r); return v == null ? null : favor(r.direction, v); })
+          .filter((x): x is number => x != null));
   const out: KindStat[] = [];
   for (const [label, rs] of groups) {
     const r15 = rs.filter(r => r.ret15 != null);
-    const hits = r15.filter(r => r.direction === 'up' ? r.ret15! >= HIT_PCT : r.ret15! <= -HIT_PCT).length;
+    const fav15 = r15.map(r => favor(r.direction, r.ret15!));
+    const hits = fav15.filter(f => f >= HIT_PCT).length;        // 継続(順行 ≥ +0.1%)
+    const reverts = fav15.filter(f => f <= -HIT_PCT).length;    // 戻り(逆行 ≥ 0.1%)
     out.push({
       label, count: rs.length,
       hitRate: r15.length ? hits / r15.length : 0,
-      avgRet5: avg(rs.filter(r => r.ret5 != null).map(r => r.ret5!)),
-      avgRet15: avg(r15.map(r => r.ret15!)),
-      avgRet30: avg(rs.filter(r => r.ret30 != null).map(r => r.ret30!)),
+      revertRate: r15.length ? reverts / r15.length : 0,
+      avgRet5: favAvg(rs, r => r.ret5),
+      avgRet15: favAvg(rs, r => r.ret15),
+      avgRet30: favAvg(rs, r => r.ret30),
     });
   }
   return out;
