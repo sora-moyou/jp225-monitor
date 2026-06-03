@@ -33,7 +33,10 @@ describe('evaluateBarsNiy', () => {
     const shock = fired.find(e => e.detectionKind === 'shock')!;
     expect(shock.symbol).toBe('NIY=F');
     expect(shock.direction).toBe('up');
-    expect(shock.note).toContain('急変');
+    // note は値幅データに専念(種別「急変」はタグ側に一本化したので含まない)。
+    expect(shock.note).toContain('1分');
+    expect(shock.note).toContain('↑');
+    expect(shock.note).not.toContain('急変');
   });
 
   it('does not fire on a flat series', () => {
