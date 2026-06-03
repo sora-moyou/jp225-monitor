@@ -13,6 +13,10 @@ import { setCooldownMs } from '../server/alertCooldown.js';
 import { resolveCooldownMin } from '../server/configStore.js';
 import { warmFromDb } from '../server/warmup.js';
 
+// バンドルした依存(express/rss-parser/https-proxy-agent 等)が出す非推奨警告(DEP0169 url.parse 等)を抑制。
+// 自前コードは url.parse 不使用。これは deprecation 種別のみを抑え、他の警告は残す。
+process.noDeprecation = true;
+
 export const COLLECTOR_VERSION = '0.5.00';
 const POLL_MS = 2000;
 const IDLE_MS = 30_000;

@@ -2,6 +2,9 @@ import express from 'express';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { installLogCapture } from './logBuffer.js';
+// バンドルした依存(express/rss-parser/https-proxy-agent 等)が出す非推奨警告(DEP0169 url.parse 等)を抑制。
+// 自前コードは url.parse 不使用。deprecation 種別のみ抑え、他の警告は残す。
+process.noDeprecation = true;
 installLogCapture();   // 最初に install してすべての console を捕捉
 
 import { streamHandler } from './routes/stream.js';
