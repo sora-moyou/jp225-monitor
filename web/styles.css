@@ -95,6 +95,8 @@ body {
   color: var(--muted);
 }
 .alert .explanation { display: block; margin-top: 4px; color: var(--text); }
+/* テクニカル(グランビル/ダブル)は説明文をインライン化して1行コンパクトに。 */
+.alert.tech .explanation { display: inline; margin-top: 0; }
 .alert .btn-group { display: flex; gap: 4px; align-items: center; }
 .alert .refresh-btn {
   cursor: pointer;

@@ -33,7 +33,9 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   if (items.has(id)) return items.get(id)!;
 
   const el = document.createElement('div');
-  el.className = `alert ${alert.direction}`;
+  // isTech は下で定義するが className に使うため先に判定。
+  const isTechKind = alert.detectionKind === 'granville' || alert.detectionKind === 'dtb';
+  el.className = `alert ${alert.direction}${isTechKind ? ' tech' : ''}`;
   const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
     : alert.detectionKind === 'shock' ? '急変'
     : alert.detectionKind === 'dtb' ? 'Wパターン'
@@ -41,7 +43,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   const arrow = alert.direction === 'up' ? '▲' : '▼';
   // 用語重複を避ける: グランビル/ダブルは固定説明文「価格xxxで…」が要点を伝えるので mid(note)を省略。
   // 急変/フラッシュは note に値幅等の情報があるので表示。symbolLabel(日経225先物/接尾辞)はタグと重複するため非表示。
-  const isTech = alert.detectionKind === 'granville' || alert.detectionKind === 'dtb';
+  const isTech = isTechKind;
   const mid = isTech ? '' : (alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`);
   // 直近15分コンテキスト（参考、発火窓と分離）
   const ctx15 = alert.change15min !== null
@@ -54,10 +56,10 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   main.innerHTML =
     `<span class="alert-time">${time}</span> ` +
     `${arrow}${mid ? ' ' + mid : ''} ` +
-    // グランビルは説明文(「価格xxxで戻り売り」等)で種別が分かるため種別タグを出さない(「グランビル」の語を削除)。
-    `${alert.detectionKind === 'granville' ? '' : `<span class="kind-tag">[${kindLabel}]</span> `}` +
-    `${ctx15} ` +
-    `<span class="explanation">${UI.ja.explanationLoading}</span>`;
+    // テクニカル(グランビル/ダブル)は説明文「価格xxxで…」で種別が分かるので種別タグも15分も省き1行に。
+    `${isTech ? '' : `<span class="kind-tag">[${kindLabel}]</span> `}` +
+    `${isTech ? '' : ctx15 + ' '}` +
+    `<span class="explanation">${isTech ? '' : UI.ja.explanationLoading}</span>`;
   const btnGroup = document.createElement('div');
   btnGroup.className = 'btn-group';
   const refreshBtn = document.createElement('button');
@@ -68,7 +70,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   close.className = 'close';
   close.textContent = '✕';
   close.onclick = () => removeBanner(id);
-  btnGroup.appendChild(refreshBtn);
+  if (!isTech) btnGroup.appendChild(refreshBtn);   // テクニカルは固定文なので🔄(再生成)は不要
   btnGroup.appendChild(close);
   el.appendChild(main);
   el.appendChild(btnGroup);
