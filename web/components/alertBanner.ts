@@ -55,7 +55,8 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     `<span class="alert-time">${time}</span> ` +
     `<strong>⚡</strong> ` +
     `${arrow}${mid ? ' ' + mid : ''} ` +
-    `<span class="kind-tag">[${kindLabel}]</span> ` +
+    // グランビルは説明文(「価格xxxで戻り売り」等)で種別が分かるため種別タグを出さない(「グランビル」の語を削除)。
+    `${alert.detectionKind === 'granville' ? '' : `<span class="kind-tag">[${kindLabel}]</span> `}` +
     `${ctx15} ` +
     `<span class="explanation">${UI.ja.explanationLoading}</span>`;
   const btnGroup = document.createElement('div');
