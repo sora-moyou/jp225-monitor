@@ -39,6 +39,32 @@ describe('detectLevelBreak', () => {
     expect(detectLevelBreak(L, mixed, 70100)).toEqual([]);   // 直近3本の安値70080 > L → 跨いでいない
   });
 
+  it('山/谷の形成なしの素通り(継続)では発火しない', () => {
+    // 上から L=70000 へ一直線に下落し割る。Lに到達後の戻り(山)が無い → 無意味な継続なので出さない。
+    const straightDown: BrkBar[] = [
+      { t: 0, h: 70080, l: 70060 },
+      { t: 1, h: 70060, l: 70040 },
+      { t: 2, h: 70040, l: 70020 },
+      { t: 3, h: 70020, l: 70000 },   // L へ到達(タッチ)
+      { t: 4, h: 70005, l: 69990 },   // そのまま割る(戻りの山なし)
+      { t: 5, h: 69995, l: 69980 },
+    ];
+    expect(detectLevelBreak(L, straightDown, 69985)).toEqual([]);
+  });
+
+  it('安値タッチ→山形成→再下落で割ると down(構造ありのみ発火)', () => {
+    const formedThenBreak: BrkBar[] = [
+      { t: 0, h: 70020, l: 70000 },   // L へ到達(谷1)
+      { t: 1, h: 70015, l: 69995 },
+      { t: 2, h: 70030, l: 70010 },   // 戻って山形成(高値 70030 ≥ L+10)
+      { t: 3, h: 70025, l: 70005 },
+      { t: 4, h: 70010, l: 69998 },   // L へ戻る
+      { t: 5, h: 70002, l: 69980 },   // 再下落して割る
+    ];
+    expect(detectLevelBreak(L, formedThenBreak, 69985))
+      .toEqual([{ kind: 'down', level: 70000, label: '70000節目' }]);
+  });
+
   it('現値0・バー不足はガード', () => {
     expect(detectLevelBreak(L, bars(70005, 69990), 0)).toEqual([]);
     expect(detectLevelBreak(L, bars(70005, 69990, 2), 70010)).toEqual([]);
