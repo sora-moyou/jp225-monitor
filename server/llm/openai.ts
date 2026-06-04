@@ -210,26 +210,35 @@ export async function explain(input: ExplainInput): Promise<string> {
     : '';
   const dirEmphasis = dir === 'up' ? '⬆ 上昇方向' : '⬇ 下落方向';
   // dtb は値幅(%)ではなくパターン接近なので、ノイズ注記(急変幅判定)を出さない。
-  const magnitudeNote = input.detectionKind !== 'dtb' && Math.abs(input.changePercent) <= 0.15
-    ? '※ 急変幅が小さい (≤0.15%)。ノイズの可能性も考慮し、無理に材料を結びつけない。'
-    : '';
+  const smallMag = input.detectionKind !== 'dtb' && Math.abs(input.changePercent) <= 0.15;
+  const ultraShort = input.detectionKind === 'slope' || input.windowSeconds <= 60;
+  const noiseNotes = [
+    smallMag ? '※ 急変幅が小さい (≤0.15%)。ノイズの可能性を考慮し、無理に材料を結びつけない。' : '',
+    ultraShort ? '※ 超短期(〜1分)の動き。ニュース起因はまれ。同方向に動いた他資産が無ければ短期需給/テクニカルを既定とする。' : '',
+  ].filter(Boolean).join('\n');
   // dtb は「X秒でY%」の急変文ではなく、主要水準へのパターン接近として導入する。
   const headline = input.detectionKind === 'dtb'
     ? `【${kindLabel}】${input.symbolLabel} が主要な価格水準に ${dirEmphasis}(反転狙い)で接近しました(ダブルトップ/ボトム形成・ネック未達)。\n`
     : `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n`;
+  const oppositeExample = dir === 'down'
+    ? '「停戦/地政学リスク後退/利下げ観測/円安/米株高」は株高(⬆)要因なので、下落の説明に使わない'
+    : '「地政学緊張・戦闘激化/利上げ・金利上昇/円高/弱い指標/米株安」は株安(⬇)要因なので、上昇の説明に使わない';
   const userPrompt =
     headline +
-    (magnitudeNote ? magnitudeNote + '\n' : '') +
+    (noiseNotes ? noiseNotes + '\n' : '') +
     ctx15Line + pa15Line + range1hLine +
     `\n${formatCrossAsset(input.crossAsset ?? [])}\n` +
     `\n【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
+    `[材料の方向(株式の一般則)]\n` +
+    `・株高(⬆)要因: 停戦/地政学リスク後退, 利下げ観測, 良い経済指標, 円安, 米株高, リスクオン\n` +
+    `・株安(⬇)要因: 地政学緊張・戦闘激化, 利上げ/金利上昇, 悪い経済指標, 円高, 米株安, リスクオフ\n` +
     `[手順]\n` +
     `1) まず「他資産」を見る。${dirEmphasis} と同方向に大きく動いた資産があれば、連動(リスクオン/オフ・金利・為替)として最優先で説明に使う。\n` +
-    `2) 次に候補ニュースを上から見て、その材料なら相場が ${dirEmphasis} へ動くはずか判定。\n` +
-    `3) 方向が一致する材料(他資産 or ニュース)を選んで「○○分前のXX、(方向の根拠)」形式で説明。\n` +
-    `4) 方向が一致するものが無ければ「整合する明確な材料なし、テクニカル/ノイズ可能性」と書く。地政学リスクなのに株が上がっている等の矛盾を引用しない。\n` +
+    `2) 次に候補ニュースを上から見て、上の方向則で「その材料の極性」を判定し、${dirEmphasis} と一致するかを必ず確認する。\n` +
+    `3) 極性が一致する材料(他資産 or ニュース)だけを選び「○○分前のXX、(方向の根拠)」形式で説明。\n` +
+    `4) 極性が逆の材料は絶対に引用しない(例: ${oppositeExample})。一致する材料が無ければ「整合する明確な材料なし、短期需給/テクニカルの可能性」と書く。無理に結びつけない。\n` +
     `5) OHLCで下髭/上髭/サポート反転等が読めれば併記してよい。\n\n` +
-    `出力は必ず200文字以内、1〜2文で。`;
+    `出力は必ず200文字以内、1〜2文で。矛盾(株高要因で下落を説明する等)は禁止。`;
 
   return callWithFallback(async (p) => {
     const completion = await p.client!.chat.completions.create({
