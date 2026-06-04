@@ -57,12 +57,18 @@ export function extractFeedPrices(text: string, now: number): Price[] {
     const price = Number(fields[0]);
     if (!Number.isFinite(price) || price <= 0) continue;
     const changePercent = Number(fields[2]);
+    // 鮮度: 取引中の銘柄は時刻[3]が HH:MM。停止中(立会外/場中フリーズ/休日)は日付("06/04"等)に
+    // なりフラグ[4]も "1"→"0"・高安が空になる。約定していない銘柄の凍結値・参照値を「ライブ tick」と
+    // 誤認すると、動いていないのに分足が動いたように見え急変等が誤発火するため stale を復元する。
+    // (timestamp は短期窓の解像度確保のため従来どおり wall-clock を注入。)
+    const timeField = (fields[3] ?? '').trim();
+    const live = /^\d{1,2}:\d{2}$/.test(timeField);
     out.push({
       symbol,
       price,
       changePercent: Number.isFinite(changePercent) ? changePercent : 0,
       timestamp: now,
-      stale: false,
+      stale: !live,
     });
   }
   return out;

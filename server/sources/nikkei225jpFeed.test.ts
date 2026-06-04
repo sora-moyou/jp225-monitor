@@ -90,3 +90,33 @@ describe('extractFeedPrices (複数銘柄一括: NIY=F/NQ=F/YM=F/CL=F/^TNX/JPY=X
     expect(syms).not.toContain('NQ=F');   // 737 が壊れている
   });
 });
+
+describe('extractFeedPrices 鮮度(stale)判定', () => {
+  it('時刻[3]が HH:MM の取引中は stale=false', () => {
+    expect(extractOseMini('A[136]="67580.00_+10_+0.01_15:44_1__";', 1)!.stale).toBe(false);
+  });
+
+  it('立会外で時刻[3]が日付("06/04")・フラグ0 の停止中は stale=true(実feed断片)', () => {
+    // 15:45-17:00 休憩中に実観測した OSE mini(136)の停止形。値(67640)は last/参照で残るが
+    // 約定していないので stale 扱いにする(これを false にすると幽霊バー→誤検知になる)。
+    const p = extractOseMini('A[136]="67640.00_-915.00_-1.33_06/04_0__";', 1);
+    expect(p).not.toBeNull();
+    expect(p!.price).toBe(67640);
+    expect(p!.stale).toBe(true);
+  });
+
+  it('時刻[3]が空/不正なら安全側で stale=true', () => {
+    expect(extractOseMini('A[136]="67640_-1_-0.1__0__";', 1)!.stale).toBe(true);     // 時刻欄が空
+    expect(extractOseMini('A[136]="67640_-1_-0.1_-_0__";', 1)!.stale).toBe(true);    // 時刻欄が "-"
+  });
+
+  it('混在: 取引中(JPY/NQ=HH:MM)は stale=false、停止中(OSE mini=日付)は stale=true', () => {
+    const mixed = 'A[136]="67640.00_-915_-1.33_06/04_0__";\n'
+      + 'A[511]="159.891_-0.157_-0.10_16:28_1_160.066_159.585";\n'
+      + 'A[737]="30440.90_+8.30_+0.03_16:28_1__";';
+    const bySym = Object.fromEntries(extractFeedPrices(mixed, 1).map(p => [p.symbol, p]));
+    expect(bySym['NIY=F']!.stale).toBe(true);
+    expect(bySym['JPY=X']!.stale).toBe(false);
+    expect(bySym['NQ=F']!.stale).toBe(false);
+  });
+});

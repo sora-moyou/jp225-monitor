@@ -46,7 +46,12 @@ async function tick(): Promise<number> {
 
     // v0.3.30/31: リアルタイム価格を銘柄ごとに 1 分足ビルダー + 生サンプルへ。
     // 急変は確定足ベース(alertLoop の 60秒タイマ → evaluateBarsNiy)で発火。realtime z-score は廃止。
-    for (const p of feed) feedRealtimePrice(p.symbol, p.price, p.timestamp);
+    // 停止/参照値(stale)はバー化しない: 約定していない銘柄の凍結値で幽霊バーが積まれ、
+    // 動いていないのに急変等が誤発火するのを防ぐ(collector の recordFeedPrices と同じ方針)。
+    // 注: 立会外ぶんを落とすため realtime 足には時間ギャップが残る(例 15:44→夜間17:00 が隣接)。
+    // この寄りシームの段差は emitAlert の openGuard(寄り OPEN_GUARD_BARS 本抑制)で吸収している。
+    // openGuardBars を 0 にするとこのシームが露出するので注意(feedBars 自体はギャップ補正しない)。
+    for (const p of feed) if (!p.stale) feedRealtimePrice(p.symbol, p.price, p.timestamp);
 
     const merged = mergeWithCached(prices);
     tickDetectorFeed(merged);   // v0.3.17: 超短期 (5s/10s) フラッシュ検知 (バッファ更新)
