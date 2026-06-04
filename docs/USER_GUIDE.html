@@ -1277,9 +1277,21 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </details>
 
     <details>
-      <summary>起動時にファイアウォール許可ダイアログ</summary>
+      <summary>「Node.js JavaScript Runtime」へのアクセスを許可しますか? と出た / まちがって「キャンセル」を押した</summary>
       <div class="faq-body">
-        「アクセスを許可する」で OK。内部 HTTP サーバ (port 3000) のために必要です。プライベートネットワークのみで十分。
+        <p><strong>結論:「許可」を押してください(安全です)。</strong> これは Windows が「このアプリの通信を許可していいか」を確認する標準のダイアログです。JP225 Monitor は中で小さな <strong>Node.js</strong> サーバー(発行元: Node.js)を動かしているため、こう表示されます。通信はあなたのパソコンの中だけ (localhost) で完結します。</p>
+
+        <p><strong>「キャンセル」を押してしまった場合:</strong> 多くの場合そのままでもアプリは動きます(パソコン内の通信のため)。それでも動かない・気になるときは、次の手順で「ブロック設定」を消せます。むずかしくありません:</p>
+        <ol>
+          <li>スタートボタン →「<strong>Windows セキュリティ</strong>」と入力して開く</li>
+          <li>「<strong>ファイアウォールとネットワーク保護</strong>」→ 画面下の「<strong>詳細設定</strong>」をクリック(管理者の確認が出たら「はい」)</li>
+          <li>左側の「<strong>受信の規則</strong>」をクリック</li>
+          <li>一覧から「<strong>Node.js JavaScript Runtime</strong>」を探す(複数あることがあります)</li>
+          <li>見つけたものを右クリック →「<strong>削除</strong>」(複数あれば全部削除)</li>
+          <li>JP225 Monitor をもう一度起動 → 同じダイアログが出たら今度は「<strong>許可</strong>」を押す</li>
+        </ol>
+        <p>パソコンに詳しい人向け(管理者の PowerShell で一括削除):<br>
+        <code>Get-NetFirewallRule -DisplayName 'Node.js*' | Where-Object Action -eq 'Block' | Remove-NetFirewallRule</code></p>
       </div>
     </details>
 
