@@ -103,7 +103,7 @@ export function evaluateBarsNiy(
         triggeredAt: lastCompleted.t,
         change15min: ctx.change15min, pa15min: ctx.pa15min, range1h: ctx.range1h,
         zscore: 0,
-        note: `${price} ${word} / ${sgn(shock.d1)}円 (1分) / 2分 ${sgn(shock.d2)}円 / score ${shock.score}/6`,
+        note: `${price} からの${word} / ${sgn(shock.d1)}円 (1分) / 2分 ${sgn(shock.d2)}円 / score ${shock.score}/6`,
       });
     }
   }

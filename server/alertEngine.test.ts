@@ -37,8 +37,8 @@ describe('evaluateBarsNiy', () => {
     expect(shock.note).toContain('1分');
     expect(shock.note).toContain('急上昇');           // 方向は語で表現
     expect(shock.note).toContain('+');                // 値幅は符号付き
-    // 先頭価格は「起点」(動き始め=1分前の終値 30,000)。終点(30,050)ではない。
-    expect(shock.note).toMatch(/^30,000 急上昇/);
+    // 先頭価格は「起点」(動き始め=1分前の終値 30,000)。終点(30,050)ではない。「からの急上昇」表記。
+    expect(shock.note).toMatch(/^30,000 からの急上昇/);
     expect(shock.note).not.toContain('急変');
     expect(shock.note).not.toContain('↑');
   });
