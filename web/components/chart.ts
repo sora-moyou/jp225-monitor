@@ -1,6 +1,9 @@
 // TradingView 埋め込みチャート
 // 銘柄変更: CHART_SYMBOL を編集（例: 'CME:NK1!', 'TVC:NI225', 'OANDA:JP225USD'）
 // 足変更: CHART_INTERVAL を編集（'1','5','15','60','240','D' など）
+// 初期インジケータ: CHART_STUDIES を編集（'<内部ID>@tv-basicstudies' 形式。
+//   例: 'MASimple@tv-basicstudies', 'BB@tv-basicstudies', 'RSI@tv-basicstudies'）。
+//   MA Ribbon は内部IDが環境依存のため、表示されない場合はこの配列を差し替える。
 
 declare global {
   interface Window {
@@ -10,7 +13,8 @@ declare global {
 
 const TV_SCRIPT_URL = 'https://s3.tradingview.com/tv.js';
 const CHART_SYMBOL = 'FOREXCOM:JP225';    // FOREXCOM Japan 225 CFD
-const CHART_INTERVAL = '15';              // 15分足
+const CHART_INTERVAL = '5';               // 5分足(初期値)
+const CHART_STUDIES = ['MovingAvgRibbon@tv-basicstudies'];   // 初期インジケータ: MA Ribbon
 
 let scriptPromise: Promise<void> | null = null;
 
@@ -49,6 +53,7 @@ export async function mountChart(containerId: string): Promise<void> {
       container_id: containerId,
       allow_symbol_change: true,
       withdateranges: true,
+      studies: CHART_STUDIES,                      // 初期インジケータ(MA Ribbon)
       disabled_features: ['create_volume_indicator_by_default'],
     });
   } catch (err) {
