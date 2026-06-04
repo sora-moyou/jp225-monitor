@@ -3,7 +3,7 @@ import {
   computeContext,
   type DetectorParams,
 } from './alertDetector.js';
-import { detectGranvilleReversal, detectGranvilleContinuation,
+import { detectGranvilleReversal, detectGranvilleContinuation, detectMaCross,
   DEFAULT_GRANVILLE, DEFAULT_GRANVILLE_CONT, type GranvilleSignal } from './granville.js';
 import { canFire, markFired } from './alertCooldown.js';
 import { detectShock } from './shockDetector.js';
@@ -29,6 +29,11 @@ export function _resetShockCooldown(): void { lastShockBar.clear(); }
 let lastGranvilleNotes = new Set<string>();
 export function _resetGranvilleDedup(): void { lastGranvilleNotes = new Set(); }
 
+// 25MA抜け(素のMAクロス)のエッジ抑制。前 tick でも同じクロスが出ていたら(同一分内の再評価=エコー)
+// 発火しない。クロスが一旦消えてから再度現れた時だけ1回発火する。グランビルの note dedup と同系統。
+let lastMaCrossKeys = new Set<string>();
+export function _resetMaCrossDedup(): void { lastMaCrossKeys = new Set(); }
+
 /** Bar-confirmed detection for NIY=F: Granville (reversal/continuation) first, then shock (完成1分足).
  *  Routes events to `sink`. */
 export function evaluateBarsNiy(
@@ -49,10 +54,12 @@ export function evaluateBarsNiy(
   for (const { ma, label } of periods) {
     const rev = detectGranvilleReversal(closes, { ...DEFAULT_GRANVILLE, maPeriod: ma });
     const cont = detectGranvilleContinuation(closes, { ...DEFAULT_GRANVILLE_CONT, maPeriod: ma });
+    // 転換=価格がMAをクロス(MA上抜け/下抜け)、継続=MA手前で支持/抵抗。MA本数(25/75)は表示しない
+    // (中期/長期は出さない既存方針)が、「MAの抜け/支持」であることは明示する(ユーザー指定: MA基準を明示)。
     const g = rev
-      ? { sig: rev, note: `グランビル${rev.dir === 'up' ? '買い' : '売り'}転換` }
+      ? { sig: rev, note: `グランビル${rev.dir === 'up' ? '買い' : '売り'}転換(MA${rev.dir === 'up' ? '上' : '下'}抜け)` }
       : cont
-        ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い' : 'グランビル戻り売り' }
+        ? { sig: cont, note: cont.dir === 'up' ? 'グランビル押し目買い(MA上で支持)' : 'グランビル戻り売り(MA下で抵抗)' }
         : null;
     if (!g) continue;
     const e = byNote.get(g.note);
@@ -76,6 +83,28 @@ export function evaluateBarsNiy(
     });
   }
   lastGranvilleNotes = currentNotes;   // 次tickのエッジ判定用に今tickのシグナル集合を記録
+
+  // ── 25MA抜け(素のMAクロス)──
+  // グランビルが構造条件付きで拾う「転換」とは別に、価格が中期MA(既定25)を単純に上下クロスした時に
+  // 「25MA抜けの可能性あり」を出す。MA は固定価格を持たない基準なので価格でなくMA名で表示(ユーザー指定)。
+  // 同 tick でグランビルが同方向の転換/継続を既に出していれば重複なので抑制。エッジ抑制で1回化。
+  const granvilleDirs = new Set([...byNote.values()].map(v => v.sig.dir));
+  const maCross = detectMaCross(closes, maMid);
+  const maKey = maCross ? `ma-${maCross.dir}` : '';
+  if (maCross && !granvilleDirs.has(maCross.dir) && !lastMaCrossKeys.has(maKey)) {
+    const ctx = computeContext(bars);
+    const dirWord = maCross.dir === 'up' ? '上抜け' : '下抜け';
+    console.log(`[alertEngine] ${sym} ${maCross.period}MA${dirWord} ma=${Math.round(maCross.ma)} dev=${maCross.deviation.toFixed(2)}%`);
+    sink({
+      symbol: sym, symbolLabel: meta.labelJa, changePercent: maCross.deviation,
+      windowSeconds: 75 * 60, detectionKind: 'ma', direction: maCross.dir,
+      triggeredAt: bars[bars.length - 1]!.t, change15min: ctx.change15min,
+      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0,
+      note: `${maCross.period}MA${dirWord}の可能性あり`,
+      level: Math.round(maCross.ma),   // 記録用(MA値)。表示は note の「25MA抜け」=固定価格は出さない。
+    });
+  }
+  lastMaCrossKeys = maKey ? new Set([maKey]) : new Set();   // クロスが消えるまで同方向を抑制
 
   // 急変(価格変化スコア方式)。完成足のみ(末尾=進行中バーを除外)。バー数クールダウンで間引く。
   const completed = bars.slice(0, -1).map(b => b.close);

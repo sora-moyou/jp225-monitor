@@ -50,6 +50,41 @@ export function detectGranvilleReversal(closes: number[], p: GranvilleParams = D
   return null;
 }
 
+export interface MaCrossSignal {
+  dir: 'up' | 'down';
+  ma: number;        // 現在の移動平均
+  period: number;    // MA 本数(表示用: 「25MA抜け」)
+  deviation: number; // 現値の MA からの乖離 %
+}
+
+/**
+ * 価格が移動平均を上下に「新規クロス」したかを検知。グランビルの傾き/構造条件は課さない素のクロス。
+ * 用途: トレンドで固定水準を次々抜ける「水準抜け」連発とは別に、MA という“固定価格を持たない基準”の
+ *   抜けを「25MA抜けの可能性あり」(価格非表示)として出す(ユーザー指定)。
+ * 60秒ポーリングでクロス足を外さないよう、直近 lookback 本以内の「反対側→現在側」遷移を許容する。
+ * 直前足が既に現在側なら新規クロスでない(null)→ 呼び出し側のエッジ抑制と併せ1回化する。closes は古い→新しい順。
+ */
+export function detectMaCross(closes: number[], period: number, lookback = 3): MaCrossSignal | null {
+  if (closes.length < period + lookback + 1) return null;
+  const last = closes.length - 1;
+  const maNow = sma(closes, last, period);
+  const cNow = closes[last]!;
+  const sideNow = cNow > maNow ? 1 : cNow < maNow ? -1 : 0;
+  if (sideNow === 0) return null;
+  for (let k = 1; k <= lookback; k++) {
+    const i = last - k;
+    const maI = sma(closes, i, period);
+    const cI = closes[i]!;
+    const sideI = cI > maI ? 1 : cI < maI ? -1 : 0;
+    if (sideI === sideNow) return null;     // 直前(off-MA)が同じ側 → 新規クロスでない(エコー)
+    if (sideI !== 0) {                       // 反対側 → 現在側へ遷移=クロス成立
+      return { dir: sideNow > 0 ? 'up' : 'down', ma: maNow, period, deviation: ((cNow - maNow) / maNow) * 100 };
+    }
+    // sideI === 0(ちょうど MA 上)は判定保留して1本さかのぼる
+  }
+  return null;
+}
+
 export interface GranvilleContParams extends GranvilleParams {
   retestBack: number;   // 「戻り/押し」を見る直近本数
   touchBand: number;    // MA に「接近した」とみなす乖離(±比率)

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { evaluateBarsNiy, _resetShockCooldown, _resetGranvilleDedup } from './alertEngine.js';
+import { evaluateBarsNiy, _resetShockCooldown, _resetGranvilleDedup, _resetMaCrossDedup } from './alertEngine.js';
 import { DEFAULT_PARAMS } from './alertDetector.js';
 import { INSTRUMENTS } from './config.js';
 import { _reset as resetCooldown, markFired, canFire } from './alertCooldown.js';
@@ -23,7 +23,7 @@ function quietThenJump(): Bar[] {
 }
 
 describe('evaluateBarsNiy', () => {
-  beforeEach(() => { resetCooldown(); _resetShockCooldown(); _resetGranvilleDedup(); });
+  beforeEach(() => { resetCooldown(); _resetShockCooldown(); _resetGranvilleDedup(); _resetMaCrossDedup(); });
 
   it('fires a shock alert through the sink on a quiet-then-jump series', () => {
     const fired: AlertEventPayload[] = [];

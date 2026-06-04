@@ -35,6 +35,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
   if (detectionKind === 'shock') return '急変';
   if (detectionKind === 'dtb') return 'Wトップ/ボトム';
   if (detectionKind === 'break') return '水準ブレイク';
+  if (detectionKind === 'ma') return 'MA抜け';
   return kindLabel(windowSeconds);
 }
 

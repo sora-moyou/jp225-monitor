@@ -6,7 +6,7 @@ import { classifySession } from '../../collector/session.js';
 import { getForecastSnapshot } from './forecastLoop.js';
 import { emitAlert } from '../alertHistory.js';
 import { detectDoubleTopBottom, DEFAULT_DOUBLE_PARAMS } from '../doublePattern.js';
-import { detectLevelBreak } from '../levelBreak.js';
+import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
@@ -26,9 +26,13 @@ let warnedNoTick = false;
 // 8秒ループでゾーン内に留まる間の連発を防ぐ。共有クールダウン(alertCooldown)とは独立。
 const DTB_COOLDOWN_MS = 15 * 60_000;
 const lastDtbFire = new Map<string, number>();
-// 水準抜けの per-level クールダウン(DTB と同様 15分・別マップ)。
+// 水準抜けの per-level クールダウン(DTB と同様 15分・別マップ)。同一水準の再タッチ連発を抑制。
 const BREAK_COOLDOWN_MS = 15 * 60_000;
 const lastBreakFire = new Map<string, number>();
+// 水準抜けの方向別クールダウン。トレンド中は価格の通り道に固定水準が複数あり、各水準を抜けるたびに
+// 1本ずつ発火して「水準が動いて見える」階段状の連発になる。方向別に一定時間まとめ、逆方向(反転)は許可。
+const BREAK_DIR_COOLDOWN_MS = 10 * 60_000;
+const lastBreakDir = new Map<'up' | 'down', number>();
 // 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火しないよう検知しない。
 const DETECT_FRESH_MS = 90_000;
 // 確定スイングピボットの戻り閾値(円)。これ以上戻った極値だけを固定水準として採用(1分足ノイズを除外)。
@@ -116,12 +120,24 @@ function tick(): void {
         });
       }
       // ── 水準抜け検知(DTBの補集合: 反転せず抜けた/ネック未達で再度抜けた)──
-      // 同じ hlLevels・同じ直近1分足を対象。per-level クールダウンで連発抑制。
-      for (const bsig of detectLevelBreak(hlLevels, recent, latest.price)) {
+      // 同じ hlLevels・同じ直近1分足を対象。連発を2段で整理する:
+      //  (1) 同一tick内の同方向ブレイクは「最も外側の1本」に集約(上抜け=最高水準/下抜け=最安水準=
+      //      価格が最も遠くまで抜けた=最も意味がある)。近接水準を同時に複数出さない。
+      //  (2) 方向別クールダウンで、トレンド中に水準を次々抜ける階段状の連発を1本化(逆方向=反転は許可)。
+      const breaks = detectLevelBreak(hlLevels, recent, latest.price);
+      const outer = new Map<'up' | 'down', BreakSignal>();
+      for (const b of breaks) {
+        const cur = outer.get(b.kind);
+        if (!cur || (b.kind === 'up' ? b.level > cur.level : b.level < cur.level)) outer.set(b.kind, b);
+      }
+      for (const bsig of outer.values()) {
+        if (now - (lastBreakDir.get(bsig.kind) ?? -Infinity) <= BREAK_DIR_COOLDOWN_MS) continue;   // 方向別(階段状連発の抑制)
         const key = `${bsig.kind}@${bsig.level.toFixed(1)}`;
-        if (now - (lastBreakFire.get(key) ?? -Infinity) <= BREAK_COOLDOWN_MS) continue;
+        if (now - (lastBreakFire.get(key) ?? -Infinity) <= BREAK_COOLDOWN_MS) continue;            // per-level(再タッチの抑制)
         lastBreakFire.set(key, now);
+        lastBreakDir.set(bsig.kind, now);
         const lvl = Math.round(bsig.level);
+        const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
         console.log(`[levelsLoop] 水準抜け ${bsig.kind} @${lvl} (${bsig.label})`);
         emitAlert({
           symbol: SYMBOL, symbolLabel: '日経225先物',
@@ -129,7 +145,8 @@ function tick(): void {
           direction: bsig.kind === 'up' ? 'up' : 'down',
           triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
           level: lvl,
-          note: `${lvl.toLocaleString('ja-JP')}水準抜けの可能性あり`,
+          // 「何の水準か」を付記(ユーザー指定): 価格 + 由来ラベル(押し安値/戻り高値/前日Day終値/長期高 等) + 方向。
+          note: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
         });
       }
     } catch (err) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectGranvilleReversal, detectGranvilleContinuation,
+import { detectGranvilleReversal, detectGranvilleContinuation, detectMaCross,
   type GranvilleParams, type GranvilleContParams } from './granville.js';
 
 const P: GranvilleParams = { maPeriod: 10, slopeBack: 5 };
@@ -77,5 +77,31 @@ describe('detectGranvilleContinuation (グランビル②③トレンド継続)'
   it('単調トレンド(戻り/押しなし)は null', () => {
     const mono = Array.from({ length: 25 }, (_, i) => 100 - i);
     expect(detectGranvilleContinuation(mono, PC)).toBeNull();
+  });
+});
+
+describe('detectMaCross (素のMAクロス)', () => {
+  // MA10 で評価。直前足が MA の反対側 → 最後の足で現在側へ抜けた時だけ発火(新規クロス)。
+  it('上抜け: 直前まで MA下 → 最後の足で MA上へクロスで up', () => {
+    const closes = [...Array.from({ length: 18 }, () => 100), 98, 98, 103];   // 直前(98)はMA下、末尾(103)でMA上抜け
+    const sig = detectMaCross(closes, 10);
+    expect(sig?.dir).toBe('up');
+    expect(sig!.period).toBe(10);
+    expect(sig!.deviation).toBeGreaterThan(0);
+  });
+
+  it('下抜け: 直前まで MA上 → 最後の足で MA下へクロスで down', () => {
+    const closes = [...Array.from({ length: 18 }, () => 100), 102, 102, 97];
+    expect(detectMaCross(closes, 10)?.dir).toBe('down');
+  });
+
+  it('現在側に居続ける(直前足も同じ側)なら新規クロスでない=null(エコー抑制)', () => {
+    // ずっと MA より上 → クロスではない
+    const closes = [...Array.from({ length: 20 }, () => 100), 105, 106, 107, 108];
+    expect(detectMaCross(closes, 10)).toBeNull();
+  });
+
+  it('データ不足は null', () => {
+    expect(detectMaCross([1, 2, 3], 10)).toBeNull();
   });
 });

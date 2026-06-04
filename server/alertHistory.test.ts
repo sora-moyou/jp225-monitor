@@ -71,6 +71,8 @@ describe('shouldPersistInMonitor', () => {
     // collector が検知・記録する種別 → 二重書き込み防止のため monitor は記録しない
     expect(shouldPersistInMonitor('shock', true)).toBe(false);
     expect(shouldPersistInMonitor('granville', true)).toBe(false);
+    // ma(25MA抜け)は evaluateBarsNiy 内で検知=collector も記録する → monitor は記録しない(二重書き防止)
+    expect(shouldPersistInMonitor('ma', true)).toBe(false);
     // null / legacy magnitude は monitor 専用集合外 → collector 稼働中は記録しない
     expect(shouldPersistInMonitor(null, true)).toBe(false);
     expect(shouldPersistInMonitor('magnitude', true)).toBe(false);
@@ -83,6 +85,7 @@ describe('rowKind', () => {
     expect(rowKind('shock', null)).toBe('急変');
     expect(rowKind('dtb', null)).toBe('Wトップ/ボトム');
     expect(rowKind('break', null)).toBe('水準ブレイク');
+    expect(rowKind('ma', null)).toBe('MA抜け');
     expect(rowKind('slope', 60)).toBe('短期');   // 専用ラベル無し → 窓秒基準
   });
 });
