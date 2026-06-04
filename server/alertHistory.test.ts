@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { initSchema, getRecentAlerts, insertAlert, type AlertRow } from './db/store.js';
-import { recordAlert, followupTick, summarize, kindLabel } from './alertHistory.js';
+import { recordAlert, followupTick, summarize, kindLabel, rowKind, shouldPersistInMonitor } from './alertHistory.js';
 import type { AlertEventPayload } from './types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,6 +54,36 @@ describe('followupTick', () => {
     followupTick(db, t0 + 10 * 60_000);
     expect(getRecentAlerts(db, 1)[0]!.ret30).toBeNull();
     db.close();
+  });
+});
+
+describe('shouldPersistInMonitor', () => {
+  it('collector 非稼働なら全種別を monitor が記録', () => {
+    for (const k of ['slope', 'shock', 'granville', 'dtb', 'break']) {
+      expect(shouldPersistInMonitor(k, false)).toBe(true);
+    }
+  });
+  it('collector 稼働中: monitor 専用種別(slope/dtb/break)は記録、collector検知種別(shock/granville)は記録しない', () => {
+    // collector が検知しない種別 → monitor が単独 writer なので記録する
+    expect(shouldPersistInMonitor('slope', true)).toBe(true);
+    expect(shouldPersistInMonitor('dtb', true)).toBe(true);
+    expect(shouldPersistInMonitor('break', true)).toBe(true);
+    // collector が検知・記録する種別 → 二重書き込み防止のため monitor は記録しない
+    expect(shouldPersistInMonitor('shock', true)).toBe(false);
+    expect(shouldPersistInMonitor('granville', true)).toBe(false);
+    // null / legacy magnitude は monitor 専用集合外 → collector 稼働中は記録しない
+    expect(shouldPersistInMonitor(null, true)).toBe(false);
+    expect(shouldPersistInMonitor('magnitude', true)).toBe(false);
+  });
+});
+
+describe('rowKind', () => {
+  it('検知種別ごとの専用ラベル', () => {
+    expect(rowKind('granville', null)).toBe('グランビル');
+    expect(rowKind('shock', null)).toBe('急変');
+    expect(rowKind('dtb', null)).toBe('Wトップ/ボトム');
+    expect(rowKind('break', null)).toBe('水準ブレイク');
+    expect(rowKind('slope', 60)).toBe('短期');   // 専用ラベル無し → 窓秒基準
   });
 });
 

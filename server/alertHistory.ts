@@ -34,7 +34,20 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
   if (detectionKind === 'granville') return 'グランビル';
   if (detectionKind === 'shock') return '急変';
   if (detectionKind === 'dtb') return 'Wトップ/ボトム';
+  if (detectionKind === 'break') return '水準ブレイク';
   return kindLabel(windowSeconds);
+}
+
+// collector が検知しない(=monitor だけが発火する)種別。collector が authoritative writer でも
+// これらは collector が一切 alerts に書かないため、monitor が単独で記録する必要がある。
+// slope=tickDetector, dtb/break=levelsLoop はいずれも monitor 専用。shock/granville は collector も検知。
+const MONITOR_ONLY_KINDS = new Set(['slope', 'dtb', 'break']);
+
+/** monitor 側で alerts に記録すべきか。collector 非稼働なら全種別記録。
+ *  collector 稼働中でも monitor 専用種別(slope/dtb/break)は collector が書かないため記録する
+ *  (二重書き込みにはならない: collector はこれらを一切検知・記録しない)。 */
+export function shouldPersistInMonitor(detectionKind: string | null, collectorAlive: boolean): boolean {
+  return !collectorAlive || MONITOR_ONLY_KINDS.has(detectionKind ?? '');
 }
 
 /** payload と発火価格から alerts に1行記録。 */
@@ -60,7 +73,10 @@ export function emitAlert(p: AlertEventPayload): void {
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());
-    if (isCollectorAlive(db, Date.now())) return;   // collector is the authoritative writer
+    // collector が authoritative writer だが、collector は shock/granville しか検知しない。
+    // slope/dtb/break は monitor 専用なので collector 稼働中でも monitor が記録しないと
+    // alerts に一切残らない(検証シートに出ない)。monitor 専用種別は collector-alive ゲートを抜ける。
+    if (!shouldPersistInMonitor(p.detectionKind, isCollectorAlive(db, Date.now()))) return;
     const latest = getLatestTick(db, p.symbol);
     const price = latest ? latest.price : (p.pa15min ? p.pa15min.current : 0);
     if (price > 0) recordAlert(db, p, price);

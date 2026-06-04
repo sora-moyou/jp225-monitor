@@ -12,7 +12,7 @@ interface ExplainBody {
   symbolLabel?: string;
   changePercent?: number;
   windowSeconds?: number;
-  detectionKind?: 'magnitude' | 'slope' | 'shock' | 'dtb';
+  detectionKind?: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break';
   direction?: 'up' | 'down';
   change15min?: number | null;
   pa15min?: PriceActionBody | null;
@@ -25,7 +25,8 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       || typeof body.symbolLabel !== 'string'
       || typeof body.changePercent !== 'number'
       || typeof body.windowSeconds !== 'number'
-      || (body.detectionKind !== 'magnitude' && body.detectionKind !== 'slope' && body.detectionKind !== 'shock' && body.detectionKind !== 'dtb')) {
+      || (body.detectionKind !== 'magnitude' && body.detectionKind !== 'slope' && body.detectionKind !== 'shock'
+          && body.detectionKind !== 'dtb' && body.detectionKind !== 'granville' && body.detectionKind !== 'break')) {
     res.status(400).json({ error: 'invalid body' });
     return;
   }
