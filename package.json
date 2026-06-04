@@ -11,6 +11,7 @@
     "build:web": "vite build",
     "build:server": "node scripts/build-server.mjs",
     "build:collector": "node scripts/build-collector.mjs",
+    "collector:dev": "tsx watch collector/index.ts",
     "package": "npm run build && node scripts/package-sea.mjs",
     "package:pkg": "npm run build && pkg dist/server.cjs --targets node18-win-x64 --output bin/jp225-monitor",
     "icons": "node scripts/gen-placeholder-icons.mjs",

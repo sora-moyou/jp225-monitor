@@ -13,10 +13,13 @@ function memDb(): DatabaseSync {
 const M = 60_000;
 
 describe('store', () => {
-  it('creates an index on bars_1m(session_date, session) so getSessionOHLC subqueries seek instead of full-scan', () => {
+  it('bars_1m は (symbol, t) 主キーで t レンジ読みを賄う(session_date 索引には依存しない)', () => {
     const db = memDb();
-    const idx = (db.prepare('PRAGMA index_list(bars_1m)').all() as Array<{ name: string }>).map(r => r.name);
-    expect(idx).toContain('idx_bars_session');
+    // getSessionOHLC は t 範囲を読んで JS 集計するため、主キー(symbol,t)があれば足りる。
+    // 旧 idx_bars_session(session_date,session 索引)は読みに使われず撤去済み。
+    const idx = (db.prepare('PRAGMA index_list(bars_1m)').all() as Array<{ name: string; origin: string }>);
+    expect(idx.some(i => i.origin === 'pk')).toBe(true);          // 主キー自動索引あり
+    expect(idx.map(i => i.name)).not.toContain('idx_bars_session'); // 死蔵索引は作らない
   });
 
   it('recordTick inserts a tick and creates a 1m bar (o=h=l=c on first tick of minute)', () => {

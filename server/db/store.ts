@@ -47,11 +47,9 @@ export function initSchema(db: DatabaseSync): void {
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
   if (!cols.includes('volume')) db.exec('ALTER TABLE bars_1m ADD COLUMN volume INTEGER');
-  // getSessionOHLC は (symbol, session_date, session) で絞る相関サブクエリを4本/セッション走らせる。
-  // この索引が無いと各サブクエリが bars_1m 全表スキャン → 基礎データ取込後(数十万行・数百セッション)は
-  // O(セッション数² × 行数) になり「価格水準の計算が終わらない」。索引でセッション単位のシークに落とす。
-  // ALTER で session_date/session 列を足した後に作る必要があるためここで実行。
-  db.exec('CREATE INDEX IF NOT EXISTS idx_bars_session ON bars_1m(symbol, session_date, session, t)');
+  // bars_1m の読み取りはすべて PRIMARY KEY(symbol, t) のレンジで賄える(getSessionOHLC は t 範囲を
+  // 読んで JS 側でセッション集計、getRecentBars/getBarClose* も symbol+t)。session_date/session で
+  // 絞る索引はもう不要なため作らない(旧 idx_bars_session は書き込み増だけで読みに使われていなかった)。
 }
 
 // 生 tick を保存しつつ、その分の 1分足 OHLC を upsert する。
@@ -201,11 +199,17 @@ export function getRecentAlerts(db: DatabaseSync, limit: number): AlertRow[] {
 export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number): SessionOHLC[] {
   // セッションは t の純関数(classifySession)。保存列 session_date は collector のバージョン差で
   // null/stale になり得るため信頼せず、読み取り時に t から都度分類して集計する(=自己修復)。
-  // 直近 limit*1000 本を見れば限度 limit セッションは十分カバーできる(夜間≈780本/セッション + 場外)。
+  // 読み取り範囲は「本数」でなくカレンダー日数で決める: 平日は1日2セッション(Day+Night)なので
+  // limit セッションは概ね limit/2 平日 ≒ limit*0.7 日に収まる。余裕を持って (limit+α) 日ぶん読めば
+  // 取りこぼし無くカバーでき、巨大 lookback でも読み込み行数が際限なく膨らまない(上限 200 日)。
+  const DAY_MS = 86_400_000;
+  const latest = (db.prepare('SELECT MAX(t) AS m FROM bars_1m WHERE symbol = ?').get(symbol) as { m: number | null }).m;
+  if (latest == null) return [];
+  const spanDays = Math.min(Math.ceil(limit * 0.8) + 5, 200);
   const rows = db.prepare(
-    'SELECT t, o, h, l, c FROM bars_1m WHERE symbol = ? ORDER BY t DESC LIMIT ?',
-  ).all(symbol, limit * 1000) as Array<{ t: number; o: number; h: number; l: number; c: number }>;
-  rows.reverse();   // 古→新: open/openT は最初、close は最後、high/low は最初の極値で確定
+    'SELECT t, o, h, l, c FROM bars_1m WHERE symbol = ? AND t >= ? ORDER BY t ASC',
+  ).all(symbol, latest - spanDays * DAY_MS) as Array<{ t: number; o: number; h: number; l: number; c: number }>;
+  // rows は古→新: open/openT は最初、close は最後、high/low は最初の極値で確定
   const map = new Map<string, SessionOHLC>();
   for (const b of rows) {
     const s = classifySession(b.t);

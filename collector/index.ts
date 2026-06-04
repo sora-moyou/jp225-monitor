@@ -27,6 +27,7 @@ async function main(): Promise<void> {
   const dbPath = resolveDbPath();
   const db = openDb(dbPath);
   console.log(`[collector ${COLLECTOR_VERSION}] db=${dbPath}`);
+  console.log(`[collector] started ${new Date().toISOString()} (node ${process.version})`);
 
   // 起動時 backfill (Yahoo 分足で直近を埋める。失敗は無視)
   await Promise.all(SYMBOLS.map(async (sym) => {
