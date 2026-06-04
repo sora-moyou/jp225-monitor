@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { classifySession } from '../../collector/session.js';
 
 /** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。 */
 export function resolveDbPath(): string {
@@ -198,27 +199,29 @@ export function getRecentAlerts(db: DatabaseSync, limit: number): AlertRow[] {
 
 /** セッション(session_date+session)別の OHLC と H/L 発生時刻。新しい順(直近が先)、最大 limit 件。 */
 export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number): SessionOHLC[] {
-  const rows = db.prepare(`
-    SELECT session_date AS sessionDate, session,
-           MAX(h) AS high, MIN(l) AS low, MIN(t) AS openT,
-           (SELECT o FROM bars_1m b2 WHERE b2.symbol=b.symbol AND b2.session_date=b.session_date
-              AND b2.session=b.session ORDER BY t ASC  LIMIT 1) AS open,
-           (SELECT c FROM bars_1m b3 WHERE b3.symbol=b.symbol AND b3.session_date=b.session_date
-              AND b3.session=b.session ORDER BY t DESC LIMIT 1) AS close,
-           (SELECT t FROM bars_1m b4 WHERE b4.symbol=b.symbol AND b4.session_date=b.session_date
-              AND b4.session=b.session ORDER BY h DESC, t ASC LIMIT 1) AS highT,
-           (SELECT t FROM bars_1m b5 WHERE b5.symbol=b.symbol AND b5.session_date=b.session_date
-              AND b5.session=b.session ORDER BY l ASC,  t ASC LIMIT 1) AS lowT
-    FROM bars_1m b
-    WHERE symbol = ? AND session_date IS NOT NULL AND session IS NOT NULL
-    GROUP BY session_date, session
-    ORDER BY MIN(t) DESC
-    LIMIT ?
-  `).all(symbol, limit) as Array<Record<string, unknown>>;
-  return rows.map(r => ({
-    sessionDate: r.sessionDate as string,
-    session: r.session as 'Day' | 'Night',
-    open: r.open as number, high: r.high as number, low: r.low as number, close: r.close as number,
-    highT: r.highT as number, lowT: r.lowT as number, openT: r.openT as number,
-  }));
+  // セッションは t の純関数(classifySession)。保存列 session_date は collector のバージョン差で
+  // null/stale になり得るため信頼せず、読み取り時に t から都度分類して集計する(=自己修復)。
+  // 直近 limit*1000 本を見れば限度 limit セッションは十分カバーできる(夜間≈780本/セッション + 場外)。
+  const rows = db.prepare(
+    'SELECT t, o, h, l, c FROM bars_1m WHERE symbol = ? ORDER BY t DESC LIMIT ?',
+  ).all(symbol, limit * 1000) as Array<{ t: number; o: number; h: number; l: number; c: number }>;
+  rows.reverse();   // 古→新: open/openT は最初、close は最後、high/low は最初の極値で確定
+  const map = new Map<string, SessionOHLC>();
+  for (const b of rows) {
+    const s = classifySession(b.t);
+    if (!s) continue;   // 場外/休場は集計しない
+    const key = `${s.sessionDate}|${s.session}`;
+    const cur = map.get(key);
+    if (!cur) {
+      map.set(key, {
+        sessionDate: s.sessionDate, session: s.session,
+        open: b.o, high: b.h, low: b.l, close: b.c, highT: b.t, lowT: b.t, openT: b.t,
+      });
+    } else {
+      if (b.h > cur.high) { cur.high = b.h; cur.highT = b.t; }   // 最初に最高値を付けた足
+      if (b.l < cur.low) { cur.low = b.l; cur.lowT = b.t; }      // 最初に最安値を付けた足
+      cur.close = b.c;                                            // 最後の足の close
+    }
+  }
+  return [...map.values()].sort((a, b) => b.openT - a.openT).slice(0, limit);
 }

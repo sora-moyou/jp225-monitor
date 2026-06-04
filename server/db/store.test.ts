@@ -107,37 +107,40 @@ describe('openDb', () => {
 });
 
 describe('getSessionOHLC', () => {
-  function seedBar(db: DatabaseSync, sd: string, ses: string, t: number, o: number, h: number, l: number, c: number) {
+  // JST 壁時計(2026-06-day jh:jm)→ UTC epoch。session_date は意図的に null で入れ、
+  // getSessionOHLC が「保存列に依存せず t から分類」することを検証(古い collector の null 対策)。
+  const J = (day: number, jh: number, jm = 0): number => Date.UTC(2026, 5, day, jh - 9, jm);
+  function seedBar(db: DatabaseSync, t: number, o: number, h: number, l: number, c: number) {
     db.prepare(
       'INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)'
-    ).run('NIY=F', sd, ses, t, o, h, l, c);
+    ).run('NIY=F', null, null, t, o, h, l, c);   // session 列は null
   }
 
-  it('セッションごとに O/H/L/C と high_t/low_t を集計し新しい順で返す', () => {
+  it('保存session_dateがnullでも t から分類して O/H/L/C・high_t/low_t を集計、新しい順', () => {
     const db = memDb();
-    seedBar(db, '2026-06-01', 'Day', 100, 67000, 67100, 66950, 67050);
-    seedBar(db, '2026-06-01', 'Day', 200, 67050, 67300, 67000, 67200);
-    seedBar(db, '2026-06-01', 'Day', 300, 67200, 67250, 66800, 66850);
-    seedBar(db, '2026-06-01', 'Night', 400, 66850, 66900, 66700, 66750);
+    seedBar(db, J(1, 9, 0), 67000, 67100, 66950, 67050);   // 6-01(月) Day 09:00
+    seedBar(db, J(1, 9, 1), 67050, 67300, 67000, 67200);
+    seedBar(db, J(1, 9, 2), 67200, 67250, 66800, 66850);
+    seedBar(db, J(1, 17, 0), 66850, 66900, 66700, 66750);  // 6-01 Night 17:00
 
     const out = getSessionOHLC(db, 'NIY=F', 10);
     expect(out.length).toBe(2);
     expect(out[0]).toEqual({
       sessionDate: '2026-06-01', session: 'Night',
-      open: 66850, high: 66900, low: 66700, close: 66750, highT: 400, lowT: 400, openT: 400,
+      open: 66850, high: 66900, low: 66700, close: 66750, highT: J(1, 17, 0), lowT: J(1, 17, 0), openT: J(1, 17, 0),
     });
     expect(out[1]).toEqual({
       sessionDate: '2026-06-01', session: 'Day',
-      open: 67000, high: 67300, low: 66800, close: 66850, highT: 200, lowT: 300, openT: 100,
+      open: 67000, high: 67300, low: 66800, close: 66850, highT: J(1, 9, 1), lowT: J(1, 9, 2), openT: J(1, 9, 0),
     });
     db.close();
   });
 
   it('limit を尊重する', () => {
     const db = memDb();
-    seedBar(db, '2026-05-30', 'Day', 100, 1, 2, 0.5, 1.5);
-    seedBar(db, '2026-05-31', 'Day', 200, 1, 2, 0.5, 1.5);
-    seedBar(db, '2026-06-01', 'Day', 300, 1, 2, 0.5, 1.5);
+    seedBar(db, J(1, 9), 1, 2, 0.5, 1.5);   // 6-01(月) Day
+    seedBar(db, J(2, 9), 1, 2, 0.5, 1.5);   // 6-02(火) Day
+    seedBar(db, J(3, 9), 1, 2, 0.5, 1.5);   // 6-03(水) Day
     expect(getSessionOHLC(db, 'NIY=F', 2).length).toBe(2);
     db.close();
   });
