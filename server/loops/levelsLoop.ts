@@ -8,6 +8,7 @@ import { emitAlert } from '../alertHistory.js';
 import { detectDoubleTopBottom, DEFAULT_DOUBLE_PARAMS } from '../doublePattern.js';
 import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
 import { extractSwingPivots } from '../swingPivots.js';
+import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
 const SYMBOL = 'NIY=F';
@@ -37,6 +38,17 @@ const lastBreakDir = new Map<'up' | 'down', number>();
 const DETECT_FRESH_MS = 90_000;
 // 確定スイングピボットの戻り閾値(円)。これ以上戻った極値だけを固定水準として採用(1分足ノイズを除外)。
 const PIVOT_RECLAIM_YEN = 25;
+// ── 長周期スイング・ダブルボトム/トップ(swingDouble)──
+// 複数セッションをまたぐ大きな W/M 反転を捉える。重いDB読取を避け約60秒に1回だけ再計算する。
+const SWING_DOUBLE_CHECK_MS = 60_000;           // 再計算間隔(8秒tick毎ではない)
+const SWING_LOOKBACK_DAYS = 4;                  // ピボット抽出に使う直近の暦日数(セッションまたぎ)
+// 主要スイングのみ確定(micro はピボットにしない)。実データ較正: 150では細かいWを拾い、500で
+// 狙いの大ダブル(例: 谷66,950→ネック67,765→谷66,930)を捉える。場中チューニングで調整可。
+const SWING_PIVOT_RECLAIM_YEN = 500;
+const SWING_DTB_COOLDOWN_MS = 30 * 60_000;      // per-neck × stage クールダウン
+const DAY_MS = 86_400_000;
+let lastSwingCheck = 0;
+const lastSwingFire = new Map<string, number>();
 // 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
 // DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
 
@@ -148,6 +160,39 @@ function tick(): void {
           // 「何の水準か」を付記(ユーザー指定): 価格 + 由来ラベル(押し安値/戻り高値/前日Day終値/長期高 等) + 方向。
           note: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
         });
+      }
+      // ── 長周期スイング・ダブルボトム/トップ(複数セッションをまたぐ大反転)──
+      // 約60秒に1回だけ、直近 SWING_LOOKBACK_DAYS 日のピボット(大 reclaim=主要スイングのみ)で検知。
+      // 谷の価格差は不問(ユーザー指定)、本物のWかはネック突出度で判定。forming/breakout の2段。
+      if (now - lastSwingCheck >= SWING_DOUBLE_CHECK_MS) {
+        lastSwingCheck = now;
+        const longBars = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+        const swingPivots = extractSwingPivots(longBars, SWING_PIVOT_RECLAIM_YEN);
+        const sd = detectSwingDouble(swingPivots, latest.price, DEFAULT_SWING_DOUBLE);
+        if (sd) {
+          const neck = Math.round(sd.neck);
+          const key = `${sd.kind}@${neck}#${sd.stage}`;
+          if (now - (lastSwingFire.get(key) ?? -Infinity) > SWING_DTB_COOLDOWN_MS) {
+            lastSwingFire.set(key, now);
+            const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
+            const [g1, g2] = sd.legs;
+            const name = sd.kind === 'bottom' ? 'ダブルボトム' : 'ダブルトップ';
+            const word = sd.kind === 'bottom' ? '上抜け' : '下抜け';
+            const watch = sd.kind === 'bottom' ? '上抜けで上昇期待' : '下抜けで下落警戒';
+            const legLabel = sd.kind === 'bottom' ? '谷' : '山';
+            const note = sd.stage === 'breakout'
+              ? `${name}成立 — ネック${yen(neck)}円を${word}(${legLabel}${yen(g1)}/${yen(g2)})目標≈${yen(sd.target)}`
+              : `${name}形成 — ネック${yen(neck)}円(${legLabel}${yen(g1)}→${yen(g2)})。${watch}`;
+            console.log(`[levelsLoop] swingDouble ${sd.kind} ${sd.stage} neck=${neck} legs=${Math.round(g1)}/${Math.round(g2)}`);
+            emitAlert({
+              symbol: SYMBOL, symbolLabel: `日経225先物 (${name})`,
+              changePercent: 0, windowSeconds: 60, detectionKind: 'swingdtb',
+              direction: sd.kind === 'bottom' ? 'up' : 'down',
+              triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+              level: neck, note,
+            });
+          }
+        }
       }
     } catch (err) {
       console.warn('[levelsLoop] dtb/break detect failed:', err instanceof Error ? err.message : err);

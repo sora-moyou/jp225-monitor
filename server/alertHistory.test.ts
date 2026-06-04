@@ -68,6 +68,7 @@ describe('shouldPersistInMonitor', () => {
     expect(shouldPersistInMonitor('slope', true)).toBe(true);
     expect(shouldPersistInMonitor('dtb', true)).toBe(true);
     expect(shouldPersistInMonitor('break', true)).toBe(true);
+    expect(shouldPersistInMonitor('swingdtb', true)).toBe(true);   // levelsLoop専用(collector非検知)
     // collector が検知・記録する種別 → 二重書き込み防止のため monitor は記録しない
     expect(shouldPersistInMonitor('shock', true)).toBe(false);
     expect(shouldPersistInMonitor('granville', true)).toBe(false);
@@ -86,6 +87,7 @@ describe('rowKind', () => {
     expect(rowKind('dtb', null)).toBe('Wトップ/ボトム');
     expect(rowKind('break', null)).toBe('水準ブレイク');
     expect(rowKind('ma', null)).toBe('MA抜け');
+    expect(rowKind('swingdtb', null)).toBe('ダブル(大)');
     expect(rowKind('slope', 60)).toBe('短期');   // 専用ラベル無し → 窓秒基準
   });
 });

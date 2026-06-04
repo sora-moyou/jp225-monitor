@@ -129,7 +129,7 @@ export interface ExplainInput {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma';
+  detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb';
   direction?: 'up' | 'down';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
@@ -197,7 +197,8 @@ export async function explain(input: ExplainInput): Promise<string> {
     : input.detectionKind === 'dtb' ? 'ダブル天井/大底'
     : input.detectionKind === 'granville' ? 'グランビル'
     : input.detectionKind === 'break' ? '水準ブレイク'
-    : input.detectionKind === 'ma' ? 'MA抜け' : 'トレンド';
+    : input.detectionKind === 'ma' ? 'MA抜け'
+    : input.detectionKind === 'swingdtb' ? 'ダブル(大)' : 'トレンド';
   // 方向は direction を真の源とし(dtb は changePercent=0 のため符号では判定不可)、無ければ符号で代替。
   const dir = input.direction ?? (input.changePercent >= 0 ? 'up' : 'down');
   const dirJa = dir === 'up' ? '上昇' : '下落';
@@ -216,7 +217,7 @@ export async function explain(input: ExplainInput): Promise<string> {
   // 急変文・ノイズ注記(急変幅判定)を出さない。
   const isTechnicalPattern = input.detectionKind === 'dtb'
     || input.detectionKind === 'granville' || input.detectionKind === 'break'
-    || input.detectionKind === 'ma';
+    || input.detectionKind === 'ma' || input.detectionKind === 'swingdtb';
   const smallMag = !isTechnicalPattern && Math.abs(input.changePercent) <= 0.15;
   const ultraShort = input.detectionKind === 'slope' || input.windowSeconds <= 60;
   const noiseNotes = [

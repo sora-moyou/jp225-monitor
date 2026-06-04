@@ -36,13 +36,14 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
   if (detectionKind === 'dtb') return 'Wトップ/ボトム';
   if (detectionKind === 'break') return '水準ブレイク';
   if (detectionKind === 'ma') return 'MA抜け';
+  if (detectionKind === 'swingdtb') return 'ダブル(大)';
   return kindLabel(windowSeconds);
 }
 
 // collector が検知しない(=monitor だけが発火する)種別。collector が authoritative writer でも
 // これらは collector が一切 alerts に書かないため、monitor が単独で記録する必要がある。
-// slope=tickDetector, dtb/break=levelsLoop はいずれも monitor 専用。shock/granville は collector も検知。
-const MONITOR_ONLY_KINDS = new Set(['slope', 'dtb', 'break']);
+// slope=tickDetector, dtb/break/swingdtb=levelsLoop はいずれも monitor 専用。shock/granville/ma は collector も検知。
+const MONITOR_ONLY_KINDS = new Set(['slope', 'dtb', 'break', 'swingdtb']);
 
 /** monitor 側で alerts に記録すべきか。collector 非稼働なら全種別記録。
  *  collector 稼働中でも monitor 専用種別(slope/dtb/break)は collector が書かないため記録する

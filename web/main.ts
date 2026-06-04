@@ -305,7 +305,8 @@ function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<type
 // チャートパターン由来(グランビル/ダブルトップ・ボトム)はニュースAI説明ではなく固定文を表示。
 function isTechnicalPattern(alert: import('./types.js').AlertEvent): boolean {
   return alert.detectionKind === 'granville' || alert.detectionKind === 'dtb'
-    || alert.detectionKind === 'break' || alert.detectionKind === 'ma';
+    || alert.detectionKind === 'break' || alert.detectionKind === 'ma'
+    || alert.detectionKind === 'swingdtb';
 }
 // テクニカル系の固定文。ダブル=「価格xxxでダブルトップ/ボトムの可能性あり」、
 // グランビル=「価格xxxで押し目買い/戻り売り/買い転換/売り転換」。それ以外は「テクニカル要因」。
@@ -325,6 +326,10 @@ function technicalExplanation(alert: import('./types.js').AlertEvent): string {
   }
   if (alert.detectionKind === 'ma') {
     // サーバ note が「25MA上抜け/下抜けの可能性あり」(固定価格は出さない=MAは動く基準のため)。
+    return alert.note ?? UI.ja.technicalReason;
+  }
+  if (alert.detectionKind === 'swingdtb') {
+    // サーバ note が「ダブルボトム成立/形成 — ネック…」(長周期スイングのW/M反転)。
     return alert.note ?? UI.ja.technicalReason;
   }
   return UI.ja.technicalReason;
