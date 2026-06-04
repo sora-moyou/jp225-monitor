@@ -36,6 +36,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   // isTech は下で定義するが className に使うため先に判定。
   const isTechKind = alert.detectionKind === 'granville' || alert.detectionKind === 'dtb' || alert.detectionKind === 'break';
   el.className = `alert ${alert.direction}${isTechKind ? ' tech' : ''}`;
+  el.dataset.triggeredAt = String(alert.triggeredAt);   // 並び替え用(時刻順で最新を最上段に)
   const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
     : alert.detectionKind === 'shock' ? '急変'
     : alert.detectionKind === 'dtb' ? 'Wパターン'
@@ -77,7 +78,13 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   btnGroup.appendChild(close);
   el.appendChild(main);
   el.appendChild(btnGroup);
-  container.prepend(el);
+  // triggeredAt 降順で挿入(到着順でなく「時刻順」で最新を最上段に)。
+  // dtb=8秒 / 急変・グランビル=60秒 とループ周期が違い、寄り直後のラグもあるため到着順は時刻順と
+  // 一致しない。自分より古い最初のバナーの前に挿す(無ければ末尾)ことで常に新しい時刻が上に来る。
+  const olderEl = (Array.from(container.children) as HTMLElement[])
+    .find(c => Number(c.dataset.triggeredAt ?? '0') < alert.triggeredAt);
+  if (olderEl) container.insertBefore(el, olderEl);
+  else container.appendChild(el);
 
   const item: BannerItem = {
     alert,
@@ -88,10 +95,11 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   refreshBtn.onclick = (e) => { e.preventDefault(); item.refresh(); };
   items.set(id, item);
 
-  // 上限超え時は古いものを削除
+  // 上限超え時は「時刻が最も古い」ものを削除(到着順でなく triggeredAt 最小)。
   if (items.size > MAX_BANNERS) {
-    const oldest = [...items.keys()][0];
-    if (oldest) removeBanner(oldest);
+    let oldestId: string | null = null, oldestT = Infinity;
+    for (const [k, v] of items) if (v.alert.triggeredAt < oldestT) { oldestT = v.alert.triggeredAt; oldestId = k; }
+    if (oldestId) removeBanner(oldestId);
   }
 
   persist();
