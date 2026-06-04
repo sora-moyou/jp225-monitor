@@ -26,6 +26,19 @@ describe('detectLevelBreak', () => {
     expect(detectLevelBreak(L, bars(70030, 70020), 70010)).toEqual([]);
   });
 
+  it('クロスが直近crossBars(3本)より前なら発火しない(=今は達していないレベルを拾わない)', () => {
+    // 古い足では L 以下に触れたが、直近3本はすべて L より十分上 → 新規クロスではない。
+    const mixed: BrkBar[] = [
+      { t: 0, h: 70005, l: 69990 },   // 過去に L=70000 へ到達(古い)
+      { t: 1, h: 70005, l: 69990 },
+      { t: 2, h: 70005, l: 69990 },
+      { t: 3, h: 70120, l: 70080 },   // 直近3本は L から離れて上
+      { t: 4, h: 70120, l: 70080 },
+      { t: 5, h: 70120, l: 70080 },
+    ];
+    expect(detectLevelBreak(L, mixed, 70100)).toEqual([]);   // 直近3本の安値70080 > L → 跨いでいない
+  });
+
   it('現値0・バー不足はガード', () => {
     expect(detectLevelBreak(L, bars(70005, 69990), 0)).toEqual([]);
     expect(detectLevelBreak(L, bars(70005, 69990, 2), 70010)).toEqual([]);

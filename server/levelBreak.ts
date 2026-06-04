@@ -5,10 +5,11 @@
 export interface BrkBar { t: number; h: number; l: number; }
 
 export interface BreakParams {
-  breakTol: number;     // この円数を超えてレベルを越え、滞在したらブレイクとみなす
-  lookbackBars: number; // レベルを「跨いだ」かを見る直近1分足の本数
+  breakTol: number;   // この円数を超えてレベルを越え、滞在したらブレイクとみなす
+  crossBars: number;  // 「今まさに跨いだ」かを見る直近1分足の本数(短く=新規クロス限定)
 }
-export const DEFAULT_BREAK_PARAMS: BreakParams = { breakTol: 2, lookbackBars: 90 };
+// クロス判定は直近 crossBars 分のみ。長くすると朝方に一瞬触れたレベルを価格が離れた後も誤発火する。
+export const DEFAULT_BREAK_PARAMS: BreakParams = { breakTol: 2, crossBars: 3 };
 
 export interface BreakSignal { kind: 'up' | 'down'; level: number; label: string; }
 
@@ -16,12 +17,12 @@ export interface BreakSignal { kind: 'up' | 'down'; level: number; label: string
  * 主要レベル群に対し「水準抜けの可能性」を検知。
  * bars は古い→新しい順の直近1分足(h/l)。current は現値(最新tick)。
  *
- * 上抜け(レジ L): 現値が L+breakTol を超え、かつ直近窓で安値が L 以下まで届いていた
- *   (=窓内でレベルを下から上へ跨いだ新規ブレイク)。
- * 下抜け(サポート L): 現値が L-breakTol を下回り、かつ直近窓で高値が L 以上まで届いていた。
+ * 上抜け(レジ L): 現値が L+breakTol を超え、かつ【直近 crossBars 本】で安値が L 以下まで届いていた
+ *   (=ここ数分でレベルを下から上へ跨いだ新規ブレイク)。
+ * 下抜け(サポート L): 現値が L-breakTol を下回り、かつ【直近 crossBars 本】で高値が L 以上まで届いていた。
  *
- * 窓内にレベルを跨いだ痕跡が必要なので、ずっと前に抜けて以後ゾーンへ戻っていないレベルは拾わない。
- * 連発抑制は呼び出し側の per-level クールダウンで行う。
+ * クロス痕跡を直近数分に限定することで、ずっと前に抜けて現値が遠ざかったレベル(=今は達していない)を
+ * 拾わない。連発抑制は呼び出し側の per-level クールダウンで行う。
  */
 export function detectLevelBreak(
   levels: { price: number; label: string }[],
@@ -30,7 +31,7 @@ export function detectLevelBreak(
   p: BreakParams = DEFAULT_BREAK_PARAMS,
 ): BreakSignal[] {
   if (!(current > 0) || bars.length < 3) return [];
-  const win = bars.slice(-p.lookbackBars);
+  const win = bars.slice(-p.crossBars);
   const minLow = Math.min(...win.map(b => b.l));
   const maxHigh = Math.max(...win.map(b => b.h));
   const out: BreakSignal[] = [];
