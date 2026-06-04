@@ -112,7 +112,9 @@ function tick(): void {
       // それ以外は computeLevels の固定 hl(前セッション/直近/長期)。現値追従の当日高安は使わない
       // (動く端を基準にすると下落中にダブルボトムが乱発する)。同価格は丸めて重複排除(ピボット優先)。
       const pivots = extractSwingPivots(recent, PIVOT_RECLAIM_YEN)
-        .map(p => ({ price: p.price, label: p.kind === 'low' ? '押し安値' : '戻り高値' }));
+        // ラベルはトレンド中立の語を使う。「押し安値/戻り高値」は方向(上昇の押し/下降の戻り)を含むため、
+        // 上昇相場で高値を上抜けした時に「戻り高値を上抜け」と矛盾する。スイング高値/安値なら両局面で成立。
+        .map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
       const seen = new Set<number>();
       const hlLevels = [...pivots, ...(result.hlLevels ?? [])]
         .filter(l => { const k = Math.round(l.price / 5) * 5; if (seen.has(k)) return false; seen.add(k); return true; });
@@ -157,7 +159,7 @@ function tick(): void {
           direction: bsig.kind === 'up' ? 'up' : 'down',
           triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
           level: lvl,
-          // 「何の水準か」を付記(ユーザー指定): 価格 + 由来ラベル(押し安値/戻り高値/前日Day終値/長期高 等) + 方向。
+          // 「何の水準か」を付記(ユーザー指定): 価格 + 由来ラベル(スイング高安/前日Day終値/長期高 等) + 方向。
           note: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
         });
       }
