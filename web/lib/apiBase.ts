@@ -11,7 +11,9 @@ interface TauriGlobal {
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in (window as TauriGlobal);
 
-export const API_BASE = isTauri ? 'http://localhost:3000' : '';
+// サーバは 127.0.0.1(IPv4 ループバック)限定で待ち受けるため、`localhost`(環境により ::1=IPv6 に
+// 解決され得る)ではなく 127.0.0.1 を明示して確実に届かせる。
+export const API_BASE = isTauri ? 'http://127.0.0.1:3000' : '';
 
 export function apiUrl(path: string): string {
   return API_BASE + path;

@@ -90,8 +90,11 @@ if (existsSync(distWeb)) {
   console.log(`[server] serving static frontend from ${distWeb}`);
 }
 
-const server = app.listen(PORT, () => {
-  console.log(`[server] listening on http://localhost:${PORT} (LLM ${isLLMEnabled() ? 'enabled' : 'disabled'})`);
+// 127.0.0.1(ループバック)限定で待ち受ける。0.0.0.0 だと Windows ファイアウォールが
+// 「Node.js JavaScript Runtime のアクセスを許可しますか?」を出し、ユーザーが拒否すると詰まる。
+// このアプリは Webview→サイドカーの localhost 通信だけなのでループバック限定が正しく、プロンプトも出ない。
+const server = app.listen(PORT, '127.0.0.1', () => {
+  console.log(`[server] listening on http://127.0.0.1:${PORT} (LLM ${isLLMEnabled() ? 'enabled' : 'disabled'})`);
   warmFromDb();          // v0.3.37: 収集デーモンの DB から即ウォームアップ (現在進行中なら)
   startPriceLoop();
   startNewsLoop();
