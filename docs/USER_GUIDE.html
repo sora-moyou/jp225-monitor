@@ -1303,6 +1303,27 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </details>
 
     <details>
+      <summary>アプリを入れ直したい(再インストール)/ インストールに失敗するとき</summary>
+      <div class="faq-body">
+        <p><strong>まず安心してください:</strong> 設定や履歴データはアプリ本体とは別の場所に保存されるので、入れ直しても<strong>消えません</strong>。</p>
+        <p><strong>入れ直す手順(初心者向け):</strong></p>
+        <ol>
+          <li><strong>アプリを完全に終了する。</strong> 右上の ⚙️ から「完全終了」、または画面右下の通知領域(時計の近く)のアイコンを右クリックして終了。確実にしたいときは<strong>パソコンを再起動</strong>すると安心です。</li>
+          <li>(きれいに入れ直す場合)古い版をアンインストール: スタート →「設定」→「アプリ」→「インストールされているアプリ」→「<strong>JP225 Monitor</strong>」→「⋯(または ⋮)」→「<strong>アンインストール</strong>」。<br>※ アンインストールしなくても、新しいインストーラで<strong>上書き更新</strong>できます。</li>
+          <li>最新のインストーラを入手: <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a> を開き、下にスクロールして <strong>Assets</strong> を展開 → <code>JP225.Monitor_X.X.X_x64-setup.exe</code> をダウンロード。</li>
+          <li>ダウンロードした <code>.exe</code> をダブルクリック。青い「Windows によって PC が保護されました」が出たら「<strong>詳細情報</strong>」→「<strong>実行</strong>」。</li>
+          <li>ウィザードに従ってインストール → スタートメニューから <strong>JP225 Monitor</strong> を起動。</li>
+        </ol>
+        <p><strong>うまくいかないとき:</strong></p>
+        <ul>
+          <li>「<strong>Error opening file for writing</strong>(ファイルを書き込めません)」と出た → アプリか収集デーモンがまだ動いています。手順1で完全終了するか、パソコンを再起動してから、もう一度インストーラを実行してください。</li>
+          <li>「<strong>Node.js…</strong> へのアクセスを許可しますか?」が出た → ひとつ上の FAQ を参照(「許可」を押せば OK)。</li>
+        </ul>
+        <p style="font-size: 12.5px; color: var(--text-faint);">※ ふだんのアップデートはアプリが自動で行うので、再インストールは不要です。再インストールは調子が悪いときの復旧用です。</p>
+      </div>
+    </details>
+
+    <details>
       <summary>サーバログを見たい (デバッグ用)</summary>
       <div class="faq-body">
         トップバーの <strong>📋</strong> ボタンでログモーダルが開きます。直近 200 行を表示、新しいログが自動で下に追加。アプリ再起動で消えます。
