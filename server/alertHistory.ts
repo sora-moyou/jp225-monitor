@@ -70,6 +70,13 @@ export function emitAlert(p: AlertEventPayload): void {
     return;
   }
   if (isWithinOpenGuard(p.triggeredAt, resolveOpenGuardBars())) return;   // 寄りから3本は全アラート抑制(UIバナーも記録も出さない)
+  // 診断: バー時刻から大きく遅れて配信されたアラート(=検知/フィードの遅延)を可視化する。
+  // 鮮度ゲート(alertLoop)で本来は抑止されるが、抜けた場合に原因追跡できるようログに残す。
+  const lagMs = Date.now() - p.triggeredAt;
+  if (lagMs > 90_000) {
+    console.warn(`[alertHistory] 遅延配信: バー時刻の ${Math.round(lagMs / 1000)}s 後に発火 `
+      + `(${p.detectionKind} ${p.symbol} @${new Date(p.triggeredAt).toISOString()}) — フィード/検知の遅延の可能性。`);
+  }
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());

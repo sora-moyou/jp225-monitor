@@ -28,6 +28,8 @@ const lastDtbFire = new Map<string, number>();
 // 水準抜けの per-level クールダウン(DTB と同様 15分・別マップ)。
 const BREAK_COOLDOWN_MS = 15 * 60_000;
 const lastBreakFire = new Map<string, number>();
+// 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火しないよう検知しない。
+const DETECT_FRESH_MS = 90_000;
 // 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
 // DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
 
@@ -80,6 +82,8 @@ function tick(): void {
       broadcast({ type: 'levels', payload: result });
       sent = true;
     }
+    // 最新tickが古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火させない(水準配信は上で継続)。
+    if (now - latest.t > DETECT_FRESH_MS) return;
     // ── ダブルトップ/ボトム検知(全レベル対象・手前10円・髭タッチ・ネック不要)──
     // 直近 lookbackBars 分の1分足(髭=h/l)を取り、全レベルに対し検知。per-level クールダウンで間引く。
     try {

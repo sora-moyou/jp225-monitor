@@ -9,6 +9,15 @@ import { evaluateBarsNiy } from '../alertEngine.js';
 // v0.3.35: 横断確認(他資産の同方向確認)を全面廃止。日経自身の z-score(+静寂前提) のみで発火。
 
 const POLL_MS = 60 * 1000;
+// 鮮度ゲート: リアルタイム足の最新バーが現在から MAX_BAR_LAG_MS 以上遅れている(フィード停止→復帰中で
+// 古い足が最新に見える状態)なら発火しない。これが無いと数分遅れの stale な急変/グランビルを出す。
+const MAX_BAR_LAG_MS = 150_000;   // 2.5分(通常の足遅れ<60s + 余裕)
+
+/** リアルタイム足が新鮮か(最新バー時刻が now から maxLagMs 以内)。純粋関数(テスト用)。 */
+export function barsAreFresh(bars: Bar[], now: number, maxLagMs: number): boolean {
+  if (bars.length === 0) return false;
+  return now - bars[bars.length - 1]!.t <= maxLagMs;
+}
 
 // instrument label のルックアップ
 const META_BY_SYM = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
@@ -52,6 +61,11 @@ function evaluateAndFire(): void {
     // ウォームアップ中(起動〜約65分)は Yahoo(CME, 約10分遅延) 分足にフォールバック。
     const bars = barsFor(sym);
     if (!bars || bars.length < 65) continue;
+    // フィード停止/復帰中の古い足では発火しない(数分遅れの stale なアラートを防ぐ)。
+    if (!barsAreFresh(bars, now, MAX_BAR_LAG_MS)) {
+      console.warn(`[alertLoop] ${sym} 足が遅延 (lag ${Math.round((now - bars[bars.length - 1]!.t) / 1000)}s) — フィード停止/復帰中とみなし発火しない`);
+      continue;
+    }
 
     const meta = META_BY_SYM.get(sym);
     if (!meta) continue;
