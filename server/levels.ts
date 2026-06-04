@@ -289,12 +289,14 @@ export function computeLevels(
     }
   }
 
-  // 高安関係の全水準(クラスタ/上位N選抜前)。ダブルトップ/ボトム検知が「スコア合計によらず
-  // すべての高安水準」を対象にするため露出(ユーザー指定)。価格で重複排除。
+  // 高安関係の固定水準(クラスタ/上位N選抜前)。ダブル/水準抜け検知の対象として露出。価格で重複排除。
+  // 当日高安(todayHL)は現値追従(min/max(extreme, current))で動くため、固定水準としては使わない
+  // (動く端を基準にすると下落中にダブルボトムが乱発する)。当日ぶんは levelsLoop が確定スイング
+  // ピボット(swingPivots)を別途供給する。ここでは固定の sessHL/直近/長期のみ。
   const hlSeen = new Set<number>();
   const hlLevels: { price: number; label: string }[] = [];
   for (const c of cands) {
-    if (c.kind !== 'sessHL' && c.kind !== 'todayHL' && c.kind !== 'longHL') continue;
+    if (c.kind !== 'sessHL' && c.kind !== 'longHL') continue;
     if (!(c.price > 0) || hlSeen.has(c.price)) continue;
     hlSeen.add(c.price);
     hlLevels.push({ price: c.price, label: c.label });

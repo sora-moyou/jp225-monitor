@@ -7,6 +7,7 @@ import { getForecastSnapshot } from './forecastLoop.js';
 import { emitAlert } from '../alertHistory.js';
 import { detectDoubleTopBottom, DEFAULT_DOUBLE_PARAMS } from '../doublePattern.js';
 import { detectLevelBreak } from '../levelBreak.js';
+import { extractSwingPivots } from '../swingPivots.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
 const SYMBOL = 'NIY=F';
@@ -30,6 +31,8 @@ const BREAK_COOLDOWN_MS = 15 * 60_000;
 const lastBreakFire = new Map<string, number>();
 // 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火しないよう検知しない。
 const DETECT_FRESH_MS = 90_000;
+// 確定スイングピボットの戻り閾値(円)。これ以上戻った極値だけを固定水準として採用(1分足ノイズを除外)。
+const PIVOT_RECLAIM_YEN = 25;
 // 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
 // DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
 
@@ -89,9 +92,14 @@ function tick(): void {
     try {
       const sinceT = now - DEFAULT_DOUBLE_PARAMS.lookbackBars * 60_000;
       const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
-      // ダブルは高安関係の全水準が対象。スコア合計・上位N選抜によらず、computeLevels が露出する
-      // 全高安水準(各セッション高安・当日高安・直近高安・長期高安)を漏れなくチェック(ユーザー指定)。
-      const hlLevels = result.hlLevels ?? [];
+      // dtb/水準抜けの対象は「固定水準」のみ: 当日ぶんは確定スイングピボット(swingPivots)、
+      // それ以外は computeLevels の固定 hl(前セッション/直近/長期)。現値追従の当日高安は使わない
+      // (動く端を基準にすると下落中にダブルボトムが乱発する)。同価格は丸めて重複排除(ピボット優先)。
+      const pivots = extractSwingPivots(recent, PIVOT_RECLAIM_YEN)
+        .map(p => ({ price: p.price, label: p.kind === 'low' ? '押し安値' : '戻り高値' }));
+      const seen = new Set<number>();
+      const hlLevels = [...pivots, ...(result.hlLevels ?? [])]
+        .filter(l => { const k = Math.round(l.price / 5) * 5; if (seen.has(k)) return false; seen.add(k); return true; });
       for (const dsig of detectDoubleTopBottom(hlLevels, recent, latest.price)) {
         const key = `${dsig.kind}@${dsig.level.toFixed(1)}`;
         if (now - (lastDtbFire.get(key) ?? -Infinity) <= DTB_COOLDOWN_MS) continue;
