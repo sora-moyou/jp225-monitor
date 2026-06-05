@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "jp225-monitor"
-version = "0.5.9"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
