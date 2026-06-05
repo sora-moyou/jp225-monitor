@@ -363,7 +363,9 @@ export async function chat(input: ChatInput): Promise<string> {
     const completion = await p.client!.chat.completions.create({
       model: p.config.chatModel,
       temperature: 0.5,
-      max_tokens: 4000,
+      // 8000: スイング分析(上昇/下落/レンジの3シナリオ)など長文の途中切れ対策。チャットモデルが
+      // 推論モデル(gemini-2.5-flash等)の場合 thinking トークンもこの枠を消費するため余裕を持たせる。
+      max_tokens: 8000,
       messages: [
         { role: 'system', content: systemPrompt },
         ...input.messages,
