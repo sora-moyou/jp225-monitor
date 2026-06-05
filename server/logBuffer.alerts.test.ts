@@ -29,7 +29,7 @@ function gradualReversalUp(): Bar[] {
   let i = 0;
   for (; i < 90; i++) bars.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
   const b = bars[bars.length - 1]!.close;
-  for (let k = 1; k <= 5; k++, i++) bars.push({ t: i * 60_000, close: b + 30 * k });
+  for (let k = 1; k <= 10; k++, i++) bars.push({ t: i * 60_000, close: b + 60 * k });
   return bars;
 }
 

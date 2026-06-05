@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { evaluateBarsNiy, _resetShockCooldown, _resetGranvilleDedup, _resetMaCrossDedup } from './alertEngine.js';
+import { evaluateBarsNiy, _resetShockCooldown, _resetGranvilleDedup, _resetMaCrossDedup, _resetL2Cooldown } from './alertEngine.js';
 import { DEFAULT_PARAMS } from './alertDetector.js';
 import { INSTRUMENTS } from './config.js';
 import { _reset as resetCooldown, markFired, canFire } from './alertCooldown.js';
@@ -23,7 +23,7 @@ function quietThenJump(): Bar[] {
 }
 
 describe('evaluateBarsNiy', () => {
-  beforeEach(() => { resetCooldown(); _resetShockCooldown(); _resetGranvilleDedup(); _resetMaCrossDedup(); });
+  beforeEach(() => { resetCooldown(); _resetShockCooldown(); _resetGranvilleDedup(); _resetMaCrossDedup(); _resetL2Cooldown(); });
 
   it('fires a shock alert through the sink on a quiet-then-jump series', () => {
     const fired: AlertEventPayload[] = [];
@@ -57,7 +57,8 @@ describe('evaluateBarsNiy', () => {
     let i = 0;
     for (; i < 90; i++) bars.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
     const b = bars[bars.length - 1]!.close;
-    for (let k = 1; k <= 5; k++, i++) bars.push({ t: i * 60_000, close: b + 30 * k });
+    // 反発は MA から十分離れる(|乖離|≥0.08% の L2 ゲートを満たす)強さにする。
+    for (let k = 1; k <= 10; k++, i++) bars.push({ t: i * 60_000, close: b + 60 * k });
     return bars;
   }
 
@@ -67,7 +68,8 @@ describe('evaluateBarsNiy', () => {
     let i = 0;
     for (; i < 90; i++) bars.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
     const b = bars[bars.length - 1]!.close;
-    for (let k = 1; k <= 8; k++, i++) bars.push({ t: i * 60_000, close: b + 15 * k });
+    // +24/本 ×26: 緩やかな上昇で MA から十分離れ trend を出すが、1本値幅が小さく shock は出さない。
+    for (let k = 1; k <= 26; k++, i++) bars.push({ t: i * 60_000, close: b + 24 * k });
     return bars;
   }
 
@@ -101,9 +103,10 @@ describe('evaluateBarsNiy', () => {
   });
 
   it('グランビル系は発火しても共有クールダウンを発生させない(シグナルは急変のみ)', () => {
-    const now = 98 * 60_000;
+    const series = granvilleOnlyUp();
+    const now = series[series.length - 1]!.t;   // now=最新足時刻(本番と同じ整合)
     const fired: AlertEventPayload[] = [];
-    evaluateBarsNiy(granvilleOnlyUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
+    evaluateBarsNiy(series, META, DEFAULT_PARAMS, now, (e) => fired.push(e));
     expect(fired.some(e => e.detectionKind === 'trend')).toBe(true);
     expect(fired.some(e => e.detectionKind === 'shock')).toBe(false);   // この系列は急変を出さない
     // グランビルは markFired を呼ばない → 共有クールダウンは未発生(canFire は true のまま)
@@ -117,7 +120,7 @@ describe('evaluateBarsNiy', () => {
     let i = 0;
     for (; i < 90; i++) full.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
     const b = full[full.length - 1]!.close;
-    for (let k = 1; k <= 20; k++, i++) full.push({ t: i * 60_000, close: b + 30 * k });
+    for (let k = 1; k <= 12; k++, i++) full.push({ t: i * 60_000, close: b + 60 * k });
     let trendCount = 0;
     for (let n = 66; n <= full.length; n++) {   // dedup はリセットせず連続評価(= 本番の毎分評価)
       evaluateBarsNiy(full.slice(0, n), META, DEFAULT_PARAMS, n * 60_000, (e) => {

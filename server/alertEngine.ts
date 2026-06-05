@@ -36,6 +36,15 @@ export function _resetGranvilleDedup(): void { lastGranvilleNotes = new Set(); }
 let lastMaCrossKeys = new Set<string>();
 export function _resetMaCrossDedup(): void { lastMaCrossKeys = new Set(); }
 
+// v0.6.2: ma_sr/trend の過剰発火対策(実データ監査で trend 5.4/h・ma_sr 4.7/h、多くが乖離≈0%=MAに触れただけ)。
+// ①乖離ゲート: |乖離| が小さい(MA上をなぞっているだけ/フラットMAのチョップ)ものは出さない。
+//   監査の実値分布(本物=0.11/0.20/0.48% vs ノイズ=0.00〜0.04%)から 0.08% で明瞭に分離できる。
+// ②方向別クールダウン: 同種・同方向の連発を抑制(グランビルは従来 un-gated だったが監査により導入)。
+const L2_MIN_DEV_PCT = 0.08;
+const L2_COOLDOWN_MS = 15 * 60_000;
+const lastL2Emit = new Map<string, number>();
+export function _resetL2Cooldown(): void { lastL2Emit.clear(); }
+
 /** Bar-confirmed detection for NIY=F: Granville (reversal/continuation) first, then shock (完成1分足).
  *  Routes events to `sink`. */
 export function evaluateBarsNiy(
@@ -74,9 +83,13 @@ export function evaluateBarsNiy(
   // 内部の g.note("グランビル…")は edge-dedup と log にのみ使い、emit は新 type/明確文へ写像する。
   const tBar = bars[bars.length - 1]!.t;
   const signals: AlertSignal[] = [];
-  const currentNotes = new Set(byNote.keys());
+  // 乖離ゲートを通った「発火可能」なシグナルだけを edge-dedup の対象にする。
+  // (乖離不足のものを dedup 集合に入れると、後で乖離が十分になった時にエコー扱いで消えてしまうため)
+  const currentNotes = new Set<string>();
   for (const g of byNote.values()) {
-    if (lastGranvilleNotes.has(g.note)) continue;   // 前tickでも出ていた→エコー、発火しない
+    if (Math.abs(g.sig.deviation) < L2_MIN_DEV_PCT) continue;   // 乖離が小さい=MAをなぞる/フラットMAのチョップ→出さない
+    currentNotes.add(g.note);
+    if (lastGranvilleNotes.has(g.note)) continue;   // 前tickでも(発火可能で)出ていた→エコー、発火しない
     const dir = g.sig.dir;
     const maVal = Math.round(g.sig.ma);
     const yen = maVal.toLocaleString('ja-JP');
@@ -100,8 +113,9 @@ export function evaluateBarsNiy(
   // 素のMAクロス → trend(トレンド転換)。グランビルが同方向の転換/継続を既に出していれば重複なので抑制。
   const granvilleDirs = new Set([...byNote.values()].map(v => v.sig.dir));
   const maCross = detectMaCross(closes, maMid);
-  const maKey = maCross ? `ma-${maCross.dir}` : '';
-  if (maCross && !granvilleDirs.has(maCross.dir) && !lastMaCrossKeys.has(maKey)) {
+  const maOk = !!maCross && Math.abs(maCross.deviation) >= L2_MIN_DEV_PCT;   // 乖離不足は dedup を汚さない
+  const maKey = maOk ? `ma-${maCross!.dir}` : '';
+  if (maOk && maCross && !granvilleDirs.has(maCross.dir) && !lastMaCrossKeys.has(maKey)) {
     const maVal = Math.round(maCross.ma);
     const dirWord = maCross.dir === 'up' ? '上抜け' : '下抜け';
     console.log(`[alertEngine] ${sym} ${maCross.period}MA${dirWord} ma=${maVal} dev=${maCross.deviation.toFixed(2)}%`);
@@ -112,8 +126,12 @@ export function evaluateBarsNiy(
   }
   lastMaCrossKeys = maKey ? new Set([maKey]) : new Set();   // クロスが消えるまで同方向を抑制
 
-  // 集約(同方向・近接基準を1本化)→ emit。グランビル系はクールダウン無視(ユーザー指定)=edge-dedupのみ。
+  // 集約(同方向・近接基準を1本化)→ 方向別クールダウン(v0.6.2: 監査で過剰発火のため導入)→ emit。
+  const tNow = bars[bars.length - 1]!.t;
   for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
+    const ck = `${a.type}#${a.direction}`;
+    if (tNow - (lastL2Emit.get(ck) ?? -Infinity) <= L2_COOLDOWN_MS) continue;
+    lastL2Emit.set(ck, tNow);
     sink({
       symbol: sym, symbolLabel: meta.labelJa, changePercent: 0, windowSeconds: 75 * 60,
       detectionKind: a.type, direction: a.direction, triggeredAt: a.triggeredAt,
