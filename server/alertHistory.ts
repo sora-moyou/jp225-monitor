@@ -4,12 +4,11 @@ import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFoll
 import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
 import { classifySession, isWithinOpenGuard } from '../collector/session.js';
-import { resolveOpenGuardBars } from './configStore.js';
+import { resolveOpenGuardBars, resolveHitThreshold } from './configStore.js';
 import { noteShock } from './shockWindow.js';
 import type { AlertEventPayload } from './types.js';
 
 const FOLLOWUP_MS = 30_000;
-const HIT_PCT = 0.1;            // 的中判定(発火方向に +0.1% 以上)
 const OFFSETS_MIN = [5, 15, 30] as const;
 const FOLLOWUP_TOL_MS = 3 * 60_000;   // +N分の足は target±この範囲(手前)で探す。無ければ null=集計除外。
 
@@ -84,6 +83,7 @@ export function recordAlert(database: DatabaseSync, p: AlertEventPayload, price:
     symbol: p.symbol, triggeredAt: p.triggeredAt, direction: p.direction,
     detectionKind: p.detectionKind, windowSeconds: p.windowSeconds, changePercent: p.changePercent,
     price, sessionDate: s?.sessionDate ?? null, session: s?.session ?? null,
+    referenceKind: p.referenceKind ?? null, referencePrice: p.referencePrice ?? null,
   });
 }
 
@@ -153,10 +153,13 @@ export function summarize(rows: AlertRow[]): KindStat[] {
           .filter((x): x is number => x != null));
   const out: KindStat[] = [];
   for (const [label, rs] of groups) {
+    // 成功しきい値はシグナル種別ごと(既定同値、config で変更可)。direction が期待方向なので
+    // favor≥th が「支持/抵抗が効いた/ブレイク・転換が継続した」=各シグナル共通の成功定義になる。
+    const th = resolveHitThreshold(rs[0]?.detection_kind ?? null);
     const r15 = rs.filter(r => r.ret15 != null);
     const fav15 = r15.map(r => favor(r.direction, r.ret15!));
-    const hits = fav15.filter(f => f >= HIT_PCT).length;        // 継続(順行 ≥ +0.1%)
-    const reverts = fav15.filter(f => f <= -HIT_PCT).length;    // 戻り(逆行 ≥ 0.1%)
+    const hits = fav15.filter(f => f >= th).length;        // 成功(順行 ≥ th%)
+    const reverts = fav15.filter(f => f <= -th).length;    // 逆行(≥ th%)
     out.push({
       label, count: rs.length,
       hitRate: r15.length ? hits / r15.length : 0,

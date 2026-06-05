@@ -40,13 +40,18 @@ export function initSchema(db: DatabaseSync): void {
       direction TEXT, detection_kind TEXT, window_seconds INTEGER,
       change_percent REAL, price REAL,
       session_date TEXT, session TEXT,
-      ret5 REAL, ret15 REAL, ret30 REAL
+      ret5 REAL, ret15 REAL, ret30 REAL,
+      reference_kind TEXT, reference_price REAL
     );
   `);
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
   if (!cols.includes('volume')) db.exec('ALTER TABLE bars_1m ADD COLUMN volume INTEGER');
+  // v0.6.0: アラートに基準(reference)を記録。既存DBへ後付けマイグレーション。
+  const aCols = (db.prepare('PRAGMA table_info(alerts)').all() as Array<{ name: string }>).map(c => c.name);
+  if (!aCols.includes('reference_kind')) db.exec('ALTER TABLE alerts ADD COLUMN reference_kind TEXT');
+  if (!aCols.includes('reference_price')) db.exec('ALTER TABLE alerts ADD COLUMN reference_price REAL');
   // bars_1m の読み取りはすべて PRIMARY KEY(symbol, t) のレンジで賄える(getSessionOHLC は t 範囲を
   // 読んで JS 側でセッション集計、getRecentBars/getBarClose* も symbol+t)。session_date/session で
   // 絞る索引はもう不要なため作らない(旧 idx_bars_session は書き込み増だけで読みに使われていなかった)。
@@ -127,20 +132,23 @@ export interface AlertRow {
   change_percent: number | null; price: number | null;
   session_date: string | null; session: string | null;
   ret5: number | null; ret15: number | null; ret30: number | null;
+  reference_kind: string | null; reference_price: number | null;
 }
 export interface AlertInsert {
   symbol: string; triggeredAt: number; direction: string; detectionKind: string;
   windowSeconds: number; changePercent: number; price: number;
   sessionDate: string | null; session: string | null;
+  referenceKind?: string | null; referencePrice?: number | null;
 }
 
 export function insertAlert(db: DatabaseSync, a: AlertInsert): void {
   db.prepare(`
     INSERT INTO alerts (symbol, triggered_at, direction, detection_kind, window_seconds,
-      change_percent, price, session_date, session)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      change_percent, price, session_date, session, reference_kind, reference_price)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(a.symbol, a.triggeredAt, a.direction, a.detectionKind, a.windowSeconds,
-    a.changePercent, a.price, a.sessionDate, a.session);
+    a.changePercent, a.price, a.sessionDate, a.session,
+    a.referenceKind ?? null, a.referencePrice ?? null);
 }
 
 /** Insert an alert only if no row with the same symbol+direction+detection_kind+window_seconds

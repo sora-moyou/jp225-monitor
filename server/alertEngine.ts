@@ -119,6 +119,7 @@ export function evaluateBarsNiy(
       detectionKind: a.type, direction: a.direction, triggeredAt: a.triggeredAt,
       change15min: null, pa15min: null, range1h: null, zscore: 0,
       level: Math.round(a.reference.price), note: a.text,
+      referenceKind: a.reference.kind, referencePrice: Math.round(a.reference.price),
     });
   }
 

@@ -55,6 +55,8 @@ export interface AlertEventPayload {
   zscore: number;
   note?: string;   // 任意: バナーで「%/秒」の代わりに表示する説明(グランビル等)
   level?: number;  // 任意: 対象の価格水準(ダブルトップ/ボトムの水準価格など)
+  referenceKind?: string;   // v0.6.0: 基準の種別(sessionLow/ma/neck/swing/level 等)。履歴の的中率内訳用。
+  referencePrice?: number;  // v0.6.0: 基準価格(MA値含む)。
 }
 
 export type SSEEvent =

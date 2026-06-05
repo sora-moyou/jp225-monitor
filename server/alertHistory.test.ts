@@ -101,9 +101,11 @@ describe('summarize / kindLabel', () => {
   it('種別ごとの的中率(15分基準, HIT=0.1%)と平均retを集計', () => {
     const rows: AlertRow[] = [
       { id: 1, symbol: 'NIY=F', triggered_at: 1, direction: 'up', detection_kind: 'slope', window_seconds: 60,
-        change_percent: 0.3, price: 1000, session_date: null, session: null, ret5: 0.2, ret15: 0.5, ret30: 0.4 },
+        change_percent: 0.3, price: 1000, session_date: null, session: null, ret5: 0.2, ret15: 0.5, ret30: 0.4,
+        reference_kind: null, reference_price: null },
       { id: 2, symbol: 'NIY=F', triggered_at: 2, direction: 'up', detection_kind: 'slope', window_seconds: 60,
-        change_percent: 0.3, price: 1000, session_date: null, session: null, ret5: -0.2, ret15: -0.3, ret30: 0 },
+        change_percent: 0.3, price: 1000, session_date: null, session: null, ret5: -0.2, ret15: -0.3, ret30: 0,
+        reference_kind: null, reference_price: null },
     ];
     const s = summarize(rows);
     const shortStat = s.find(x => x.label === '短期')!;
@@ -116,7 +118,8 @@ describe('summarize / kindLabel', () => {
 
   it('down方向は順行正規化される(下げ継続=hit・順行+、上げ戻り=revert・順行−)', () => {
     const base = { symbol: 'NIY=F', triggered_at: 1, detection_kind: 'slope', window_seconds: 60,
-      change_percent: 0.3, price: 1000, session_date: null, session: null } as const;
+      change_percent: 0.3, price: 1000, session_date: null, session: null,
+      reference_kind: null, reference_price: null } as const;
     const rows: AlertRow[] = [
       { ...base, id: 1, direction: 'down', ret5: -0.5, ret15: -0.5, ret30: -0.5 },   // 下げ継続
       { ...base, id: 2, direction: 'down', ret5: 0.4, ret15: 0.4, ret30: 0.4 },       // 上げ戻り
