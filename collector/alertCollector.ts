@@ -44,6 +44,7 @@ export class AlertCollector {
       detectionKind: e.detectionKind, windowSeconds: e.windowSeconds,
       changePercent: e.changePercent, price,
       sessionDate: s?.sessionDate ?? null, session: s?.session ?? null,
+      referenceKind: e.referenceKind ?? null, referencePrice: e.referencePrice ?? null,   // v0.6.0: 基準を記録(collectorも)
     };
     insertAlertIfNew(this.db, row, this.dedupWindowMs);
   };

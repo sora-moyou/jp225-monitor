@@ -74,6 +74,10 @@ describe('shouldPersistInMonitor', () => {
     expect(shouldPersistInMonitor('granville', true)).toBe(false);
     // ma(25MA抜け)は evaluateBarsNiy 内で検知=collector も記録する → monitor は記録しない(二重書き防止)
     expect(shouldPersistInMonitor('ma', true)).toBe(false);
+    // v0.6.0: levelsLoop専用(collector非検知)→ monitor が記録する
+    for (const k of ['double', 'level_sr', 'pivot']) expect(shouldPersistInMonitor(k, true)).toBe(true);
+    // v0.6.0: alertEngine由来(evaluateBarsNiy=collectorも検知)→ monitor は記録しない
+    for (const k of ['ma_sr', 'trend']) expect(shouldPersistInMonitor(k, true)).toBe(false);
     // null / legacy magnitude は monitor 専用集合外 → collector 稼働中は記録しない
     expect(shouldPersistInMonitor(null, true)).toBe(false);
     expect(shouldPersistInMonitor('magnitude', true)).toBe(false);
