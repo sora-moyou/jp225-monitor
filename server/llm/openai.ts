@@ -130,15 +130,16 @@ export interface ExplainInput {
   changePercent: number;
   windowSeconds: number;
   detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb'
-    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend';
+    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash';
   direction?: 'up' | 'down';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
   range1h: { high: number; low: number } | null;
   news: NewsItem[];
   crossAsset?: Mover[];
-  newsSince?: number;   // ①: これ以降のニュースのみ参照(直前の急変以降)。0/未指定=従来の固定窓。
-  l2Recent?: string;    // ①: 直近のテクニカル状態(L2シグナル)要約。テクニカル判定時に併記。
+  newsSince?: number;     // ①: これ以降のニュースのみ参照(直前の急変以降)。0/未指定=従来の固定窓。
+  l2Recent?: string;      // ①: 直近のテクニカル状態(L2シグナル)要約。テクニカル判定時に併記。
+  newsWindowMs?: number;  // 暴落(crash)等で参照ニュース窓を広げる(未指定=既定4h)。
 }
 
 export function scoreNews(news: NewsItem, keywords: string[], now: number): number {
@@ -155,9 +156,10 @@ export function scoreNews(news: NewsItem, keywords: string[], now: number): numb
 // 急変近接プール選別 (v0.3.9)
 // 4h 全体から拾うと「4h 前のキーワード豊富な記事 > 直近の正体不明短文」となり、的外れな引用が増える。
 // ±15min → ±60min → 4h の段階フォールバックで、急変直前の材料を最優先する。
-export function selectNewsPool(news: NewsItem[], now: number, sinceFloor = 0): NewsItem[] {
-  // ①: 直前の急変以降に限定したい場合 sinceFloor を渡す。固定窓(4h)と「直前の急変以降」の遅い方を採用。
-  const cutoff = Math.max(now - NEWS_RECENT_WINDOW_MS, sinceFloor);
+export function selectNewsPool(news: NewsItem[], now: number, sinceFloor = 0, windowMs = NEWS_RECENT_WINDOW_MS): NewsItem[] {
+  // ①: 直前の急変以降に限定したい場合 sinceFloor を渡す。固定窓と「直前の急変以降」の遅い方を採用。
+  // 暴落(crash)等は windowMs を広げて参照(ユーザー指定: ニュース期間を広く)。
+  const cutoff = Math.max(now - windowMs, sinceFloor);
   const recent = news.filter(n => n.publishedAt >= cutoff);
   const tightMs = NEWS_PROXIMITY_TIGHT_MIN * 60_000;
   const looseMs = NEWS_PROXIMITY_LOOSE_MIN * 60_000;
@@ -180,7 +182,7 @@ export function formatCrossAsset(movers: Mover[]): string {
 }
 
 function rankAndFormatNews(input: ExplainInput, now: number): string {
-  const pool = selectNewsPool(input.news, now, input.newsSince ?? 0);
+  const pool = selectNewsPool(input.news, now, input.newsSince ?? 0, input.newsWindowMs ?? NEWS_RECENT_WINDOW_MS);
   const keywords = INSTRUMENT_KEYWORDS[input.symbol] ?? [];
   const ranked = [...pool]
     .map(n => ({ n, s: scoreNews(n, keywords, now) }))
@@ -206,7 +208,8 @@ export async function explain(input: ExplainInput): Promise<string> {
     : input.detectionKind === 'ma_sr' ? 'MAサポレジ'
     : input.detectionKind === 'level_sr' ? '水準サポレジ'
     : input.detectionKind === 'pivot' ? 'スイング形成'
-    : input.detectionKind === 'trend' ? 'トレンド転換' : 'トレンド';
+    : input.detectionKind === 'trend' ? 'トレンド転換'
+    : input.detectionKind === 'crash' ? '暴落' : 'トレンド';
   // 方向は direction を真の源とし(dtb は changePercent=0 のため符号では判定不可)、無ければ符号で代替。
   const dir = input.direction ?? (input.changePercent >= 0 ? 'up' : 'down');
   const dirJa = dir === 'up' ? '上昇' : '下落';
@@ -236,14 +239,18 @@ export async function explain(input: ExplainInput): Promise<string> {
     ultraShort ? '※ 超短期(〜1分)の動き。ニュース起因はまれ。同方向に動いた他資産が無ければ短期需給/テクニカルを既定とする。' : '',
   ].filter(Boolean).join('\n');
   // テクニカル系(dtb/granville/break)は「X秒でY%」の急変文ではなく、テクニカル局面として導入する。
-  const headline = input.detectionKind === 'dtb'
+  const headline = input.detectionKind === 'crash'
+    ? `【暴落】${input.symbolLabel} がセッション高値から ${Math.abs(input.changePercent).toFixed(1)}% 急落しました(${dirEmphasis})。直近の材料を広く確認し、原因(ファンダ/需給/外部要因)を簡潔に。\n`
+    : input.detectionKind === 'dtb'
     ? `【${kindLabel}】${input.symbolLabel} が主要な価格水準に ${dirEmphasis}(反転狙い)で接近しました(ダブルトップ/ボトム形成・ネック未達)。\n`
     : isTechnicalPattern
     ? `【${kindLabel}】${input.symbolLabel} がテクニカル局面(${kindLabel})にあります(${dirEmphasis})。\n`
     : `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n`;
   // ①ファンダ/テクニカル判定: 値動き(急変/フラッシュ)で、直前の急変以降に参照すべきニュースが
   // 1件も無ければ、LLMを呼ばず「テクニカル要因の可能性」と明示し、直近のテクニカル状態(L2)を併記する。
-  if (!isTechnicalPattern && selectNewsPool(input.news, now, input.newsSince ?? 0).length === 0) {
+  // ※ 暴落(crash)は重大イベントなので短絡せず、必ず広いニュース窓でLLMに原因を分析させる(ユーザー指定)。
+  if (!isTechnicalPattern && input.detectionKind !== 'crash'
+      && selectNewsPool(input.news, now, input.newsSince ?? 0, input.newsWindowMs ?? NEWS_RECENT_WINDOW_MS).length === 0) {
     const l2 = input.l2Recent ? ` 直近のテクニカル状況: ${input.l2Recent}。` : '';
     return `直前の急変以降、該当する材料ニュースなし → テクニカル要因の可能性。${l2}`;
   }

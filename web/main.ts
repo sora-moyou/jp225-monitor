@@ -353,6 +353,9 @@ function scheduleExplanation(alert: import('./types.js').AlertEvent, banner: Ret
   // 🔄ボタン: クールダウンを無視して即LLM
   banner.refresh = () => callLLM(alert, banner);
 
+  // 暴落(crash)は重大イベント。スロットルを無視して即座にAI原因分析を取得する(ユーザー指定)。
+  if (alert.detectionKind === 'crash') { callLLM(alert, banner); return; }
+
   const now = Date.now();
   const elapsed = now - lastLLMCallAt;
   if (elapsed >= LLM_AUTO_INTERVAL_MS) {

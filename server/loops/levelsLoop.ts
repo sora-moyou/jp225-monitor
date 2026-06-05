@@ -10,6 +10,7 @@ import { detectLevelHold } from '../levelHold.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
 import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
+import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../crash.js';
 import type { AlertSignal, SignalType } from '../signals/types.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
@@ -39,6 +40,10 @@ const DOUBLE_COOLDOWN_MS = 30 * 60_000;
 const lastEmit = new Map<string, number>();
 // 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格で誤発火しないよう検知しない。
 const DETECT_FRESH_MS = 90_000;
+// ── 暴落(crash): セッション高値からの下落率がこれ以上(ユーザー定義)。閾値/計算は crash.ts に集約。
+let crashSessionKey = '';
+let crashSessionHigh = 0;
+let crashFired = false;
 // 確定スイングピボットの戻り閾値(円)。break/level_sr/pivot の基準・形成判定に使う。
 // v0.6.1: 25→60。v0.6.2: 実データ監査で全体が過剰発火(level_sr 6.5/h 等)→ 主要スイングのみに絞るため 120。
 // 「意識される水準」= computeLevels tier≥1(当日/前日/長期高安・節目・合流)+ この主要スイング、に限定する。
@@ -120,6 +125,35 @@ function tick(): void {
     }
     // 最新tickが古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火させない(水準配信は上で継続)。
     if (now - latest.t > DETECT_FRESH_MS) return;
+    // ── 暴落検知: セッション高値から CRASH_DRAWDOWN_PCT 以上の下落でアラート(AIが広いニュース窓で原因分析)──
+    // セッションが変わったらリセット。高値=DB上のセッション高値・ランニング・現値の最大(再起動でも欠けない)。
+    // エッジ発火(暴落入りで1回)+ ヒステリシスで戻したらリセット → 同セッションの再暴落でも再発火。
+    try {
+      const csk = sessionKey(cs);
+      if (csk !== crashSessionKey) { crashSessionKey = csk; crashSessionHigh = 0; crashFired = false; }
+      if (csk !== 'none') {
+        const inProg = cs ? sessions.find(s => s.sessionDate === cs.sessionDate && s.session === cs.session) : undefined;
+        crashSessionHigh = Math.max(crashSessionHigh, inProg?.high ?? 0, latest.price);
+        const dd = crashDrawdown(crashSessionHigh, latest.price);
+        if (dd >= CRASH_DRAWDOWN_PCT && !crashFired) {
+          crashFired = true;
+          const high = Math.round(crashSessionHigh), drop = Math.round(crashSessionHigh - latest.price);
+          const pct = (dd * 100).toFixed(1);
+          console.log(`[levelsLoop] 暴落 high=${high} now=${Math.round(latest.price)} -${pct}% (-${drop})`);
+          emitAlert({
+            symbol: SYMBOL, symbolLabel: '日経225先物',
+            changePercent: -dd * 100, windowSeconds: 6 * 3600, detectionKind: 'crash', direction: 'down',
+            triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0, level: high,
+            note: `暴落: セッション高値${high.toLocaleString('ja-JP')}から -${pct}%(-${drop.toLocaleString('ja-JP')}円)`,
+            referenceKind: 'sessionHigh', referencePrice: high,
+          });
+        } else if (dd < CRASH_DRAWDOWN_PCT - CRASH_HYSTERESIS_PCT) {
+          crashFired = false;   // 戻したら次の暴落に備えてリセット
+        }
+      }
+    } catch (err) {
+      console.warn('[levelsLoop] crash detect failed:', err instanceof Error ? err.message : err);
+    }
     // ── L2 価格系シグナル(double / level_sr / break / pivot)を生成 → 集約 → emit(v0.6.0)──
     // 対象水準は「固定水準」のみ: 当日ぶんは確定スイングピボット、それ以外は computeLevels の固定 hl
     // (前セッション/直近/長期)。現値追従の当日高安は使わない(動く端を基準にすると乱発する)。

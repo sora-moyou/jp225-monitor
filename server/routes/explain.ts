@@ -15,7 +15,7 @@ interface ExplainBody {
   changePercent?: number;
   windowSeconds?: number;
   detectionKind?: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb'
-    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend';
+    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash';
   direction?: 'up' | 'down';
   change15min?: number | null;
   pa15min?: PriceActionBody | null;
@@ -33,7 +33,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
           && body.detectionKind !== 'ma' && body.detectionKind !== 'swingdtb'
           && body.detectionKind !== 'double' && body.detectionKind !== 'ma_sr'
           && body.detectionKind !== 'level_sr' && body.detectionKind !== 'pivot'
-          && body.detectionKind !== 'trend')) {
+          && body.detectionKind !== 'trend' && body.detectionKind !== 'crash')) {
     res.status(400).json({ error: 'invalid body' });
     return;
   }
@@ -50,7 +50,9 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       range1h: body.range1h ?? null,
       news: getNews(),
       crossAsset: getSignificantMovers(body.symbol),
-      newsSince: newsSinceFor(body.detectionKind),          // ①: 直前の急変以降のニュースのみ参照
+      // 暴落(crash)はニュース窓を広く・絞り込みなしで原因分析(ユーザー指定)。それ以外は直前の急変以降に限定。
+      newsSince: body.detectionKind === 'crash' ? 0 : newsSinceFor(body.detectionKind),
+      newsWindowMs: body.detectionKind === 'crash' ? 24 * 60 * 60 * 1000 : undefined,
       l2Recent: getRecentL2Summary(Date.now()) ?? undefined, // ①: テクニカル判定時に直近L2状態を併記
     });
     res.json({ explanation: text });

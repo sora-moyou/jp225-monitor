@@ -75,7 +75,7 @@ describe('shouldPersistInMonitor', () => {
     // ma(25MA抜け)は evaluateBarsNiy 内で検知=collector も記録する → monitor は記録しない(二重書き防止)
     expect(shouldPersistInMonitor('ma', true)).toBe(false);
     // v0.6.0: levelsLoop専用(collector非検知)→ monitor が記録する
-    for (const k of ['double', 'level_sr', 'pivot']) expect(shouldPersistInMonitor(k, true)).toBe(true);
+    for (const k of ['double', 'level_sr', 'pivot', 'crash']) expect(shouldPersistInMonitor(k, true)).toBe(true);
     // v0.6.0: alertEngine由来(evaluateBarsNiy=collectorも検知)→ monitor は記録しない
     for (const k of ['ma_sr', 'trend']) expect(shouldPersistInMonitor(k, true)).toBe(false);
     // null / legacy magnitude は monitor 専用集合外 → collector 稼働中は記録しない
@@ -92,6 +92,7 @@ describe('rowKind', () => {
     expect(rowKind('break', null)).toBe('水準ブレイク');
     expect(rowKind('ma', null)).toBe('MA抜け');
     expect(rowKind('swingdtb', null)).toBe('ダブル(大)');
+    expect(rowKind('crash', null)).toBe('暴落');
     expect(rowKind('slope', 60)).toBe('短期');   // 専用ラベル無し → 窓秒基準
   });
 });

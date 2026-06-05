@@ -32,6 +32,7 @@ export function kindLabel(windowSeconds: number | null): string {
 /** 履歴の種別ラベル。グランビルは検知種別で別扱い、それ以外は窓秒で 超短期/短期/長期。 */
 export function rowKind(detectionKind: string | null, windowSeconds: number | null): string {
   // v0.6.0 現行種別
+  if (detectionKind === 'crash') return '暴落';
   if (detectionKind === 'shock') return '急変';
   if (detectionKind === 'double') return 'ダブル天底';
   if (detectionKind === 'ma_sr') return 'MAサポレジ';
@@ -52,7 +53,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
 // levelsLoop 由来(double/level_sr/break/pivot)+ slope は monitor 専用(collector は levelsLoop を回さない)。
 // shock/ma_sr/trend は alertEngine 由来で collector も検知 → monitor-only ではない。
 // 旧 dtb/swingdtb も levelsLoop 由来だったため後方互換で残す。
-const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb']);
+const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'crash', 'dtb', 'swingdtb']);
 
 /** monitor 側で alerts に記録すべきか。collector 非稼働なら全種別記録。
  *  collector 稼働中でも monitor 専用種別(slope/dtb/break)は collector が書かないため記録する
