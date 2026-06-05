@@ -40,8 +40,12 @@ const COOLDOWN_BY_TYPE: Partial<Record<SignalType, number>> = {
 const lastEmit = new Map<string, number>();
 // 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格で誤発火しないよう検知しない。
 const DETECT_FRESH_MS = 90_000;
-// 確定スイングピボットの戻り閾値(円)。break/level_sr/pivot の基準・形成判定に使う(1分足ノイズ除外)。
-const PIVOT_RECLAIM_YEN = 25;
+// 確定スイングピボットの戻り閾値(円)。break/level_sr/pivot の基準・形成判定に使う。
+// v0.6.1: 25 は小さすぎ、チョップ帯で数十円のさざ波を「スイング高安」と量産していた(実データで90分47個)。
+// 60 に引き上げ「本物のスイングのみ」を採用(同データで帯内17→3本)。場中の体感で調整可。
+const PIVOT_RECLAIM_YEN = 60;
+// 近接水準の統合許容(円)。これ以内の水準は1本にまとめる(クラスタの5円バケツ擦り抜け=乱発を防ぐ)。
+const LEVEL_MERGE_YEN = 25;
 let lastPivotT = 0;   // 最後に「形成」を通知したピボットの時刻(新規確定のみ通知)
 // ── ダブル天井/大底(double, 長周期スイング)──
 // 複数セッションをまたぐ大きな W/M 反転。重いDB読取を避け約60秒に1回だけ再計算する。
@@ -115,9 +119,14 @@ function tick(): void {
       const rawPivots = extractSwingPivots(recent, PIVOT_RECLAIM_YEN);
       // ラベルはトレンド中立(「押し安値/戻り高値」は方向を含み水準抜け文で矛盾するため)。形成イベントは別途方向語を使う。
       const pivots = rawPivots.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
-      const seen = new Set<number>();
+      // 近接水準を統合(LEVEL_MERGE_YEN 以内は1本)。ピボット優先で先に積み、既存と近ければ捨てる。
+      // 5円バケツ重複排除だと 65,160/65,165/65,170/65,175 が別水準として残り乱発するため、帯で1本化する。
+      const kept: number[] = [];
       const hlLevels = [...pivots, ...(result.hlLevels ?? [])]
-        .filter(l => { const k = Math.round(l.price / 5) * 5; if (seen.has(k)) return false; seen.add(k); return true; });
+        .filter(l => {
+          if (!(l.price > 0) || kept.some(k => Math.abs(k - l.price) <= LEVEL_MERGE_YEN)) return false;
+          kept.push(l.price); return true;
+        });
 
       const signals: AlertSignal[] = [];
 
