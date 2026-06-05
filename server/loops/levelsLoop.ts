@@ -5,10 +5,12 @@ import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
 import { getForecastSnapshot } from './forecastLoop.js';
 import { emitAlert } from '../alertHistory.js';
-import { detectDoubleTopBottom, DEFAULT_DOUBLE_PARAMS } from '../doublePattern.js';
 import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
+import { detectLevelHold } from '../levelHold.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
+import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
+import type { AlertSignal, SignalType } from '../signals/types.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
 const SYMBOL = 'NIY=F';
@@ -23,32 +25,33 @@ let last: LevelsResult = { current: 0, up: [], down: [], swing: null, reversalSa
 let lastSig = '';
 let tickCount = 0;
 let warnedNoTick = false;
-// ダブルトップ/ボトムの per-level クールダウン。同一レベル(種別+価格)を15分は再発火しない。
-// 8秒ループでゾーン内に留まる間の連発を防ぐ。共有クールダウン(alertCooldown)とは独立。
-const DTB_COOLDOWN_MS = 15 * 60_000;
-const lastDtbFire = new Map<string, number>();
-// 水準抜けの per-level クールダウン(DTB と同様 15分・別マップ)。同一水準の再タッチ連発を抑制。
-const BREAK_COOLDOWN_MS = 15 * 60_000;
-const lastBreakFire = new Map<string, number>();
-// 水準抜けの方向別クールダウン。トレンド中は価格の通り道に固定水準が複数あり、各水準を抜けるたびに
-// 1本ずつ発火して「水準が動いて見える」階段状の連発になる。方向別に一定時間まとめ、逆方向(反転)は許可。
+// ── アラート再設計(v0.6.0): L2 価格系シグナルを signals→aggregate→emit に一本化 ──
+// 直近1分足の取得本数(break/level_sr/pivot 用の窓)。
+const RECENT_BARS_MIN = 90;
+// 水準抜けの方向別クールダウン(階段状連発の抑制)。トレンド中は通り道の固定水準を次々抜けるため、
+// 同方向は最外1本+方向別クールダウンで前置フィルタする(集約前)。逆方向(反転)は許可。
 const BREAK_DIR_COOLDOWN_MS = 10 * 60_000;
 const lastBreakDir = new Map<'up' | 'down', number>();
-// 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火しないよう検知しない。
+// 集約後シグナルの per-(type×丸め基準×stage) クールダウン。種別ごとに既定値を持つ。
+const DEFAULT_SIGNAL_COOLDOWN_MS = 15 * 60_000;
+const COOLDOWN_BY_TYPE: Partial<Record<SignalType, number>> = {
+  double: 30 * 60_000, break: 15 * 60_000, level_sr: 15 * 60_000, pivot: 15 * 60_000,
+};
+const lastEmit = new Map<string, number>();
+// 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格で誤発火しないよう検知しない。
 const DETECT_FRESH_MS = 90_000;
-// 確定スイングピボットの戻り閾値(円)。これ以上戻った極値だけを固定水準として採用(1分足ノイズを除外)。
+// 確定スイングピボットの戻り閾値(円)。break/level_sr/pivot の基準・形成判定に使う(1分足ノイズ除外)。
 const PIVOT_RECLAIM_YEN = 25;
-// ── 長周期スイング・ダブルボトム/トップ(swingDouble)──
-// 複数セッションをまたぐ大きな W/M 反転を捉える。重いDB読取を避け約60秒に1回だけ再計算する。
+let lastPivotT = 0;   // 最後に「形成」を通知したピボットの時刻(新規確定のみ通知)
+// ── ダブル天井/大底(double, 長周期スイング)──
+// 複数セッションをまたぐ大きな W/M 反転。重いDB読取を避け約60秒に1回だけ再計算する。
 const SWING_DOUBLE_CHECK_MS = 60_000;           // 再計算間隔(8秒tick毎ではない)
 const SWING_LOOKBACK_DAYS = 4;                  // ピボット抽出に使う直近の暦日数(セッションまたぎ)
 // 主要スイングのみ確定(micro はピボットにしない)。実データ較正: 150では細かいWを拾い、500で
 // 狙いの大ダブル(例: 谷66,950→ネック67,765→谷66,930)を捉える。場中チューニングで調整可。
 const SWING_PIVOT_RECLAIM_YEN = 500;
-const SWING_DTB_COOLDOWN_MS = 30 * 60_000;      // per-neck × stage クールダウン
 const DAY_MS = 86_400_000;
 let lastSwingCheck = 0;
-const lastSwingFire = new Map<string, number>();
 // 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
 // DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
 
@@ -103,41 +106,22 @@ function tick(): void {
     }
     // 最新tickが古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火させない(水準配信は上で継続)。
     if (now - latest.t > DETECT_FRESH_MS) return;
-    // ── ダブルトップ/ボトム検知(全レベル対象・手前10円・髭タッチ・ネック不要)──
-    // 直近 lookbackBars 分の1分足(髭=h/l)を取り、全レベルに対し検知。per-level クールダウンで間引く。
+    // ── L2 価格系シグナル(double / level_sr / break / pivot)を生成 → 集約 → emit(v0.6.0)──
+    // 対象水準は「固定水準」のみ: 当日ぶんは確定スイングピボット、それ以外は computeLevels の固定 hl
+    // (前セッション/直近/長期)。現値追従の当日高安は使わない(動く端を基準にすると乱発する)。
     try {
-      const sinceT = now - DEFAULT_DOUBLE_PARAMS.lookbackBars * 60_000;
+      const sinceT = now - RECENT_BARS_MIN * 60_000;
       const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
-      // dtb/水準抜けの対象は「固定水準」のみ: 当日ぶんは確定スイングピボット(swingPivots)、
-      // それ以外は computeLevels の固定 hl(前セッション/直近/長期)。現値追従の当日高安は使わない
-      // (動く端を基準にすると下落中にダブルボトムが乱発する)。同価格は丸めて重複排除(ピボット優先)。
-      const pivots = extractSwingPivots(recent, PIVOT_RECLAIM_YEN)
-        // ラベルはトレンド中立の語を使う。「押し安値/戻り高値」は方向(上昇の押し/下降の戻り)を含むため、
-        // 上昇相場で高値を上抜けした時に「戻り高値を上抜け」と矛盾する。スイング高値/安値なら両局面で成立。
-        .map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
+      const rawPivots = extractSwingPivots(recent, PIVOT_RECLAIM_YEN);
+      // ラベルはトレンド中立(「押し安値/戻り高値」は方向を含み水準抜け文で矛盾するため)。形成イベントは別途方向語を使う。
+      const pivots = rawPivots.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
       const seen = new Set<number>();
       const hlLevels = [...pivots, ...(result.hlLevels ?? [])]
         .filter(l => { const k = Math.round(l.price / 5) * 5; if (seen.has(k)) return false; seen.add(k); return true; });
-      for (const dsig of detectDoubleTopBottom(hlLevels, recent, latest.price)) {
-        const key = `${dsig.kind}@${dsig.level.toFixed(1)}`;
-        if (now - (lastDtbFire.get(key) ?? -Infinity) <= DTB_COOLDOWN_MS) continue;
-        lastDtbFire.set(key, now);
-        const name = dsig.kind === 'top' ? 'Wトップ' : 'Wボトム';
-        console.log(`[levelsLoop] ${name} @${Math.round(dsig.level)} (${dsig.label})`);
-        emitAlert({
-          symbol: SYMBOL, symbolLabel: `日経225先物 (${name})`,
-          changePercent: 0, windowSeconds: 60, detectionKind: 'dtb',
-          direction: dsig.kind === 'top' ? 'down' : 'up',
-          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
-          level: Math.round(dsig.level),
-          note: `${name} ${Math.round(dsig.level)}円(${dsig.label})に接近`,
-        });
-      }
-      // ── 水準抜け検知(DTBの補集合: 反転せず抜けた/ネック未達で再度抜けた)──
-      // 同じ hlLevels・同じ直近1分足を対象。連発を2段で整理する:
-      //  (1) 同一tick内の同方向ブレイクは「最も外側の1本」に集約(上抜け=最高水準/下抜け=最安水準=
-      //      価格が最も遠くまで抜けた=最も意味がある)。近接水準を同時に複数出さない。
-      //  (2) 方向別クールダウンで、トレンド中に水準を次々抜ける階段状の連発を1本化(逆方向=反転は許可)。
+
+      const signals: AlertSignal[] = [];
+
+      // 水準抜け(break): 同方向は最外1本+方向別クールダウンで前置フィルタ(トレンドの階段状連発を抑制)。
       const breaks = detectLevelBreak(hlLevels, recent, latest.price);
       const outer = new Map<'up' | 'down', BreakSignal>();
       for (const b of breaks) {
@@ -145,59 +129,83 @@ function tick(): void {
         if (!cur || (b.kind === 'up' ? b.level > cur.level : b.level < cur.level)) outer.set(b.kind, b);
       }
       for (const bsig of outer.values()) {
-        if (now - (lastBreakDir.get(bsig.kind) ?? -Infinity) <= BREAK_DIR_COOLDOWN_MS) continue;   // 方向別(階段状連発の抑制)
-        const key = `${bsig.kind}@${bsig.level.toFixed(1)}`;
-        if (now - (lastBreakFire.get(key) ?? -Infinity) <= BREAK_COOLDOWN_MS) continue;            // per-level(再タッチの抑制)
-        lastBreakFire.set(key, now);
-        lastBreakDir.set(bsig.kind, now);
+        if (now - (lastBreakDir.get(bsig.kind) ?? -Infinity) <= BREAK_DIR_COOLDOWN_MS) continue;
         const lvl = Math.round(bsig.level);
         const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
-        console.log(`[levelsLoop] 水準抜け ${bsig.kind} @${lvl} (${bsig.label})`);
-        emitAlert({
-          symbol: SYMBOL, symbolLabel: '日経225先物',
-          changePercent: 0, windowSeconds: 60, detectionKind: 'break',
-          direction: bsig.kind === 'up' ? 'up' : 'down',
-          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
-          level: lvl,
-          // 「何の水準か」を付記(ユーザー指定): 価格 + 由来ラベル(スイング高安/前日Day終値/長期高 等) + 方向。
-          note: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
+        signals.push({
+          type: 'break', direction: bsig.kind, reference: { kind: 'level', price: lvl }, stage: 'confirmed',
+          score: 1.2, triggeredAt: now,
+          text: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
         });
       }
-      // ── 長周期スイング・ダブルボトム/トップ(複数セッションをまたぐ大反転)──
-      // 約60秒に1回だけ、直近 SWING_LOOKBACK_DAYS 日のピボット(大 reclaim=主要スイングのみ)で検知。
-      // 谷の価格差は不問(ユーザー指定)、本物のWかはネック突出度で判定。forming/breakout の2段。
+
+      // 水準サポート/レジスタンス(level_sr): 反発確認後(③)。
+      for (const h of detectLevelHold(hlLevels, recent, latest.price)) {
+        const lvl = Math.round(h.level);
+        const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
+        signals.push({
+          type: 'level_sr', direction: h.kind === 'support' ? 'up' : 'down',
+          reference: { kind: 'level', price: lvl }, stage: 'confirmed', score: 1.1, triggeredAt: now,
+          text: `${lvl.toLocaleString('ja-JP')} ${h.label}が${word}の可能性`,
+        });
+      }
+
+      // スイング転換点の形成(pivot): 新しい確定ピボットが現れたら1回。ここでは方向語(押し安値/戻り高値)を許可。
+      const newest = rawPivots[rawPivots.length - 1];
+      if (newest && newest.t > lastPivotT) {
+        lastPivotT = newest.t;
+        const lvl = Math.round(newest.price);
+        const word = newest.kind === 'low' ? 'スイング安値' : 'スイング高値';
+        const note = newest.kind === 'low' ? '押し安値の可能性' : '戻り高値の可能性';
+        signals.push({
+          type: 'pivot', direction: newest.kind === 'low' ? 'up' : 'down',
+          reference: { kind: 'swing', price: lvl }, stage: 'confirmed', score: 1.0, triggeredAt: now,
+          text: `${lvl.toLocaleString('ja-JP')} ${word}を形成(${note})`,
+        });
+      }
+
+      // ダブル天井/大底(double, 長周期): 約60秒に1回。谷差は不問、本物のWはネック突出度で判定。forming/confirmed。
       if (now - lastSwingCheck >= SWING_DOUBLE_CHECK_MS) {
         lastSwingCheck = now;
         const longBars = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        const swingPivots = extractSwingPivots(longBars, SWING_PIVOT_RECLAIM_YEN);
-        const sd = detectSwingDouble(swingPivots, latest.price, DEFAULT_SWING_DOUBLE);
+        const sd = detectSwingDouble(extractSwingPivots(longBars, SWING_PIVOT_RECLAIM_YEN), latest.price, DEFAULT_SWING_DOUBLE);
         if (sd) {
           const neck = Math.round(sd.neck);
-          const key = `${sd.kind}@${neck}#${sd.stage}`;
-          if (now - (lastSwingFire.get(key) ?? -Infinity) > SWING_DTB_COOLDOWN_MS) {
-            lastSwingFire.set(key, now);
-            const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
-            const [g1, g2] = sd.legs;
-            const name = sd.kind === 'bottom' ? 'ダブルボトム' : 'ダブルトップ';
-            const word = sd.kind === 'bottom' ? '上抜け' : '下抜け';
-            const watch = sd.kind === 'bottom' ? '上抜けで上昇期待' : '下抜けで下落警戒';
-            const legLabel = sd.kind === 'bottom' ? '谷' : '山';
-            const note = sd.stage === 'breakout'
-              ? `${name}成立 — ネック${yen(neck)}円を${word}(${legLabel}${yen(g1)}/${yen(g2)})目標≈${yen(sd.target)}`
-              : `${name}形成 — ネック${yen(neck)}円(${legLabel}${yen(g1)}→${yen(g2)})。${watch}`;
-            console.log(`[levelsLoop] swingDouble ${sd.kind} ${sd.stage} neck=${neck} legs=${Math.round(g1)}/${Math.round(g2)}`);
-            emitAlert({
-              symbol: SYMBOL, symbolLabel: `日経225先物 (${name})`,
-              changePercent: 0, windowSeconds: 60, detectionKind: 'swingdtb',
-              direction: sd.kind === 'bottom' ? 'up' : 'down',
-              triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
-              level: neck, note,
-            });
-          }
+          const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
+          const [g1, g2] = sd.legs;
+          const name = sd.kind === 'bottom' ? 'ダブルボトム' : 'ダブルトップ';
+          const word = sd.kind === 'bottom' ? '上抜け' : '下抜け';
+          const watch = sd.kind === 'bottom' ? '上抜けで上昇期待' : '下抜けで下落警戒';
+          const legLabel = sd.kind === 'bottom' ? '谷' : '山';
+          const text = sd.stage === 'breakout'
+            ? `${name}成立 — ネック${yen(neck)}円を${word}(${legLabel}${yen(g1)}/${yen(g2)})目標≈${yen(sd.target)}`
+            : `${name}形成 — ネック${yen(neck)}円(${legLabel}${yen(g1)}→${yen(g2)})。${watch}`;
+          signals.push({
+            type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: neck },
+            stage: sd.stage === 'breakout' ? 'confirmed' : 'forming',
+            score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text,
+          });
         }
       }
+
+      // 集約(同方向・近接基準を1本化しコンフルエンス加点)→ per-type クールダウン → emit。
+      for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
+        const ck = `${a.type}@${Math.round(a.reference.price / 5) * 5}#${a.stage ?? ''}`;
+        const cd = COOLDOWN_BY_TYPE[a.type] ?? DEFAULT_SIGNAL_COOLDOWN_MS;
+        if (now - (lastEmit.get(ck) ?? -Infinity) <= cd) continue;
+        lastEmit.set(ck, now);
+        if (a.types.includes('break')) lastBreakDir.set(a.direction, now);   // 階段状連発の方向別抑制を更新
+        console.log(`[levelsLoop] signal ${a.type} ${a.direction} @${Math.round(a.reference.price)} score=${a.score.toFixed(2)}`
+          + `${a.types.length > 1 ? ` conf[${a.types.join(',')}]` : ''}`);
+        emitAlert({
+          symbol: SYMBOL, symbolLabel: '日経225先物',
+          changePercent: 0, windowSeconds: 60, detectionKind: a.type,
+          direction: a.direction, triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: Math.round(a.reference.price), note: a.text,
+        });
+      }
     } catch (err) {
-      console.warn('[levelsLoop] dtb/break detect failed:', err instanceof Error ? err.message : err);
+      console.warn('[levelsLoop] signal detect failed:', err instanceof Error ? err.message : err);
     }
     // 診断ログ: 最初の3tick / 遅い時(DB>500ms or compute>150ms) / 水準が空の時 に出す。
     // 通常は無音。これを見れば「どのステージで詰まるか」「水準が空になっていないか」が分かる。

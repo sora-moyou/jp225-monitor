@@ -304,9 +304,9 @@ function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<type
 
 // チャートパターン由来(グランビル/ダブルトップ・ボトム)はニュースAI説明ではなく固定文を表示。
 function isTechnicalPattern(alert: import('./types.js').AlertEvent): boolean {
-  return alert.detectionKind === 'granville' || alert.detectionKind === 'dtb'
-    || alert.detectionKind === 'break' || alert.detectionKind === 'ma'
-    || alert.detectionKind === 'swingdtb';
+  const k = alert.detectionKind;
+  return k === 'granville' || k === 'dtb' || k === 'break' || k === 'ma' || k === 'swingdtb'
+    || k === 'double' || k === 'ma_sr' || k === 'level_sr' || k === 'pivot' || k === 'trend';
 }
 // テクニカル系の固定文。ダブル=「価格xxxでダブルトップ/ボトムの可能性あり」、
 // グランビル=「価格xxxで押し目買い/戻り売り/買い転換/売り転換」。それ以外は「テクニカル要因」。
@@ -330,6 +330,12 @@ function technicalExplanation(alert: import('./types.js').AlertEvent): string {
   }
   if (alert.detectionKind === 'swingdtb') {
     // サーバ note が「ダブルボトム成立/形成 — ネック…」(長周期スイングのW/M反転)。
+    return alert.note ?? UI.ja.technicalReason;
+  }
+  // v0.6.0 再設計の現行種別はサーバ note が明確文(「{基準名}{動作}の可能性」)。そのまま表示。
+  if (alert.detectionKind === 'double' || alert.detectionKind === 'ma_sr'
+      || alert.detectionKind === 'level_sr' || alert.detectionKind === 'pivot'
+      || alert.detectionKind === 'trend') {
     return alert.note ?? UI.ja.technicalReason;
   }
   return UI.ja.technicalReason;

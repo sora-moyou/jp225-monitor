@@ -129,7 +129,8 @@ export interface ExplainInput {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb';
+  detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb'
+    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend';
   direction?: 'up' | 'down';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
@@ -198,7 +199,11 @@ export async function explain(input: ExplainInput): Promise<string> {
     : input.detectionKind === 'granville' ? 'グランビル'
     : input.detectionKind === 'break' ? '水準ブレイク'
     : input.detectionKind === 'ma' ? 'MA抜け'
-    : input.detectionKind === 'swingdtb' ? 'ダブル(大)' : 'トレンド';
+    : input.detectionKind === 'swingdtb' || input.detectionKind === 'double' ? 'ダブル天底'
+    : input.detectionKind === 'ma_sr' ? 'MAサポレジ'
+    : input.detectionKind === 'level_sr' ? '水準サポレジ'
+    : input.detectionKind === 'pivot' ? 'スイング形成'
+    : input.detectionKind === 'trend' ? 'トレンド転換' : 'トレンド';
   // 方向は direction を真の源とし(dtb は changePercent=0 のため符号では判定不可)、無ければ符号で代替。
   const dir = input.direction ?? (input.changePercent >= 0 ? 'up' : 'down');
   const dirJa = dir === 'up' ? '上昇' : '下落';
@@ -217,7 +222,10 @@ export async function explain(input: ExplainInput): Promise<string> {
   // 急変文・ノイズ注記(急変幅判定)を出さない。
   const isTechnicalPattern = input.detectionKind === 'dtb'
     || input.detectionKind === 'granville' || input.detectionKind === 'break'
-    || input.detectionKind === 'ma' || input.detectionKind === 'swingdtb';
+    || input.detectionKind === 'ma' || input.detectionKind === 'swingdtb'
+    || input.detectionKind === 'double' || input.detectionKind === 'ma_sr'
+    || input.detectionKind === 'level_sr' || input.detectionKind === 'pivot'
+    || input.detectionKind === 'trend';
   const smallMag = !isTechnicalPattern && Math.abs(input.changePercent) <= 0.15;
   const ultraShort = input.detectionKind === 'slope' || input.windowSeconds <= 60;
   const noiseNotes = [
