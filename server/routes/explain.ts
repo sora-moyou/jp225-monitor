@@ -2,6 +2,8 @@ import type { Request, Response } from 'express';
 import { explain } from '../llm/openai.js';
 import { getNews } from '../cache.js';
 import { getSignificantMovers } from '../marketSnapshot.js';
+import { newsSinceFor } from '../shockWindow.js';
+import { getRecentL2Summary } from '../alertHistory.js';
 
 interface PriceActionBody {
   open: number; high: number; low: number; current: number;
@@ -48,6 +50,8 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       range1h: body.range1h ?? null,
       news: getNews(),
       crossAsset: getSignificantMovers(body.symbol),
+      newsSince: newsSinceFor(body.detectionKind),          // ①: 直前の急変以降のニュースのみ参照
+      l2Recent: getRecentL2Summary(Date.now()) ?? undefined, // ①: テクニカル判定時に直近L2状態を併記
     });
     res.json({ explanation: text });
   } catch (err) {

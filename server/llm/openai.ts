@@ -137,6 +137,8 @@ export interface ExplainInput {
   range1h: { high: number; low: number } | null;
   news: NewsItem[];
   crossAsset?: Mover[];
+  newsSince?: number;   // ①: これ以降のニュースのみ参照(直前の急変以降)。0/未指定=従来の固定窓。
+  l2Recent?: string;    // ①: 直近のテクニカル状態(L2シグナル)要約。テクニカル判定時に併記。
 }
 
 export function scoreNews(news: NewsItem, keywords: string[], now: number): number {
@@ -153,8 +155,9 @@ export function scoreNews(news: NewsItem, keywords: string[], now: number): numb
 // 急変近接プール選別 (v0.3.9)
 // 4h 全体から拾うと「4h 前のキーワード豊富な記事 > 直近の正体不明短文」となり、的外れな引用が増える。
 // ±15min → ±60min → 4h の段階フォールバックで、急変直前の材料を最優先する。
-export function selectNewsPool(news: NewsItem[], now: number): NewsItem[] {
-  const cutoff = now - NEWS_RECENT_WINDOW_MS;
+export function selectNewsPool(news: NewsItem[], now: number, sinceFloor = 0): NewsItem[] {
+  // ①: 直前の急変以降に限定したい場合 sinceFloor を渡す。固定窓(4h)と「直前の急変以降」の遅い方を採用。
+  const cutoff = Math.max(now - NEWS_RECENT_WINDOW_MS, sinceFloor);
   const recent = news.filter(n => n.publishedAt >= cutoff);
   const tightMs = NEWS_PROXIMITY_TIGHT_MIN * 60_000;
   const looseMs = NEWS_PROXIMITY_LOOSE_MIN * 60_000;
@@ -177,7 +180,7 @@ export function formatCrossAsset(movers: Mover[]): string {
 }
 
 function rankAndFormatNews(input: ExplainInput, now: number): string {
-  const pool = selectNewsPool(input.news, now);
+  const pool = selectNewsPool(input.news, now, input.newsSince ?? 0);
   const keywords = INSTRUMENT_KEYWORDS[input.symbol] ?? [];
   const ranked = [...pool]
     .map(n => ({ n, s: scoreNews(n, keywords, now) }))
@@ -238,6 +241,12 @@ export async function explain(input: ExplainInput): Promise<string> {
     : isTechnicalPattern
     ? `【${kindLabel}】${input.symbolLabel} がテクニカル局面(${kindLabel})にあります(${dirEmphasis})。\n`
     : `【急変・${kindLabel}】${input.symbolLabel} が ${input.windowSeconds}秒で ${input.changePercent.toFixed(2)}% ${dirJa} (${dirEmphasis}) しました。\n`;
+  // ①ファンダ/テクニカル判定: 値動き(急変/フラッシュ)で、直前の急変以降に参照すべきニュースが
+  // 1件も無ければ、LLMを呼ばず「テクニカル要因の可能性」と明示し、直近のテクニカル状態(L2)を併記する。
+  if (!isTechnicalPattern && selectNewsPool(input.news, now, input.newsSince ?? 0).length === 0) {
+    const l2 = input.l2Recent ? ` 直近のテクニカル状況: ${input.l2Recent}。` : '';
+    return `直前の急変以降、該当する材料ニュースなし → テクニカル要因の可能性。${l2}`;
+  }
   const oppositeExample = dir === 'down'
     ? '「停戦/地政学リスク後退/利下げ観測/円安/米株高」は株高(⬆)要因なので、下落の説明に使わない'
     : '「地政学緊張・戦闘激化/利上げ・金利上昇/円高/弱い指標/米株安」は株安(⬇)要因なので、上昇の説明に使わない';

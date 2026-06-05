@@ -1,10 +1,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFollowup,
-  updateAlertReturns, getBarCloseNear, type AlertRow } from './db/store.js';
+  updateAlertReturns, getBarCloseNear, getRecentAlerts, type AlertRow } from './db/store.js';
 import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
 import { classifySession, isWithinOpenGuard } from '../collector/session.js';
 import { resolveOpenGuardBars } from './configStore.js';
+import { noteShock } from './shockWindow.js';
 import type { AlertEventPayload } from './types.js';
 
 const FOLLOWUP_MS = 30_000;
@@ -61,6 +62,21 @@ export function shouldPersistInMonitor(detectionKind: string | null, collectorAl
   return !collectorAlive || MONITOR_ONLY_KINDS.has(detectionKind ?? '');
 }
 
+// L2(テクニカル状態)種別。①のテクニカル判定時に「直近の状況」を併記するために使う。
+const L2_KINDS = new Set(['double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dtb', 'swingdtb', 'granville', 'ma']);
+
+/** 直近 withinMs 以内の最新 L2 アラートを「{種別} {価格} ▲/▼」で要約。無ければ null。①の併記用。 */
+export function getRecentL2Summary(now: number, withinMs = 30 * 60_000): string | null {
+  try {
+    if (!db) db = openDb(resolveDbPath());
+    const r = getRecentAlerts(db, 20).find(a =>
+      L2_KINDS.has(a.detection_kind ?? '') && now - a.triggered_at <= withinMs);
+    if (!r) return null;
+    const arrow = r.direction === 'up' ? '▲' : '▼';
+    return `${rowKind(r.detection_kind, r.window_seconds)} ${Math.round(r.price ?? 0).toLocaleString('ja-JP')} ${arrow}`;
+  } catch { return null; }
+}
+
 /** payload と発火価格から alerts に1行記録。 */
 export function recordAlert(database: DatabaseSync, p: AlertEventPayload, price: number): void {
   const s = classifySession(p.triggeredAt);
@@ -88,6 +104,7 @@ export function emitAlert(p: AlertEventPayload): void {
     console.warn(`[alertHistory] 遅延配信: バー時刻の ${Math.round(lagMs / 1000)}s 後に発火 `
       + `(${p.detectionKind} ${p.symbol} @${new Date(p.triggeredAt).toISOString()}) — フィード/検知の遅延の可能性。`);
   }
+  if (p.detectionKind === 'shock') noteShock(p.triggeredAt);   // ①判定のニュース窓(直前の急変以降)に使う
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());
