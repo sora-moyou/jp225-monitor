@@ -1,22 +1,21 @@
-// 急変(shock)発火時刻のトラッカー。①ファンダ/テクニカル判定で「直前の急変以降のニュース」を
-// 参照するために使う(ユーザー指定)。
+// 説明付きアラート(急変shock/超短期slope/暴落crash/旧magnitude)の発火時刻トラッカー。
+// ①「前回アラート以降のニュースだけ参照」のために使う(同じ古いニュースを毎回引用しないため)。
 //
-// emitAlert が shock を出すたびに noteShock(t) を呼ぶ。lastShockAt=最新の急変、prevShockAt=その1つ前。
-// - 急変(shock)を説明する時の参照開始 = prevShockAt(=この急変の1つ前の急変以降)。
-// - フラッシュ等を説明する時の参照開始 = lastShockAt(=直近の急変以降)。
+// emitAlert が説明対象アラートを出すたび noteAlert(t) を呼ぶ。lastAlertAt=最新、prevAlertAt=その1つ前。
+// 説明時の参照開始 = prevAlertAt(=1つ前のアラート以降のニュースのみ)。
+// 旧実装は「直前の急変(shock)以降」だったが、超短期(slope)は急変が少ないと窓が4hに広がり、
+// 同じ個別株ニュースを毎回引いていた。種別を問わず「前回アラート以降」に統一する。
 
-let lastShockAt = 0;
-let prevShockAt = 0;
+let lastAlertAt = 0;
+let prevAlertAt = 0;
 
-export function noteShock(t: number): void {
-  if (t <= lastShockAt) return;   // 巻き戻り/重複は無視(単調)
-  prevShockAt = lastShockAt;
-  lastShockAt = t;
+export function noteAlert(t: number): void {
+  if (t <= lastAlertAt) return;   // 巻き戻り/重複は無視(単調)
+  prevAlertAt = lastAlertAt;
+  lastAlertAt = t;
 }
 
-/** 説明対象の種別に応じたニュース参照の開始時刻(これ以降のニュースのみ参照)。0=制限なし。 */
-export function newsSinceFor(detectionKind: string | undefined): number {
-  return detectionKind === 'shock' ? prevShockAt : lastShockAt;
-}
+/** 説明で参照すべきニュースの開始時刻(1つ前のアラート以降)。0=まだ前例なし(=従来の固定窓にフォールバック)。 */
+export function newsSinceForAlert(): number { return prevAlertAt; }
 
-export function _reset(): void { lastShockAt = 0; prevShockAt = 0; }
+export function _reset(): void { lastAlertAt = 0; prevAlertAt = 0; }

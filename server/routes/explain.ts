@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { explain } from '../llm/openai.js';
 import { getNews } from '../cache.js';
 import { getSignificantMovers } from '../marketSnapshot.js';
-import { newsSinceFor } from '../shockWindow.js';
+import { newsSinceForAlert } from '../shockWindow.js';
 import { getRecentL2Summary } from '../alertHistory.js';
 
 interface PriceActionBody {
@@ -50,8 +50,9 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       range1h: body.range1h ?? null,
       news: getNews(),
       crossAsset: getSignificantMovers(body.symbol),
-      // 暴落(crash)はニュース窓を広く・絞り込みなしで原因分析(ユーザー指定)。それ以外は直前の急変以降に限定。
-      newsSince: body.detectionKind === 'crash' ? 0 : newsSinceFor(body.detectionKind),
+      // 暴落(crash)はニュース窓を広く・絞り込みなしで原因分析(ユーザー指定)。それ以外は「前回アラート以降」に限定
+      // (同じ古いニュースを毎回引用しないため。最新ニュースなら引用OK)。
+      newsSince: body.detectionKind === 'crash' ? 0 : newsSinceForAlert(),
       newsWindowMs: body.detectionKind === 'crash' ? 24 * 60 * 60 * 1000 : undefined,
       l2Recent: getRecentL2Summary(Date.now()) ?? undefined, // ①: テクニカル判定時に直近L2状態を併記
     });
