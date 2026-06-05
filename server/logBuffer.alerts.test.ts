@@ -52,7 +52,7 @@ describe('アラート検証ログ (logBuffer) がアラートを拾う', () => 
     installLogCapture();
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(gradualReversalUp(), META, DEFAULT_PARAMS, 95 * 60_000, e => fired.push(e));
-    expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
+    expect(fired.some(e => e.detectionKind === 'trend')).toBe(true);   // 転換→trend(内部ログは「グランビル…」)
     const captured = getLogs().filter(l => l.msg.includes('[alertEngine]') && l.msg.includes('グランビル'));
     expect(captured.length).toBe(1);
   });

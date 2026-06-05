@@ -9,6 +9,8 @@ import { canFire, markFired } from './alertCooldown.js';
 import { detectShock } from './shockDetector.js';
 import { resolveShockParams, resolveShockCooldownBars,
   resolveGranvilleMaMid, resolveGranvilleMaLong } from './configStore.js';
+import { aggregateSignals, DEFAULT_AGGREGATE } from './signals/aggregate.js';
+import type { AlertSignal } from './signals/types.js';
 import type { InstrumentMeta, AlertEventPayload } from './types.js';
 
 export type AlertSink = (e: AlertEventPayload) => void;
@@ -68,43 +70,57 @@ export function evaluateBarsNiy(
   }
   // グランビルはクールダウンを完全無視(ユーザー指定):ブロックされず、共有クールダウンも発生させない。
   // ただしエコー(前tickと同一シグナルが出続ける=過去の転換/継続の再表示)はエッジ抑制で1回化する。
+  // L2 シグナル化(v0.6.0): グランビル転換→trend(トレンド転換)、グランビル継続→ma_sr(MAサポレジ)。
+  // 内部の g.note("グランビル…")は edge-dedup と log にのみ使い、emit は新 type/明確文へ写像する。
+  const tBar = bars[bars.length - 1]!.t;
+  const signals: AlertSignal[] = [];
   const currentNotes = new Set(byNote.keys());
   for (const g of byNote.values()) {
     if (lastGranvilleNotes.has(g.note)) continue;   // 前tickでも出ていた→エコー、発火しない
-    const ctx = computeContext(bars);
-    const maTag = g.labels.join('・');   // 中期/長期/中期・長期(ログ用。表示には出さない=ユーザー指定)
-    console.log(`[alertEngine] ${sym} ${g.note}(${maTag}) dev=${g.sig.deviation.toFixed(2)}%`);
-    sink({
-      symbol: sym, symbolLabel: meta.labelJa, changePercent: g.sig.deviation,
-      windowSeconds: 75 * 60, detectionKind: 'granville', direction: g.sig.dir,
-      triggeredAt: bars[bars.length - 1]!.t, change15min: ctx.change15min,
-      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0, note: g.note,   // MAラベルは表示しない
-      level: Math.round(g.sig.origin),   // 起点価格(1つ以上前の足: 転換=クロス前 / 継続=押し安値・戻り高値)
-    });
+    const dir = g.sig.dir;
+    const maVal = Math.round(g.sig.ma);
+    const yen = maVal.toLocaleString('ja-JP');
+    console.log(`[alertEngine] ${sym} ${g.note}(${g.labels.join('・')}) dev=${g.sig.deviation.toFixed(2)}%`);
+    if (g.note.includes('転換')) {
+      signals.push({
+        type: 'trend', direction: dir, reference: { kind: 'ma', price: maVal }, stage: 'confirmed', score: 1.3,
+        text: dir === 'up' ? `${yen} MA上抜け、上昇転換の可能性` : `${yen} MA下抜け、下降転換の可能性`,
+        triggeredAt: tBar,
+      });
+    } else {
+      const word = dir === 'up' ? 'サポート' : 'レジスタンス';
+      signals.push({
+        type: 'ma_sr', direction: dir, reference: { kind: 'ma', price: maVal }, stage: 'confirmed', score: 1.1,
+        text: `${yen} MAが${word}の可能性`, triggeredAt: tBar,
+      });
+    }
   }
   lastGranvilleNotes = currentNotes;   // 次tickのエッジ判定用に今tickのシグナル集合を記録
 
-  // ── 25MA抜け(素のMAクロス)──
-  // グランビルが構造条件付きで拾う「転換」とは別に、価格が中期MA(既定25)を単純に上下クロスした時に
-  // 「25MA抜けの可能性あり」を出す。MA は固定価格を持たない基準なので価格でなくMA名で表示(ユーザー指定)。
-  // 同 tick でグランビルが同方向の転換/継続を既に出していれば重複なので抑制。エッジ抑制で1回化。
+  // 素のMAクロス → trend(トレンド転換)。グランビルが同方向の転換/継続を既に出していれば重複なので抑制。
   const granvilleDirs = new Set([...byNote.values()].map(v => v.sig.dir));
   const maCross = detectMaCross(closes, maMid);
   const maKey = maCross ? `ma-${maCross.dir}` : '';
   if (maCross && !granvilleDirs.has(maCross.dir) && !lastMaCrossKeys.has(maKey)) {
-    const ctx = computeContext(bars);
+    const maVal = Math.round(maCross.ma);
     const dirWord = maCross.dir === 'up' ? '上抜け' : '下抜け';
-    console.log(`[alertEngine] ${sym} ${maCross.period}MA${dirWord} ma=${Math.round(maCross.ma)} dev=${maCross.deviation.toFixed(2)}%`);
-    sink({
-      symbol: sym, symbolLabel: meta.labelJa, changePercent: maCross.deviation,
-      windowSeconds: 75 * 60, detectionKind: 'ma', direction: maCross.dir,
-      triggeredAt: bars[bars.length - 1]!.t, change15min: ctx.change15min,
-      pa15min: ctx.pa15min, range1h: ctx.range1h, zscore: 0,
-      note: `${maCross.period}MA${dirWord}の可能性あり`,
-      level: Math.round(maCross.ma),   // 記録用(MA値)。表示は note の「25MA抜け」=固定価格は出さない。
+    console.log(`[alertEngine] ${sym} ${maCross.period}MA${dirWord} ma=${maVal} dev=${maCross.deviation.toFixed(2)}%`);
+    signals.push({
+      type: 'trend', direction: maCross.dir, reference: { kind: 'ma', price: maVal }, stage: 'confirmed', score: 1.0,
+      text: `${maVal.toLocaleString('ja-JP')} ${maCross.period}MA${dirWord}、トレンド転換の可能性`, triggeredAt: tBar,
     });
   }
   lastMaCrossKeys = maKey ? new Set([maKey]) : new Set();   // クロスが消えるまで同方向を抑制
+
+  // 集約(同方向・近接基準を1本化)→ emit。グランビル系はクールダウン無視(ユーザー指定)=edge-dedupのみ。
+  for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
+    sink({
+      symbol: sym, symbolLabel: meta.labelJa, changePercent: 0, windowSeconds: 75 * 60,
+      detectionKind: a.type, direction: a.direction, triggeredAt: a.triggeredAt,
+      change15min: null, pa15min: null, range1h: null, zscore: 0,
+      level: Math.round(a.reference.price), note: a.text,
+    });
+  }
 
   // 急変(価格変化スコア方式)。完成足のみ(末尾=進行中バーを除外)。バー数クールダウンで間引く。
   const completed = bars.slice(0, -1).map(b => b.close);

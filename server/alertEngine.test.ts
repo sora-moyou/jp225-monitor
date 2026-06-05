@@ -88,23 +88,23 @@ describe('evaluateBarsNiy', () => {
     expect(canFire('NIY=F', 'up', 30050, now + 60_000)).toBe(false);
   });
 
-  it('グランビルは共有クールダウンが有効でも発火する(クールダウン完全無視)', () => {
+  it('グランビル転換→trend は共有クールダウンが有効でも発火する(クールダウン完全無視)', () => {
     const now = 95 * 60_000;
     markFired('NIY=F', 'up', 67000, now);   // クールダウンを発火状態にしてもブロックされない
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(gradualReversalUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
-    expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
-    // 中期/長期2本MA併用で検知するが、表示(note)に MA ラベルは出さない(ユーザー指定)。
-    const g = fired.find(e => e.detectionKind === 'granville')!;
-    expect(g.note).toMatch(/転換|押し目買い|戻り売り/);
+    expect(fired.some(e => e.detectionKind === 'trend')).toBe(true);   // 転換→トレンド転換シグナル
+    // 表示(note)に MA ラベル(中期/長期=25/75)は出さない(ユーザー指定)。
+    const g = fired.find(e => e.detectionKind === 'trend')!;
+    expect(g.note).toMatch(/転換/);
     expect(g.note).not.toMatch(/中期|長期/);
   });
 
-  it('グランビルは発火しても共有クールダウンを発生させない(シグナルは急変のみ)', () => {
+  it('グランビル系は発火しても共有クールダウンを発生させない(シグナルは急変のみ)', () => {
     const now = 98 * 60_000;
     const fired: AlertEventPayload[] = [];
     evaluateBarsNiy(granvilleOnlyUp(), META, DEFAULT_PARAMS, now, (e) => fired.push(e));
-    expect(fired.some(e => e.detectionKind === 'granville')).toBe(true);
+    expect(fired.some(e => e.detectionKind === 'trend')).toBe(true);
     expect(fired.some(e => e.detectionKind === 'shock')).toBe(false);   // この系列は急変を出さない
     // グランビルは markFired を呼ばない → 共有クールダウンは未発生(canFire は true のまま)
     expect(canFire('NIY=F', 'up', 67000, now + 1000)).toBe(true);
@@ -118,12 +118,12 @@ describe('evaluateBarsNiy', () => {
     for (; i < 90; i++) full.push({ t: i * 60_000, close: 67500 - 1500 * (i / 89) });
     const b = full[full.length - 1]!.close;
     for (let k = 1; k <= 20; k++, i++) full.push({ t: i * 60_000, close: b + 30 * k });
-    let granvilleCount = 0;
+    let trendCount = 0;
     for (let n = 66; n <= full.length; n++) {   // dedup はリセットせず連続評価(= 本番の毎分評価)
       evaluateBarsNiy(full.slice(0, n), META, DEFAULT_PARAMS, n * 60_000, (e) => {
-        if (e.detectionKind === 'granville') granvilleCount++;
+        if (e.detectionKind === 'trend') trendCount++;
       });
     }
-    expect(granvilleCount).toBe(1);
+    expect(trendCount).toBe(1);
   });
 });
