@@ -94,6 +94,7 @@ let congestionLevels: { price: number; rel: number; visits: number }[] = [];
 // 「今のライン価格」を節目化。ブレイクまで有効(ステートレス再計算)。重い探索は60秒ごとに1回。
 const TREND_CHECK_MS = 60_000;
 const TREND_LOOKBACK_DAYS = 15;   // 反応水準と同程度の期間からスイング点を取る
+const TREND_CONFLUENCE_YEN = 40;  // 合流ゲート: ライン価格が水平の反応水準(2回以上)とこの距離内の線だけ採用
 let lastTrendCheck = 0;
 let trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [];
 
@@ -202,7 +203,11 @@ function tick(): void {
           ...extractSwingPivots(resampleHL(tb, 60 * 60_000), REACTION_RECLAIM_1H),
           ...extractSwingPivots(resampleHL(tb, 180 * 60_000), REACTION_RECLAIM_3H),
         ];
+        // 合流ゲート(v0.6.16・バックテスト検証): 単独の3点ラインは乱択並み(+2〜3pt)だが、確定価格が
+        // 水平の反応水準(2回以上反転した実S/R)と重なる線だけは反発率が明確に高い(非合流比 +9〜12pt)。
+        // よって reactionLevels(=スイング点2回以上の集積)と ±TREND_CONFLUENCE_YEN で重なる線のみ採用。
         trendlineLevels = computeTrendLines(tpiv, latest.price, now)
+          .filter(t => reactionLevels.some(r => Math.abs(r.price - t.priceNow) <= TREND_CONFLUENCE_YEN))
           .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
       } catch (err) { console.warn('[levelsLoop] trend lines failed:', err instanceof Error ? err.message : err); }
     }

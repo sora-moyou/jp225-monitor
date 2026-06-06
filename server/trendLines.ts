@@ -23,7 +23,7 @@ export interface TrendLineParams {
 
 export const DEFAULT_TRENDLINE: TrendLineParams = {
   tolPct: 0.0004,    // ≒±0.04%(66,000円で約±26円)。0 まで詰め可。
-  breakPct: 0.0012,  // ≒±0.12%
+  breakPct: 0.003,   // ≒±0.30%。バックテストで識別力が出た設定(0.12%は厳しすぎて寿命が不自然に短かった)。
   minTouches: 3,
   maxLines: 3,
   maxDistPct: 0.04,  // 現値±4%以内

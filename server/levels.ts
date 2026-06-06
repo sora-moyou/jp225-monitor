@@ -55,7 +55,7 @@ const WEIGHTS = {
   fibExtBreakout: 1.8,               // 高値/安値更新中、ブレイク側のFib拡張は前方目標として強める(ユーザー指定)
   volume: 1.2, volumePer: 0.6,       // 価格帯別出来高(HVN/POC): weight = volume + volumePer×rel(POC=rel1)
   congestion: 0.9, congestionPer: 0.4,  // もみ合い帯(直近の時間滞在=出来高の次善): weight = congestion + congestionPer×rel
-  trendline: 1.1, trendlinePer: 0.25,   // 有効トレンドライン(3点以上接触): weight = trendline + trendlinePer×min(接触-3,2)
+  trendline: 1.3, trendlinePer: 0.3,    // 有効トレンドライン(3点接触×反応水準と合流): weight = trendline + trendlinePer×min(接触-3,2)
 } as const;
 
 interface Cand {
@@ -300,13 +300,14 @@ export function computeLevels(
     });
   }
 
-  // ── 有効トレンドライン(v0.6.15): 3点以上接触した斜めの支持/抵抗線を now へ延長した「今のライン価格」。
-  // ブレイクまで有効。接触数が多いほど強い。表示専用(hlLevels には入れず検知には非関与)。
+  // ── 有効トレンドライン(v0.6.15、合流ゲート v0.6.16): 3点以上接触した斜めの支持/抵抗線を now へ延長した
+  // 「今のライン価格」。levelsLoop 側で水平の反応水準と合流する線だけに絞り込み済(バックテストで合流線のみ
+  // 有効=非合流比+9〜12pt)。ブレイクまで有効。表示専用(hlLevels には入れず検知には非関与)。
   for (const t of trendlineLevels) {
     if (!Number.isFinite(t.price) || t.price <= 0) continue;
     const w = WEIGHTS.trendline + WEIGHTS.trendlinePer * Math.min(Math.max(t.touches - 3, 0), 2);
     const dir = t.kind === 'support' ? '上昇トレンドライン' : '下降トレンドライン';
-    cands.push({ price: t.price, label: `${dir}(${t.touches}点)`, weight: w, kind: 'trendline' });
+    cands.push({ price: t.price, label: `${dir}(合流・${t.touches}点)`, weight: w, kind: 'trendline' });
   }
 
   // ── 多スイング・多比率フィボ ──
