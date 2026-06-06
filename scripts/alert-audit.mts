@@ -55,7 +55,16 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const raw = extractSwingPivots(recent, T.pivotReclaimYen);
   const pivots = raw.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
   if (now - hlCacheT > 30 * 60000) {
-    try { const r = computeLevels(getSessionOHLC(db, SYMBOL, 24), price, now, classifySession(now), []); hlCache = [...r.up, ...r.down].filter(l => l.tier >= 1).map(l => ({ price: l.price, label: l.labels[0] ?? '水準' })); } catch { hlCache = []; }
+    try {
+      // 反応水準も levelsLoop と同様に算出して computeLevels へ渡す(本番の tier≥1 集合と一致させる)。
+      const rb = all.filter(b => b.t >= now - 3 * 86400000 && b.t <= now).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const rp = extractSwingPivots(rb, 50).map(p => p.price).sort((a, b) => a - b);
+      const rcl: { price: number; reactions: number }[] = [];
+      for (const p of rp) { const c = rcl.find(x => Math.abs(x.price - p) <= 25); if (c) { c.price = (c.price * c.reactions + p) / (c.reactions + 1); c.reactions++; } else rcl.push({ price: p, reactions: 1 }); }
+      const rl = rcl.filter(c => c.reactions >= 2).map(c => ({ price: Math.round(c.price), reactions: c.reactions }));
+      const r = computeLevels(getSessionOHLC(db, SYMBOL, 24), price, now, classifySession(now), [], rl);
+      hlCache = [...r.up, ...r.down].filter(l => l.tier >= 1).map(l => ({ price: l.price, label: l.labels[0] ?? '水準' }));
+    } catch { hlCache = []; }
     hlCacheT = now;
   }
   const kept: number[] = [];

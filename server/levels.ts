@@ -44,11 +44,15 @@ export const FIB_CONFLUENCE_BONUS = 1.5;  // 合流倍率
 export const LEVEL_TEST_BONUS = 0.15;     // 被テスト加点係数
 
 // ── 候補タイプ別重み ──
+// v0.6.10: 反応水準(価格が複数回反転した実反応の帯)を最重視。Fib は単独だと過剰だったため低減し、
+// 反応帯/キリ番/セッション極値との「合流」で効くようにする(合流倍率は維持)。
 const WEIGHTS = {
   sessHL: 1.0, todayHL: 1.0, open: 0.8,
   grid250: 0.4, grid500: 0.7, grid1000: 1.2,
   prevClose: 1.3, longHL: 1.6, adr: 0.7,
-  fibRetr: 1.0, fibExt: 0.5, fibToday: 0.5,
+  fibRetr: 0.6, fibExt: 0.6, fibToday: 0.3,
+  reaction: 1.0, reactionPer: 0.2,   // 反応水準: weight = reaction + reactionPer×min(反応回数,5)
+  fibExtBreakout: 1.8,               // 高値/安値更新中、ブレイク側のFib拡張は前方目標として強める(ユーザー指定)
 } as const;
 
 interface Cand {
@@ -179,6 +183,7 @@ export function computeLevels(
   asOf: number,
   currentSession: { sessionDate: string; session: 'Day' | 'Night' } | null,
   extraLevels: { price: number; label: string }[] = [],
+  reactionLevels: { price: number; reactions: number }[] = [],   // v0.6.10: 反応帯(複数回反転した実水準)
 ): LevelsResult {
   const cfg = resolveLevelsConfig();
   const tol = cfg.tol;
@@ -252,6 +257,14 @@ export function computeLevels(
     if (Number.isFinite(e.price) && e.price > 0) cands.push({ price: e.price, label: e.label, weight: WEIGHTS.adr, kind: 'adr' });
   }
 
+  // ── 反応水準(v0.6.10): 価格が複数回反転した実反応の帯。最も意識される S/R なので高めの重み。
+  // reactions(反転回数)が多いほど強い。キリ番/セッション極値と近ければ cluster で合流して更に上位化。
+  for (const rl of reactionLevels) {
+    if (!Number.isFinite(rl.price) || rl.price <= 0) continue;
+    const w = WEIGHTS.reaction + WEIGHTS.reactionPer * Math.min(Math.max(rl.reactions, 0), 5);
+    cands.push({ price: rl.price, label: `反応${rl.reactions}回`, weight: w, kind: 'reaction' });
+  }
+
   // ── 多スイング・多比率フィボ ──
   // 後方互換: swing/reversalSatisfied は従来 FIB_SWING_SESSIONS(=5)スイングで決める。
   let swing: LevelsResult['swing'] = null;
@@ -273,9 +286,20 @@ export function computeLevels(
   const todaySw = currentSessionSwing(inProgress && isSessionComplete(inProgress) ? inProgress : null, current);
   if (todaySw) swings.push({ sw: todaySw, today: true });
 
+  // 高値/安値更新中(ブレイク)の判定。直近レンジの上限/下限を現値が超えた=前方に過去S/Rが無い局面。
+  // この時はブレイク側の Fib 拡張(127.2/161.8% など)を前方目標として強める(ユーザー指定: 更新中はFibが有効)。
+  const rangeHigh = recent.length ? Math.max(...recent.map(s => s.high)) : current;
+  const rangeLow = recent.length ? Math.min(...recent.map(s => s.low)) : current;
+  const breakingUp = current >= rangeHigh;
+  const breakingDown = current <= rangeLow;
+
   for (const { sw, today } of swings) {
     for (const fl of fibLevelsForSwing(sw)) {
-      const weight = today ? WEIGHTS.fibToday : (fl.kind === 'retr' ? WEIGHTS.fibRetr : WEIGHTS.fibExt);
+      let weight: number = today ? WEIGHTS.fibToday : (fl.kind === 'retr' ? WEIGHTS.fibRetr : WEIGHTS.fibExt);
+      if (fl.kind === 'ext' && !today) {
+        if (breakingUp && fl.price > current) weight = WEIGHTS.fibExtBreakout;       // 上抜け継続の前方目標
+        else if (breakingDown && fl.price < current) weight = WEIGHTS.fibExtBreakout; // 下抜け継続の前方目標
+      }
       const pct = (fl.ratio * 100).toFixed(1).replace(/\.0$/, '');
       cands.push({
         price: fl.price,
@@ -322,8 +346,8 @@ export function computeLevels(
     };
     // (a) 現値直近1本(窓内最近接)
     add([...win].sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))[0]);
-    // (b) スコア最上位1本(窓外でも)
-    add([...side].sort((a, b) => b.score - a.score)[0]);
+    // (b) 遠い水準も指値(リミット注文)に有効なので、窓外の強い水準を上位2本まで表示する(ユーザー指定)。
+    for (const f of side.filter(l => !inWindow(l)).sort((a, b) => b.score - a.score).slice(0, 2)) add(f);
     return chosen;
   };
 
@@ -351,9 +375,11 @@ export function computeLevels(
   up = dedup(up).sort((a, b) => a.price - b.price);
   down = dedup(down).sort((a, b) => b.price - a.price);
 
-  // ── ティア = 相対ランク(表示集合 up+down で正規化)──
+  // ── ティア = 相対ランク。基準は「近接(窓内)水準の最大スコア」にする。
+  // 遠方の強水準(指値用)を含めても、近接の実戦水準の★が潰れないようにする(遠方は norm>1→★★扱い)。
   const display = [...up, ...down];
-  const maxScore = display.reduce((m, l) => Math.max(m, l.score), 0);
+  const nearForTier = display.filter(l => Math.abs(l.dist) <= selectWindowYen);
+  const maxScore = (nearForTier.length ? nearForTier : display).reduce((m, l) => Math.max(m, l.score), 0);
   for (const l of display) {
     const norm = maxScore > 0 ? l.score / maxScore : 0;
     if (norm >= 0.66 && l.confluence) l.tier = 2;
