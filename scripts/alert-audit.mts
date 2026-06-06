@@ -56,11 +56,12 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const pivots = raw.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
   if (now - hlCacheT > 30 * 60000) {
     try {
-      // 反応水準も levelsLoop と同様に算出して computeLevels へ渡す(本番の tier≥1 集合と一致させる)。
-      const rb = all.filter(b => b.t >= now - 3 * 86400000 && b.t <= now).map(b => ({ t: b.t, h: b.h, l: b.l }));
-      const rp = extractSwingPivots(rb, 50).map(p => p.price).sort((a, b) => a - b);
+      // 反応水準も levelsLoop と同様に算出(1H/3Hスイング)。本番の tier≥1 集合と一致させる。
+      const rb = all.filter(b => b.t >= now - 5 * 86400000 && b.t <= now).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const resHL = (tf: number): { t: number; h: number; l: number }[] => { const m = new Map<number, { t: number; h: number; l: number }>(); for (const b of rb) { const k = Math.floor(b.t / tf) * tf; const e = m.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else m.set(k, { t: k, h: b.h, l: b.l }); } return [...m.values()].sort((a, b) => a.t - b.t); };
+      const rp = [...extractSwingPivots(resHL(3600000), 120), ...extractSwingPivots(resHL(10800000), 200)].map(p => p.price).sort((a, b) => a - b);
       const rcl: { price: number; reactions: number }[] = [];
-      for (const p of rp) { const c = rcl.find(x => Math.abs(x.price - p) <= 25); if (c) { c.price = (c.price * c.reactions + p) / (c.reactions + 1); c.reactions++; } else rcl.push({ price: p, reactions: 1 }); }
+      for (const p of rp) { const c = rcl.find(x => Math.abs(x.price - p) <= 30); if (c) { c.price = (c.price * c.reactions + p) / (c.reactions + 1); c.reactions++; } else rcl.push({ price: p, reactions: 1 }); }
       const rl = rcl.filter(c => c.reactions >= 2).map(c => ({ price: Math.round(c.price), reactions: c.reactions }));
       const r = computeLevels(getSessionOHLC(db, SYMBOL, 24), price, now, classifySession(now), [], rl);
       hlCache = [...r.up, ...r.down].filter(l => l.tier >= 1).map(l => ({ price: l.price, label: l.labels[0] ?? '水準' }));
