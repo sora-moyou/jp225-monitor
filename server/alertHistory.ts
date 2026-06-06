@@ -51,9 +51,9 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
 // collector が検知しない(=monitor だけが発火する)種別。collector が authoritative writer でも
 // これらは collector が一切 alerts に書かないため、monitor が単独で記録する必要がある。
 // levelsLoop 由来(double/level_sr/break/pivot)+ slope は monitor 専用(collector は levelsLoop を回さない)。
-// shock/ma_sr/trend は alertEngine 由来で collector も検知 → monitor-only ではない。
+// shock/ma_sr/trend は alertEngine 由来、crash は collector も検知 → monitor-only ではない(collector が authoritative)。
 // 旧 dtb/swingdtb も levelsLoop 由来だったため後方互換で残す。
-const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'crash', 'dtb', 'swingdtb']);
+const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb']);
 
 // LLM説明を受ける(=ニュースを参照する)アラート種別。これらの発火時刻で「前回アラート以降」のニュース窓を決める。
 // テクニカル系(double/level_sr/break/pivot/trend/ma_sr…)は固定文でニュースを引かないため対象外。
