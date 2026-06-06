@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars } from '../db/store.js';
+import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars } from '../db/store.js';
+import { computeVolumeProfile } from '../volumeProfile.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
@@ -73,6 +74,13 @@ const REACTION_CLUSTER_YEN = 30;    // 同一水準帯に束ねる許容
 const REACTION_MIN = 2;             // 1H/3H 合わせて2回以上スイング点になった帯のみ採用
 let lastReactionCheck = 0;
 let reactionLevels: { price: number; reactions: number }[] = [];
+// ── 価格帯別出来高(v0.6.13): 厚い出来高帯(HVN)/POC を durable な S/R 候補に。出来高は基礎データ(週次)
+// 由来のため過去ぶんのみ。週次更新で十分(HVNは数週間で大きく動かない)。重い集計は30分ごとに1回。
+const VOLUME_CHECK_MS = 30 * 60_000;
+const VOLUME_LOOKBACK_DAYS = 40;   // 基礎データの出来高期間に届く長さ
+const VOLUME_BIN_YEN = 50;
+let lastVolumeCheck = 0;
+let volumeLevels: { price: number; rel: number; isPoc: boolean }[] = [];
 
 /** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
 function resampleHL(bars: { t: number; h: number; l: number }[], tfMs: number): { t: number; h: number; l: number }[] {
@@ -154,8 +162,16 @@ function tick(): void {
         reactionLevels = cl.filter(c => c.reactions >= REACTION_MIN).map(c => ({ price: Math.round(c.price), reactions: c.reactions }));
       } catch (err) { console.warn('[levelsLoop] reaction levels failed:', err instanceof Error ? err.message : err); }
     }
+    // 価格帯別出来高(HVN/POC)を約30分ごとに再計算してキャッシュ(出来高は基礎データ由来=週次更新)。
+    if (now - lastVolumeCheck >= VOLUME_CHECK_MS) {
+      lastVolumeCheck = now;
+      try {
+        const vb = getVolumeBars(db, SYMBOL, now - VOLUME_LOOKBACK_DAYS * DAY_MS);
+        volumeLevels = computeVolumeProfile(vb, VOLUME_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, isPoc: n.isPoc }));
+      } catch (err) { console.warn('[levelsLoop] volume profile failed:', err instanceof Error ? err.message : err); }
+    }
     const tCompute = Date.now();
-    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels);
+    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels);
     const computeMs = Date.now() - tCompute;
     last = result;
     const sig = levelSignature(result);

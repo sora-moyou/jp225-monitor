@@ -75,6 +75,14 @@ export function getRecentBars(db: DatabaseSync, symbol: string, sinceT: number):
   ).all(symbol, sinceT) as unknown as Bar1m[];
 }
 
+/** 出来高(volume>0)のあるバーの h/l/volume。価格帯別出来高(ボリュームプロファイル)用。
+ *  出来高はリアルタイムフィードに無く基礎データ(週次)由来のため、過去ぶんのみ返る。 */
+export function getVolumeBars(db: DatabaseSync, symbol: string, sinceT: number): { h: number; l: number; volume: number }[] {
+  return db.prepare(
+    'SELECT h, l, volume FROM bars_1m WHERE symbol = ? AND t >= ? AND volume > 0 ORDER BY t ASC',
+  ).all(symbol, sinceT) as unknown as { h: number; l: number; volume: number }[];
+}
+
 export function getRecentTicks(db: DatabaseSync, symbol: string, sinceT: number): Tick[] {
   return db.prepare(
     'SELECT symbol, t, price FROM ticks WHERE symbol = ? AND t >= ? ORDER BY t ASC',
