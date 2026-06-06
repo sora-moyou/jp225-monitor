@@ -1095,7 +1095,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード (2 段モメンタム)</strong><p>監視銘柄をリアルタイム更新。緑=上昇 / 赤=下落、急変時はハイライト点滅。日経の値の上には <strong>「1分」(率 %) と「10秒」(値幅・円)</strong> の 2 段モメンタムを表示。「日経225先物」は <code>NIY=F</code> 表記ですが、価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、~66,000〜67,000 円台の日経指数そのままが出ます。</p></div></div>
     <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>主要レベル (メド) パネル</strong><p>価格カード下のパネルに、過去セッション高安を主軸とした <strong>上値/下値メド</strong> (重なるレベルは強レベル ★、フィボ 50% は方向転換ライン ⚑、<strong>ADR 予測メド</strong> も) を現値からの距離付きで表示します。区切りのドラッグで高さ可変。</p></div></div>
     <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近 15 件ニュース + 日経225先物のテクニカル要約が LLM コンテキストに自動付与される。</p></div></div>
-    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変動を検知すると 30 秒以内に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。<strong>グランビル/ダブルトップ・ボトムなどチャートパターン由来のアラートは AI を呼ばず「テクニカル要因」と表示</strong>(ニュース要因ではないため)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
+    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変・暴落を検知すると 30 秒以内(暴落は即時)に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。<strong>テクニカル系(ダブル天底/MAサポレジ/水準サポレジ・水準抜け/スイング形成/トレンド転換)は AI を呼ばず固定文で表示</strong>(価格・MA を併記)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
     <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>TradingView チャート</strong><p>右カラム中段に表示。チャート銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て) で、<strong>参照指数は日経 225 と同一</strong>。価格カード「日経225先物」(<code>NIY=F</code>) とほぼ一致します。区切りのドラッグで高さ可変。</p></div></div>
     <div class="ann"><div class="ann-num">9</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
   </div>
@@ -1116,10 +1116,22 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="features">
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>急変検知 (価格変化スコア方式)</h3>
-      <p><strong>アラートは日経 225 先物 (NIY=F) 単独で発火</strong>。発火条件は次の 4 つ (v0.4.24 で短期/長期の z-score を撤廃):</p>
-      <p>① <strong>急変</strong> — 完成 1 分足の価格変化(円)のみで判定するスコア方式 (1分変化・2分変化・加速度・平均変化倍率・ブレイク・同方向本数の 6 条件＋急変条件)。クールダウンは<strong>バー数方式 (直近発火から 3 本超)</strong>。<br>② <strong>超短期フラッシュ</strong> — 5〜10 秒窓で値幅 ≥ 80 円。<br>③ <strong>グランビル</strong> — <strong>中期(既定25本)・長期(既定75本)の2本MAを併用</strong>し、各MAで①転換・②③継続(戻り売り/押し目買い)を検知(どちらかで出れば発火、取りこぼし防止)。MA本数は 🎛️ で可変。<br>④ <strong>ダブルトップ/ボトム</strong> — <strong>高安関係の水準すべて</strong>(スコア合計・表示選抜によらず全件)を対象に、<strong>手前 10 円</strong> まで接近したら発火。左側の <strong>髭タッチ</strong>(水準まで手前 5 円以内に到達)→ 押し戻し → 2 山目形成で反転を示唆。<strong>ネック割れは不要</strong>、髭がレベルを超えてブレイクした場合は不成立。バナーには「ダブルトップ/ボトムの可能性あり」と表示。レベルごとに 15 分クールダウン。</p>
-      <p><strong>寄り (Day 8:45 / Night 17:00) から 3 本(=最初の 3 分)は全アラートを抑制</strong>し、寄付直後の荒れによる誤発火を避けます。<strong>クールダウンを出すのは ①急変 のみ</strong>(急変が連続表示しないよう自己抑制。既定 15 分・逆方向は起点越えで解禁・🎛️ で変更可)。<strong>②③④のテクニカル系はクールダウンを完全無視</strong>(常に発火し、他のアラートも抑制しません)。</p>
+      <h3>アラート体系 (v0.6 再設計・2層 + コンフルエンス集約)</h3>
+      <p><strong>アラートは日経 225 先物 (NIY=F) 単独で発火</strong>。「トレーダーが転換点で問う問い」に、根拠付きで・もっともらしい時だけ答える設計です。2 層構成:</p>
+      <p><strong>L1 値動き(大きく動いた事実)</strong><br>
+        ① <strong>急変</strong> — 完成 1 分足の価格変化(円)のスコア方式(6 条件)。<strong>絶対的にも十分動いた時のみ</strong>(微小値動きで相対条件だけで鳴るのを防止)。<br>
+        ② <strong>超短期フラッシュ</strong> — 5〜10 秒窓で値幅 ≥ 80 円。<br>
+        ③ <strong>暴落 (crash)</strong> — <strong>セッション高値から 3% 以上の下落</strong>。AI が広い(24時間)ニュース窓で原因を分析。常駐デーモンが <strong>24/7 記録</strong>(夜間にアプリを閉じていても拾う)。<br>
+        L1 はニュースと他資産から AI が<strong>「ファンダ要因かテクニカル要因か」</strong>を判定(該当ニュースが無ければ「テクニカル要因の可能性」と明示)。</p>
+      <p><strong>L2 テクニカル状態(反転/継続の局面)</strong> — すべて<strong>確定スイングピボット</strong>と<strong>意識される水準のみ</strong>(主要レベル パネルの ★ 水準 + 主要スイング)を対象に検知し、固定文で表示(LLM 不使用):<br>
+        ④ <strong>ダブル天井/大底</strong>(複数セッションをまたぐ大きな W/M、ネック越えで成立)<br>
+        ⑤ <strong>MA サポート/レジスタンス</strong>(価格が MA で支持/抵抗)<br>
+        ⑥ <strong>水準サポート/レジスタンス</strong>(意識水準で反発確認後。例「セッション最安値がサポートされた可能性」)<br>
+        ⑦ <strong>水準抜け</strong>(意識水準のブレイク)<br>
+        ⑧ <strong>スイング転換点の形成</strong>(押し安値/戻り高値をつけた)<br>
+        ⑨ <strong>トレンド転換</strong>(MA 抜け + 傾き反転)</p>
+      <p><strong>コンフルエンス集約</strong> — 同じ局面(同方向・近接基準)で複数シグナルが整合すると<strong>1 本に統合し強調</strong>。意味の薄い乱発を抑えます。各シグナルは<strong>「{基準名}{動作}の可能性」+ 価格/MA</strong> を併記し、チャートで確認できます。</p>
+      <p><strong>寄り (Day 8:45 / Night 17:00) から 3 本(=最初の 3 分)は全アラートを抑制</strong>。発火頻度は種別ごとのクールダウンと有意性ゲートで管理(リリース前に実データで発火頻度を監査)。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
@@ -1130,12 +1142,12 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div>
       <h3>AI 自動説明</h3>
-      <p>4 時間分のニュースから関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。<strong>v0.3.19 以降は、同時刻に大きく動いた他資産 (他指数・FX・商品・値がさ株のうち |z|≥4.0) も判断材料</strong>として渡し、連動を優先的に説明します。</p>
+      <p>関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。<strong>参照ニュースは「前回アラート以降」</strong>に限定し、同じ古い材料を毎回引かないようにします(暴落 crash のみ広い 24 時間窓)。<strong>同時刻に大きく動いた他資産 (他指数・FX・商品・値がさ株 |z|≥4.0) も判断材料</strong>に。指数寄与の大きい値がさ株(ファストリ等)は指数急変の真因になり得るため、方向が一致すれば理由に挙げます。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
       <h3>AI チャット (定型質問付き)</h3>
-      <p>「今の地合いは?」など自由質問。現在価格・直近ニュース・日経225先物のテクニカル要約が自動でコンテキストに。<strong>ワンタップの定型質問</strong>(① トレンド方向と上値/下値メド ② 急変の理由を詳しく)も用意、入力欄に「1」「2」と打っても送れます。</p>
+      <p>「今の地合いは?」など自由質問。現在価格・直近ニュース・日経225先物のテクニカル要約が自動でコンテキストに。<strong>ワンタップの定型質問</strong>(① テクニカル分析 ② ファンダメンタル分析 ③ スイング分析〔1週間程度の手じまい前提で 上昇/下落/レンジ の3シナリオ〕)も用意、入力欄に「1」「2」「3」と打っても送れます。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>

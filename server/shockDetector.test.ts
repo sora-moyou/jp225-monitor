@@ -45,6 +45,15 @@ describe('detectShock', () => {
     expect(loose).not.toBeNull();
   });
 
+  it('微小な絶対変化は相対条件だけで急変にしない(+12円で score4 でも発火しない)', () => {
+    // 極静穏(±1円)で平均変化を極小にし、末尾を 小+小+12円 にする。
+    // b(平均比)/d(同方向)/e(高値更新)/f(加速) は立つが a(d1≥25)・c(d2≥40)が立たない=絶対変化が小さい。
+    const c: number[] = []; let p = 30000;
+    for (let i = 0; i < 33; i++) { p += (i % 2 === 0 ? 1 : -1); c.push(p); }
+    c.push(p + 1); c.push(p + 2); c.push(p + 14);   // d1=12, d2=13(a/c未達), accel=11(f), 同方向, 高値更新
+    expect(detectShock(c, DEFAULT_SHOCK_PARAMS)).toBeNull();
+  });
+
   it('does not fire on a tie (no dominant direction)', () => {
     // 緩やかな単調上昇: スコアは出るが急変条件未満になるよう小さめの傾き
     const c = Array.from({ length: 40 }, (_, i) => 30000 + i * 2);

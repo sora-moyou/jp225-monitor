@@ -54,8 +54,11 @@ export function detectShock(closes: number[], p: ShockParams = DEFAULT_SHOCK_PAR
   const upScore = b(aUp) + b(bUp) + b(cUp) + b(dUp) + b(eUp) + b(fUp);
   const dnScore = b(aDn) + b(bDn) + b(cDn) + b(dDn) + b(eDn) + b(fDn);
 
-  const upShockRaw = (d1 >= p.shock1 && (d2 >= p.shock2 || eUp)) || upScore >= p.scoreNeed;
-  const dnShockRaw = (d1 <= -p.shock1 && (d2 <= -p.shock2 || eDn)) || dnScore >= p.scoreNeed;
+  // スコア経路は「意味のある絶対変化(a: d1≥move1 もしくは c: d2≥move2)」を必須にする。
+  // これが無いと、極静穏時に相対条件(b:平均比/d:同方向/e:高値更新/f:加速)だけで微小な値動き(例 +10円)が
+  // score≥4 に達して急変扱いになる(ノイズ)。急変=絶対的にも十分動いた、を担保する。
+  const upShockRaw = (d1 >= p.shock1 && (d2 >= p.shock2 || eUp)) || ((aUp || cUp) && upScore >= p.scoreNeed);
+  const dnShockRaw = (d1 <= -p.shock1 && (d2 <= -p.shock2 || eDn)) || ((aDn || cDn) && dnScore >= p.scoreNeed);
 
   if (upScore > dnScore && upShockRaw) return { dir: 'up', d1, d2, score: upScore };
   if (dnScore > upScore && dnShockRaw) return { dir: 'down', d1, d2, score: dnScore };
