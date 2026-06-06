@@ -1,26 +1,14 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { upsertBar } from './db/store.js';
 import { classifySession } from '../collector/session.js';
+import type { BaseBar } from './basedataDate.js';
+
+// xlsx の日付マッピング(rowToBar / 日付規約)は server/basedataDate.ts が唯一の正準実装(SSOT)。
+// publish スクリプトと共有する。ここでは再エクスポートのみ(取り込みは publish 済み NDJSON の t を直接使う)。
+export { rowToBar } from './basedataDate.js';
+export type { BaseBar } from './basedataDate.js';
 
 const SYMBOL = 'NIY=F';
-const EXCEL_1970 = 25569;          // 1970-01-01 の Excel シリアル(1900日付系)。(serial-25569)*86400_000 = UTC epoch ms
-const JST_OFFSET_MS = 9 * 3600_000;
-
-export interface BaseBar { t: number; o: number; h: number; l: number; c: number; v: number | null; }
-
-/** Excel シリアル日付 + 1日小数の時間 → bar(JST 壁時計→UTC epoch, 分床)。
- *  日付列(A)は「実カレンダー日付」(セッション開始日ではない)。夜間立会の翌朝(00:00-06:00)の
- *  バーも実日付=翌日のシリアルでラベルされる。よって日付シフト補正は一切不要で、
- *  serial(日付)+ frac(時刻)を JST として UTC epoch に変換するだけでよい。
- *  早朝portionの Night セッション帰属は classifySession が前日始まりとして正しく処理する。
- *  (旧実装は A列をセッション日と誤認し早朝(<7:00)に+1日していたため夜間バーが翌日=未来へずれていた) */
-export function rowToBar(serialDate: number, timeFrac: number,
-  o: number, h: number, l: number, c: number, v: number | null): BaseBar {
-  const dayMs = (serialDate - EXCEL_1970) * 86400_000;
-  const minMs = Math.round((timeFrac * 86400_000) / 60_000) * 60_000;
-  const t = dayMs + minMs - JST_OFFSET_MS;
-  return { t, o, h, l, c, v };
-}
 
 export function parseNdjsonLine(line: string): BaseBar | null {
   const s = line.trim();
@@ -42,8 +30,10 @@ export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
   db.exec('BEGIN');
   try {
     for (const b of bars) {
-      // 未来日時のバーは DB に入れない。黙って捨てると日付解析バグが隠れるのでエラーログに残す
-      // (取り込み元が正しければ未来バーは存在しないはず)。
+      // 【未来=バグ方針 / 取り込み方法の基準実装】未来日時のバーは日付マッピングのバグなので DB に
+      // 入れない。黙って捨てると原因が隠れるためドロップ件数をためて下でエラーログに残す(正しく
+      // マッピングできていれば未来バーは存在しないはず)。publish 側(basedata-publish.mts)はこの方針に
+      // 合わせて publish 自体を中止する。
       if (b.t > futureCutoff) { futureDropped++; if (b.t > latestFuture) latestFuture = b.t; continue; }
       const s = classifySession(b.t);
       if (!s) { skipped++; continue; }
@@ -58,7 +48,7 @@ export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
   if (futureDropped > 0) {
     console.error(`[basedata] ERROR: dropped ${futureDropped} future-dated bars on import `
       + `(latest ${new Date(latestFuture).toISOString()}, now ${new Date().toISOString()}). `
-      + `日付解析バグ or ソースデータ異常の可能性。rowToBar/publish を確認すること。`);
+      + `日付バグ or ソースデータ異常の可能性。server/basedataDate.ts の日付マッピングを確認すること。`);
   }
   return { inserted: applied, updated: 0, skipped, from: from === Infinity ? 0 : from, to: to === -Infinity ? 0 : to, total: bars.length };
 }

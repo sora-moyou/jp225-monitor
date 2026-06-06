@@ -41,7 +41,7 @@ export function selectWarmup(db: DatabaseSync, now: number): WarmupData | null {
     const latest = futureBars > 0 ? `, latest future bar ${new Date(futureSample).toISOString()}` : '';
     console.error(`[warmup] ERROR: future-dated rows in DB — dropped ${futureBars} bars / ${futureTicks} ticks `
       + `(now ${new Date(now).toISOString()}${latest}). `
-      + `基礎データ取り込みの日付解析バグの可能性。importBars/rowToBar を確認すること。`);
+      + `基礎データ取り込みの日付バグの可能性。server/basedataDate.ts の日付マッピング / importBars を確認すること。`);
   }
   return { barsBySymbol, niyTicks };
 }

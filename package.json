@@ -23,7 +23,7 @@
     "tauri:signer": "tauri signer generate -w ~/.tauri/jp225-monitor.key",
     "release:build": "node scripts/release-build.mjs",
     "release:latest-json": "node scripts/make-latest-json.mjs",
-    "basedata:publish": "node scripts/basedata-publish.mjs",
+    "basedata:publish": "tsx scripts/basedata-publish.mts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

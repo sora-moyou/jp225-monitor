@@ -3,23 +3,34 @@ import { DatabaseSync } from 'node:sqlite';
 import { initSchema } from './db/store.js';
 import { rowToBar, parseNdjsonLine, importBars } from './basedata.js';
 
-describe('rowToBar (Excel serial+fraction → JST epoch)', () => {
-  it('Excelシリアル46021@17:00 を JST 2025-12-30 17:00 に変換、分床へ丸める', () => {
-    // 標準の Excel 1900日付系: serial 25569 = 1970-01-01。serial 46021 = 2025-12-30。
-    const b = rowToBar(46021, 17 / 24, 50450, 50465, 50415, 50420, 2086);
-    const jst = new Date(b.t + 9 * 3600_000);
-    expect(jst.toISOString().slice(0, 16)).toBe('2025-12-30T17:00');
+describe('rowToBar (xlsx A=セッション日付 → 実時刻 epoch)', () => {
+  // A列=セッション日付(夜間=翌営業日ラベル)。実時刻へ逆変換: 夕方→前営業日 / 早朝→前営業日+1暦日 / 日中→D。
+  const toSerial = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400_000) + 25569;
+  const jstHHMM = (t: number) => new Date(t + 9 * 3600_000).toISOString().slice(0, 16);
+
+  it('日中(08:45–15:45)は A の当日。OHLCV を保持し分床へ丸める', () => {
+    const b = rowToBar(toSerial(2025, 12, 30), 10 / 24, 50450, 50465, 50415, 50420, 2086); // 火 10:00
+    expect(jstHHMM(b.t)).toBe('2025-12-30T10:00');
     expect(b.t % 60_000).toBe(0);
     expect(b).toMatchObject({ o: 50450, h: 50465, l: 50415, c: 50420, v: 2086 });
   });
 
-  it('日付列は実カレンダー日付なので時刻シフト補正なし(早朝も同シリアル日のまま)', () => {
-    // A列は実日付。早朝(夜間立会の翌朝)のバーは xlsx 上で既に翌日のシリアルを持つため、
-    // serial 46021 @ 02:00 はそのまま 2025-12-30 02:00(+1日しない)。Night帰属は classifySession が処理。
-    const morning = rowToBar(46021, 2 / 24, 1, 2, 0.5, 1.5, 10);
-    expect(new Date(morning.t + 9 * 3600_000).toISOString().slice(0, 16)).toBe('2025-12-30T02:00');
-    const evening = rowToBar(46021, 17 / 24, 1, 2, 0.5, 1.5, 10);
-    expect(new Date(evening.t + 9 * 3600_000).toISOString().slice(0, 16)).toBe('2025-12-30T17:00');
+  it('夜間の夕方(17:00〜)は A の前営業日(=実際の寄付夕方)', () => {
+    // A=火12-30 の夜間 17:00 は実際には 月12-29 夕方(前営業日)。
+    const b = rowToBar(toSerial(2025, 12, 30), 17 / 24, 1, 2, 0.5, 1.5, 10);
+    expect(jstHHMM(b.t)).toBe('2025-12-29T17:00');
+  });
+
+  it('夜間の早朝(〜6:00)は A の前営業日+1暦日(=実際の翌朝)', () => {
+    // A=火12-30 の早朝 02:00 は実際には 火12-30 未明(前営業日 月12-29 の翌暦日)。
+    const b = rowToBar(toSerial(2025, 12, 30), 2 / 24, 1, 2, 0.5, 1.5, 10);
+    expect(jstHHMM(b.t)).toBe('2025-12-30T02:00');
+  });
+
+  it('金曜夜は週末を跨いで前営業日(金)へ: A=月の夜間 → 実 金夕方 / 土未明', () => {
+    const mon = toSerial(2026, 6, 8); // 月06-08
+    expect(jstHHMM(rowToBar(mon, 17 / 24, 1, 2, 0.5, 1.5, 10).t)).toBe('2026-06-05T17:00'); // 金 夕方
+    expect(jstHHMM(rowToBar(mon, 2 / 24, 1, 2, 0.5, 1.5, 10).t)).toBe('2026-06-06T02:00');  // 土 未明
   });
 });
 
