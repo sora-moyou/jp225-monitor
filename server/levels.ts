@@ -333,10 +333,19 @@ export function computeLevels(
     levelTestBonus: cfg.levelTestBonus,
   });
 
-  // ── 選抜: 近接窓内スコア降順 + 直近1本 + 最上位1本(各側)──
+  // ── 選抜: 近接窓内スコア降順 + 直近1本 + 遠方(指値/逆指値用)主要水準 ──
   const inWindow = (l: Level): boolean => Math.abs(l.dist) <= selectWindowYen;
   const upAll = clustered.filter(l => l.dist > 0);
   const downAll = clustered.filter(l => l.dist < 0);
+
+  // v0.6.11: 遠方の主要水準は「相場を見られない時の強力な指値/逆指値の置き場」。大変動セッションほど多く出す
+  // (ボラ連動)。ADR(直近セッション平均レンジ)に対し直近レンジが大きい=大変動региムなら 4本、平常は 3本。
+  const ranges = completedComplete.slice(0, 10).map(s => s.high - s.low).filter(x => x > 0);
+  const adr = ranges.length ? ranges.reduce((a, b) => a + b, 0) / ranges.length : 0;
+  const curRange = inProgress ? Math.max(inProgress.high, current) - Math.min(inProgress.low, current)
+    : (ranges[0] ?? adr);
+  const volRatio = adr > 0 ? curRange / adr : 1;
+  const farCount = volRatio >= 1.3 ? 4 : 3;
 
   const pickSide = (side: Level[]): Level[] => {
     const win = side.filter(inWindow);
@@ -346,8 +355,9 @@ export function computeLevels(
     };
     // (a) 現値直近1本(窓内最近接)
     add([...win].sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))[0]);
-    // (b) 遠い水準も指値(リミット注文)に有効なので、窓外の強い水準を上位2本まで表示する(ユーザー指定)。
-    for (const f of side.filter(l => !inWindow(l)).sort((a, b) => b.score - a.score).slice(0, 2)) add(f);
+    // (b) 遠い水準は指値/逆指値の置き場に有効(相場を見られない時・大変動時に特に)。窓外の強い水準を
+    //     farCount 本まで表示(ボラ連動: 大変動セッションほど多く)。
+    for (const f of side.filter(l => !inWindow(l)).sort((a, b) => b.score - a.score).slice(0, farCount)) add(f);
     return chosen;
   };
 
