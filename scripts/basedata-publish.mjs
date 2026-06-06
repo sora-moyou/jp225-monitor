@@ -10,11 +10,25 @@ const xlsxPath = process.argv[2];
 if (!xlsxPath) { console.error('usage: npm run basedata:publish -- <path-to-xlsx>'); process.exit(1); }
 
 const EXCEL_1970 = 25569, JST = 9 * 3600_000;   // 25569 = 1970-01-01 の Excel シリアル(標準1900日付系)
+
+// A列=セッション日付(業務日)であって実日付ではない(ライブDB突合で確定 2026-06-06)。OSE 夜間は翌営業日に属する
+// ため、実時刻へ変換する。例: 金曜夜の取引は A=月曜 とラベルされる → 実日付は金曜夕方〜土曜朝。
+// 夕方(16:00〜) = D の前営業日 / 早朝(〜08:00) = 前営業日+1暦日 / 日中(08:45〜15:45) = D。
+function isWeekendSerial(serial) {
+  const dow = new Date((serial - EXCEL_1970) * 86400_000).getUTCDay();   // 0=日, 6=土
+  return dow === 0 || dow === 6;
+}
+function prevBusinessDaySerial(serial) {
+  let s = serial - 1;
+  while (isWeekendSerial(s)) s--;   // 週末をスキップ(祝日は未対応=近似)
+  return s;
+}
 function rowToBar(serial, frac, o, h, l, c, v) {
-  // A列の日付は「実カレンダー日付」(セッション日付ではない)。B列は時刻。1minシートは日時でソート済み。
-  // よって日付シフト補正は一切不要。serial(日付)+ frac(時刻)を JST として UTC epoch に変換するだけ。
-  // (旧実装は A列をセッション日として扱い早朝(<7:00)に+1日していたため、夜間バーが翌日=未来へずれていた)
-  const dayMs = (serial - EXCEL_1970) * 86400_000;
+  let realSerial;
+  if (frac >= 16 / 24) realSerial = prevBusinessDaySerial(serial);        // 夕方(夜間17:00〜)= 前営業日
+  else if (frac < 8 / 24) realSerial = prevBusinessDaySerial(serial) + 1; // 早朝(00:00〜06:00)= 前営業日+1暦日
+  else realSerial = serial;                                               // 日中(08:45〜15:45)= D
+  const dayMs = (realSerial - EXCEL_1970) * 86400_000;
   const minMs = Math.round((frac * 86400_000) / 60_000) * 60_000;
   return { t: dayMs + minMs - JST, o, h, l, c, v: typeof v === 'number' ? v : null };
 }
