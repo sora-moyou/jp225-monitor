@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars } from '../db/store.js';
 import { computeVolumeProfile } from '../volumeProfile.js';
+import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
@@ -81,6 +82,13 @@ const VOLUME_LOOKBACK_DAYS = 40;   // 基礎データの出来高期間に届く
 const VOLUME_BIN_YEN = 50;
 let lastVolumeCheck = 0;
 let volumeLevels: { price: number; rel: number; isPoc: boolean }[] = [];
+// ── もみ合い帯(v0.6.14): 出来高フィードが無い直近の需給を「時間滞在(在足数)」で近似する次善指標。
+// 直近1営業日のライブ足から往復しつつ停滞した帯を抽出。出来高ループと同じく30分ごとに再計算。
+const CONGESTION_CHECK_MS = 30 * 60_000;
+const CONGESTION_LOOKBACK_MS = 24 * 60 * 60_000;   // 直近1日(ユーザー指定)
+const CONGESTION_BIN_YEN = 50;
+let lastCongestionCheck = 0;
+let congestionLevels: { price: number; rel: number; visits: number }[] = [];
 
 /** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
 function resampleHL(bars: { t: number; h: number; l: number }[], tfMs: number): { t: number; h: number; l: number }[] {
@@ -170,8 +178,16 @@ function tick(): void {
         volumeLevels = computeVolumeProfile(vb, VOLUME_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, isPoc: n.isPoc }));
       } catch (err) { console.warn('[levelsLoop] volume profile failed:', err instanceof Error ? err.message : err); }
     }
+    // もみ合い帯(直近1日の時間滞在=出来高の次善)を約30分ごとに再計算してキャッシュ。
+    if (now - lastCongestionCheck >= CONGESTION_CHECK_MS) {
+      lastCongestionCheck = now;
+      try {
+        const cb = getRecentBars(db, SYMBOL, now - CONGESTION_LOOKBACK_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+        congestionLevels = computeCongestionProfile(cb, CONGESTION_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, visits: n.visits }));
+      } catch (err) { console.warn('[levelsLoop] congestion profile failed:', err instanceof Error ? err.message : err); }
+    }
     const tCompute = Date.now();
-    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels);
+    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels);
     const computeMs = Date.now() - tCompute;
     last = result;
     const sig = levelSignature(result);

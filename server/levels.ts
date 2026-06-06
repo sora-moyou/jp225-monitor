@@ -54,6 +54,7 @@ const WEIGHTS = {
   reaction: 1.0, reactionPer: 0.2,   // 反応水準: weight = reaction + reactionPer×min(反応回数,5)
   fibExtBreakout: 1.8,               // 高値/安値更新中、ブレイク側のFib拡張は前方目標として強める(ユーザー指定)
   volume: 1.2, volumePer: 0.6,       // 価格帯別出来高(HVN/POC): weight = volume + volumePer×rel(POC=rel1)
+  congestion: 0.9, congestionPer: 0.4,  // もみ合い帯(直近の時間滞在=出来高の次善): weight = congestion + congestionPer×rel
 } as const;
 
 interface Cand {
@@ -186,6 +187,7 @@ export function computeLevels(
   extraLevels: { price: number; label: string }[] = [],
   reactionLevels: { price: number; reactions: number }[] = [],   // v0.6.10: 反応帯(複数回反転した実水準)
   volumeLevels: { price: number; rel: number; isPoc: boolean }[] = [],   // v0.6.13: 価格帯別出来高(HVN/POC)
+  congestionLevels: { price: number; rel: number; visits: number }[] = [],   // v0.6.14: もみ合い帯(直近の時間滞在=出来高の次善)
 ): LevelsResult {
   const cfg = resolveLevelsConfig();
   const tol = cfg.tol;
@@ -286,6 +288,16 @@ export function computeLevels(
     });
   }
 
+  // ── もみ合い帯(v0.6.14): 直近で価格が往復しつつ停滞した帯。出来高フィードが無い直近の需給を、
+  // 時間滞在(在足数)で近似する「次善」の節目。実出来高(HVN)より一段下の重み。反応帯/極値と合流で上位化。
+  for (const z of congestionLevels) {
+    if (!Number.isFinite(z.price) || z.price <= 0) continue;
+    cands.push({
+      price: z.price, label: 'もみ合い帯',
+      weight: WEIGHTS.congestion + WEIGHTS.congestionPer * Math.min(Math.max(z.rel, 0), 1), kind: 'congestion',
+    });
+  }
+
   // ── 多スイング・多比率フィボ ──
   // 後方互換: swing/reversalSatisfied は従来 FIB_SWING_SESSIONS(=5)スイングで決める。
   let swing: LevelsResult['swing'] = null;
@@ -374,7 +386,7 @@ export function computeLevels(
     const far = side.filter(l => !inWindow(l));
     // 重要水準 = スイング/反応/セッション高安・前日終値(実際に効いた S/R)。キリ番「単独」は価値が無いので除外
     // (反応等と合流したキリ番は 反応/高/安 ラベルを併せ持つので拾われる)。ユーザー指定。
-    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日|出来高|POC/.test(s));
+    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日|出来高|POC|もみ合い/.test(s));
     // 現値に近い順に、近接重複(±60円)は1本に間引いて farCount+1 本まで(指値/逆指値のラダー)。
     const importantFar: Level[] = [];
     for (const l of far.filter(isImportant).sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))) {
