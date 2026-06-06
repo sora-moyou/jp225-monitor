@@ -55,6 +55,7 @@ const WEIGHTS = {
   fibExtBreakout: 1.8,               // 高値/安値更新中、ブレイク側のFib拡張は前方目標として強める(ユーザー指定)
   volume: 1.2, volumePer: 0.6,       // 価格帯別出来高(HVN/POC): weight = volume + volumePer×rel(POC=rel1)
   congestion: 0.9, congestionPer: 0.4,  // もみ合い帯(直近の時間滞在=出来高の次善): weight = congestion + congestionPer×rel
+  trendline: 1.1, trendlinePer: 0.25,   // 有効トレンドライン(3点以上接触): weight = trendline + trendlinePer×min(接触-3,2)
 } as const;
 
 interface Cand {
@@ -188,6 +189,7 @@ export function computeLevels(
   reactionLevels: { price: number; reactions: number }[] = [],   // v0.6.10: 反応帯(複数回反転した実水準)
   volumeLevels: { price: number; rel: number; isPoc: boolean }[] = [],   // v0.6.13: 価格帯別出来高(HVN/POC)
   congestionLevels: { price: number; rel: number; visits: number }[] = [],   // v0.6.14: もみ合い帯(直近の時間滞在=出来高の次善)
+  trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [],   // v0.6.15: 有効トレンドライン(3点接触)を now へ延長
 ): LevelsResult {
   const cfg = resolveLevelsConfig();
   const tol = cfg.tol;
@@ -298,6 +300,15 @@ export function computeLevels(
     });
   }
 
+  // ── 有効トレンドライン(v0.6.15): 3点以上接触した斜めの支持/抵抗線を now へ延長した「今のライン価格」。
+  // ブレイクまで有効。接触数が多いほど強い。表示専用(hlLevels には入れず検知には非関与)。
+  for (const t of trendlineLevels) {
+    if (!Number.isFinite(t.price) || t.price <= 0) continue;
+    const w = WEIGHTS.trendline + WEIGHTS.trendlinePer * Math.min(Math.max(t.touches - 3, 0), 2);
+    const dir = t.kind === 'support' ? '上昇トレンドライン' : '下降トレンドライン';
+    cands.push({ price: t.price, label: `${dir}(${t.touches}点)`, weight: w, kind: 'trendline' });
+  }
+
   // ── 多スイング・多比率フィボ ──
   // 後方互換: swing/reversalSatisfied は従来 FIB_SWING_SESSIONS(=5)スイングで決める。
   let swing: LevelsResult['swing'] = null;
@@ -386,7 +397,7 @@ export function computeLevels(
     const far = side.filter(l => !inWindow(l));
     // 重要水準 = スイング/反応/セッション高安・前日終値(実際に効いた S/R)。キリ番「単独」は価値が無いので除外
     // (反応等と合流したキリ番は 反応/高/安 ラベルを併せ持つので拾われる)。ユーザー指定。
-    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日|出来高|POC|もみ合い/.test(s));
+    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日|出来高|POC|もみ合い|トレンドライン/.test(s));
     // 現値に近い順に、近接重複(±60円)は1本に間引いて farCount+1 本まで(指値/逆指値のラダー)。
     const importantFar: Level[] = [];
     for (const l of far.filter(isImportant).sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))) {

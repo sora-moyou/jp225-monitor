@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars } from '../db/store.js';
 import { computeVolumeProfile } from '../volumeProfile.js';
 import { computeCongestionProfile } from '../congestionProfile.js';
+import { computeTrendLines } from '../trendLines.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
 import { classifySession } from '../../collector/session.js';
@@ -89,6 +90,12 @@ const CONGESTION_LOOKBACK_MS = 24 * 60 * 60_000;   // 直近1日(ユーザー指
 const CONGESTION_BIN_YEN = 50;
 let lastCongestionCheck = 0;
 let congestionLevels: { price: number; rel: number; visits: number }[] = [];
+// ── 有効トレンドライン(v0.6.15): 1H/3H のスイング点から3点以上接触する斜め線を引き、now へ延長した
+// 「今のライン価格」を節目化。ブレイクまで有効(ステートレス再計算)。重い探索は60秒ごとに1回。
+const TREND_CHECK_MS = 60_000;
+const TREND_LOOKBACK_DAYS = 15;   // 反応水準と同程度の期間からスイング点を取る
+let lastTrendCheck = 0;
+let trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [];
 
 /** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
 function resampleHL(bars: { t: number; h: number; l: number }[], tfMs: number): { t: number; h: number; l: number }[] {
@@ -186,8 +193,21 @@ function tick(): void {
         congestionLevels = computeCongestionProfile(cb, CONGESTION_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, visits: n.visits }));
       } catch (err) { console.warn('[levelsLoop] congestion profile failed:', err instanceof Error ? err.message : err); }
     }
+    // 有効トレンドライン(3点接触の斜め支持/抵抗線)を約60秒ごとに再計算。1H/3H のスイング点から探索。
+    if (now - lastTrendCheck >= TREND_CHECK_MS) {
+      lastTrendCheck = now;
+      try {
+        const tb = getRecentBars(db, SYMBOL, now - TREND_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+        const tpiv = [
+          ...extractSwingPivots(resampleHL(tb, 60 * 60_000), REACTION_RECLAIM_1H),
+          ...extractSwingPivots(resampleHL(tb, 180 * 60_000), REACTION_RECLAIM_3H),
+        ];
+        trendlineLevels = computeTrendLines(tpiv, latest.price, now)
+          .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
+      } catch (err) { console.warn('[levelsLoop] trend lines failed:', err instanceof Error ? err.message : err); }
+    }
     const tCompute = Date.now();
-    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels);
+    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels, trendlineLevels);
     const computeMs = Date.now() - tCompute;
     last = result;
     const sig = levelSignature(result);
