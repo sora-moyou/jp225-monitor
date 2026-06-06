@@ -114,9 +114,10 @@ describe('computeLevels コア（H/L・コンフルエンス・選抜）', () =>
     const sessions = Array.from({ length: 10 }, (_, i) =>
       s(`2026-05-${10 + i}`, 'Day', 67000 + (i + 1) * 100, 67000 - (i + 1) * 100));
     const r = computeLevels(sessions, 67000, 0, null);
-    // 新ロジック: 窓内スコア降順 LEVEL_SHOW_N(=5) に直近1本+最上位1本を足しうる。
-    expect(r.up.length).toBeLessThanOrEqual(LEVEL_SHOW_N + 2);
-    expect(r.down.length).toBeLessThanOrEqual(LEVEL_SHOW_N + 2);
+    // v0.6.12: 窓内スコア降順 LEVEL_SHOW_N(=5) + 直近1本 + 遠方の重要水準(指値/逆指値用、ボラ連動 farCount+1≦5
+    // +保険1本)。遠方は実S/R(スイング/反応/セッション高安)のみで上限はあるが従来より広い。
+    expect(r.up.length).toBeLessThanOrEqual(LEVEL_SHOW_N + 8);
+    expect(r.down.length).toBeLessThanOrEqual(LEVEL_SHOW_N + 8);
   });
 
   it('履歴ゼロなら空を返す（クラッシュしない）', () => {

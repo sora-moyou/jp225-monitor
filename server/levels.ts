@@ -227,13 +227,22 @@ export function computeLevels(
     mark(Math.max(...recent2.map(s => s.high)), '直近高2');
     mark(Math.min(...recent2.map(s => s.low)), '直近安2');
   }
+  // ボラ(ADR=直近セッション平均レンジ)。大変動ほど遠方のキリ番ラダー/遠方水準数を広げるのに使う。
+  const adrRanges = completedComplete.slice(0, 10).map(s => s.high - s.low).filter(x => x > 0);
+  const adr = adrRanges.length ? adrRanges.reduce((a, b) => a + b, 0) / adrRanges.length : 0;
+  const curRange = inProgress ? Math.max(inProgress.high, current) - Math.min(inProgress.low, current) : (adrRanges[0] ?? adr);
+  const volRatio = adr > 0 ? curRange / adr : 1;
+  const farCount = volRatio >= 1.3 ? 4 : 3;
+
   if (completed.length) {
     // グリッド節目（履歴データがあれば現値から。寄り欠け判定とは独立）。
     cands.push({ price: Math.ceil((current + 5) / GRID) * GRID, label: '節目', weight: WEIGHTS.grid250, kind: 'grid250' });
     cands.push({ price: Math.floor((current - 5) / GRID) * GRID, label: '節目', weight: WEIGHTS.grid250, kind: 'grid250' });
-    // 500/1000 円節目(現値の上下最近1本ずつ)
+    // 500 円節目(現値の上下最近1本ずつ)
     cands.push({ price: Math.ceil((current + 5) / 500) * 500, label: '節目500', weight: WEIGHTS.grid500, kind: 'grid500' });
     cands.push({ price: Math.floor((current - 5) / 500) * 500, label: '節目500', weight: WEIGHTS.grid500, kind: 'grid500' });
+    // 1000 円節目(現値の上下最近1本ずつ)。キリ番は「合流」時のみ価値があるため、遠方ラダーは作らない
+    // (単独の遠いキリ番は表示しない=ユーザー指定: キリ番だけなら表示価値なし)。
     cands.push({ price: Math.ceil((current + 5) / 1000) * 1000, label: '節目1000', weight: WEIGHTS.grid1000, kind: 'grid1000' });
     cands.push({ price: Math.floor((current - 5) / 1000) * 1000, label: '節目1000', weight: WEIGHTS.grid1000, kind: 'grid1000' });
   }
@@ -338,15 +347,7 @@ export function computeLevels(
   const upAll = clustered.filter(l => l.dist > 0);
   const downAll = clustered.filter(l => l.dist < 0);
 
-  // v0.6.11: 遠方の主要水準は「相場を見られない時の強力な指値/逆指値の置き場」。大変動セッションほど多く出す
-  // (ボラ連動)。ADR(直近セッション平均レンジ)に対し直近レンジが大きい=大変動региムなら 4本、平常は 3本。
-  const ranges = completedComplete.slice(0, 10).map(s => s.high - s.low).filter(x => x > 0);
-  const adr = ranges.length ? ranges.reduce((a, b) => a + b, 0) / ranges.length : 0;
-  const curRange = inProgress ? Math.max(inProgress.high, current) - Math.min(inProgress.low, current)
-    : (ranges[0] ?? adr);
-  const volRatio = adr > 0 ? curRange / adr : 1;
-  const farCount = volRatio >= 1.3 ? 4 : 3;
-
+  // 遠方の主要水準は「相場を見られない時の強力な指値/逆指値の置き場」。farCount/volRatio は上で算出済(ボラ連動)。
   const pickSide = (side: Level[]): Level[] => {
     const win = side.filter(inWindow);
     const chosen: Level[] = [...win].sort((a, b) => b.score - a.score).slice(0, showN);
@@ -355,9 +356,23 @@ export function computeLevels(
     };
     // (a) 現値直近1本(窓内最近接)
     add([...win].sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))[0]);
-    // (b) 遠い水準は指値/逆指値の置き場に有効(相場を見られない時・大変動時に特に)。窓外の強い水準を
-    //     farCount 本まで表示(ボラ連動: 大変動セッションほど多く)。
-    for (const f of side.filter(l => !inWindow(l)).sort((a, b) => b.score - a.score).slice(0, farCount)) add(f);
+    // (b) 遠い水準は指値/逆指値の置き場に有効(相場を見られない時・大変動時に特に)。
+    //     キリ番(1000)だけでなく、スイング/反応/セッション高安・前日終値 等の「重要水準」も対象にし、
+    //     現値に近い順に farCount+1 本まで混在表示(ユーザー指定: キリ番だけでなくスイング水準でも)。
+    const far = side.filter(l => !inWindow(l));
+    // 重要水準 = スイング/反応/セッション高安・前日終値(実際に効いた S/R)。キリ番「単独」は価値が無いので除外
+    // (反応等と合流したキリ番は 反応/高/安 ラベルを併せ持つので拾われる)。ユーザー指定。
+    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日/.test(s));
+    // 現値に近い順に、近接重複(±60円)は1本に間引いて farCount+1 本まで(指値/逆指値のラダー)。
+    const importantFar: Level[] = [];
+    for (const l of far.filter(isImportant).sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))) {
+      if (importantFar.length >= farCount + 1) break;
+      if (importantFar.some(k => Math.abs(k.price - l.price) <= 60)) continue;
+      importantFar.push(l);
+    }
+    for (const f of importantFar) add(f);
+    //   超遠方でも最強スコアの主要水準(長期高安など。実S/Rのみ)は保険で1本。
+    add([...far].filter(isImportant).sort((a, b) => b.score - a.score)[0]);
     return chosen;
   };
 
