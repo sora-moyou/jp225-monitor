@@ -151,6 +151,8 @@ initSettingsModal({
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
   updateResult:   document.getElementById('settings-update-result') as HTMLElement,
   currentVersion: document.getElementById('settings-current-version') as HTMLElement,
+  mergeDbBtn:     document.getElementById('settings-merge-db') as HTMLButtonElement,
+  mergeResult:    document.getElementById('settings-merge-result') as HTMLElement,
 });
 
 // 詳細パラメータ モーダル (定期ポーリング / クールダウン等。設定とは別ボタン 🎛️)

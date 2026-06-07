@@ -1,5 +1,6 @@
 import { apiUrl } from '../lib/apiBase.js';
 import { getUpdateStatus, installUpdate } from '../lib/updater.js';
+import { pickDbFile, mergeDbFromFile, relaunchApp, isTauri } from '../lib/dbMerge.js';
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({
@@ -85,6 +86,8 @@ export interface SettingsElements {
   checkUpdateBtn: HTMLButtonElement;
   updateResult: HTMLElement;
   currentVersion: HTMLElement;
+  mergeDbBtn: HTMLButtonElement;
+  mergeResult: HTMLElement;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -231,6 +234,41 @@ export function initSettingsModal(el: SettingsElements): void {
   }
 
   el.checkUpdateBtn.addEventListener('click', () => { void checkAll(); });
+
+  // --- 別PCのDBをマージ(ファイル選択→停止→バックアップ→OR IGNORE 統合→再起動) ---
+  function setMergeResult(cls: 'ok' | 'warn' | 'err', html: string) {
+    el.mergeResult.className = `update-result ${cls}`;
+    el.mergeResult.innerHTML = html;
+  }
+
+  // 非Tauri(開発ブラウザ)では dialog/relaunch 不可。ボタン無効化+案内。
+  if (!isTauri()) {
+    el.mergeDbBtn.disabled = true;
+    setMergeResult('warn', 'パッケージ版でのみ利用可');
+  }
+
+  el.mergeDbBtn.addEventListener('click', async () => {
+    if (!isTauri()) { setMergeResult('warn', 'パッケージ版でのみ利用可'); return; }
+    const path = await pickDbFile();
+    if (!path) return;   // キャンセル
+    if (!window.confirm('collector と jp225-Trade を停止してマージし、自動で再起動します。よろしいですか?')) return;
+    el.mergeDbBtn.disabled = true;
+    setMergeResult('warn', 'マージ中…(数十秒かかる場合があります)');
+    try {
+      const res = await mergeDbFromFile(path);
+      if (res.ok) {
+        const i = res.inserted ?? { alerts: 0, bars_1m: 0, ticks: 0 };
+        setMergeResult('ok', `✅ 統合: alerts +${i.alerts} / bars +${i.bars_1m} / ticks +${i.ticks}。再起動します`);
+        setTimeout(() => { void relaunchApp(); }, 1500);
+      } else {
+        setMergeResult('err', `❌ 失敗: ${escapeHtml(res.error ?? '不明')}`);
+        el.mergeDbBtn.disabled = false;
+      }
+    } catch (err) {
+      setMergeResult('err', `❌ 失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
+      el.mergeDbBtn.disabled = false;
+    }
+  });
 
   async function open() {
     el.modal.classList.remove('hidden');
