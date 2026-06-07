@@ -52,6 +52,22 @@ export function initSchema(db: DatabaseSync): void {
   const aCols = (db.prepare('PRAGMA table_info(alerts)').all() as Array<{ name: string }>).map(c => c.name);
   if (!aCols.includes('reference_kind')) db.exec('ALTER TABLE alerts ADD COLUMN reference_kind TEXT');
   if (!aCols.includes('reference_price')) db.exec('ALTER TABLE alerts ADD COLUMN reference_price REAL');
+  // v0.6.17: アラートの同一性に UNIQUE インデックスを張り、二重書き込み(collector×monitor の
+  // ハートビート陳腐化窓・monitor 二重起動など)による完全一致重複を DB レベルで物理的に禁止する。
+  // NULL-safe: SQLite は UNIQUE 索引で NULL を相異と見なす(NULL同士は衝突しない)ため、COALESCE で
+  // 既定値に正規化して NULL の reference_price 等も正しく重複判定する。reference_* を含めるので
+  // 「同時刻・同種別・別水準」の正当に異なるアラートは衝突せず保持される。
+  // 既存DBに重複があると UNIQUE 索引を張れないため、先に id 最小を残して重複を除去(自己修復)。
+  const ALERT_IDENTITY = `symbol, triggered_at, COALESCE(detection_kind,''), COALESCE(direction,''), `
+    + `COALESCE(window_seconds,-1), COALESCE(reference_kind,''), COALESCE(reference_price,-1)`;
+  // 索引が未作成のときだけ重複除去(初回マイグレーションのみ)。以後は UNIQUE 索引が重複を防ぐため、
+  // 起動毎の全表スキャン DELETE は不要。
+  const hasIdentityIdx = (db.prepare('PRAGMA index_list(alerts)').all() as Array<{ name: string }>)
+    .some(i => i.name === 'idx_alerts_identity');
+  if (!hasIdentityIdx) {
+    db.exec(`DELETE FROM alerts WHERE id NOT IN (SELECT MIN(id) FROM alerts GROUP BY ${ALERT_IDENTITY})`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_identity ON alerts(${ALERT_IDENTITY})`);
+  }
   // bars_1m の読み取りはすべて PRIMARY KEY(symbol, t) のレンジで賄える(getSessionOHLC は t 範囲を
   // 読んで JS 側でセッション集計、getRecentBars/getBarClose* も symbol+t)。session_date/session で
   // 絞る索引はもう不要なため作らない(旧 idx_bars_session は書き込み増だけで読みに使われていなかった)。
@@ -150,8 +166,11 @@ export interface AlertInsert {
 }
 
 export function insertAlert(db: DatabaseSync, a: AlertInsert): void {
+  // INSERT OR IGNORE: alerts の同一性 UNIQUE インデックス(idx_alerts_identity)違反は黙って無視。
+  // collector と monitor(あるいは monitor の二重起動)が同じ確定足アラートを書いても、DBレベルで
+  // 完全一致重複が物理的に作られない(プロセス間レース・ハートビート陳腐化窓の最終防壁)。
   db.prepare(`
-    INSERT INTO alerts (symbol, triggered_at, direction, detection_kind, window_seconds,
+    INSERT OR IGNORE INTO alerts (symbol, triggered_at, direction, detection_kind, window_seconds,
       change_percent, price, session_date, session, reference_kind, reference_price)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(a.symbol, a.triggeredAt, a.direction, a.detectionKind, a.windowSeconds,
