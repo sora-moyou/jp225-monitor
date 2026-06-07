@@ -75,6 +75,15 @@
         <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
       </fieldset>
 
+      <fieldset class="settings-section">
+        <legend>データ</legend>
+        <div class="version-row">
+          <button type="button" id="settings-merge-db" class="btn-secondary">別PCのDBをマージ</button>
+        </div>
+        <div id="settings-merge-result" class="update-result"></div>
+        <div class="exit-hint">別PCの jp225.db を選んで取り込みます。collector と jp225-Trade を停止し、現行DBをバックアップしてから OR IGNORE で統合し、自動で再起動します。パッケージ版でのみ利用可。</div>
+      </fieldset>
+
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
 
       <div class="modal-actions">

@@ -19,6 +19,7 @@ import { forecastHandler } from './routes/forecast.js';
 import { alertsHistoryHandler } from './routes/alerts.js';
 import { levelsHandler } from './routes/levels.js';
 import { basedataImportHandler, basedataStatusHandler } from './routes/basedata.js';
+import { mergeHandler } from './routes/merge.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
@@ -78,6 +79,7 @@ app.get('/api/alerts/history', alertsHistoryHandler);
 app.get('/api/levels', levelsHandler);
 app.get('/api/basedata/status', basedataStatusHandler);
 app.post('/api/basedata/import', basedataImportHandler);
+app.post('/api/merge', mergeHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
 app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor' }));
 
