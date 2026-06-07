@@ -11,12 +11,14 @@
 //
 // 動作:
 //   - 事前にローカル DB をバックアップ(jp225.db.bak-merge-YYYYMMDD-HHMMSS)
-//   - alerts: 他DBの全行を挿入 → 全列一致の重複を id 最小残しで除去(NULL安全・自然キー不要)
+//   - alerts: id 以外の全列を INSERT OR IGNORE(v0.6.17 の UNIQUE 同一性索引 idx_alerts_identity が重複を弾く)
 //   - bars_1m / ticks: PK(symbol,t)で INSERT OR IGNORE(列順差は列名明示で吸収)
 //   - 整合性チェック(quick_check)と前後件数を表示
 //
-// 設計メモ: alerts は id(自動採番)が PC 間で食い違うため id 一致では重複判定できない。
-//   「他DBを全挿入 → 全列一致(id以外)でグローバル重複排除」が最も安全(粗いキーで別物を取りこぼさない)。
+// 設計メモ: マージの DB ロジックは server/db/mergeDb.ts の mergeFrom と同一(OR IGNORE)。
+//   v0.6.17 で alerts に UNIQUE 同一性索引が張られたため、素の INSERT は制約違反になる。
+//   OR IGNORE なら完全一致のみ無視され「同時刻・別水準」等の正当に異なるアラートは保持される
+//   (id は PC 間で食い違うが、索引が id を含まない自然な同一性で重複判定する)。
 
 import { DatabaseSync } from 'node:sqlite';
 import { copyFileSync, existsSync } from 'node:fs';
@@ -68,21 +70,17 @@ const srcFwd = src.replace(/\\/g, '/');
 db.exec(`ATTACH DATABASE '${srcFwd}' AS other`);
 db.exec('BEGIN');
 try {
-  // alerts: id 以外の全列を明示。他DB全行を挿入(重複は後段で除去)。
-  const aCols = cols('alerts').map((c) => c.name).filter((n) => n !== 'id');
-  const aList = aCols.join(', ');
-  db.prepare(`INSERT INTO main.alerts (${aList}) SELECT ${aList} FROM other.alerts`).run();
+  // alerts: id 以外の全列を OR IGNORE。UNIQUE 同一性索引(idx_alerts_identity)が重複を弾く。
+  // (server/db/mergeDb.ts の mergeFrom と同ロジック。)
+  const aList = cols('alerts').map((c) => c.name).filter((n) => n !== 'id').join(', ');
+  const aRes = db.prepare(`INSERT OR IGNORE INTO main.alerts (${aList}) SELECT ${aList} FROM other.alerts`).run();
+  console.log(`alerts 追加: ${aRes.changes} 行`);
 
   // bars_1m / ticks: PK(symbol,t)で OR IGNORE。列名明示(列順差吸収)。
   for (const t of ['bars_1m', 'ticks']) {
     const list = cols(t).map((c) => c.name).join(', ');
     db.prepare(`INSERT OR IGNORE INTO main.${t} (${list}) SELECT ${list} FROM other.${t}`).run();
   }
-
-  // alerts の全列一致重複を除去(id 最小を残す)。GROUP BY は NULL を等価に扱う。
-  const aCols2 = cols('alerts').map((c) => c.name).filter((n) => n !== 'id').join(', ');
-  const del = db.prepare(`DELETE FROM main.alerts WHERE id NOT IN (SELECT MIN(id) FROM main.alerts GROUP BY ${aCols2})`).run();
-  console.log(`alerts 重複除去: ${del.changes} 行`);
 
   db.exec('COMMIT');
 } catch (e) {
