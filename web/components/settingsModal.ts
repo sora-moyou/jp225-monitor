@@ -1,6 +1,6 @@
 import { apiUrl } from '../lib/apiBase.js';
 import { getUpdateStatus, installUpdate } from '../lib/updater.js';
-import { pickDbFile, mergeDbFromFile, relaunchApp, isTauri } from '../lib/dbMerge.js';
+import { pickDbFile, mergeDbFromFile, relaunchApp, isTauri, saveDbFile, exportDbToFile } from '../lib/dbMerge.js';
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({
@@ -88,6 +88,8 @@ export interface SettingsElements {
   currentVersion: HTMLElement;
   mergeDbBtn: HTMLButtonElement;
   mergeResult: HTMLElement;
+  exportDbBtn: HTMLButtonElement;
+  exportResult: HTMLElement;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -267,6 +269,36 @@ export function initSettingsModal(el: SettingsElements): void {
     } catch (err) {
       setMergeResult('err', `❌ 失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
       el.mergeDbBtn.disabled = false;
+    }
+  });
+
+  // --- このPCのDBをコピー(保存ダイアログ→VACUUM INTO エクスポート。停止・再起動なし) ---
+  function setExportResult(cls: 'ok' | 'warn' | 'err', html: string) {
+    el.exportResult.className = `update-result ${cls}`;
+    el.exportResult.innerHTML = html;
+  }
+  if (!isTauri()) {
+    el.exportDbBtn.disabled = true;
+    setExportResult('warn', 'パッケージ版でのみ利用可');
+  }
+  el.exportDbBtn.addEventListener('click', async () => {
+    if (!isTauri()) { setExportResult('warn', 'パッケージ版でのみ利用可'); return; }
+    const dest = await saveDbFile();
+    if (!dest) return;   // キャンセル
+    el.exportDbBtn.disabled = true;
+    setExportResult('warn', 'コピー中…');
+    try {
+      const res = await exportDbToFile(dest);
+      if (res.ok) {
+        const mb = ((res.size ?? 0) / 1024 / 1024).toFixed(1);
+        setExportResult('ok', `✅ 保存しました: ${escapeHtml(res.dest ?? dest)}(${mb} MB)`);
+      } else {
+        setExportResult('err', `❌ 失敗: ${escapeHtml(res.error ?? '不明')}`);
+      }
+    } catch (err) {
+      setExportResult('err', `❌ 失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
+    } finally {
+      el.exportDbBtn.disabled = false;
     }
   });
 

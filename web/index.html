@@ -82,6 +82,11 @@
         </div>
         <div id="settings-merge-result" class="update-result"></div>
         <div class="exit-hint">別PCの jp225.db を選んで取り込みます。collector と jp225-Trade を停止し、現行DBをバックアップしてから OR IGNORE で統合し、自動で再起動します。パッケージ版でのみ利用可。</div>
+        <div class="version-row" style="margin-top:8px">
+          <button type="button" id="settings-export-db" class="btn-secondary">このPCのDBをコピー</button>
+        </div>
+        <div id="settings-export-result" class="update-result"></div>
+        <div class="exit-hint">この PC の jp225.db を選んだ場所へ書き出します（別PCへ移してマージする用）。DBは変更せず、停止・再起動もしません。パッケージ版でのみ利用可。</div>
       </fieldset>
 
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
