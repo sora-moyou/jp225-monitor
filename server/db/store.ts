@@ -60,8 +60,14 @@ export function initSchema(db: DatabaseSync): void {
   // 既存DBに重複があると UNIQUE 索引を張れないため、先に id 最小を残して重複を除去(自己修復)。
   const ALERT_IDENTITY = `symbol, triggered_at, COALESCE(detection_kind,''), COALESCE(direction,''), `
     + `COALESCE(window_seconds,-1), COALESCE(reference_kind,''), COALESCE(reference_price,-1)`;
-  db.exec(`DELETE FROM alerts WHERE id NOT IN (SELECT MIN(id) FROM alerts GROUP BY ${ALERT_IDENTITY})`);
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_identity ON alerts(${ALERT_IDENTITY})`);
+  // 索引が未作成のときだけ重複除去(初回マイグレーションのみ)。以後は UNIQUE 索引が重複を防ぐため、
+  // 起動毎の全表スキャン DELETE は不要。
+  const hasIdentityIdx = (db.prepare('PRAGMA index_list(alerts)').all() as Array<{ name: string }>)
+    .some(i => i.name === 'idx_alerts_identity');
+  if (!hasIdentityIdx) {
+    db.exec(`DELETE FROM alerts WHERE id NOT IN (SELECT MIN(id) FROM alerts GROUP BY ${ALERT_IDENTITY})`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_identity ON alerts(${ALERT_IDENTITY})`);
+  }
   // bars_1m の読み取りはすべて PRIMARY KEY(symbol, t) のレンジで賄える(getSessionOHLC は t 範囲を
   // 読んで JS 側でセッション集計、getRecentBars/getBarClose* も symbol+t)。session_date/session で
   // 絞る索引はもう不要なため作らない(旧 idx_bars_session は書き込み増だけで読みに使われていなかった)。
