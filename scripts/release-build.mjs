@@ -15,7 +15,10 @@ if (!existsSync(keyPath)) {
   process.exit(1);
 }
 const key = readFileSync(keyPath, 'utf-8').trim();
-const password = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '';
+// jp225-monitor 鍵はパスフレーズ無し(空)。共有 env 変数 TAURI_SIGNING_PRIVATE_KEY_PASSWORD は
+// 他プロジェクト(jp225-Trade=パスフレーズ"trade")の値が入りうるため参照せず空に固定する
+// (誤った非空パスワードで署名が "Wrong password" になるのを防ぐ)。
+const password = '';
 
 console.log(`🔐 Using private key: ${keyPath} (${key.length} chars)`);
 console.log(`🔐 Password length:   ${password.length} (0 = no password)`);
