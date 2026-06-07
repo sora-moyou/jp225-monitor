@@ -5,18 +5,25 @@ export interface MergeResult { alerts: number; bars_1m: number; ticks: number; }
 /** sourcePath の jp225 DB を db へ統合(OR IGNORE)。db は v0.6.17 の UNIQUE 同一性索引を持つ前提。
  *  純粋に DB 操作のみ(停止・バックアップ・再起動は呼び出し側)。 */
 export function mergeFrom(db: DatabaseSync, sourcePath: string): MergeResult {
-  const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>).map(c => c.name);
   const src = sourcePath.replace(/\\/g, '/');
   db.exec(`ATTACH DATABASE '${src}' AS src`);
+  // 列は main と src の共通部分のみを使う。別PCが別バージョンで列が増減していても、
+  // 存在する列だけ移送して "no such column" 失敗を避ける(列順差も列名明示で吸収)。
+  const colsOf = (schema: 'main' | 'src', t: string) =>
+    (db.prepare(`PRAGMA ${schema}.table_info(${t})`).all() as Array<{ name: string }>).map(c => c.name);
+  const common = (t: string, exclude: string[] = []) => {
+    const s = new Set(colsOf('src', t));
+    return colsOf('main', t).filter(n => s.has(n) && !exclude.includes(n));
+  };
   db.exec('BEGIN');
   try {
-    // alerts: id 以外の全列。UNIQUE 同一性索引が重複を弾く。
-    const aCols = cols('alerts').filter(n => n !== 'id').join(', ');
+    // alerts: id 以外の共通列。UNIQUE 同一性索引が重複を弾く。
+    const aCols = common('alerts', ['id']).join(', ');
     const a = db.prepare(`INSERT OR IGNORE INTO main.alerts (${aCols}) SELECT ${aCols} FROM src.alerts`).run();
-    // bars_1m / ticks: PK(symbol,t)。列名明示で列順差を吸収。
-    const bCols = cols('bars_1m').join(', ');
+    // bars_1m / ticks: PK(symbol,t)。共通列を明示。
+    const bCols = common('bars_1m').join(', ');
     const b = db.prepare(`INSERT OR IGNORE INTO main.bars_1m (${bCols}) SELECT ${bCols} FROM src.bars_1m`).run();
-    const tCols = cols('ticks').join(', ');
+    const tCols = common('ticks').join(', ');
     const t = db.prepare(`INSERT OR IGNORE INTO main.ticks (${tCols}) SELECT ${tCols} FROM src.ticks`).run();
     db.exec('COMMIT');
     db.exec('DETACH DATABASE src');

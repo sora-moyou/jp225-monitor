@@ -24,6 +24,10 @@ export function mergeHandler(req: Request, res: Response): void {
   const dbPath = resolveDbPath();
   const backup = join(dbPath, '..', `jp225.db.bak-merge-${ts()}`);
   const db = openDb(dbPath);   // 専用接続
+  // マージはこの sidecar 内で同期実行されるが、同プロセスの他ループ(priceLoop/alertHistory 等)が
+  // 別接続で書き込みうる。WAL の単一筆者ロックで COMMIT がそれらと競合しても確実に勝てるよう、
+  // マージ接続の busy_timeout を長めにする(既定5秒→30秒)。
+  db.exec('PRAGMA busy_timeout=30000');
   try {
     backupViaVacuum(db, backup);
     const inserted = mergeFrom(db, source);   // 同期=原子的
