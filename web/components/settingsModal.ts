@@ -1,6 +1,6 @@
 import { apiUrl } from '../lib/apiBase.js';
 import { getUpdateStatus, installUpdate } from '../lib/updater.js';
-import { pickDbFile, mergeDbFromFile, relaunchApp, isTauri, saveDbFile, exportDbToFile } from '../lib/dbMerge.js';
+import { pickDbFile, mergeDbFromFile, relaunchApp, isTauri, saveDbFile, exportDbToFile, replaceDbFromFile } from '../lib/dbMerge.js';
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({
@@ -90,6 +90,8 @@ export interface SettingsElements {
   mergeResult: HTMLElement;
   exportDbBtn: HTMLButtonElement;
   exportResult: HTMLElement;
+  replaceDbBtn: HTMLButtonElement;
+  replaceResult: HTMLElement;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -299,6 +301,38 @@ export function initSettingsModal(el: SettingsElements): void {
       setExportResult('err', `❌ 失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
     } finally {
       el.exportDbBtn.disabled = false;
+    }
+  });
+
+  // --- DBを置き換え(インポート): 選んだDBの内容で現在のDBを丸ごと置換→自動再起動(破壊的・バックアップ後) ---
+  function setReplaceResult(cls: 'ok' | 'warn' | 'err', html: string) {
+    el.replaceResult.className = `update-result ${cls}`;
+    el.replaceResult.innerHTML = html;
+  }
+  if (!isTauri()) {
+    el.replaceDbBtn.disabled = true;
+    setReplaceResult('warn', 'パッケージ版でのみ利用可');
+  }
+  el.replaceDbBtn.addEventListener('click', async () => {
+    if (!isTauri()) { setReplaceResult('warn', 'パッケージ版でのみ利用可'); return; }
+    const path = await pickDbFile();
+    if (!path) return;
+    if (!window.confirm('現在のDBを、選んだDBの内容で完全に置き換えます(既存データは消えます)。自動バックアップ後に置換し、collector と jp225-Trade を停止して自動再起動します。よろしいですか?')) return;
+    el.replaceDbBtn.disabled = true;
+    setReplaceResult('warn', '置き換え中…(数十秒かかる場合があります)');
+    try {
+      const res = await replaceDbFromFile(path);
+      if (res.ok) {
+        const i = res.replaced ?? { alerts: 0, bars_1m: 0, ticks: 0 };
+        setReplaceResult('ok', `✅ 置き換え完了: alerts ${i.alerts} / bars ${i.bars_1m} / ticks ${i.ticks}。再起動します`);
+        setTimeout(() => { void relaunchApp(); }, 1500);
+      } else {
+        setReplaceResult('err', `❌ 失敗: ${escapeHtml(res.error ?? '不明')}`);
+        el.replaceDbBtn.disabled = false;
+      }
+    } catch (err) {
+      setReplaceResult('err', `❌ 失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
+      el.replaceDbBtn.disabled = false;
     }
   });
 

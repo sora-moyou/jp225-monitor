@@ -47,4 +47,12 @@ export async function exportDbToFile(dest: string): Promise<ExportResp> {
   return r.json() as Promise<ExportResp>;
 }
 
+export interface ReplaceResp { ok: boolean; replaced?: { alerts: number; bars_1m: number; ticks: number }; backup?: string; error?: string; note?: string; }
+
+/** 現在のDBの中身を source の内容で置き換える(破壊的・バックアップ後)。collector/trade 停止→置換。 */
+export async function replaceDbFromFile(source: string): Promise<ReplaceResp> {
+  const r = await fetch(apiUrl('/api/replace'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source }) });
+  return r.json() as Promise<ReplaceResp>;
+}
+
 export function isTauri(): boolean { return inTauri(); }
