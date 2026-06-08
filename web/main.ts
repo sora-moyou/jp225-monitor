@@ -155,6 +155,8 @@ initSettingsModal({
   mergeResult:    document.getElementById('settings-merge-result') as HTMLElement,
   exportDbBtn:    document.getElementById('settings-export-db') as HTMLButtonElement,
   exportResult:   document.getElementById('settings-export-result') as HTMLElement,
+  replaceDbBtn:   document.getElementById('settings-replace-db') as HTMLButtonElement,
+  replaceResult:  document.getElementById('settings-replace-result') as HTMLElement,
 });
 
 // 詳細パラメータ モーダル (定期ポーリング / クールダウン等。設定とは別ボタン 🎛️)

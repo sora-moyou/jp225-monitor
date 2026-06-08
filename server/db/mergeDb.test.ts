@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { insertAlert, recordTick, getRecentAlerts, getRecentTicks, openDb } from './store.js';
-import { mergeFrom } from './mergeDb.js';
+import { mergeFrom, replaceFrom } from './mergeDb.js';
 
 const tmp: string[] = [];
 function fileDb(): { db: DatabaseSync; path: string } {
@@ -40,6 +40,29 @@ describe('mergeFrom', () => {
     recordTick(o.db, 'NIY=F', 120_000, 67010, '2026-06-05', 'Day');  // 別
     const res = mergeFrom(m.db, o.path);
     expect(getRecentTicks(m.db, 'NIY=F', 0).length).toBe(2);
+    expect(res.ticks).toBe(1);
+  });
+});
+
+describe('replaceFrom', () => {
+  it('main の中身をソースと完全一致に置き換える(既存は消える・ソース分だけ残る)', () => {
+    const m = fileDb(); const o = fileDb();
+    // main: 既存の独自データ
+    insertAlert(m.db, { ...A, triggeredAt: 9000 });
+    recordTick(m.db, 'NIY=F', 9_000_000, 60000, '2026-06-05', 'Day');
+    // source: 別の2件
+    insertAlert(o.db, A);
+    insertAlert(o.db, { ...A, triggeredAt: 2000 });
+    recordTick(o.db, 'NIY=F', 60_000, 67000, '2026-06-05', 'Day');
+
+    const res = replaceFrom(m.db, o.path);
+
+    const alerts = getRecentAlerts(m.db, 10);
+    expect(alerts.length).toBe(2);                                  // main の独自9000は消え、source の2件
+    expect(alerts.some(a => a.triggered_at === 9000)).toBe(false);  // 既存は消えた
+    expect(alerts.map(a => a.triggered_at).sort()).toEqual([1000, 2000]);
+    expect(getRecentTicks(m.db, 'NIY=F', 0).map(t => t.t)).toEqual([60_000]);  // main の独自tickも消えてsourceのみ
+    expect(res.alerts).toBe(2);
     expect(res.ticks).toBe(1);
   });
 });

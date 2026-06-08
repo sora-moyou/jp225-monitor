@@ -87,6 +87,11 @@
         </div>
         <div id="settings-export-result" class="update-result"></div>
         <div class="exit-hint">この PC の jp225.db を選んだ場所へ書き出します（別PCへ移してマージする用）。DBは変更せず、停止・再起動もしません。パッケージ版でのみ利用可。</div>
+        <div class="version-row" style="margin-top:8px">
+          <button type="button" id="settings-replace-db" class="btn-secondary">DBを置き換え(インポート)</button>
+        </div>
+        <div id="settings-replace-result" class="update-result"></div>
+        <div class="exit-hint">選んだ DB の内容で現在の DB を<b>丸ごと置き換え</b>ます（既存データは消去・自動バックアップ後）。2台を完全に同一データにしたい時用。collector/jp225-Trade を停止し自動再起動。パッケージ版でのみ利用可。</div>
       </fieldset>
 
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>

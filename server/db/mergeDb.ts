@@ -4,26 +4,53 @@ export interface MergeResult { alerts: number; bars_1m: number; ticks: number; }
 
 /** sourcePath の jp225 DB を db へ統合(OR IGNORE)。db は v0.6.17 の UNIQUE 同一性索引を持つ前提。
  *  純粋に DB 操作のみ(停止・バックアップ・再起動は呼び出し側)。 */
+// main と src の共通列(src を ATTACH 済み前提)。別PCが別バージョンで列が増減していても
+// 存在する列だけ移送して "no such column" を避け、列順差も列名明示で吸収する。
+function commonColsOf(db: DatabaseSync, t: string, exclude: string[] = []): string {
+  const colsOf = (schema: 'main' | 'src') =>
+    (db.prepare(`PRAGMA ${schema}.table_info(${t})`).all() as Array<{ name: string }>).map(c => c.name);
+  const s = new Set(colsOf('src'));
+  return colsOf('main').filter(n => s.has(n) && !exclude.includes(n)).join(', ');
+}
+
 export function mergeFrom(db: DatabaseSync, sourcePath: string): MergeResult {
   const src = sourcePath.replace(/\\/g, '/');
   db.exec(`ATTACH DATABASE '${src}' AS src`);
-  // 列は main と src の共通部分のみを使う。別PCが別バージョンで列が増減していても、
-  // 存在する列だけ移送して "no such column" 失敗を避ける(列順差も列名明示で吸収)。
-  const colsOf = (schema: 'main' | 'src', t: string) =>
-    (db.prepare(`PRAGMA ${schema}.table_info(${t})`).all() as Array<{ name: string }>).map(c => c.name);
-  const common = (t: string, exclude: string[] = []) => {
-    const s = new Set(colsOf('src', t));
-    return colsOf('main', t).filter(n => s.has(n) && !exclude.includes(n));
-  };
   db.exec('BEGIN');
   try {
-    // alerts: id 以外の共通列。UNIQUE 同一性索引が重複を弾く。
-    const aCols = common('alerts', ['id']).join(', ');
+    // alerts: id 以外の共通列。UNIQUE 同一性索引が重複を弾く。bars_1m / ticks は PK(symbol,t)。
+    const aCols = commonColsOf(db, 'alerts', ['id']);
     const a = db.prepare(`INSERT OR IGNORE INTO main.alerts (${aCols}) SELECT ${aCols} FROM src.alerts`).run();
-    // bars_1m / ticks: PK(symbol,t)。共通列を明示。
-    const bCols = common('bars_1m').join(', ');
+    const bCols = commonColsOf(db, 'bars_1m');
     const b = db.prepare(`INSERT OR IGNORE INTO main.bars_1m (${bCols}) SELECT ${bCols} FROM src.bars_1m`).run();
-    const tCols = common('ticks').join(', ');
+    const tCols = commonColsOf(db, 'ticks');
+    const t = db.prepare(`INSERT OR IGNORE INTO main.ticks (${tCols}) SELECT ${tCols} FROM src.ticks`).run();
+    db.exec('COMMIT');
+    db.exec('DETACH DATABASE src');
+    return { alerts: Number(a.changes), bars_1m: Number(b.changes), ticks: Number(t.changes) };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    try { db.exec('DETACH DATABASE src'); } catch { /* ignore */ }
+    throw e;
+  }
+}
+
+/** sourcePath の jp225 DB の内容で db を「置き換える」。alerts/bars_1m/ticks を全削除してから
+ *  ソースの全行を入れ直す(meta=ローカル設定/ハートビートは残す)。1トランザクション=原子的。
+ *  これで db の中身がソースと完全一致し、両PCで同一バックテストになる。返り値=投入件数。 */
+export function replaceFrom(db: DatabaseSync, sourcePath: string): MergeResult {
+  const src = sourcePath.replace(/\\/g, '/');
+  db.exec(`ATTACH DATABASE '${src}' AS src`);
+  db.exec('BEGIN');
+  try {
+    db.exec('DELETE FROM main.alerts');
+    db.exec('DELETE FROM main.bars_1m');
+    db.exec('DELETE FROM main.ticks');
+    const aCols = commonColsOf(db, 'alerts', ['id']);
+    const a = db.prepare(`INSERT OR IGNORE INTO main.alerts (${aCols}) SELECT ${aCols} FROM src.alerts`).run();
+    const bCols = commonColsOf(db, 'bars_1m');
+    const b = db.prepare(`INSERT OR IGNORE INTO main.bars_1m (${bCols}) SELECT ${bCols} FROM src.bars_1m`).run();
+    const tCols = commonColsOf(db, 'ticks');
     const t = db.prepare(`INSERT OR IGNORE INTO main.ticks (${tCols}) SELECT ${tCols} FROM src.ticks`).run();
     db.exec('COMMIT');
     db.exec('DETACH DATABASE src');
