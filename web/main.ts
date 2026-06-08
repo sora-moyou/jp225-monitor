@@ -120,7 +120,7 @@ function setupColResize(handleId: string, gridSelector: string, storageKey: stri
     const cur = parseFloat(grid.style.getPropertyValue('--left-fr'));
     if (cur > 0 && cur < 1) localStorage.setItem(storageKey, cur.toString());
   });
-  // ダブルクリックで初期比率 (1:2) に戻す
+  // ダブルクリックで初期比率 (1:1) に戻す
   handle.addEventListener('dblclick', () => {
     grid.style.removeProperty('--left-fr');
     grid.style.removeProperty('--right-fr');

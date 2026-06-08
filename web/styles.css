@@ -142,7 +142,7 @@ body {
 
 .main-grid {
   display: grid;
-  grid-template-columns: var(--left-fr, 1fr) 6px var(--right-fr, 2fr);   /* 左 | 境界ハンドル | 右 (既定 1:2, D&D可) */
+  grid-template-columns: var(--left-fr, 1fr) 6px var(--right-fr, 1fr);   /* 左 | 境界ハンドル | 右 (既定 1:1, D&D可) */
   gap: 14px;
   padding: 14px 18px;
   /* body の zoom(z)で全体が z 倍になるため、グリッド高さを z で割って
@@ -363,6 +363,15 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+}
+/* 見出し「AI チャット」+ プリセットボタンを1行目左側にまとめる(クリアは右端) */
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 .chat-header h2 {
   font-size: 12px;
@@ -721,7 +730,8 @@ body {
 .upd-row.err  { color: var(--down); }
 .upd-row .update-progress, .upd-row .basedata-progress { opacity: 0.8; font-size: 12px; }
 
-.chat-presets { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 0; }
+/* 見出し右へ移設。先頭に全角2文字程度の空白(margin-left: 2em)を空ける */
+.chat-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 2em; }
 .chat-preset {
   font-size: 11px; padding: 4px 10px;
   background: var(--panel); color: var(--text);
