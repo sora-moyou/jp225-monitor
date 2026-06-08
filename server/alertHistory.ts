@@ -40,6 +40,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
   if (detectionKind === 'break') return '水準ブレイク';
   if (detectionKind === 'pivot') return 'スイング形成';
   if (detectionKind === 'trend') return 'トレンド転換';
+  if (detectionKind === 'dailyband') return '日足バンド';
   // 後方互換(過去履歴の旧種別)
   if (detectionKind === 'granville') return 'グランビル';
   if (detectionKind === 'dtb') return 'Wトップ/ボトム';
@@ -53,7 +54,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
 // levelsLoop 由来(double/level_sr/break/pivot)+ slope は monitor 専用(collector は levelsLoop を回さない)。
 // shock/ma_sr/trend は alertEngine 由来、crash は collector も検知 → monitor-only ではない(collector が authoritative)。
 // 旧 dtb/swingdtb も levelsLoop 由来だったため後方互換で残す。
-const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb']);
+const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb', 'dailyband']);
 
 // LLM説明を受ける(=ニュースを参照する)アラート種別。これらの発火時刻で「前回アラート以降」のニュース窓を決める。
 // テクニカル系(double/level_sr/break/pivot/trend/ma_sr…)は固定文でニュースを引かないため対象外。

@@ -46,7 +46,7 @@ export interface AlertEventPayload {
   windowSeconds: number;
   // v0.6.0 再設計: double/ma_sr/level_sr/break/pivot/trend が現行。dtb/swingdtb/granville/ma は履歴後方互換で残す。
   detectionKind: 'slope' | 'magnitude' | 'granville' | 'shock' | 'dtb' | 'break' | 'ma' | 'swingdtb'
-    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash';
+    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash' | 'dailyband';
   direction: 'up' | 'down';
   triggeredAt: number;
   change15min: number | null;

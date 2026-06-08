@@ -22,6 +22,7 @@ import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../server/swingDouble.j
 import { aggregateSignals, DEFAULT_AGGREGATE } from '../server/signals/aggregate.js';
 import { computeLevels } from '../server/levels.js';
 import { getSessionOHLC } from '../server/db/store.js';
+import { computeDailyBands } from '../server/dailyBand.js';
 import { classifySession } from '../collector/session.js';
 import { LEVELS_TUNING as T } from '../server/loops/levelsLoop.js';
 import type { AlertSignal } from '../server/signals/types.js';
@@ -48,6 +49,10 @@ for (let n = 66; n <= ebars.length; n++) {
 const all = db.prepare('SELECT t,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t').all(SYMBOL, start - 90 * 60000) as Array<{ t: number; h: number; l: number; c: number }>;
 const lastBreakDir: Record<string, number> = {}, lastEmit: Record<string, number> = {};
 let lastPivotT = 0, hlCacheT = 0; let hlCache: { price: number; label: string }[] = [];
+// 日足バンド(dailyband): 約60秒ごとに再計算。20分のゾーン(40円)×方向クールダウン。
+const lastBandEmit: Record<string, number> = {}; let bandCacheT = 0;
+let bandLevels: { price: number; label: string; refKind: string }[] = [];
+const BAND_COOLDOWN = 20 * 60000;
 for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const now = all[i]!.t, price = all[i]!.c;
   const recent = all.filter(b => b.t >= now - T.recentBarsMin * 60000 && b.t <= now).map(b => ({ t: b.t, h: b.h, l: b.l }));
@@ -78,6 +83,21 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const nw = raw[raw.length - 1], pv = raw[raw.length - 2];
   if (nw && nw.t > lastPivotT && (!pv || Math.abs(nw.price - pv.price) >= T.pivotFormedMinYen)) { lastPivotT = nw.t; sig.push({ type: 'pivot', direction: nw.kind === 'low' ? 'up' : 'down', reference: { kind: 'swing', price: nw.price }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${Math.round(nw.price)} 形成` }); }
   if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const sd = detectSwingDouble(extractSwingPivots(lb, T.swingPivotReclaimYen), price, DEFAULT_SWING_DOUBLE); if (sd) sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: sd.stage === 'breakout' ? 'confirmed' : 'forming', score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
+  // 日足バンド(dailyband): 60秒ごとにバンド再計算 → break/hold を直接 bump(集約なし)。
+  if (now - bandCacheT >= 60000) {
+    bandCacheT = now;
+    const closes = getSessionOHLC(db, SYMBOL, 60).filter(s => s.session === 'Night').sort((a, b) => a.sessionDate.localeCompare(b.sessionDate)).slice(-25).map(s => s.close);
+    bandLevels = computeDailyBands(closes).map(b => ({ price: b.price, label: 'daily ' + b.label, refKind: b.refKind }));
+  }
+  if (bandLevels.length > 0) {
+    const emitBand = (price: number, dir: 'up' | 'down', text: string): void => {
+      const key = `${dir}@${Math.round(price / 40) * 40}`;
+      if (now - (lastBandEmit[key] ?? -1e15) <= BAND_COOLDOWN) return;
+      lastBandEmit[key] = now; bump('dailyband', `${hm(now)} ${dir === 'up' ? '▲' : '▼'} ${text}`);
+    };
+    for (const b of detectLevelBreak(bandLevels, recent, price)) emitBand(Math.round(b.level), b.kind, `${b.label.replace(/^daily /, '')}${b.kind === 'up' ? '上抜け' : '下抜け'}`);
+    for (const h of detectLevelHold(bandLevels, recent, price)) emitBand(Math.round(h.level), h.kind === 'support' ? 'up' : 'down', `${h.label.replace(/^daily /, '')}${h.kind === 'support' ? 'サポート' : 'レジ'}`);
+  }
   for (const a of aggregateSignals(sig, DEFAULT_AGGREGATE)) {
     const ck = a.type === 'double' ? `double@${Math.round(a.reference.price / 5) * 5}#${a.stage ?? ''}` : `${a.direction}@${Math.round(a.reference.price / T.levelMergeYen) * T.levelMergeYen}`;
     const cd = a.type === 'double' ? T.doubleCooldownMs : T.zoneCooldownMs;

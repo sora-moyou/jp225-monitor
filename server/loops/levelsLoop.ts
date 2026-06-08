@@ -14,6 +14,7 @@ import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
 import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
 import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../crash.js';
+import { computeDailyBands, type DailyBand } from '../dailyBand.js';
 import type { AlertSignal, SignalType } from '../signals/types.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
@@ -97,6 +98,13 @@ const TREND_LOOKBACK_DAYS = 15;   // 反応水準と同程度の期間からス�
 const TREND_CONFLUENCE_YEN = 40;  // 合流ゲート: ライン価格が水平の反応水準(2回以上)とこの距離内の線だけ採用
 let lastTrendCheck = 0;
 let trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [];
+// ── 日足バンド(v0.6.17): 夜間セッション終値25本の MA25 ±1σ/±2σ の5水準。現値がこの帯を抜け/反発したら
+// dailyband アラートを直接 emit(crash 同様・集約は通さない)。バンドは約60秒ごとに再計算してキャッシュ。
+const DAILYBAND_CHECK_MS = 60_000;
+const DAILYBAND_COOLDOWN_MS = 20 * 60_000;   // ゾーン(40円刻み)×方向の発火クールダウン
+let lastDailyBandCheck = 0;
+let dailyBandLevels: DailyBand[] = [];
+const lastDailyBandEmit = new Map<string, number>();
 
 /** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
 function resampleHL(bars: { t: number; h: number; l: number }[], tfMs: number): { t: number; h: number; l: number }[] {
@@ -210,6 +218,18 @@ function tick(): void {
           .filter(t => reactionLevels.some(r => Math.abs(r.price - t.priceNow) <= TREND_CONFLUENCE_YEN))
           .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
       } catch (err) { console.warn('[levelsLoop] trend lines failed:', err instanceof Error ? err.message : err); }
+    }
+    // 日足バンド(MA25 ±1σ/±2σ)を約60秒ごとに再計算。日足=夜間セッション、終値=各夜間クローズ。
+    if (now - lastDailyBandCheck >= DAILYBAND_CHECK_MS) {
+      lastDailyBandCheck = now;
+      try {
+        const closes = getSessionOHLC(db, SYMBOL, 60)
+          .filter(s => s.session === 'Night')
+          .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate))   // 古い→新しい
+          .slice(-25)
+          .map(s => s.close);
+        dailyBandLevels = computeDailyBands(closes);
+      } catch (err) { console.warn('[levelsLoop] daily bands failed:', err instanceof Error ? err.message : err); }
     }
     const tCompute = Date.now();
     const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels, trendlineLevels);
@@ -369,6 +389,48 @@ function tick(): void {
       }
     } catch (err) {
       console.warn('[levelsLoop] signal detect failed:', err instanceof Error ? err.message : err);
+    }
+    // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
+    try {
+      if (dailyBandLevels.length > 0) {
+        const sinceT = now - RECENT_BARS_MIN * 60_000;
+        const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+        const bandLevelList = dailyBandLevels.map(b => ({ price: b.price, label: 'daily ' + b.label }));
+        const refKindOf = (price: number): DailyBand['refKind'] =>
+          dailyBandLevels.find(b => b.price === price)?.refKind ?? 'ma25';
+        const emitBand = (price: number, direction: 'up' | 'down', refKind: DailyBand['refKind'], note: string): void => {
+          const key = `${direction}@${Math.round(price / 40) * 40}`;
+          if (now - (lastDailyBandEmit.get(key) ?? -Infinity) <= DAILYBAND_COOLDOWN_MS) return;
+          lastDailyBandEmit.set(key, now);
+          console.log(`[levelsLoop] dailyband ${direction} @${Math.round(price)} (${refKind})`);
+          emitAlert({
+            symbol: SYMBOL, symbolLabel: '日経225先物',
+            changePercent: 0, windowSeconds: 60, detectionKind: 'dailyband', direction,
+            triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+            level: Math.round(price), note,
+            referenceKind: refKind, referencePrice: Math.round(price),
+          });
+        };
+        // 水準抜け(break)
+        for (const bsig of detectLevelBreak(bandLevelList, recent, latest.price)) {
+          const price = Math.round(bsig.level);
+          const refKind = refKindOf(bsig.level);
+          const label = bsig.label.replace(/^daily /, '');
+          const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
+          emitBand(price, bsig.kind, refKind, `日足${label} ${price.toLocaleString('ja-JP')}を${dirWord}`);
+        }
+        // 反発(support/resistance)
+        for (const h of detectLevelHold(bandLevelList, recent, latest.price)) {
+          const price = Math.round(h.level);
+          const refKind = refKindOf(h.level);
+          const label = h.label.replace(/^daily /, '');
+          const direction = h.kind === 'support' ? 'up' : 'down';
+          const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
+          emitBand(price, direction, refKind, `日足${label} ${price.toLocaleString('ja-JP')}が${word}の可能性`);
+        }
+      }
+    } catch (err) {
+      console.warn('[levelsLoop] dailyband detect failed:', err instanceof Error ? err.message : err);
     }
     // 診断ログ: 最初の3tick / 遅い時(DB>500ms or compute>150ms) / 水準が空の時 に出す。
     // 通常は無音。これを見れば「どのステージで詰まるか」「水準が空になっていないか」が分かる。
