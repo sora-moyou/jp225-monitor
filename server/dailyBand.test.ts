@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDailyBands } from './dailyBand.js';
+import { computeDailyBands, dailyCloseSeries } from './dailyBand.js';
 
 describe('computeDailyBands', () => {
   it('returns [] when fewer than 25 closes', () => {
@@ -81,5 +81,41 @@ describe('computeDailyBands', () => {
     const closes = Array.from({ length: 25 }, (_, i) => 38000 + i * 7.3);
     const bands = computeDailyBands(closes);
     expect(bands.every(b => Number.isInteger(b.price))).toBe(true);
+  });
+});
+
+describe('dailyCloseSeries (realtime MA25, v0.6.22)', () => {
+  it('24 confirmed + current price -> 25 values ending in the price', () => {
+    const confirmed = Array.from({ length: 24 }, (_, i) => 38000 + i);
+    const series = dailyCloseSeries(confirmed, 39999);
+    expect(series).toHaveLength(25);
+    expect(series[series.length - 1]).toBe(39999);
+    expect(series.slice(0, 24)).toEqual(confirmed);
+  });
+
+  it('30 confirmed -> keeps only the last 24 then appends the current price', () => {
+    const confirmed = Array.from({ length: 30 }, (_, i) => 38000 + i);
+    const series = dailyCloseSeries(confirmed, 40000);
+    expect(series).toHaveLength(25);
+    // last 24 of confirmed = indices 6..29 -> 38006..38029
+    expect(series.slice(0, 24)).toEqual(confirmed.slice(-24));
+    expect(series[24]).toBe(40000);
+  });
+
+  it('appends the price even when fewer than 24 confirmed closes', () => {
+    const confirmed = [38000, 38010, 38020];
+    const series = dailyCloseSeries(confirmed, 38100);
+    expect(series).toEqual([38000, 38010, 38020, 38100]);
+  });
+
+  it('changing currentPrice changes the computed MA25', () => {
+    const confirmed = Array.from({ length: 24 }, () => 38000);
+    const maOf = (price: number): number =>
+      computeDailyBands(dailyCloseSeries(confirmed, price)).find(b => b.refKind === 'ma25')!.price;
+    const maLow = maOf(38000);   // all 25 == 38000 -> MA25 = 38000
+    const maHigh = maOf(40500);  // (24*38000 + 40500)/25 = 38100
+    expect(maLow).toBe(38000);
+    expect(maHigh).toBe(38100);
+    expect(maHigh).toBeGreaterThan(maLow);
   });
 });

@@ -22,7 +22,7 @@ import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../server/swingDouble.j
 import { aggregateSignals, DEFAULT_AGGREGATE } from '../server/signals/aggregate.js';
 import { computeLevels } from '../server/levels.js';
 import { getSessionOHLC } from '../server/db/store.js';
-import { computeDailyBands } from '../server/dailyBand.js';
+import { computeDailyBands, dailyCloseSeries } from '../server/dailyBand.js';
 import { classifySession } from '../collector/session.js';
 import { LEVELS_TUNING as T } from '../server/loops/levelsLoop.js';
 import type { AlertSignal } from '../server/signals/types.js';
@@ -49,8 +49,10 @@ for (let n = 66; n <= ebars.length; n++) {
 const all = db.prepare('SELECT t,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t').all(SYMBOL, start - 90 * 60000) as Array<{ t: number; h: number; l: number; c: number }>;
 const lastBreakDir: Record<string, number> = {}, lastEmit: Record<string, number> = {};
 let lastPivotT = 0, hlCacheT = 0; let hlCache: { price: number; label: string }[] = [];
-// 日足バンド(dailyband): 約60秒ごとに再計算。20分のゾーン(40円)×方向クールダウン。
+// 日足バンド(dailyband): v0.6.22 リアルタイム化。確定済み夜間終値は約60秒キャッシュだが、現在値を進行中
+// 日足の終値として append しバンドは毎ティック再計算する。20分のゾーン(40円)×方向クールダウン。
 const lastBandEmit: Record<string, number> = {}; let bandCacheT = 0;
+let confirmedCloses: number[] = [];
 let bandLevels: { price: number; label: string; refKind: string }[] = [];
 const BAND_COOLDOWN = 20 * 60000;
 for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
@@ -83,12 +85,17 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const nw = raw[raw.length - 1], pv = raw[raw.length - 2];
   if (nw && nw.t > lastPivotT && (!pv || Math.abs(nw.price - pv.price) >= T.pivotFormedMinYen)) { lastPivotT = nw.t; sig.push({ type: 'pivot', direction: nw.kind === 'low' ? 'up' : 'down', reference: { kind: 'swing', price: nw.price }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${Math.round(nw.price)} 形成` }); }
   if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const sd = detectSwingDouble(extractSwingPivots(lb, T.swingPivotReclaimYen), price, DEFAULT_SWING_DOUBLE); if (sd) sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: sd.stage === 'breakout' ? 'confirmed' : 'forming', score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
-  // 日足バンド(dailyband): 60秒ごとにバンド再計算 → break/hold を直接 bump(集約なし)。
-  if (now - bandCacheT >= 60000) {
+  // 日足バンド(dailyband): v0.6.22 リアルタイム化。確定済み夜間終値は60秒キャッシュ(進行中夜間足は除外)。
+  // 現在値を進行中日足の終値として append し、バンドは毎ティック再計算 → break/hold を直接 bump(集約なし)。
+  if (now - bandCacheT >= 60000 || confirmedCloses.length === 0) {
     bandCacheT = now;
-    const closes = getSessionOHLC(db, SYMBOL, 60).filter(s => s.session === 'Night').sort((a, b) => a.sessionDate.localeCompare(b.sessionDate)).slice(-25).map(s => s.close);
-    bandLevels = computeDailyBands(closes).map(b => ({ price: b.price, label: 'daily ' + b.label, refKind: b.refKind }));
+    const nights = getSessionOHLC(db, SYMBOL, 60).filter(s => s.session === 'Night').sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
+    const inNight = classifySession(now)?.session === 'Night';
+    confirmedCloses = (inNight ? nights.slice(0, -1) : nights).slice(-30).map(s => s.close);
   }
+  bandLevels = confirmedCloses.length >= 24
+    ? computeDailyBands(dailyCloseSeries(confirmedCloses, price)).map(b => ({ price: b.price, label: 'daily ' + b.label, refKind: b.refKind }))
+    : [];
   if (bandLevels.length > 0) {
     const emitBand = (price: number, dir: 'up' | 'down', text: string): void => {
       const key = `${dir}@${Math.round(price / 40) * 40}`;

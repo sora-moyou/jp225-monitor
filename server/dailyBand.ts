@@ -15,6 +15,16 @@ export interface DailyBand {
  * nightCloses は時系列順(古い→新しい)で渡す想定だが、平均/分散は順序に依らない。
  * 25本未満なら [] を返す。価格は整数に丸める。
  */
+/**
+ * 日足終値系列を組み立てる(v0.6.22 リアルタイム MA25)。
+ * 最後の日足(進行中の夜間足)は確定を待たず、現在値を終値として採用する。
+ * 確定済み夜間終値の直近24本 + 現在値 = 25値 を返す。これを computeDailyBands に渡すと、
+ * MA25/σ が現在値の変化に合わせて毎ティック動く。
+ */
+export function dailyCloseSeries(confirmedNightCloses: number[], currentPrice: number): number[] {
+  return [...confirmedNightCloses.slice(-24), currentPrice];
+}
+
 export function computeDailyBands(nightCloses: number[]): DailyBand[] {
   if (nightCloses.length < 25) return [];
   const last25 = nightCloses.slice(-25);
