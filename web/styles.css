@@ -32,14 +32,16 @@ body {
 }
 .topbar h1 { font-size: 18px; margin: 0; display: flex; align-items: baseline; gap: 8px; }
 .version-tag {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text);   /* タイトル「JP225 Monitor」と同色に(サイズは現状維持) */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);   /* タイトル「JP225 Monitor」と同色・1行目に明示 */
   padding: 1px 6px;
   border: 1px solid var(--border);
   border-radius: 3px;
 }
 .version-tag.update-available { color: var(--up); border-color: var(--up); cursor: pointer; }
+/* 1行目の日時を大きく(ユーザー指定) */
+#clock { font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
 .status { display: flex; gap: 12px; align-items: center; }
 /* 相関ライン「相関 (vs 日経225先物): …」は非表示(ユーザー指定)。データ自体は
    getCurrentLeader/getAnchorSymbol が他ロジックで使うのでポーリングは継続、表示のみ消す。 */
