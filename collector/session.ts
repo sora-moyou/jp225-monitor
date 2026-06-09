@@ -48,6 +48,19 @@ export function classifySession(epochMs: number): SessionInfo | null {
   return info;
 }
 
+// ── 東証 現物(個別株 .T)の立会時間帯。先物(8:45-15:45/夜間)とは別物。
+// AI が個別株を「今リアルタイムに動いている」材料として誤用しないための判定。
+// 昼休み(11:30-12:30)は取引停止だが、朝の値動きは新鮮で連動材料として有効(ユーザー指定)なので
+// 9:00-15:30 を**連続**で「引用可(=立会時間帯)」と扱う。夜間・早朝は前回終値で停止=false。
+const CASH_OPEN = 9 * 60;          // 9:00
+const CASH_CLOSE = 15 * 60 + 30;   // 15:30(大引け・2024拡大後)
+/** 東証現物の立会時間帯か。平日 9:00-15:30 JST(昼休み含む・休場日・週末は false)。 */
+export function tokyoCashOpen(epochMs: number): boolean {
+  const { dow, mod, date } = jstParts(epochMs);
+  if (!isWeekday(dow) || HOLIDAYS.has(date)) return false;
+  return mod >= CASH_OPEN && mod < CASH_CLOSE;
+}
+
 export const OPEN_GUARD_BARS = 3;   // 寄りから3本(=3分)は抑制
 
 /** 立会開始(寄付)からの分オフセット。非取引時間は null。

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifySession, inPollWindow } from './session.js';
+import { classifySession, inPollWindow, tokyoCashOpen } from './session.js';
 
 // JST epoch helper: y-m-d h:mm (JST) → epoch ms.  (JST = UTC+9, no DST)
 function jst(y: number, mo: number, d: number, h: number, mi: number): number {
@@ -11,6 +11,26 @@ const TUE = [2026, 6, 2] as const;
 const FRI = [2026, 6, 5] as const;
 const SAT = [2026, 6, 6] as const;
 const SUN = [2026, 5, 31] as const;
+
+describe('tokyoCashOpen (東証現物 9:00-15:30・AI連動材料の引用可判定)', () => {
+  it('平日 9:00 開始(含む)〜15:30 終了(除く)。昼休みも引用可で true', () => {
+    expect(tokyoCashOpen(jst(...MON, 9, 0))).toBe(true);    // 寄り(含む)
+    expect(tokyoCashOpen(jst(...MON, 8, 59))).toBe(false);  // 寄り前
+    expect(tokyoCashOpen(jst(...MON, 11, 45))).toBe(true);  // 昼休み=引用可(ユーザー指定)
+    expect(tokyoCashOpen(jst(...MON, 12, 30))).toBe(true);  // 後場寄り
+    expect(tokyoCashOpen(jst(...MON, 15, 29))).toBe(true);  // 大引け直前
+    expect(tokyoCashOpen(jst(...MON, 15, 30))).toBe(false); // 大引け(除く)
+  });
+  it('夜間・早朝(先物Nightセッション)は false=引用しない', () => {
+    expect(tokyoCashOpen(jst(...MON, 17, 0))).toBe(false);  // 夜間
+    expect(tokyoCashOpen(jst(...TUE, 3, 0))).toBe(false);   // 早朝
+    expect(tokyoCashOpen(jst(...MON, 16, 0))).toBe(false);  // 引け後
+  });
+  it('週末・休場日は false', () => {
+    expect(tokyoCashOpen(jst(...SAT, 10, 0))).toBe(false);
+    expect(tokyoCashOpen(jst(2026, 1, 1, 10, 0))).toBe(false);   // 元日(HOLIDAYS)
+  });
+});
 
 describe('classifySession', () => {
   it('Day session: Mon 08:45–15:44 inclusive of open, exclusive of 15:45', () => {
