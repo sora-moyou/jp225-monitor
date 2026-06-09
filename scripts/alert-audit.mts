@@ -24,7 +24,7 @@ import { computeLevels } from '../server/levels.js';
 import { getSessionOHLC } from '../server/db/store.js';
 import { computeDailyBands, dailyCloseSeries } from '../server/dailyBand.js';
 import { classifySession } from '../collector/session.js';
-import { LEVELS_TUNING as T } from '../server/loops/levelsLoop.js';
+import { LEVELS_TUNING as T, yenPct } from '../server/loops/levelsLoop.js';
 import type { AlertSignal } from '../server/signals/types.js';
 
 const SYMBOL = 'NIY=F';
@@ -59,14 +59,14 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const now = all[i]!.t, price = all[i]!.c;
   const recent = all.filter(b => b.t >= now - T.recentBarsMin * 60000 && b.t <= now).map(b => ({ t: b.t, h: b.h, l: b.l }));
   if (recent.length < 5) continue;
-  const raw = extractSwingPivots(recent, T.pivotReclaimYen);
+  const raw = extractSwingPivots(recent, yenPct(price, T.pivotReclaimPct));
   const pivots = raw.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
   if (now - hlCacheT > 30 * 60000) {
     try {
       // 反応水準も levelsLoop と同様に算出(1H/3Hスイング)。本番の tier≥1 集合と一致させる。
       const rb = all.filter(b => b.t >= now - 5 * 86400000 && b.t <= now).map(b => ({ t: b.t, h: b.h, l: b.l }));
       const resHL = (tf: number): { t: number; h: number; l: number }[] => { const m = new Map<number, { t: number; h: number; l: number }>(); for (const b of rb) { const k = Math.floor(b.t / tf) * tf; const e = m.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else m.set(k, { t: k, h: b.h, l: b.l }); } return [...m.values()].sort((a, b) => a.t - b.t); };
-      const rp = [...extractSwingPivots(resHL(3600000), 120), ...extractSwingPivots(resHL(10800000), 200)].map(p => p.price).sort((a, b) => a - b);
+      const rp = [...extractSwingPivots(resHL(3600000), yenPct(price, T.reactionReclaim1hPct)), ...extractSwingPivots(resHL(10800000), yenPct(price, T.reactionReclaim3hPct))].map(p => p.price).sort((a, b) => a - b);
       const rcl: { price: number; reactions: number }[] = [];
       for (const p of rp) { const c = rcl.find(x => Math.abs(x.price - p) <= 30); if (c) { c.price = (c.price * c.reactions + p) / (c.reactions + 1); c.reactions++; } else rcl.push({ price: p, reactions: 1 }); }
       const rl = rcl.filter(c => c.reactions >= 2).map(c => ({ price: Math.round(c.price), reactions: c.reactions }));
@@ -83,8 +83,8 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   for (const b of outer.values()) { if (now - (lastBreakDir[b.kind] ?? -1e15) <= T.breakDirCooldownMs) continue; sig.push({ type: 'break', direction: b.kind, reference: { kind: 'level', price: b.level }, stage: 'confirmed', score: 1.2, triggeredAt: now, text: `${Math.round(b.level)} ${b.label}抜け` }); }
   for (const h of detectLevelHold(hl, recent, price)) sig.push({ type: 'level_sr', direction: h.kind === 'support' ? 'up' : 'down', reference: { kind: 'level', price: h.level }, stage: 'confirmed', score: 1.1, triggeredAt: now, text: `${Math.round(h.level)} ${h.label}${h.kind === 'support' ? 'サポート' : 'レジ'}` });
   const nw = raw[raw.length - 1], pv = raw[raw.length - 2];
-  if (nw && nw.t > lastPivotT && (!pv || Math.abs(nw.price - pv.price) >= T.pivotFormedMinYen)) { lastPivotT = nw.t; sig.push({ type: 'pivot', direction: nw.kind === 'low' ? 'up' : 'down', reference: { kind: 'swing', price: nw.price }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${Math.round(nw.price)} 形成` }); }
-  if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const sd = detectSwingDouble(extractSwingPivots(lb, T.swingPivotReclaimYen), price, DEFAULT_SWING_DOUBLE); if (sd) sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: sd.stage === 'breakout' ? 'confirmed' : 'forming', score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
+  if (nw && nw.t > lastPivotT && (!pv || Math.abs(nw.price - pv.price) >= yenPct(price, T.pivotFormedMinPct))) { lastPivotT = nw.t; sig.push({ type: 'pivot', direction: nw.kind === 'low' ? 'up' : 'down', reference: { kind: 'swing', price: nw.price }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${Math.round(nw.price)} 形成` }); }
+  if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const sd = detectSwingDouble(extractSwingPivots(lb, yenPct(price, T.swingPivotReclaimPct)), price, DEFAULT_SWING_DOUBLE); if (sd) sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: sd.stage === 'breakout' ? 'confirmed' : 'forming', score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
   // 日足バンド(dailyband): v0.6.22 リアルタイム化。確定済み夜間終値は60秒キャッシュ(進行中夜間足は除外)。
   // 現在値を進行中日足の終値として append し、バンドは毎ティック再計算 → break/hold を直接 bump(集約なし)。
   if (now - bandCacheT >= 60000 || confirmedCloses.length === 0) {
