@@ -337,9 +337,30 @@ function formatPricesForChat(prices: Price[], now: number): string {
   }).join('\n');
 }
 
-function formatNewsForChat(news: NewsItem[], now: number): string {
+/** 文字バイグラム集合(空白・記号除去)。日本語は語分割が無いので2文字シングルで類似を測る。 */
+function bigrams(s: string): string[] {
+  const c = s.toLowerCase().replace(/[\s、。,.!?？！「」（）()・:：;；'"’”]/g, '');
+  const out: string[] = [];
+  for (let i = 0; i + 2 <= c.length; i++) out.push(c.slice(i, i + 2));
+  return out;
+}
+
+export function formatNewsForChat(news: NewsItem[], now: number, queryText = ''): string {
   if (news.length === 0) return '(ニュースなし)';
-  return news.slice(0, 15).map(n => {
+  // ③: 最新発話と文字バイグラムが重なるニュースを優先。重なりゼロなら直近にフォールバック。
+  const qGrams = new Set(bigrams(queryText));
+  const scored = news.map(n => {
+    const title = n.title.toLowerCase();
+    let hits = 0;
+    for (const g of qGrams) if (title.includes(g)) hits++;
+    return { n, hits };
+  });
+  const relevant = scored.filter(s => s.hits > 0)
+    .sort((a, b) => b.hits - a.hits || b.n.publishedAt - a.n.publishedAt)
+    .slice(0, 12)
+    .map(s => s.n);
+  const list = relevant.length > 0 ? relevant : news.slice(0, 15);
+  return list.map(n => {
     const ageMin = Math.max(0, Math.round((now - n.publishedAt) / 60000));
     return `- [${ageMin}分前] [${n.source}] ${n.title}`;
   }).join('\n');
@@ -400,13 +421,14 @@ export async function runChatWithTools(
 
 export async function chat(input: ChatInput): Promise<string> {
   const now = Date.now();
+  const lastUser = [...input.messages].reverse().find(m => m.role === 'user')?.content ?? '';
   const systemPrompt =
     `${CHAT_SYSTEM_PROMPT}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(input.prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
     (input.correlate ? `${formatCorrelate(input.correlate)}\n\n` : '') +
-    `■ 直近ニュース (上位15件):\n${formatNewsForChat(input.news, now)}`;
+    `■ 関連ニュース:\n${formatNewsForChat(input.news, now, lastUser)}`;
 
   const useTools = isWebSearchEnabled();
   return callWithFallback(async (p) => {
