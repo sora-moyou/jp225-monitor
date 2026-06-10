@@ -3,7 +3,7 @@ import { openDb, resolveDbPath, getSessionOHLC, getRecentBars } from '../db/stor
 import { isSessionComplete } from '../levels.js';
 import { computeADR, projectTargets, computeSeasonality, currentAndNextSlot,
   type ADR, type SlotStat } from '../forecast.js';
-import { classifySession } from '../../collector/session.js';
+import { classifySession, inPollWindow } from '../../collector/session.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 120_000;
@@ -26,6 +26,7 @@ let running = false;
 let last: ForecastSnapshot = { adr: null, targets: null, seasonalityNow: null, seasonalityNext: null, asOf: 0 };
 
 function tick(): void {
+  if (!inPollWindow(Date.now())) return;   // 取引時間外は何もしない(軽量化)
   if (!db) return;
   try {
     const now = Date.now();

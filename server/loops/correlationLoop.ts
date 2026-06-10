@@ -1,4 +1,5 @@
 import { fetchMinuteBars, pearsonAlignedReturns, type Bar, type CorrelationResult } from '../correlation.js';
+import { inPollWindow } from '../../collector/session.js';
 import { INSTRUMENTS } from '../config.js';
 import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
 
@@ -28,6 +29,7 @@ async function barsForCorr(sym: string): Promise<Bar[]> {
 }
 
 async function tick(): Promise<void> {
+  if (!inPollWindow(Date.now())) return;   // 取引時間外は何もしない(軽量化)
   try {
     let anchorBars: Bar[];
     try {

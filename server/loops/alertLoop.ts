@@ -1,4 +1,5 @@
 import { fetchMinuteBars, type Bar } from '../correlation.js';
+import { inPollWindow } from '../../collector/session.js';
 import { DEFAULT_PARAMS } from '../alertDetector.js';
 import { emitAlert } from '../alertHistory.js';
 import { INSTRUMENTS } from '../config.js';
@@ -76,6 +77,7 @@ function evaluateAndFire(): void {
 }
 
 async function tick(): Promise<void> {
+  if (!inPollWindow(Date.now())) return;   // 取引時間外は何もしない(軽量化)
   try {
     await refreshAllBars();
     evaluateAndFire();

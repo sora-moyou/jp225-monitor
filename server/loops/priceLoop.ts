@@ -5,6 +5,7 @@ import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
+import { inPollWindow } from '../../collector/session.js';
 import type { Price } from '../types.js';
 import { feedPrice as tickDetectorFeed, getMomentum } from '../tickDetector.js';
 
@@ -22,6 +23,7 @@ let degradedUntil = 0;          // 全取得失敗でバックオフ中はこの
 let intervalMs = resolvePricePollMs();
 
 const SYMBOLS = INSTRUMENTS.map(i => i.symbol);
+const OFFHOURS_IDLE_MS = 30_000;   // 取引時間外はフェッチせず 30s 後に再判定(2s→バックオフ)
 
 function mergeWithCached(fresh: Price[]): Price[] {
   const map = new Map(getPrices().map(p => [p.symbol, { ...p, stale: true }]));
@@ -32,6 +34,7 @@ function mergeWithCached(fresh: Price[]): Price[] {
 }
 
 async function tick(): Promise<number> {
+  if (!inPollWindow(Date.now())) return OFFHOURS_IDLE_MS;   // 取引時間外は何もしない(軽量化)
   try {
     // v0.3.30/31: 日経225先物(OSE) と米国系(ダウ/ナスダック/原油/10年債)・ドル円は
     // nikkei225jp のリアルタイム feed を主経路にする。Yahoo は CME/NYMEX を約10分ディレイで

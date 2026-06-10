@@ -1,4 +1,5 @@
 import { fetchAllNews } from '../sources/rssAggregator.js';
+import { inPollWindow } from '../../collector/session.js';
 import { broadcast } from '../sse/broker.js';
 import { setNews, getNews } from '../cache.js';
 import { resolveNewsPollMs } from '../configStore.js';
@@ -8,6 +9,7 @@ let running = false;
 let intervalMs = resolveNewsPollMs();
 
 async function tick(): Promise<void> {
+  if (!inPollWindow(Date.now())) return;   // 取引時間外は何もしない(軽量化)
   try {
     const news = await fetchAllNews();
     // 全フィードが失敗すると fetchAllNews は [] を返す。既存ニュースがあるなら

@@ -5,7 +5,7 @@ import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeTrendLines } from '../trendLines.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
-import { classifySession } from '../../collector/session.js';
+import { classifySession, inPollWindow } from '../../collector/session.js';
 import { getForecastSnapshot } from './forecastLoop.js';
 import { emitAlert } from '../alertHistory.js';
 import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
@@ -158,6 +158,7 @@ export function levelSignature(r: LevelsResult): string {
 }
 
 function tick(): void {
+  if (!inPollWindow(Date.now())) return;   // 取引時間外は何もしない(軽量化・DB読み停止)
   if (!db) return;
   tickCount++;
   const tStart = Date.now();
