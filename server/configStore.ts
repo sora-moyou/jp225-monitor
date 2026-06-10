@@ -13,6 +13,7 @@ export interface UserConfig {
   geminiKey?: string;
   groqKey?: string;
   openaiKey?: string;
+  tavilyKey?: string;     // チャットの web_search(Tavily)用
   pricePollMs?: number;
   newsPollMs?: number;
   port?: number;
@@ -109,6 +110,13 @@ export function resolveApiKey(provider: ProviderName): string | undefined {
   : provider === 'groq'   ? 'GROQ_API_KEY'
   : 'OPENAI_API_KEY';
   return process.env[envName]?.trim();
+}
+
+// チャットの web_search(Tavily) キー解決: config.json 優先 → 環境変数 TAVILY_API_KEY。
+export function resolveTavilyKey(): string | undefined {
+  const fromConfig = loadConfig().tavilyKey;
+  if (fromConfig && fromConfig.trim()) return fromConfig.trim();
+  return process.env.TAVILY_API_KEY?.trim();
 }
 
 // 3 つの数値パラメータ resolver
