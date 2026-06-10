@@ -23,11 +23,23 @@ describe('detectSwingDouble', () => {
     expect(detectSwingDouble(example, 67500)?.stage).toBe('forming');
   });
 
-  it('谷の価格差が大きくても、ネック突出が足りれば成立(equal-lows不要)', () => {
-    // 谷1=66000, 谷2=67000(差1000)。ネック68000、浅い方=67000、突出=1000≥150。
-    // 既定 lowTol=2000 なら差1000は通る(ユーザー指定: 谷差は実質不問)。ここでは明示的に広げて確認。
-    const piv: SwingPivot[] = [hi(0, 69000), lo(1, 66000), hi(2, 68000), lo(3, 67000)];
-    expect(detectSwingDouble(piv, 68100, { ...DEFAULT_SWING_DOUBLE, lowTol: 2000 })?.stage).toBe('breakout');
+  // ダブルは2つの脚が「ほぼ同じ高さ」でなければ人間の認識と乖離する(谷64,455→63,755=差700の
+  // 切り下げを「ダブルボトム」と誤検知していた)。谷差は突出(ネック高さ)に対する比率で判定する。
+  it('谷差が突出に対して大きすぎる(切り下げ/切り上げ)なら null', () => {
+    // 谷1=64455, 谷2=63755(差700・切り下げ)。ネック65090、浅い方=64455、突出=635。
+    // 比率 700/635=1.10 > 0.4 → 非ダブル(ユーザー実例)。
+    const piv: SwingPivot[] = [hi(0, 65800), lo(1, 64455), hi(2, 65090), lo(3, 63755)];
+    expect(detectSwingDouble(piv, 64365)).toBeNull();
+  });
+  it('谷がほぼ同じ高さ(突出比 ≤ lowTolRatio=0.08)なら成立', () => {
+    // 谷1=66000, 谷2=66050(差50)。ネック67000、浅い方=66050、突出=950。比率50/950=0.053 ≤ 0.08 → OK。
+    const piv: SwingPivot[] = [hi(0, 68000), lo(1, 66000), hi(2, 67000), lo(3, 66050)];
+    expect(detectSwingDouble(piv, 66800)?.stage).toBe('forming');
+  });
+  it('谷差が突出の8%を超えれば null(やや不揃いでも厳格に弾く)', () => {
+    // 谷1=66000, 谷2=66150(差150)。突出=850。比率150/850=0.176 > 0.08 → null。
+    const piv: SwingPivot[] = [hi(0, 68000), lo(1, 66000), hi(2, 67000), lo(3, 66150)];
+    expect(detectSwingDouble(piv, 66800)).toBeNull();
   });
 
   it('ネックの突出が minProminence 未満なら null(浅いW=ノイズ)', () => {
@@ -56,5 +68,31 @@ describe('detectSwingDouble', () => {
   it('ガード: ピボット3本未満 / 現値<=0 は null', () => {
     expect(detectSwingDouble([lo(0, 1), hi(1, 2)], 3)).toBeNull();
     expect(detectSwingDouble(example, 0)).toBeNull();
+  });
+
+  // 決着済みガード: ネックを大きく抜けて測定移動の目標に到達したら、もう「認識できる」
+  // setup ではない(古いブレイクの再発火)。actionable=ネック近傍だけ通知する。
+  describe('決着済みガード(目標到達で打ち切り)', () => {
+    // example: neck 67770, 浅い谷 66950, 突出 820, target 68590
+    it('ダブルボトム: 目標(68590)以上では null', () => {
+      expect(detectSwingDouble(example, 68590)).toBeNull();
+      expect(detectSwingDouble(example, 68700)).toBeNull();
+    });
+    it('ダブルボトム: 目標手前のブレイクは breakout のまま', () => {
+      expect(detectSwingDouble(example, 68500)?.stage).toBe('breakout');
+      expect(detectSwingDouble(example, 67790)?.stage).toBe('breakout');
+    });
+    it('ダブルトップ: 目標(66200)以下では null', () => {
+      // neck 67000, 浅い山 67800, 突出 800, target 66200
+      const top: SwingPivot[] = [lo(0, 66000), hi(1, 67800), lo(2, 67000), hi(3, 67820)];
+      expect(detectSwingDouble(top, 66200)).toBeNull();
+      expect(detectSwingDouble(top, 66000)).toBeNull();
+      expect(detectSwingDouble(top, 66300)?.stage).toBe('breakout');
+    });
+    it('breakoutExtensionRatio を狭めると、より早く打ち切る', () => {
+      // ratio 0.5 → 目標の半分(neck+410=68180)以上で null
+      expect(detectSwingDouble(example, 68200, { ...DEFAULT_SWING_DOUBLE, breakoutExtensionRatio: 0.5 })).toBeNull();
+      expect(detectSwingDouble(example, 68000, { ...DEFAULT_SWING_DOUBLE, breakoutExtensionRatio: 0.5 })?.stage).toBe('breakout');
+    });
   });
 });
