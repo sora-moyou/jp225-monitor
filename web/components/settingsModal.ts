@@ -11,6 +11,7 @@ function escapeHtml(s: string): string {
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
+  tavilySet: boolean; tavilyFromEnv: boolean;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -42,6 +43,7 @@ interface SavePayload {
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
+  tavilyKey?: string | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -81,6 +83,7 @@ export interface SettingsElements {
   inputGemini: HTMLInputElement;
   inputGroq: HTMLInputElement;
   inputOpenai: HTMLInputElement;
+  inputTavily: HTMLInputElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -109,6 +112,9 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputOpenai.placeholder = current?.openaiSet
       ? '設定済み (上書きする場合のみ入力)'
       : current?.openaiFromEnv ? '環境変数から読込中' : 'sk-...';
+    el.inputTavily.placeholder = current?.tavilySet
+      ? '設定済み (上書きする場合のみ入力)'
+      : current?.tavilyFromEnv ? '環境変数から読込中' : 'tvly-...';
   }
 
   async function loadCurrentVersion() {
@@ -348,6 +354,7 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputGemini.value = '';
     el.inputGroq.value = '';
     el.inputOpenai.value = '';
+    el.inputTavily.value = '';
   }
 
   el.openBtn.addEventListener('click', () => { void open(); });
@@ -366,9 +373,11 @@ export function initSettingsModal(el: SettingsElements): void {
       const gv = el.inputGemini.value.trim();
       const grv = el.inputGroq.value.trim();
       const ov = el.inputOpenai.value.trim();
+      const tv = el.inputTavily.value.trim();
       if (gv) body.geminiKey = gv;
       if (grv) body.groqKey = grv;
       if (ov) body.openaiKey = ov;
+      if (tv) body.tavilyKey = tv;
 
       const result = await saveSettings(body);
       if (!result.ok) {

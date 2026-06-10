@@ -30,6 +30,8 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     geminiFromEnv: !config.geminiKey && !!process.env.GEMINI_API_KEY?.trim(),
     groqFromEnv: !config.groqKey && !!process.env.GROQ_API_KEY?.trim(),
     openaiFromEnv: !config.openaiKey && !!process.env.OPENAI_API_KEY?.trim(),
+    tavilySet: !!config.tavilyKey,
+    tavilyFromEnv: !config.tavilyKey && !!process.env.TAVILY_API_KEY?.trim(),
     // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
     ...resolveAllNumericParams(),
     pricePollMs: resolvePricePollMs(),
@@ -45,6 +47,7 @@ interface SettingsBody {
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
+  tavilyKey?: string | null;
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -94,6 +97,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     geminiKey: applyStringField(existing.geminiKey, body.geminiKey),
     groqKey: applyStringField(existing.groqKey, body.groqKey),
     openaiKey: applyStringField(existing.openaiKey, body.openaiKey),
+    tavilyKey: applyStringField(existing.tavilyKey, body.tavilyKey),
   };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {

@@ -146,6 +146,7 @@ initSettingsModal({
   inputGemini:    document.getElementById('key-gemini') as HTMLInputElement,
   inputGroq:      document.getElementById('key-groq') as HTMLInputElement,
   inputOpenai:    document.getElementById('key-openai') as HTMLInputElement,
+  inputTavily:    document.getElementById('key-tavily') as HTMLInputElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
