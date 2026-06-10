@@ -5,7 +5,6 @@ import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
 import { classifySession, isWithinOpenGuard } from '../collector/session.js';
 import { resolveOpenGuardBars, resolveHitThreshold } from './configStore.js';
-import { noteAlert } from './shockWindow.js';
 import type { AlertEventPayload } from './types.js';
 
 const FOLLOWUP_MS = 30_000;
@@ -56,9 +55,6 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
 // 旧 dtb/swingdtb も levelsLoop 由来だったため後方互換で残す。
 const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb', 'dailyband']);
 
-// LLM説明を受ける(=ニュースを参照する)アラート種別。これらの発火時刻で「前回アラート以降」のニュース窓を決める。
-// テクニカル系(double/level_sr/break/pivot/trend/ma_sr…)は固定文でニュースを引かないため対象外。
-const EXPLAINED_ALERT_KINDS = new Set(['shock', 'slope', 'magnitude', 'crash']);
 
 /** monitor 側で alerts に記録すべきか。collector 非稼働なら全種別記録。
  *  collector 稼働中でも monitor 専用種別(slope/dtb/break)は collector が書かないため記録する
@@ -110,8 +106,7 @@ export function emitAlert(p: AlertEventPayload): void {
     console.warn(`[alertHistory] 遅延配信: バー時刻の ${Math.round(lagMs / 1000)}s 後に発火 `
       + `(${p.detectionKind} ${p.symbol} @${new Date(p.triggeredAt).toISOString()}) — フィード/検知の遅延の可能性。`);
   }
-  // ①判定のニュース窓(前回アラート以降)に使う。説明対象(LLM)アラート種別ごとに発火時刻を記録。
-  if (EXPLAINED_ALERT_KINDS.has(p.detectionKind)) noteAlert(p.triggeredAt);
+  // ①ニュース窓のアンカー前進は説明生成時(/api/explain)に移譲(節約モード/テクニカル固定文では据置)。
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());

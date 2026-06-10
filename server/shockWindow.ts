@@ -1,21 +1,14 @@
-// 説明付きアラート(急変shock/超短期slope/暴落crash/旧magnitude)の発火時刻トラッカー。
-// ①「前回アラート以降のニュースだけ参照」のために使う(同じ古いニュースを毎回引用しないため)。
-//
-// emitAlert が説明対象アラートを出すたび noteAlert(t) を呼ぶ。lastAlertAt=最新、prevAlertAt=その1つ前。
-// 説明時の参照開始 = prevAlertAt(=1つ前のアラート以降のニュースのみ)。
-// 旧実装は「直前の急変(shock)以降」だったが、超短期(slope)は急変が少ないと窓が4hに広がり、
-// 同じ個別株ニュースを毎回引いていた。種別を問わず「前回アラート以降」に統一する。
+// アラート説明で「ユーザーが実際に提示されたニュース以降」だけを次回参照するためのアンカー。
+// /api/explain が実際に説明を生成した時のみ前進する(API節約モード/テクニカル固定文では /api/explain を
+// 呼ばないので据置)。値=直近説明で提示したニュースの最大 publishedAt。
+let lastReferencedNewsAt = 0;
 
-let lastAlertAt = 0;
-let prevAlertAt = 0;
-
-export function noteAlert(t: number): void {
-  if (t <= lastAlertAt) return;   // 巻き戻り/重複は無視(単調)
-  prevAlertAt = lastAlertAt;
-  lastAlertAt = t;
+/** 説明で実提示したニュースの最大 publishedAt を記録(単調・0は無視)。 */
+export function noteReferencedNews(maxPublishedAt: number): void {
+  if (maxPublishedAt > lastReferencedNewsAt) lastReferencedNewsAt = maxPublishedAt;
 }
 
-/** 説明で参照すべきニュースの開始時刻(1つ前のアラート以降)。0=まだ前例なし(=従来の固定窓にフォールバック)。 */
-export function newsSinceForAlert(): number { return prevAlertAt; }
+/** 説明で参照すべきニュースの開始時刻(=直近で実提示したニュース以降)。0=まだ無し→従来の固定窓。 */
+export function newsSinceForAlert(): number { return lastReferencedNewsAt; }
 
-export function _reset(): void { lastAlertAt = 0; prevAlertAt = 0; }
+export function _reset(): void { lastReferencedNewsAt = 0; }
