@@ -36,7 +36,7 @@ describe('selectNewsPool sinceFloor (①: 直前の急変以降)', () => {
 
 describe('explain ①ファンダ/テクニカル判定', () => {
   it('値動き(急変)で参照窓内にニュースが無ければ、LLMを呼ばず「テクニカル要因の可能性」+L2併記', async () => {
-    const text = await explain({
+    const { text } = await explain({
       symbol: 'NIY=F', symbolLabel: '日経225先物', changePercent: -0.4, windowSeconds: 60,
       detectionKind: 'shock', direction: 'down', change15min: null, pa15min: null, range1h: null,
       news: [news('old', 300)], newsSince: Date.now() - 10 * 60_000,   // 窓内(10分)にニュース無し

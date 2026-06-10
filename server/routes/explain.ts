@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { explain } from '../llm/openai.js';
 import { getNews } from '../cache.js';
 import { getSignificantMovers } from '../marketSnapshot.js';
-import { newsSinceForAlert } from '../shockWindow.js';
+import { newsSinceForAlert, noteReferencedNews } from '../shockWindow.js';
 import { getRecentL2Summary } from '../alertHistory.js';
 
 interface PriceActionBody {
@@ -38,7 +38,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
     return;
   }
   try {
-    const text = await explain({
+    const result = await explain({
       symbol: body.symbol,
       symbolLabel: body.symbolLabel,
       changePercent: body.changePercent,
@@ -56,7 +56,9 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       newsWindowMs: body.detectionKind === 'crash' ? 24 * 60 * 60 * 1000 : undefined,
       l2Recent: getRecentL2Summary(Date.now()) ?? undefined, // ①: テクニカル判定時に直近L2状態を併記
     });
-    res.json({ explanation: text });
+    // ①: 説明を実生成した時のみ、実提示ニュースの最大 publishedAt でアンカー前進(節約モード/テクニカル固定文では /api/explain 未呼び出し=据置)。
+    if (result.newsMaxPublishedAt > 0) noteReferencedNews(result.newsMaxPublishedAt);
+    res.json({ explanation: result.text });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[explain] error:', msg);

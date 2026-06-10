@@ -182,9 +182,8 @@ export function formatCrossAsset(movers: Mover[]): string {
   return `【同時刻に大きく動いた他資産(z>=4.0)】\n${lines.join('\n')}`;
 }
 
-function rankAndFormatNews(input: ExplainInput, now: number): string {
-  const pool = selectNewsPool(input.news, now, input.newsSince ?? 0, input.newsWindowMs ?? NEWS_RECENT_WINDOW_MS);
-  const keywords = INSTRUMENT_KEYWORDS[input.symbol] ?? [];
+function rankAndFormatNews(pool: NewsItem[], symbol: string, now: number): string {
+  const keywords = INSTRUMENT_KEYWORDS[symbol] ?? [];
   const ranked = [...pool]
     .map(n => ({ n, s: scoreNews(n, keywords, now) }))
     .sort((a, b) => b.s - a.s)
@@ -197,8 +196,11 @@ function rankAndFormatNews(input: ExplainInput, now: number): string {
   }).join('\n');
 }
 
-export async function explain(input: ExplainInput): Promise<string> {
+export async function explain(input: ExplainInput): Promise<{ text: string; newsMaxPublishedAt: number }> {
   const now = Date.now();
+  // ①: 参照プールを一度だけ確定し、実提示ニュースの最大 publishedAt を呼び出し側へ返す(アンカー前進用)。
+  const pool = selectNewsPool(input.news, now, input.newsSince ?? 0, input.newsWindowMs ?? NEWS_RECENT_WINDOW_MS);
+  const newsMaxPublishedAt = pool.reduce((m, n) => Math.max(m, n.publishedAt), 0);
   const kindLabel = input.detectionKind === 'slope' ? 'フラッシュ'
     : input.detectionKind === 'shock' ? '急変'
     : input.detectionKind === 'dtb' ? 'ダブル天井/大底'
@@ -250,10 +252,9 @@ export async function explain(input: ExplainInput): Promise<string> {
   // ①ファンダ/テクニカル判定: 値動き(急変/フラッシュ)で、直前の急変以降に参照すべきニュースが
   // 1件も無ければ、LLMを呼ばず「テクニカル要因の可能性」と明示し、直近のテクニカル状態(L2)を併記する。
   // ※ 暴落(crash)は重大イベントなので短絡せず、必ず広いニュース窓でLLMに原因を分析させる(ユーザー指定)。
-  if (!isTechnicalPattern && input.detectionKind !== 'crash'
-      && selectNewsPool(input.news, now, input.newsSince ?? 0, input.newsWindowMs ?? NEWS_RECENT_WINDOW_MS).length === 0) {
+  if (!isTechnicalPattern && input.detectionKind !== 'crash' && pool.length === 0) {
     const l2 = input.l2Recent ? ` 直近のテクニカル状況: ${input.l2Recent}。` : '';
-    return `直前の急変以降、該当する材料ニュースなし → テクニカル要因の可能性。${l2}`;
+    return { text: `直前の急変以降、該当する材料ニュースなし → テクニカル要因の可能性。${l2}`, newsMaxPublishedAt };
   }
   const oppositeExample = dir === 'down'
     ? '「停戦/地政学リスク後退/利下げ観測/円安/米株高」は株高(⬆)要因なので、下落の説明に使わない'
@@ -263,7 +264,7 @@ export async function explain(input: ExplainInput): Promise<string> {
     (noiseNotes ? noiseNotes + '\n' : '') +
     ctx15Line + pa15Line + range1hLine +
     `\n${formatCrossAsset(input.crossAsset ?? [])}\n` +
-    `\n【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(input, now)}\n\n` +
+    `\n【直近${windowHours}時間のニュース（関連性順、重大マクロは古くても上位）】\n${rankAndFormatNews(pool, input.symbol, now)}\n\n` +
     `[材料の方向(株式の一般則)]\n` +
     `・株高(⬆)要因: 停戦/地政学リスク後退, 利下げ観測, 良い経済指標, 円安, 米株高, リスクオン\n` +
     `・株安(⬇)要因: 地政学緊張・戦闘激化, 利上げ/金利上昇, 悪い経済指標, 円高, 米株安, リスクオフ\n` +
@@ -275,7 +276,7 @@ export async function explain(input: ExplainInput): Promise<string> {
     `5) OHLCで下髭/上髭/サポート反転等が読めれば併記してよい。\n\n` +
     `出力は必ず200文字以内、1〜2文で。矛盾(株高要因で下落を説明する等)は禁止。`;
 
-  return callWithFallback(async (p) => {
+  const text = await callWithFallback(async (p) => {
     const completion = await p.client!.chat.completions.create({
       model: p.config.model,
       temperature: 0.3,
@@ -286,13 +287,14 @@ export async function explain(input: ExplainInput): Promise<string> {
       ],
     });
     const choice = completion.choices[0];
-    const text = choice?.message?.content?.trim() ?? '(no response)';
+    const t = choice?.message?.content?.trim() ?? '(no response)';
     if (choice?.finish_reason === 'length') {
       console.warn(`[explain:${p.config.name}] TRUNCATED. usage=${JSON.stringify(completion.usage)}`);
-      return text + ' …(token切れ)';
+      return t + ' …(token切れ)';
     }
-    return text;
+    return t;
   }, 'explain');
+  return { text, newsMaxPublishedAt };
 }
 
 function fmt(n: number): string {
