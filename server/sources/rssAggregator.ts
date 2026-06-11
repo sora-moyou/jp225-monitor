@@ -1,6 +1,7 @@
 import Parser from 'rss-parser';
 import type { NewsItem } from '../types.js';
 import { RSS_FEEDS, NEWS_MAX_ITEMS, FINANCE_RELEVANCE_KEYWORDS, FINANCE_BLACKLIST, HIGH_IMPACT_KEYWORDS } from '../config.js';
+import { fetchNikkei225jpNews } from './nikkei225jp.js';
 
 // 金融関連かどうかを判定 (v0.3.9 タイトル+本文 ハイブリッド)
 // - BLACKLIST はタイトル限定 (本文の偶発ヒットで金融ニュースを誤除外しないため)
@@ -68,9 +69,13 @@ export async function fetchAllNews(): Promise<NewsItem[]> {
   const tasks: Promise<NewsItem[]>[] = [];
   for (const f of RSS_FEEDS.ja) tasks.push(fetchFeed(f.name, f.url, 'ja'));
   for (const f of RSS_FEEDS.en) tasks.push(fetchFeed(f.name, f.url, 'en'));
+  tasks.push(fetchNikkei225jpNews());   // nikkei225jp 総合ニュース(他ソースと同列・広く取り込む)
   const results = await Promise.allSettled(tasks);
   const items = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-  return items
+  // id で重複排除(別ソース経由の同一記事に備える)。
+  const seen = new Set<string>();
+  const uniq = items.filter(it => (seen.has(it.id) ? false : (seen.add(it.id), true)));
+  return uniq
     .sort((a, b) => b.publishedAt - a.publishedAt)
     .slice(0, NEWS_MAX_ITEMS);
 }
