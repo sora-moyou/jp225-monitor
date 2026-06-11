@@ -1,7 +1,11 @@
-> **【2026-06-12 改訂・方針転換】** 当初の faireconomy 週次JSONは **actual(結果)を含まず予想専用**と判明（エバリュエーターが実フェッチで確認）。
-> 「結果＋反応」を無料・キー無しで出す構造化ソースが無いため本案は保留。代わりにユーザー指示で
-> **nikkei225jp.com の総合ニュースを一般ニュース源として広く取り込む**方針に変更（指標限定にしない）。
-> 実装は `server/sources/nikkei225jp.ts`（News_ALL1.js をパース→既存ニュースへマージ）。下記は当初設計の記録。
+> **【2026-06-12 改訂】**
+> 1. 当初の faireconomy 週次JSONは **actual(結果)を含まず予想専用**と判明（エバリュエーター実フェッチ確認）→ 不採用。
+> 2. ユーザー指示で **nikkei225jp.com 総合ニュース**を一般ニュース源として広く取り込み（`server/sources/nikkei225jp.ts`）。
+> 3. 指標は **無料ソース限定**の指示で **minkabu 経済指標カレンダー**(`https://fx.minkabu.jp/indicators`・robots許可)を採用し、
+>    当初の「結果＋反応」を復活。`server/sources/econIndicators.ts` が US×★4+×発表済みを抽出し、
+>    結果・予想・前回 ＋ NK225夜間先物の発表後10分の反応(pt) を NewsItem 化して NEWS にマージ。
+>    `?date=YYYY-MM-DD&days=1&importance=4` で単日取得、`data_country="US"` 行を抽出、CPI のサブ種別[前月比/前年比/コア]は名前に残す。
+> 下記は当初(faireconomy前提)設計の記録。反応算出(NK225夜間+10分・getBarCloseNear)は minkabu 版でもそのまま採用。
 
 # 米経済指標をNEWSに取り込む（結果＋反応）設計
 
