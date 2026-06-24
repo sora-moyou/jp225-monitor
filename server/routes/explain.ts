@@ -1,9 +1,8 @@
 import type { Request, Response } from 'express';
 import { explain } from '../llm/openai.js';
+import { buildExplainInput } from '../llm/explainInput.js';
 import { getNews } from '../cache.js';
-import { getSignificantMovers } from '../marketSnapshot.js';
-import { newsSinceForAlert, noteReferencedNews } from '../shockWindow.js';
-import { getRecentL2Summary } from '../alertHistory.js';
+import { noteReferencedNews } from '../shockWindow.js';
 
 interface PriceActionBody {
   open: number; high: number; low: number; current: number;
@@ -38,7 +37,8 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
     return;
   }
   try {
-    const result = await explain({
+    // 入力組立は buildExplainInput に集約(チャットの explain_move ツールと同一規約)。
+    const result = await explain(buildExplainInput({
       symbol: body.symbol,
       symbolLabel: body.symbolLabel,
       changePercent: body.changePercent,
@@ -48,14 +48,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       change15min: typeof body.change15min === 'number' ? body.change15min : null,
       pa15min: body.pa15min ?? null,
       range1h: body.range1h ?? null,
-      news: getNews(),
-      crossAsset: getSignificantMovers(body.symbol),
-      // 暴落(crash)はニュース窓を広く・絞り込みなしで原因分析(ユーザー指定)。それ以外は「前回アラート以降」に限定
-      // (同じ古いニュースを毎回引用しないため。最新ニュースなら引用OK)。
-      newsSince: body.detectionKind === 'crash' ? 0 : newsSinceForAlert(),
-      newsWindowMs: body.detectionKind === 'crash' ? 24 * 60 * 60 * 1000 : undefined,
-      l2Recent: getRecentL2Summary(Date.now()) ?? undefined, // ①: テクニカル判定時に直近L2状態を併記
-    });
+    }));
     // ①: 説明を実生成した時のみ、実提示ニュースの最大 publishedAt でアンカー前進(節約モード/テクニカル固定文では /api/explain 未呼び出し=据置)。
     if (result.newsMaxPublishedAt > 0) noteReferencedNews(result.newsMaxPublishedAt);
     res.json({ explanation: result.text });

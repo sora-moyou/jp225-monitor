@@ -1,6 +1,6 @@
 [package]
 name = "jp225-monitor"
-version = "0.7.6"
+version = "0.7.7"
 description = "JP225 (Nikkei 225) market monitor"
 edition = "2021"
 
