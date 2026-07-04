@@ -772,7 +772,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.5</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.8</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
@@ -1108,10 +1108,10 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
     <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード (2 段モメンタム)</strong><p>監視銘柄をリアルタイム更新。緑=上昇 / 赤=下落、急変時はハイライト点滅。日経の値の上には <strong>「1分」(率 %) と「10秒」(値幅・円)</strong> の 2 段モメンタムを表示。「日経225先物」は <code>NIY=F</code> 表記ですが、価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、~66,000〜67,000 円台の日経指数そのままが出ます。</p></div></div>
     <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>主要レベル (メド) パネル</strong><p>価格カード下のパネルに、過去セッション高安を主軸とした <strong>上値/下値メド</strong> (重なるレベルは強レベル ★、フィボ 50% は方向転換ライン ⚑、<strong>ADR 予測メド</strong> も) を現値からの距離付きで表示します。区切りのドラッグで高さ可変。</p></div></div>
-    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近 15 件ニュース + 日経225先物のテクニカル要約が LLM コンテキストに自動付与される。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」「<strong>なぜ急落した?</strong>」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近ニュース + 日経225先物のテクニカル要約に加え、<strong>このアプリ自身の監視データ(直近アラートの要約・本日のセッション OHLC)</strong>が自動付与され、「なぜ急落?」には直近の急変を特定して原因分析します。</p></div></div>
     <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変・暴落を検知すると 30 秒以内(暴落は即時)に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。<strong>テクニカル系(ダブル天底/MAサポレジ/水準サポレジ・水準抜け/スイング形成/トレンド転換)は AI を呼ばず固定文で表示</strong>(価格・MA を併記)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
     <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>TradingView チャート</strong><p>右カラム中段に表示。チャート銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て) で、<strong>参照指数は日経 225 と同一</strong>。価格カード「日経225先物」(<code>NIY=F</code>) とほぼ一致します。区切りのドラッグで高さ可変。</p></div></div>
-    <div class="ann"><div class="ann-num">9</div><div class="ann-body"><strong>ニュース (21 ソース)</strong><p>日本 7 + 英語 14 フィードを 60 秒間隔で集約。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
+    <div class="ann"><div class="ann-num">9</div><div class="ann-body"><strong>ニュース (RSS + 米経済指標 + 日経総合)</strong><p>日本 7 + 英語 14 の RSS フィードを 60 秒間隔で集約。加えて <strong>米経済指標 (CPI・雇用統計など、結果/予想/前回 + 発表直後の NK225 夜間先物の反応 pt)</strong> と <strong>日経225 総合ニュース</strong> をマージ表示 (重複除去)。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
   </div>
 
   <div class="callout" style="margin-top: 28px;">
@@ -1154,15 +1154,21 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <span class="tag">trader-focused</span>
     </div>
     <div class="feature">
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg></div>
+      <h3>米経済指標 + 日経総合ニュース (v0.7.6)</h3>
+      <p>News に 2 つの実用ソースを追加。<strong>米経済指標</strong> (CPI・雇用統計など) は <strong>結果 / 予想 / 前回</strong> の 3 点セットに、<strong>発表直後の日経225 夜間先物の反応 (pt)</strong> を併記 — 「その指標に相場がどう反応したか」がひと目でわかります。加えて <strong>日経225 総合ニュース</strong> も取り込み、国内外 RSS とマージ (重複除去) して時系列表示します。</p>
+      <span class="tag">v0.7.6</span>
+    </div>
+    <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div>
       <h3>AI 自動説明</h3>
       <p>関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。<strong>参照ニュースは「前回テキストに実際に提示したニュース以降」</strong>に限定し、同じ古い材料を毎回引かないようにします(API 節約モードで説明を出さなかった間のニュースは取りこぼさず次回に持ち越し・暴落 crash のみ広い 24 時間窓)。<strong>同時刻に大きく動いた他資産 (他指数・FX・商品・値がさ株 |z|≥4.0) も判断材料</strong>に。指数寄与の大きい値がさ株(ファストリ等)は指数急変の真因になり得るため、方向が一致すれば理由に挙げます。</p>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-      <h3>AI チャット (定型質問 + Web 検索)</h3>
-      <p>「今の地合いは?」など自由質問。現在価格・テクニカル要約に加え、<strong>会話の文脈に沿ったニュース</strong>を自動でコンテキストに。<strong>Web 検索 (Tavily)</strong> も搭載し、手元に無い最新の出来事は AI が自分で検索して出典付きで答えます (設定で Tavily キーを入れると有効・未設定でも従来どおり動作)。<strong>ワンタップの定型質問</strong>(① テクニカル分析 ② ファンダメンタル分析 ③ スイング分析〔上昇/下落/レンジ の3シナリオ〕)も用意、入力欄に「1」「2」「3」と打っても送れます。</p>
-      <span class="tag">v0.7.4</span>
+      <h3>AI チャット (モニターのデータを参照 + Web 検索)</h3>
+      <p>「今の地合いは?」「<strong>なぜ急落した?</strong>」など自由質問。現在価格・テクニカル要約・<strong>会話の文脈に沿ったニュース</strong>に加え、<strong>このアプリ自身の監視データ(直近アラートの要約・本日のセッション OHLC)</strong>を自動でコンテキストに渡し、必要なら直近の急変を特定して原因を分析・種別ごとの的中率や本日/直近の値動きも即答します。<strong>Web 検索 (Tavily)</strong> も搭載し、手元に無い最新の出来事は AI が自分で検索して出典付きで答えます (設定で Tavily キーを入れると有効・未設定でも従来どおり動作)。<strong>ワンタップの定型質問</strong>(① テクニカル分析 ② ファンダメンタル分析 ③ スイング分析〔上昇/下落/レンジ の3シナリオ〕)も用意、入力欄に「1」「2」「3」と打っても送れます。</p>
+      <span class="tag">v0.7.7</span>
     </div>
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>

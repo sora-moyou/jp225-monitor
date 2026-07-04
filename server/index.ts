@@ -8,6 +8,7 @@ process.noDeprecation = true;
 installLogCapture();   // 最初に install してすべての console を捕捉
 
 import { streamHandler } from './routes/stream.js';
+import { startHeartbeat, stopHeartbeat } from './sse/broker.js';
 import { explainHandler } from './routes/explain.js';
 import { chatHandler } from './routes/chat.js';
 import { getSettingsHandler, postSettingsHandler } from './routes/settings.js';
@@ -109,7 +110,16 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startAlertHistoryLoop();
   startLevelsLoop();
   startForecastLoop();
+  startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
 });
+
+// 終了時にハートビート interval を止めてプロセスが即座に落ちられるようにする。
+function shutdown(): void {
+  stopHeartbeat();
+  server.close();
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 server.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
