@@ -31,6 +31,17 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
     card.className = 'price-card';
     card.dataset.symbol = meta.symbol;
     if (p) {
+      // 実弾安全(NIY=F): 実際に建てる大阪日経先物が取得不能(stale)のときは、
+      // もっともらしい遅延値を出さず「取得不能 / 停止」と明示する。数字は捏造しない。
+      if (meta.symbol === 'NIY=F' && p.stale) {
+        card.classList.add('down', 'stale', 'unavailable');
+        card.innerHTML = `
+          <div class="label"><span>${meta.labelJa}</span><span class="source-badge unavail">取得不能</span></div>
+          <div class="value"><span class="num unavail-num">停止</span></div>
+        `;
+        container.appendChild(card);
+        continue;
+      }
       const mom = meta.symbol === 'NIY=F' ? p.momentum : undefined;
       // 日経は「短期(率)」の符号でカード方向を決める(日中の値動きと一致させる)。
       // それ以外/momentum 未取得時は従来どおり前日終値比で判定。

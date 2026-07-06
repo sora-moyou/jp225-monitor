@@ -324,6 +324,23 @@ body {
 .price-card .value .change.mom .down { color: var(--down); }
 .price-card .value .change.mom .flat { color: var(--muted, #888); }
 .price-card.stale { opacity: 0.75; }
+/* 実弾安全: NIY=F(建てる日経先物)が取得不能なときは、遅延値を出さず「取得不能/停止」を強調。 */
+.price-card.unavailable {
+  opacity: 1;
+  border-color: var(--down);
+  background: rgba(220, 80, 80, 0.08);
+}
+.price-card .source-badge.unavail {
+  color: #fff;
+  background: var(--down);
+  border-color: var(--down);
+  font-weight: 700;
+}
+.price-card .value .num.unavail-num {
+  color: var(--down);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
 .price-card.flash-up { animation: flashUp 500ms 2; }
 .price-card.flash-down { animation: flashDown 500ms 2; }
 
