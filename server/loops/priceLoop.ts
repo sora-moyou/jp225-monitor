@@ -1,5 +1,5 @@
 import { fetchYahooChartPrices } from '../sources/yahooChart.js';
-import { fetchFeedPrices } from '../sources/nikkei225jpFeed.js';
+import { getSocketPrices } from '../sources/nikkei225jpSocket.js';
 import { feedRealtimePrice } from '../feedBars.js';
 import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
@@ -61,13 +61,13 @@ export function mergeWithCached(fresh: Price[]): Price[] {
 async function tick(): Promise<number> {
   if (!inPollWindow(Date.now())) return OFFHOURS_IDLE_MS;   // 取引時間外は何もしない(軽量化)
   try {
-    // v0.3.30/31: 日経225先物(OSE) と米国系(ダウ/ナスダック/原油/10年債)・ドル円は
-    // nikkei225jp のリアルタイム feed を主経路にする。Yahoo は CME/NYMEX を約10分ディレイで
-    // 返すため、feed で取れた銘柄はそれで上書きし、取れない銘柄(S&P/VIX 等)は Yahoo を残す。
-    const [yahoo, feed] = await Promise.all([
-      fetchYahooChartPrices(SYMBOLS),
-      fetchFeedPrices().catch(() => [] as Price[]),
-    ]);
+    // v0.3.30/31 → v0.8: 日経225先物(OSE) と米国系(ダウ/ナスダック/原油/10年債)・ドル円は
+    // nikkei225jp のリアルタイム socket(バックグラウンドで常時接続)を主経路にする。ここでは毎ポール
+    // socket の最新スナップショットを **同期読み** する(HTTP ポーリングは廃止=旧 ajax_TOP.js は停止したため)。
+    // Yahoo は CME/NYMEX を約10分ディレイで返すため、socket で取れた銘柄はそれで上書きし、
+    // 取れない銘柄(S&P/VIX 等)は Yahoo を残す。
+    const yahoo = await fetchYahooChartPrices(SYMBOLS);
+    const feed = getSocketPrices(Date.now());
     const prices = mergeSources(yahoo, feed);
     if (prices.length === 0) throw new Error('No prices fetched (Yahoo chart API failed)');
 

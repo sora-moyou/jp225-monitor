@@ -1,6 +1,6 @@
 {
   "name": "finance-monitor",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "private": true,
   "type": "module",
   "scripts": {
@@ -43,6 +43,7 @@
     "express": "^4.19.0",
     "openai": "^4.50.0",
     "rss-parser": "^3.13.0",
+    "socket.io-client": "^4.8.3",
     "yahoo-finance2": "^2.11.0"
   },
   "devDependencies": {

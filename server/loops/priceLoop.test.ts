@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mergeSources, mergeWithCached } from './priceLoop.js';
 import { setPrices, getPrices } from '../cache.js';
-import type { Price } from '../types.js';
+import { buildSocketPrices, SOCKET_STALE_MS, type SocketQuote } from '../sources/nikkei225jpSocket.js';
+import type { Price, Symbol } from '../types.js';
 
 // 実弾安全: NIY=F(実際に建てる大阪日経先物)は Yahoo(CME・約10分ディレイ)を絶対に出さない。
 // LIVE の供給源はリアルタイム feed のみ。feed が無い/stale のときは stale(取得不能)で、
@@ -51,6 +52,41 @@ describe('mergeSources — NIY=F は Yahoo(遅延)を絶対に採用しない', 
     const merged = mergeSources(yahoo, feed);
     expect(merged.find(p => p.symbol === 'NQ=F')?.price).toBe(20050);  // feed 優先
     expect(merged.find(p => p.symbol === 'CL=F')?.price).toBe(75);     // Yahoo フォールバック
+  });
+});
+
+// v0.8: socket 経路。live な socket NIY=F は mergeSources を通り採用され、
+// stale/未受信のときは v0.7.9 ルールで Yahoo に埋められない(NIY=F は fresh から欠落)。
+describe('socket 経路 — buildSocketPrices → mergeSources(実 timestamp が流れる/遅延ガードが本物のラグを見る)', () => {
+  const now = 1783334800000;
+  it('live socket NIY=F は mergeSources を通って採用され、tick の実 timestamp を保持', () => {
+    const latest = new Map<Symbol, SocketQuote>([
+      ['NIY=F', { price: FEED_NIY_LIVE, timestamp: now - 2000, changePercent: 0.1 }],
+    ]);
+    const feed = buildSocketPrices(latest, now);   // socket スナップショット
+    const yahoo = [px('NIY=F', YAHOO_NIY), px('NQ=F', 20000)];
+    const niy = mergeSources(yahoo, feed).find(p => p.symbol === 'NIY=F')!;
+    expect(niy.price).toBe(FEED_NIY_LIVE);
+    expect(niy.stale).toBe(false);
+    expect(niy.price).not.toBe(YAHOO_NIY);
+    expect(niy.timestamp).toBe(now - 2000);   // Yahoo でも now でもなく tick の実 epoch-ms
+  });
+
+  it('socket NIY=F が stale(古い tick)なら fresh に載らず Yahoo にも埋められない', () => {
+    const latest = new Map<Symbol, SocketQuote>([
+      ['NIY=F', { price: 39990, timestamp: now - (SOCKET_STALE_MS + 5000), changePercent: 0 }],
+    ]);
+    const feed = buildSocketPrices(latest, now);   // stale=true
+    const yahoo = [px('NIY=F', YAHOO_NIY)];
+    expect(mergeSources(yahoo, feed).find(p => p.symbol === 'NIY=F')).toBeUndefined();
+  });
+
+  it('socket が NIY=F を全く持たない(未受信)なら Yahoo は混ざらない', () => {
+    const feed = buildSocketPrices(new Map(), now);   // 空
+    const yahoo = [px('NIY=F', YAHOO_NIY), px('NQ=F', 20000)];
+    const merged = mergeSources(yahoo, feed);
+    expect(merged.find(p => p.symbol === 'NIY=F')).toBeUndefined();
+    expect(merged.find(p => p.symbol === 'NQ=F')?.price).toBe(20000);   // 他銘柄は Yahoo フォールバック
   });
 });
 
