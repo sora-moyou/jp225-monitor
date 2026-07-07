@@ -11,22 +11,9 @@ import {
   _clearLatestForTest,
   _runWatchdogForTest,
   _setConnStateForTest,
-  _setPrimaryLagForTest,
-  _setLagWithinIntervalForTest,
-  _getLastForceReconnectAtForTest,
   _hasWatchdogForTest,
-  _runProactiveForTest,
-  _runMbbTimeoutForTest,
-  _getActiveSocketForTest,
-  _getSocketNextForTest,
-  _isSwappingForTest,
-  _hasProactiveTimerForTest,
   SOCKET_STALE_MS,
   TICK_WATCHDOG_MS,
-  TICK_STALE_LAG_MS,
-  RECONNECT_GRACE_MS,
-  PROACTIVE_RECONNECT_MS,
-  MAKE_BEFORE_BREAK_TIMEOUT_MS,
   type SocketConnector,
   type SocketQuote,
 } from './nikkei225jpSocket.js';
@@ -141,7 +128,7 @@ describe('getSocketPrices — シングルトン latest 経由(注入)', () => {
   });
 });
 
-// ── tick watchdog + 強制再接続(2026-07-07 NIY=F 恒久 stale 事故対策) ────────────────
+// ── no-tick watchdog(完全沈黙からの強制フル再接続) ────────────────
 // 実 socket.io は張らず、connector シームで fake Socket を注入する。
 
 interface FakeSocket {
@@ -157,17 +144,6 @@ function makeFakeSocket(): FakeSocket {
     disconnect: vi.fn(),
     removeAllListeners: vi.fn(),
   };
-}
-/** fake socket に登録された event ハンドラを発火する(実 socket.io の tick 到着を模す)。
- *  同 event に複数登録されていれば全て呼ぶ(active 用と probe 用が並存しても両方走る)。 */
-function fireSocketEvent(s: FakeSocket, event: string, ...args: unknown[]): void {
-  for (const call of s.on.mock.calls) {
-    if (call[0] === event && typeof call[1] === 'function') (call[1] as (...a: unknown[]) => void)(...args);
-  }
-}
-/** code 136(NIY=F)の tick 配列。make-before-break の「最初の tick」に使う。 */
-function niyTick(price = 69920, tsMs = Date.now()): string[] {
-  return ['136', String(tsMs), String(price)];
 }
 
 describe('socket watchdog — 半死(tick 途絶)からの強制フル再接続', () => {
@@ -245,253 +221,5 @@ describe('socket watchdog — 半死(tick 途絶)からの強制フル再接続'
     _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 20_000));
     vi.advanceTimersByTime(16_000);
     expect(connector).toHaveBeenCalledTimes(2);   // 点検で1回強制再接続
-  });
-});
-
-// ── stale-timestamp watchdog(B): tick は届き続けるが価格値=tsMs が古い半死セッション ──
-// 実測(2026-07-07): 起動直後は real-time(lag 数秒)→ 時間経過で同一 socket の**価格値が約10分遅延**へ
-// ドリフト(tsMs もそれに連れて古くなる)→ 再接続(=新規接続)で real-time に復帰。これが繰り返し起きる。
-// arrival だけ見る (A) は tick が届くので発火しない → tsMs 遅延ベースの (B) が必要。
-// v0.7.14: give-up cap は撤去。ドリフトを検知するたびに(min-interval を空けて)何度でも張り直す。
-
-describe('socket watchdog (B) — 価格値ドリフト(tsMs 遅延)からの強制再接続', () => {
-  afterEach(() => { stopSocket(); vi.useRealTimers(); });
-
-  it('lag > 閾値の tick が TICK_STALE_LAG_STREAK 回連続で届いたら強制再接続する', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());   // connected・無 tick watchdog は発火しない状態
-
-    // 1回目: lag 大 → streak=1 だけで再接続しない(一発ノイズ耐性)。
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);   // 約570s 相当
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(1);   // まだ再接続なし
-
-    // 2回目: 連続で lag 大 → streak=2 で強制再接続(connector 再呼び)。
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(2);
-    // 強制再接続時刻が記録される(min-interval の基準)。
-    expect(_getLastForceReconnectAtForTest()).toBeGreaterThan(0);
-  });
-
-  it('fresh(lag 小)な tick が届いている間は再接続しない', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());
-    for (let i = 0; i < 5; i++) {
-      _setPrimaryLagForTest(2_000);   // real-time(≈2s)
-      _runWatchdogForTest();
-    }
-    expect(connector).toHaveBeenCalledTimes(1);   // 再接続なし
-  });
-
-  it('一発だけ lag 大(単発ノイズ)では再接続しない', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);   // 大
-    _runWatchdogForTest();                                 // streak=1
-    _setPrimaryLagForTest(2_000);                          // 次は fresh → streak リセット
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(1);   // sustained でないので再接続なし
-  });
-
-  // v0.7.14 の核心: give-up せず、ドリフトが再発するたびに何度でも張り直す(絶対的な打ち止めなし)。
-  it('give-up cap なし: ドリフトが再発するたびに何度でも再接続する', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    // 1 サイクル = sustained ドリフト検知 → 強制再接続。_setPrimaryLagForTest が min-interval を過去化するので
-    // 毎サイクルで再接続が許可される(= min-interval を空けて撃ち直す状況の代理)。
-    const driftCycle = (): void => {
-      _setConnStateForTest(true, Date.now());
-      _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=1
-      _setConnStateForTest(true, Date.now());
-      _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=2 → reconnect
-    };
-    const N = 6;   // 旧 cap(3)を大きく超える回数。打ち止めが無いことを示す。
-    for (let i = 0; i < N; i++) driftCycle();
-    // 初回 startSocket の1回 + 各サイクルで必ず1回ずつ再接続 → 打ち止めなし。
-    expect(connector).toHaveBeenCalledTimes(1 + N);
-  });
-
-  it('min-interval: 前回の強制再接続から RECONNECT_GRACE_MS 未満は再接続しない(rapid thrash 防止)', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    // sustained ドリフトで1回目の再接続を起こす。
-    _setConnStateForTest(true, Date.now());
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=1
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=2 → reconnect
-    expect(connector).toHaveBeenCalledTimes(2);
-    // 直後(min-interval 内)にまた lag 大が続いても再接続しない。
-    //   _setLagWithinIntervalForTest は lastForceReconnectAt=now を保つ(= 再接続直後)。
-    _setConnStateForTest(true, Date.now());
-    _setLagWithinIntervalForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();
-    _setLagWithinIntervalForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(2);   // min-interval 内なので増えない
-    expect(RECONNECT_GRACE_MS).toBeGreaterThan(0);   // min-interval は正の値
-  });
-
-  it('無 tick(A)経路は 価格ドリフト(B)と独立に依然として発火する', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 5_000));   // 完全沈黙
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(2);
-  });
-});
-
-// ── proactive make-before-break(v0.7.15)──────────────────────────────
-// 一定周期で新 socket を先に開き、それが最初の tick を出したら旧 socket を閉じて差し替える(ギャップ0)。
-// 目的: 長寿命セッションが約10分遅延へ劣化する前に、常に「初回接続=real-time」状態へ更新し続ける。
-
-describe('proactive make-before-break — 周期的なゼロギャップ差し替え', () => {
-  afterEach(() => { stopSocket(); _clearLatestForTest(); vi.useRealTimers(); });
-
-  it('startSocket は proactive timer を張る(定数は正の周期)', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    expect(_hasProactiveTimerForTest()).toBe(true);
-    expect(PROACTIVE_RECONNECT_MS).toBeGreaterThan(0);
-    expect(MAKE_BEFORE_BREAK_TIMEOUT_MS).toBeGreaterThan(0);
-  });
-
-  it('周期発火で新 socket を開く(旧 socket は閉じない=make-before-break の「make」側)', () => {
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    const oldSock = sockets[0]!;
-    expect(_getActiveSocketForTest()).toBe(oldSock);
-
-    _runProactiveForTest();   // 周期発火(setInterval を待たず直接)
-    // 新 socket が開かれた(connector が2回目)。旧 socket はまだ閉じていない。
-    expect(connector).toHaveBeenCalledTimes(2);
-    expect(_isSwappingForTest()).toBe(true);
-    expect(_getSocketNextForTest()).toBe(sockets[1]);
-    expect(oldSock.disconnect).not.toHaveBeenCalled();          // 旧はまだ active(ギャップ0)
-    expect(_getActiveSocketForTest()).toBe(oldSock);            // active はまだ旧のまま
-  });
-
-  it('新 socket の最初の tick で差し替え: そこで初めて旧 socket を閉じ、latest は新 socket 由来になる', () => {
-    _clearLatestForTest();
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    const oldSock = sockets[0]!;
-
-    _runProactiveForTest();
-    const newSock = sockets[1]!;
-    expect(oldSock.disconnect).not.toHaveBeenCalled();   // 差し替え前は旧を閉じない
-
-    // 新 socket が最初の tick(code 136)を配信 → 差し替え発火。
-    fireSocketEvent(newSock, 'tick', niyTick(70010));
-
-    // 差し替え後: 旧 socket は破棄され、active は新 socket、swapping は解除。
-    expect(oldSock.removeAllListeners).toHaveBeenCalled();
-    expect(oldSock.disconnect).toHaveBeenCalled();
-    expect(_getActiveSocketForTest()).toBe(newSock);
-    expect(_getSocketNextForTest()).toBeNull();
-    expect(_isSwappingForTest()).toBe(false);
-    // latest は新 socket の tick 由来(価格が供給され続ける=ギャップ0)。
-    const niy = getSocketPrices(Date.now()).find(p => p.symbol === 'NIY=F')!;
-    expect(niy.price).toBe(70010);
-    _clearLatestForTest();
-  });
-
-  it('make-before-break 中も latest は途切れない: 旧 socket の tick が差し替え前も供給される', () => {
-    _clearLatestForTest();
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    const oldSock = sockets[0]!;
-
-    // 旧 socket が供給(差し替え前)。
-    fireSocketEvent(oldSock, 'tick', niyTick(69900));
-    expect(getSocketPrices(Date.now()).find(p => p.symbol === 'NIY=F')!.price).toBe(69900);
-
-    _runProactiveForTest();   // 新 socket を開く(差し替えはまだ)
-    // この間も旧 socket は生きていて供給し続けられる(latest は空にならない)。
-    fireSocketEvent(oldSock, 'tick', niyTick(69950));
-    expect(getSocketPrices(Date.now()).find(p => p.symbol === 'NIY=F')!.price).toBe(69950);
-    expect(oldSock.disconnect).not.toHaveBeenCalled();
-    _clearLatestForTest();
-  });
-
-  it('新 socket が猶予内に tick を出さない → 新を捨てて旧を維持(retry は次周期)', () => {
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    const oldSock = sockets[0]!;
-
-    _runProactiveForTest();
-    const newSock = sockets[1]!;
-    expect(_isSwappingForTest()).toBe(true);
-
-    // timeout 到達(tick 無し)→ 新 socket を破棄し、旧を active のまま維持。
-    _runMbbTimeoutForTest();
-    expect(newSock.disconnect).toHaveBeenCalled();      // 新は捨てる
-    expect(newSock.removeAllListeners).toHaveBeenCalled();
-    expect(_getSocketNextForTest()).toBeNull();
-    expect(_isSwappingForTest()).toBe(false);
-    expect(_getActiveSocketForTest()).toBe(oldSock);    // 旧は維持(socket 無しにしない)
-    expect(oldSock.disconnect).not.toHaveBeenCalled();
-
-    // 次周期でまた新 socket を開ける(retry)。
-    _runProactiveForTest();
-    expect(connector).toHaveBeenCalledTimes(3);         // 1(初回)+1(1回目)+1(retry)
-    expect(_isSwappingForTest()).toBe(true);
-  });
-
-  it('進行中サイクルの多重発火ガード: swapping 中に再度周期が来ても新 socket を重ねない', () => {
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    _runProactiveForTest();
-    expect(connector).toHaveBeenCalledTimes(2);
-    // 進行中にもう一度周期 → 何もしない(socketNext を積み上げない)。
-    _runProactiveForTest();
-    expect(connector).toHaveBeenCalledTimes(2);
-    expect(_isSwappingForTest()).toBe(true);
-  });
-
-  it('stopSocket は proactive timer を止め、進行中の新 socket も閉じる', () => {
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    _runProactiveForTest();
-    const oldSock = sockets[0]!;
-    const newSock = sockets[1]!;
-
-    stopSocket();
-    expect(_hasProactiveTimerForTest()).toBe(false);
-    expect(_isSwappingForTest()).toBe(false);
-    expect(oldSock.disconnect).toHaveBeenCalled();
-    expect(newSock.disconnect).toHaveBeenCalled();      // 進行中の新 socket も閉じる
-  });
-
-  it('setInterval 経路でも proactive が発火して新 socket を開く(fake timers)', () => {
-    vi.useFakeTimers();
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    expect(connector).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(PROACTIVE_RECONNECT_MS + 1_000);
-    expect(connector).toHaveBeenCalledTimes(2);          // 周期で新 socket を開いた
-    expect(_isSwappingForTest()).toBe(true);
-  });
-
-  it('force reconnect(watchdog A/B)は進行中の make-before-break を破棄してから張り直す', () => {
-    const sockets: FakeSocket[] = [];
-    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
-    startSocket(connector);
-    _runProactiveForTest();
-    const newSock = sockets[1]!;
-    expect(_isSwappingForTest()).toBe(true);
-
-    // 無 tick watchdog(A)を発火 → force reconnect が進行中 mbb を破棄。
-    _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 5_000));
-    _runWatchdogForTest();
-    expect(newSock.disconnect).toHaveBeenCalled();      // 進行中の新 socket は破棄
-    expect(_isSwappingForTest()).toBe(false);
-    expect(_getSocketNextForTest()).toBeNull();
   });
 });

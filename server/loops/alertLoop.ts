@@ -37,12 +37,19 @@ export function getCachedBars(symbol: string): Bar[] {
 // ウォームアップ中は Yahoo 分足を返す。系列は混ぜず全リアルタイム or 全 Yahoo。
 // これで日経(NIY=F)の z-score も横断確認(NQ/YM/HSI/JPY)も同じ実時間軸で評価できる。
 // v0.3.32: 相関ループ・AIチャット文脈でも同じ実時間優先ロジックを使えるよう export。
+// v0.7.18(実弾安全 v0.7.9 の徹底): NIY=F は **リアルタイム足のみ**(Yahoo=CME 約10分ディレイの
+// barsCache には決してフォールバックしない)。ウォームアップ中(リアルタイム足<65)は空配列を返し、
+// 呼び出し側の `bars.length < 65` で単にスキップされる(遅延した Yahoo 足で評価/「足が遅延」ログを
+// 出さない)。リアルタイム足は warmFromDb(DB 種付け)/ajax_cme 蓄積で満たされ次第、新鮮に評価する。
+// 横断確認用の他銘柄は従来どおり Yahoo barsCache フォールバックを残す。
 export function barsFor(symbol: string): Bar[] {
+  if (symbol === 'NIY=F') return getRealtimeBars(symbol);
   return isRealtimeBarsReady(symbol) ? getRealtimeBars(symbol) : (barsCache.get(symbol) ?? []);
 }
 
 async function refreshAllBars(): Promise<void> {
-  await Promise.all(SYMBOLS.map(async (sym) => {
+  // NIY=F は Yahoo(遅延)を使わない(barsFor がリアルタイム専用)ので、Yahoo 取得の対象から除く。
+  await Promise.all(SYMBOLS.filter(sym => sym !== 'NIY=F').map(async (sym) => {
     try {
       const bars = await fetchMinuteBars(sym);
       if (bars.length > 0) barsCache.set(sym, bars);
@@ -58,8 +65,9 @@ function evaluateAndFire(): void {
   for (const sym of SYMBOLS) {
     // v0.3.19: アラートは日経225先物のみ。他銘柄は分足取得のみ続け、AI 説明の元ネタ専用。
     if (sym !== 'NIY=F') continue;
-    // v0.3.30/31: NIY=F はリアルタイム OSE バーが溜まればそれで z-score 評価。
-    // ウォームアップ中(起動〜約65分)は Yahoo(CME, 約10分遅延) 分足にフォールバック。
+    // v0.3.30/31 → v0.7.18: NIY=F はリアルタイム OSE バー(ajax_cme / DB 種付け)**のみ**で z-score 評価。
+    // ウォームアップ中(リアルタイム足<65)は barsFor が空を返し、下の length<65 で単にスキップ
+    // (遅延した Yahoo 分足では評価しない=実弾安全 v0.7.9)。
     const bars = barsFor(sym);
     if (!bars || bars.length < 65) continue;
     // フィード停止/復帰中の古い足では発火しない(数分遅れの stale なアラートを防ぐ)。
