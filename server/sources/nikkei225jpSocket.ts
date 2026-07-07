@@ -123,6 +123,15 @@ export const TICK_STALE_LAG_STREAK = 2;
  *  この最小間隔だけで抑制する(絶対的な打ち止めはしない=起動直後は必ず real-time に戻るため)。 */
 export const RECONNECT_GRACE_MS = 25_000;
 
+/** v0.7.15: 先回り(proactive)再接続の周期。実測(2026-07-07): socket は「初回接続直後は必ず real-time」で、
+ *  長時間つなぎ続けた**そのマシンの長寿命セッションだけ**が約10分遅延へ劣化する(私の4分接続は lag 3-12s で劣化せず)。
+ *  よって劣化を待って反応(case B)する前に、一定周期で**新しい接続に差し替え続けて常に「初回接続」状態**を保つ。
+ *  make-before-break(新 socket が最初の tick を出してから旧 socket を閉じる)でギャップ0にする。 */
+export const PROACTIVE_RECONNECT_MS = 60_000;
+/** make-before-break で新 socket が「最初の tick を出す」までの猶予。これを過ぎたら新 socket を捨てて旧を維持し、
+ *  次周期で再挑戦する(=決して「socket 無し」状態にしない)。 */
+export const MAKE_BEFORE_BREAK_TIMEOUT_MS = 10_000;
+
 /** primary(NIY=F)の tick timestamp 遅延を測る対象コード。 */
 const PRIMARY_SYMBOL: Symbol = 'NIY=F';
 
@@ -145,6 +154,11 @@ let connector: SocketConnector = defaultConnector;
 let lastTickAt = 0;          // 直近に有効な tick を受けた時刻(0=未受信)。watchdog の鮮度基準。
 let watchdogTimer: NodeJS.Timeout | null = null;
 let reconnecting = false;    // 強制再接続の多重発火ガード(タイマ/ソケットを積み上げない)。
+// ── proactive make-before-break(v0.7.15) ──
+let proactiveTimer: NodeJS.Timeout | null = null;   // 一定周期で make-before-break を開始するタイマ。
+let socketNext: Socket | null = null;               // 差し替え候補の新 socket(旧 socket と並行接続中)。
+let swapping = false;                                // make-before-break 進行中フラグ(周期の多重発火ガード)。
+let mbbTimeoutTimer: NodeJS.Timeout | null = null;   // 新 socket が tick を出さないときの打ち切りタイマ。
 // ── stale-timestamp watchdog(半死セッション: 届き続けるが価格値=tsMs が古い) ──
 let primaryLagMs: number | null = null;   // 直近 primary(NIY=F) tick の timestamp 遅延(now − tsMs)。null=未観測。
 let primaryLagAt = 0;                      // その lag を観測した壁時計時刻(古い lag を再利用しないため)。
@@ -186,18 +200,23 @@ function applyPriceT(text: unknown): void {
   }
 }
 
-/** connector で socket を作りリスナを張る(startSocket と forceReconnect で共有)。 */
-function createSocket(): void {
-  socket = connector();
-  socket.on('connect', () => { connected = true; logState('connected'); });
-  socket.on('disconnect', (reason: string) => { connected = false; logState('disconnected', reason); });
-  socket.on('connect_error', (err: Error) => { connected = false; logState('connect_error', err.message); });
-  socket.on('tick', (arr: unknown) => applyTick(arr));
-  socket.on('priceT', (text: unknown) => applyPriceT(text));
+/** アクティブ socket 用のリスナを張る(tick/priceT は共有 latest に書く)。startSocket / forceReconnect / swap 後で使う。 */
+function attachActiveListeners(s: Socket): void {
+  s.on('connect', () => { connected = true; logState('connected'); });
+  s.on('disconnect', (reason: string) => { connected = false; logState('disconnected', reason); });
+  s.on('connect_error', (err: Error) => { connected = false; logState('connect_error', err.message); });
+  s.on('tick', (arr: unknown) => applyTick(arr));
+  s.on('priceT', (text: unknown) => applyPriceT(text));
   // socket.io マネージャの透過再接続(reconnect)。ログのみ。tick が戻らなければ watchdog が強制再作成する。
   // io() の Socket は Manager イベントを socket.io.on(...) で購読する。
-  try { socket.io.on('reconnect', (n: number) => logState('io_reconnect', `attempt ${n}`)); } catch { /* manager 無し(テスト mock)は無視 */ }
+  try { s.io.on('reconnect', (n: number) => logState('io_reconnect', `attempt ${n}`)); } catch { /* manager 無し(テスト mock)は無視 */ }
   // 'server' 等その他イベントは無視。
+}
+
+/** connector で socket を作りアクティブリスナを張る(startSocket と forceReconnect で共有)。 */
+function createSocket(): void {
+  socket = connector();
+  attachActiveListeners(socket);
 }
 
 /** watchdog が半死(tick 途絶)を検知したときの強制フル再接続。透過再接続では tick が戻らないため
@@ -206,6 +225,12 @@ function forceReconnect(reason: string): void {
   if (reconnecting) return;   // 進行中の再接続にタイマ/ソケットを積み上げない。
   reconnecting = true;
   logState('force_reconnect', reason);
+  // 進行中の make-before-break があれば破棄(強制フル再接続が優先。二重 socket を残さない)。
+  if (swapping) {
+    try { if (socketNext) { socketNext.removeAllListeners(); socketNext.disconnect(); } } catch { /* noop */ }
+    socketNext = null;
+    endMakeBeforeBreak();
+  }
   try {
     if (socket) { socket.removeAllListeners(); socket.disconnect(); }
   } catch { /* noop */ }
@@ -221,6 +246,82 @@ function forceReconnect(reason: string): void {
     logState('start_error', err instanceof Error ? err.message : String(err));
   }
   reconnecting = false;
+}
+
+// ── proactive make-before-break(v0.7.15) ─────────────────────────────
+// 一定周期で「新しい socket を先に開き、それが最初の tick を出したら旧 socket を閉じて差し替える」。
+// 旧 socket は新 socket が実証されるまで active のまま latest を供給し続ける → ギャップ0(価格が途切れない)。
+// 目的: 長寿命セッションが約10分遅延へ劣化する前に、常に「初回接続=real-time」状態へ更新し続ける。
+
+/** make-before-break の後始末(成功/失敗/停止で共通)。timeout タイマと swapping フラグを解除する。 */
+function endMakeBeforeBreak(): void {
+  if (mbbTimeoutTimer) { clearTimeout(mbbTimeoutTimer); mbbTimeoutTimer = null; }
+  swapping = false;
+}
+
+/** 新 socket(socketNext)が最初の tick を出したとき: 旧 socket を破棄し、新 socket を active に昇格する。 */
+function swapToNext(): void {
+  if (!socketNext) return;
+  const promoted = socketNext;
+  socketNext = null;
+  // 旧 active socket を閉じる(新が実証済みなので今なら安全=ギャップ0)。
+  try { if (socket && socket !== promoted) { socket.removeAllListeners(); socket.disconnect(); } } catch { /* noop */ }
+  // 新 socket を active に。probe で張った tick/priceT は既に latest を供給しているので、
+  // active 用の connect/disconnect(グローバル connected を扱う)だけ追加で張る。
+  socket = promoted;
+  connected = true;
+  lastLoggedState = null;               // 差し替え後の 'connected' 系ログを必ず出せるように。
+  // probe 用の connect_error は外し、active 用の connect/disconnect/connect_error を張る(tick/priceT は流用)。
+  try { promoted.removeAllListeners('connect_error'); } catch { /* mock 無視 */ }
+  promoted.on('connect', () => { connected = true; logState('connected'); });
+  promoted.on('disconnect', (reason: string) => { connected = false; logState('disconnected', reason); });
+  promoted.on('connect_error', (err: Error) => { connected = false; logState('connect_error', err.message); });
+  // 差し替え=fresh セッション開始。lag 系の状態をリセット(旧セッションの古い lag を持ち越さない)。
+  lastForceReconnectAt = Date.now();
+  staleLagStreak = 0;
+  primaryLagMs = null;
+  logState('proactive_swap', 'new socket live, old closed (make-before-break)');
+  endMakeBeforeBreak();
+}
+
+/** 新 socket 用のリスナ: tick/priceT を latest に供給しつつ、最初の tick で swap を発火する。
+ *  グローバル connected は触らない(swap 前に new の disconnect で active を落とさないため)。 */
+function attachNextListeners(s: Socket): void {
+  s.on('tick', (arr: unknown) => {
+    applyTick(arr);                     // 供給は即開始(swap 前でも latest は last-write-wins で fresh)。
+    if (socketNext === s && swapping) swapToNext();   // 最初の tick で差し替え。
+  });
+  s.on('priceT', (text: unknown) => applyPriceT(text));
+  s.on('connect_error', (err: Error) => logState('next_connect_error', err.message));
+  try { s.io.on('reconnect', (n: number) => logState('io_reconnect', `attempt ${n}`)); } catch { /* mock 無視 */ }
+}
+
+/** 差し替え候補の新 socket を開いて make-before-break を開始する(周期タイマから呼ぶ)。 */
+function startMakeBeforeBreak(): void {
+  // 進行中/強制再接続中/そもそも active socket が無いときは開始しない(周期の多重発火ガード)。
+  if (swapping || reconnecting || !socket) return;
+  swapping = true;
+  try {
+    socketNext = connector();
+    attachNextListeners(socketNext);
+  } catch (err) {
+    logState('proactive_start_error', err instanceof Error ? err.message : String(err));
+    socketNext = null;
+    endMakeBeforeBreak();
+    return;
+  }
+  logState('proactive_open', 'opened next socket (make-before-break)');
+  // 猶予内に新 socket が tick を出さなければ捨てて旧を維持(=決して socket 無しにしない)。
+  mbbTimeoutTimer = setTimeout(abortMakeBeforeBreak, MAKE_BEFORE_BREAK_TIMEOUT_MS);
+}
+
+/** 新 socket が猶予内に tick を出さなかった: 新 socket を破棄し、旧 socket を active のまま維持する。 */
+function abortMakeBeforeBreak(): void {
+  if (!swapping) return;
+  try { if (socketNext) { socketNext.removeAllListeners(); socketNext.disconnect(); } } catch { /* noop */ }
+  socketNext = null;
+  logState('proactive_abort', 'next socket no tick in time, kept old (retry next interval)');
+  endMakeBeforeBreak();
 }
 
 /** watchdog: connected の間、以下のいずれかで強制フル再接続する。
@@ -268,15 +369,23 @@ export function startSocket(conn?: SocketConnector): void {
   }
   // watchdog を1本だけ張る(冪等)。stopSocket でクリアする。
   if (!watchdogTimer) watchdogTimer = setInterval(watchdogCheck, TICK_WATCHDOG_CHECK_MS);
+  // proactive make-before-break を周期起動(冪等)。常に「初回接続=real-time」状態へ更新し続ける。
+  if (!proactiveTimer) proactiveTimer = setInterval(startMakeBeforeBreak, PROACTIVE_RECONNECT_MS);
 }
 
 /** socket を停止(冪等)。プロセス終了時に呼ぶ。watchdog も止める。 */
 export function stopSocket(): void {
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  if (proactiveTimer) { clearInterval(proactiveTimer); proactiveTimer = null; }
+  if (mbbTimeoutTimer) { clearTimeout(mbbTimeoutTimer); mbbTimeoutTimer = null; }
   reconnecting = false;
+  swapping = false;
   lastTickAt = 0;
   primaryLagMs = null; primaryLagAt = 0; staleLagStreak = 0; lastForceReconnectAt = 0;
   connector = defaultConnector;
+  // 進行中の make-before-break の新 socket も閉じる。
+  try { if (socketNext) { socketNext.removeAllListeners(); socketNext.disconnect(); } } catch { /* noop */ }
+  socketNext = null;
   if (!socket) { connected = false; lastLoggedState = null; return; }
   try { socket.removeAllListeners(); socket.disconnect(); } catch { /* noop */ }
   socket = null;
@@ -340,4 +449,29 @@ export function _setLagWithinIntervalForTest(lagMs: number): void {
 /** テスト用: watchdog interval が張られているか。 */
 export function _hasWatchdogForTest(): boolean {
   return watchdogTimer !== null;
+}
+// ── proactive make-before-break のテスト用シーム ──
+/** テスト用: proactive make-before-break を1回起動する(setInterval を待たない)。 */
+export function _runProactiveForTest(): void {
+  startMakeBeforeBreak();
+}
+/** テスト用: make-before-break の打ち切り(新 socket が tick を出さなかった経路)を駆動する。 */
+export function _runMbbTimeoutForTest(): void {
+  abortMakeBeforeBreak();
+}
+/** テスト用: 現在の active socket 参照(差し替え確認用)。 */
+export function _getActiveSocketForTest(): Socket | null {
+  return socket;
+}
+/** テスト用: 差し替え候補の新 socket 参照(make-before-break 中のみ非 null)。 */
+export function _getSocketNextForTest(): Socket | null {
+  return socketNext;
+}
+/** テスト用: make-before-break 進行中フラグ。 */
+export function _isSwappingForTest(): boolean {
+  return swapping;
+}
+/** テスト用: proactive timer が張られているか。 */
+export function _hasProactiveTimerForTest(): boolean {
+  return proactiveTimer !== null;
 }
