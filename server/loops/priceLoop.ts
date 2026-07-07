@@ -23,6 +23,22 @@ let running = false;
 let degradedUntil = 0;          // 全取得失敗でバックオフ中はこの時刻まで「劣化中」
 let intervalMs = resolvePricePollMs();
 
+// v0.7.17 診断: ajax_cme(HTTP)による NIY=F 取得の成否を明示ログする(新ロジックが動いている証拠 +
+// kabu 機で HTTP エンドポイントが通っているかの確認)。毎ポール出すとスパムなので、状態変化時
+// (成功↔失敗)と 60 秒ごとの1回だけ出す。
+let ajaxCmeLoggedOk: boolean | null = null;
+let ajaxCmeLoggedAt = 0;
+function logAjaxCmeState(niy: Price | null): void {
+  const ok = !!(niy && !niy.stale);
+  const nowMs = Date.now();
+  if (ok !== ajaxCmeLoggedOk || nowMs - ajaxCmeLoggedAt >= 60_000) {
+    if (ok) console.log(`[priceLoop] NIY=F ajax_cme(HTTP)=${niy!.price} 新鮮 [v0.7.17]`);
+    else console.warn('[priceLoop] NIY=F ajax_cme(HTTP) 取得不能 — HTTP フィード失敗(jss2/225225 両方) [v0.7.17]');
+    ajaxCmeLoggedOk = ok;
+    ajaxCmeLoggedAt = nowMs;
+  }
+}
+
 const SYMBOLS = INSTRUMENTS.map(i => i.symbol);
 const OFFHOURS_IDLE_MS = 30_000;   // 取引時間外はフェッチせず 30s 後に再判定(2s→バックオフ)
 
@@ -78,6 +94,7 @@ async function tick(): Promise<number> {
       fetchYahooChartPrices(SYMBOLS),
       fetchAjaxCmePrice('136'),
     ]);
+    logAjaxCmeState(ajaxCme);   // v0.7.17: HTTP 経路の成否を明示(新ロジック稼働確認)
     const feed = getSocketPrices(Date.now());
     const prices = mergeSources(yahoo, feed, ajaxCme);
     if (prices.length === 0) throw new Error('No prices fetched (Yahoo chart API failed)');
