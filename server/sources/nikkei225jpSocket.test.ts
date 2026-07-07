@@ -11,13 +11,9 @@ import {
   _clearLatestForTest,
   _runWatchdogForTest,
   _setConnStateForTest,
-  _setPrimaryLagForTest,
-  _getStaleLagReconnectsForTest,
   _hasWatchdogForTest,
   SOCKET_STALE_MS,
   TICK_WATCHDOG_MS,
-  TICK_STALE_LAG_MS,
-  MAX_STALE_LAG_RECONNECTS,
   type SocketConnector,
   type SocketQuote,
 } from './nikkei225jpSocket.js';
@@ -67,42 +63,55 @@ describe('parsePriceTChangePercent — priceT バッチから騰落率', () => {
   });
 });
 
-describe('isStale — 鮮度判定', () => {
+describe('isStale — 鮮度判定(到着時刻 arrivalMs ベース)', () => {
   const now = 1783334800000;
-  it('SOCKET_STALE_MS 以内の tick は fresh', () => {
-    const q: SocketQuote = { price: 69920, timestamp: now - 5000, changePercent: 0 };
+  it('SOCKET_STALE_MS 以内に到着した tick は fresh', () => {
+    const q: SocketQuote = { price: 69920, arrivalMs: now - 5000, tsMs: now - 5000, changePercent: 0 };
     expect(isStale(q, now)).toBe(false);
   });
-  it('SOCKET_STALE_MS 超の tick は stale', () => {
-    const q: SocketQuote = { price: 69920, timestamp: now - (SOCKET_STALE_MS + 1), changePercent: 0 };
+  it('到着から SOCKET_STALE_MS 超過なら stale', () => {
+    const q: SocketQuote = { price: 69920, arrivalMs: now - (SOCKET_STALE_MS + 1), tsMs: now - (SOCKET_STALE_MS + 1), changePercent: 0 };
     expect(isStale(q, now)).toBe(true);
+  });
+  it('tsMs が約610s 古くても、到着が新しければ fresh(半死セッション対策)', () => {
+    const q: SocketQuote = { price: 69920, arrivalMs: now - 2000, tsMs: now - 610_000, changePercent: 0 };
+    expect(isStale(q, now)).toBe(false);
   });
   it('未受信(undefined)は stale', () => {
     expect(isStale(undefined, now)).toBe(true);
   });
 });
 
-describe('buildSocketPrices — latest → Price[](鮮度付与)', () => {
+describe('buildSocketPrices — latest → Price[](鮮度付与・到着時刻 timestamp)', () => {
   const now = 1783334800000;
-  it('fresh な NIY=F は stale=false・実 timestamp を保持', () => {
+  it('fresh な NIY=F は stale=false・到着時刻(arrivalMs)を timestamp に保持', () => {
     const latest = new Map<Symbol, SocketQuote>([
-      ['NIY=F', { price: 69920, timestamp: now - 3000, changePercent: -0.12 }],
+      ['NIY=F', { price: 69920, arrivalMs: now - 3000, tsMs: now - 3000, changePercent: -0.12 }],
     ]);
     const prices = buildSocketPrices(latest, now);
     const niy = prices.find(p => p.symbol === 'NIY=F')!;
     expect(niy.stale).toBe(false);
     expect(niy.price).toBe(69920);
-    expect(niy.timestamp).toBe(now - 3000);   // tick の実 epoch-ms(now を上書きしない)
+    expect(niy.timestamp).toBe(now - 3000);   // 到着時刻(tsMs でなく arrivalMs)
     expect(niy.changePercent).toBe(-0.12);
   });
 
-  it('古い tick の銘柄は stale=true(下流で Yahoo に埋められない)', () => {
+  it('tsMs が約610s 古くても、到着が新しければ fresh・timestamp は到着時刻(半死セッション対策)', () => {
     const latest = new Map<Symbol, SocketQuote>([
-      ['NIY=F', { price: 69920, timestamp: now - (SOCKET_STALE_MS + 10_000), changePercent: 0 }],
+      ['NIY=F', { price: 69920, arrivalMs: now - 2000, tsMs: now - 610_000, changePercent: 0 }],
+    ]);
+    const niy = buildSocketPrices(latest, now).find(p => p.symbol === 'NIY=F')!;
+    expect(niy.stale).toBe(false);            // tsMs が古くても到着が新しいので fresh
+    expect(niy.timestamp).toBe(now - 2000);   // 現在時刻に近い到着時刻 → 下流で新鮮な足が積める
+  });
+
+  it('到着途絶(arrivalMs が古い)なら stale=true(下流で Yahoo に埋められない)', () => {
+    const latest = new Map<Symbol, SocketQuote>([
+      ['NIY=F', { price: 69920, arrivalMs: now - (SOCKET_STALE_MS + 10_000), tsMs: now - (SOCKET_STALE_MS + 10_000), changePercent: 0 }],
     ]);
     const niy = buildSocketPrices(latest, now).find(p => p.symbol === 'NIY=F')!;
     expect(niy.stale).toBe(true);
-    expect(niy.timestamp).toBe(now - (SOCKET_STALE_MS + 10_000));   // 古い timestamp のまま
+    expect(niy.timestamp).toBe(now - (SOCKET_STALE_MS + 10_000));   // 到着時刻のまま
   });
 
   it('未受信の銘柄は結果に含めない', () => {
@@ -115,7 +124,7 @@ describe('getSocketPrices — シングルトン latest 経由(注入)', () => {
   it('_setLatestForTest で入れた値がスナップショットで返る', () => {
     _clearLatestForTest();
     const now = 1783334800000;
-    _setLatestForTest('NIY=F', { price: 70050, timestamp: now - 2000, changePercent: 0.3 });
+    _setLatestForTest('NIY=F', { price: 70050, arrivalMs: now - 2000, tsMs: now - 2000, changePercent: 0.3 });
     const prices = getSocketPrices(now);
     const niy = prices.find(p => p.symbol === 'NIY=F')!;
     expect(niy.price).toBe(70050);
@@ -123,10 +132,10 @@ describe('getSocketPrices — シングルトン latest 経由(注入)', () => {
     _clearLatestForTest();
   });
 
-  it('stale な NIY=F はスナップショットで stale=true', () => {
+  it('到着途絶の NIY=F はスナップショットで stale=true', () => {
     _clearLatestForTest();
     const now = 1783334800000;
-    _setLatestForTest('NIY=F', { price: 70050, timestamp: now - (SOCKET_STALE_MS + 1), changePercent: 0 });
+    _setLatestForTest('NIY=F', { price: 70050, arrivalMs: now - (SOCKET_STALE_MS + 1), tsMs: now - (SOCKET_STALE_MS + 1), changePercent: 0 });
     expect(getSocketPrices(now).find(p => p.symbol === 'NIY=F')!.stale).toBe(true);
     _clearLatestForTest();
   });
@@ -228,78 +237,6 @@ describe('socket watchdog — 半死(tick 途絶)からの強制フル再接続'
   });
 });
 
-// ── stale-timestamp watchdog(2026-07-07): tick は届き続けるが tsMs が古い半死セッション ──
-// 実測: 停止セッションは NIY=F tick を lag≈600s の古い timestamp で配り続ける(別接続では同銘柄 real-time)。
-// arrival ベースの (A) watchdog は tick が来ているので発火しない → tsMs 遅延ベースの (B) が必要。
-
-describe('socket watchdog (B) — stale-timestamp(届くが古い)からの強制再接続', () => {
-  afterEach(() => { stopSocket(); vi.useRealTimers(); });
-
-  it('lag > 閾値の tick が TICK_STALE_LAG_STREAK 回連続で届いたら強制再接続する', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());   // connected・無 tick watchdog は発火しない状態
-
-    // 1回目: lag 大 → streak=1 だけで再接続しない(一発ノイズ耐性)。
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);   // 約608s 相当
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(1);   // まだ再接続なし
-
-    // 2回目: 連続で lag 大 → streak=2 で強制再接続(connector 再呼び)。
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(2);
-    expect(_getStaleLagReconnectsForTest()).toBe(1);
-  });
-
-  it('fresh(lag 小)な tick が届いている間は再接続しない', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());
-    for (let i = 0; i < 5; i++) {
-      _setPrimaryLagForTest(2_000);   // real-time(≈2s)
-      _runWatchdogForTest();
-    }
-    expect(connector).toHaveBeenCalledTimes(1);   // 再接続なし
-  });
-
-  it('一発だけ lag 大(単発ノイズ)では再接続しない', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());
-    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);   // 大
-    _runWatchdogForTest();                                 // streak=1
-    _setPrimaryLagForTest(2_000);                          // 次は fresh → streak リセット
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(1);   // sustained でないので再接続なし
-  });
-
-  it('連続 stale-lag 再接続は MAX_STALE_LAG_RECONNECTS で打ち止め(thrash cap)', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now());
-    // 毎回 lag 大のままで sustained → 再接続。cap までは張り直す。
-    const forceOnce = (): void => {
-      _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=1
-      _setConnStateForTest(true, Date.now());
-      _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=2 → reconnect
-      _setConnStateForTest(true, Date.now());   // forceReconnect が connected=false にするので戻す
-    };
-    forceOnce();   // #1
-    forceOnce();   // #2
-    forceOnce();   // #3
-    expect(_getStaleLagReconnectsForTest()).toBe(MAX_STALE_LAG_RECONNECTS);
-    const callsAtCap = (connector as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
-    // 4回目は cap 到達 → もう再接続しない(give up、alertLoop の抑制に委ねる)。
-    forceOnce();
-    expect((connector as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAtCap);
-  });
-
-  it('無 tick(A)経路は stale-lag(B)と独立に依然として発火する', () => {
-    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
-    startSocket(connector);
-    _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 5_000));   // 完全沈黙
-    _runWatchdogForTest();
-    expect(connector).toHaveBeenCalledTimes(2);
-  });
-});
+// v0.7.13: 旧 case B(stale-timestamp watchdog: tick は届くが tsMs が古い半死セッションで強制再接続)は撤去。
+// 到着し続けている tick は「到着=リアルタイム」として fresh 扱いにする方針へ変更したため、tsMs 遅延だけを
+// 理由にした強制再接続は行わない(churn の元)。watchdog は case A(無 tick=完全沈黙)のみ。
