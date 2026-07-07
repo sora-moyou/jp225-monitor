@@ -59,23 +59,22 @@ describe('mergeSources — NIY=F は Yahoo(遅延)を絶対に採用しない', 
 // stale/未受信のときは v0.7.9 ルールで Yahoo に埋められない(NIY=F は fresh から欠落)。
 describe('socket 経路 — buildSocketPrices → mergeSources(実 timestamp が流れる/遅延ガードが本物のラグを見る)', () => {
   const now = 1783334800000;
-  it('live socket NIY=F は mergeSources を通って採用され、到着時刻(arrivalMs)を timestamp に保持', () => {
-    // v0.7.13: tsMs が約610s 古くても、到着(arrivalMs)が新しければ fresh(半死セッション対策)。
+  it('live socket NIY=F は mergeSources を通って採用され、tick の実 timestamp を保持', () => {
     const latest = new Map<Symbol, SocketQuote>([
-      ['NIY=F', { price: FEED_NIY_LIVE, arrivalMs: now - 2000, tsMs: now - 610_000, changePercent: 0.1 }],
+      ['NIY=F', { price: FEED_NIY_LIVE, timestamp: now - 2000, changePercent: 0.1 }],
     ]);
     const feed = buildSocketPrices(latest, now);   // socket スナップショット
     const yahoo = [px('NIY=F', YAHOO_NIY), px('NQ=F', 20000)];
     const niy = mergeSources(yahoo, feed).find(p => p.symbol === 'NIY=F')!;
     expect(niy.price).toBe(FEED_NIY_LIVE);
-    expect(niy.stale).toBe(false);           // 古い tsMs でも到着が新しいので fresh
+    expect(niy.stale).toBe(false);
     expect(niy.price).not.toBe(YAHOO_NIY);
-    expect(niy.timestamp).toBe(now - 2000);   // Yahoo でも tsMs でもなく到着時刻
+    expect(niy.timestamp).toBe(now - 2000);   // Yahoo でも now でもなく tick の実 epoch-ms
   });
 
-  it('socket NIY=F が stale(到着途絶)なら fresh に載らず Yahoo にも埋められない', () => {
+  it('socket NIY=F が stale(古い tick)なら fresh に載らず Yahoo にも埋められない', () => {
     const latest = new Map<Symbol, SocketQuote>([
-      ['NIY=F', { price: 39990, arrivalMs: now - (SOCKET_STALE_MS + 5000), tsMs: now - (SOCKET_STALE_MS + 5000), changePercent: 0 }],
+      ['NIY=F', { price: 39990, timestamp: now - (SOCKET_STALE_MS + 5000), changePercent: 0 }],
     ]);
     const feed = buildSocketPrices(latest, now);   // stale=true
     const yahoo = [px('NIY=F', YAHOO_NIY)];

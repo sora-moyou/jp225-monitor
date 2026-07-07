@@ -30,16 +30,10 @@ export const SOCKET_CODE_SYMBOL: ReadonlyMap<string, Symbol> = new Map<string, S
   ['511', 'JPY=X'],
 ]);
 
-/** socket が保持する銘柄別の最新値。
- *  v0.7.13: 鮮度は **到着時刻(arrivalMs=tick を受けた壁時計)** で判定し、timestamp にも到着時刻を使う。
- *  背景: あるマシンでは NIY=F(code 136)の tick が **リアルタイムで到着し続ける**のに tsMs だけ約610s 古い
- *  ("半死セッション")。旧実装は tsMs を採用したため NIY=F を stale と誤判定 → 落として足/levels/alerts が崩壊した。
- *  socket は push 型で「到着=リアルタイム」なので、旧 ajax フィード同様「取得時 wall-clock」で timestamp する。
- *  tsMs は診断用に保持するだけ(鮮度判定・価格 timestamp には使わない)。 */
+/** socket が保持する銘柄別の最新値。price/timestamp は tick 由来、changePercent は priceT 由来。 */
 export interface SocketQuote {
   price: number;
-  arrivalMs: number;      // tick が到着した壁時計 epoch-ms(Date.now)。鮮度判定・価格 timestamp はこれ。
-  tsMs: number;           // tick が申告する epoch-ms(診断用のみ。半死セッションでは古いことがある)。
+  timestamp: number;      // tick の実 epoch-ms(真のリアルタイム)
   changePercent: number;  // 直近 priceT の騰落率(無ければ 0)
 }
 
@@ -78,20 +72,16 @@ export function parsePriceTChangePercent(text: string): Map<Symbol, number> {
   return out;
 }
 
-/** その quote が stale か(未受信=引数 undefined も stale)。
- *  v0.7.13: **到着時刻** 基準。now − arrivalMs > SOCKET_STALE_MS で stale。
- *  tick が届き続ける限り fresh(tsMs が古くても関係ない)。socket が本当に配信を止めたときだけ stale。 */
+/** その quote が stale か(未受信=引数 undefined も stale)。now − timestamp > SOCKET_STALE_MS で stale。 */
 export function isStale(quote: SocketQuote | undefined, now: number, staleMs: number = SOCKET_STALE_MS): boolean {
   if (!quote) return true;
-  return now - quote.arrivalMs > staleMs;
+  return now - quote.timestamp > staleMs;
 }
 
 /**
- * latest マップ → Price[]。各対象銘柄について、鮮度を **到着時刻** で判定して stale フラグを立てる。
+ * latest マップ → Price[]。各対象銘柄について、鮮度を now で判定して stale フラグを立てる。
  * priceLoop はこの結果を mergeSources へ渡す。stale=true の NIY=F は下流で Yahoo に埋められず、
  * 前回値を古い timestamp のまま持ち越す(v0.7.9 ルール)。
- * v0.7.13: timestamp には tick の tsMs ではなく **到着時刻(arrivalMs)** を使う。socket は push 型で
- * 「到着=リアルタイム」なので、tsMs が古い半死セッションでも到着していれば fresh・現在時刻で足を積める。
  */
 export function buildSocketPrices(latest: ReadonlyMap<Symbol, SocketQuote>, now: number, staleMs: number = SOCKET_STALE_MS): Price[] {
   const out: Price[] = [];
@@ -102,7 +92,7 @@ export function buildSocketPrices(latest: ReadonlyMap<Symbol, SocketQuote>, now:
       symbol,
       price: q.price,
       changePercent: q.changePercent,
-      timestamp: q.arrivalMs,   // 到着時刻(=リアルタイムの取得時 wall-clock)。tsMs は使わない。
+      timestamp: q.timestamp,   // tick の実 epoch-ms(真のリアルタイム)。
       stale: isStale(q, now, staleMs),
     });
   }
@@ -119,10 +109,22 @@ export const TICK_WATCHDOG_MS = 75_000;
 /** watchdog の点検間隔。 */
 export const TICK_WATCHDOG_CHECK_MS = 15_000;
 
-// v0.7.13: 旧 case B(stale-timestamp 強制再接続)は撤去。
-// NIY=F(code 136)の tick は **到着=リアルタイム** なので、tsMs が古い半死セッションでも到着していれば
-// fresh 扱いにする方針に変更した。tsMs の遅延だけを理由にした強制再接続は不要(むしろ churn を生む)ため削除。
-// watchdog は case A(TICK_WATCHDOG_MS の完全沈黙=無 tick)のみを見る。
+/** primary symbol(NIY=F/code 136)の tick timestamp 遅延(now − tick.tsMs)がこれを超える tick が
+ *  「届き続けている」なら、接続は生きているが**価格値そのものが遅延した半死セッション**とみなす。
+ *  実測(2026-07-07): 起動直後は real-time(lag 数秒)→ 時間経過で同一 socket の**価格値が約10分遅延**へ
+ *  ドリフト(225225.jp の実ソースから乖離)→ tsMs もそれに連れて古くなる。再接続(=新規接続)で real-time に
+ *  復帰する。real-time は数秒・ドリフト後は数百秒なので 90s は両者を明確に分離する。 */
+export const TICK_STALE_LAG_MS = 90_000;
+/** stale-lag の一発ノイズで再接続しないため、この回数連続で lag 超過を観測してから強制再接続する。 */
+export const TICK_STALE_LAG_STREAK = 2;
+/** 強制再接続後の grace(この間は lag 再評価を skip)。新セッションの fresh tick 到着を待つ。
+ *  さらに「前回の強制再接続からこの時間が経つまでは次を撃たない」min-interval も兼ねる(rapid thrash 防止)。
+ *  v0.7.14: give-up cap を撤去し「ドリフトするたびに何度でも再接続」する方針にしたので、暴走しないよう
+ *  この最小間隔だけで抑制する(絶対的な打ち止めはしない=起動直後は必ず real-time に戻るため)。 */
+export const RECONNECT_GRACE_MS = 25_000;
+
+/** primary(NIY=F)の tick timestamp 遅延を測る対象コード。 */
+const PRIMARY_SYMBOL: Symbol = 'NIY=F';
 
 /** socket.io の接続を生成するシーム(テストで差し替え可能)。既定は本物の io(...)。 */
 export type SocketConnector = () => Socket;
@@ -143,6 +145,14 @@ let connector: SocketConnector = defaultConnector;
 let lastTickAt = 0;          // 直近に有効な tick を受けた時刻(0=未受信)。watchdog の鮮度基準。
 let watchdogTimer: NodeJS.Timeout | null = null;
 let reconnecting = false;    // 強制再接続の多重発火ガード(タイマ/ソケットを積み上げない)。
+// ── stale-timestamp watchdog(半死セッション: 届き続けるが価格値=tsMs が古い) ──
+let primaryLagMs: number | null = null;   // 直近 primary(NIY=F) tick の timestamp 遅延(now − tsMs)。null=未観測。
+let primaryLagAt = 0;                      // その lag を観測した壁時計時刻(古い lag を再利用しないため)。
+let staleLagStreak = 0;                    // 連続で lag 超過を観測した watchdog 回数(ノイズ耐性)。
+let lastForceReconnectAt = 0;             // 直近に強制再接続した時刻(grace / min-interval 判定)。
+// v0.7.14: give-up cap(staleLagReconnects / MAX_STALE_LAG_RECONNECTS)は撤去。ドリフトは繰り返し起き、
+// 再接続は毎回 real-time を復元する(起動直後は必ず real-time)ので、打ち止めせず何度でも張り直す。
+// 暴走は RECONNECT_GRACE_MS の min-interval だけで抑える。
 
 function logState(state: string, detail?: string): void {
   if (lastLoggedState === state) return;   // 状態変化時のみ1回ログ(スパム防止)。
@@ -150,15 +160,19 @@ function logState(state: string, detail?: string): void {
   console.log(`[nikkei225jpSocket] ${state}${detail ? `: ${detail}` : ''}`);
 }
 
-/** tick を latest へ反映(純 parseTick を使用)。changePercent は既存 quote から引き継ぐ。
- *  v0.7.13: arrivalMs=到着壁時計を鮮度・timestamp の正とし、tick 申告の tsMs は診断用に保持のみ。 */
+/** tick を latest へ反映(純 parseTick を使用)。changePercent は既存 quote から引き継ぐ。 */
 function applyTick(arr: unknown): void {
   const t = parseTick(arr);
   if (!t) return;
-  const now = Date.now();
   const prev = latest.get(t.symbol);
-  latest.set(t.symbol, { price: t.price, arrivalMs: now, tsMs: t.timestamp, changePercent: prev?.changePercent ?? 0 });
+  latest.set(t.symbol, { price: t.price, timestamp: t.timestamp, changePercent: prev?.changePercent ?? 0 });
+  const now = Date.now();
   lastTickAt = now;   // watchdog 用に「有効 tick を受けた壁時計時刻」を更新。
+  // primary(NIY=F)は tick timestamp の遅延も追う(半死セッション=届くが価格値が古い、の検知用)。
+  if (t.symbol === PRIMARY_SYMBOL) {
+    primaryLagMs = now - t.timestamp;
+    primaryLagAt = now;
+  }
 }
 
 /** priceT を latest の changePercent へ反映(price/timestamp は tick を正とするため触らない)。 */
@@ -199,17 +213,23 @@ function forceReconnect(reason: string): void {
   connected = false;
   // 状態機の logState は「同一状態は1回」なので、再接続後の 'connected' を必ず出せるようリセット。
   lastLoggedState = null;
+  // 再接続直後は fresh tick 到着まで lag 再評価を猶予する(grace)。lag streak もリセット。
+  lastForceReconnectAt = Date.now();
+  staleLagStreak = 0;
+  primaryLagMs = null;   // 新セッションの lag を待つ(旧セッションの古い lag を再利用しない)。
   try { createSocket(); } catch (err) {
     logState('start_error', err instanceof Error ? err.message : String(err));
   }
   reconnecting = false;
 }
 
-/** watchdog: connected の間、(A) 無 tick で強制フル再接続する。
+/** watchdog: connected の間、以下のいずれかで強制フル再接続する。
  *  (A) 無 tick: 直近 tick 到着が TICK_WATCHDOG_MS を超えた(完全沈黙=半死/停止)。
- *  disconnected 中は socket.io 透過再接続に任せる。
- *  v0.7.13: 旧 (B) stale-timestamp(tsMs が古いだけ)による強制再接続は撤去した。tick が到着し続けている限り
- *  「到着=リアルタイム」として fresh 扱いにするため、tsMs 遅延を理由にした再接続は不要(churn の元)。 */
+ *  (B) stale-timestamp: tick は届き続けているが primary(NIY=F)の tsMs 遅延が TICK_STALE_LAG_MS を超え、
+ *      それが TICK_STALE_LAG_STREAK 回連続(=価格値が遅延へドリフトした半死セッション。再接続で real-time 復帰)。
+ *  disconnected 中は socket.io 透過再接続に任せる。再接続直後の grace / min-interval 中は (B) を評価しない。
+ *  v0.7.14: (B) の give-up cap は撤去。ドリフトは再発し、再接続は毎回 real-time を復元するので、
+ *  ドリフトを検知するたびに(min-interval を空けて)何度でも張り直す。絶対的な打ち止めはしない。 */
 function watchdogCheck(): void {
   if (!connected) return;          // 切断中は透過再接続に任せる(接続の張り直しはしない)。
   if (lastTickAt === 0) return;    // まだ一度も tick が無い(起動直後)。誤発火しない。
@@ -218,6 +238,22 @@ function watchdogCheck(): void {
   // (A) 無 tick(完全沈黙)。
   const age = now - lastTickAt;
   if (age > TICK_WATCHDOG_MS) { forceReconnect(`no tick ${age}ms(half-dead socket)`); return; }
+
+  // (B) stale-timestamp(届くが価格値が古い)。再接続直後の grace / min-interval 中は評価しない
+  //     (fresh tick 待ち + rapid thrash 防止)。
+  if (now - lastForceReconnectAt < RECONNECT_GRACE_MS) return;
+  // primary の lag 観測が無い/古すぎる(この点検周期で更新されていない)なら判定しない。
+  if (primaryLagMs === null || now - primaryLagAt > TICK_WATCHDOG_CHECK_MS * 2) { staleLagStreak = 0; return; }
+  if (primaryLagMs > TICK_STALE_LAG_MS) {
+    staleLagStreak++;
+    if (staleLagStreak >= TICK_STALE_LAG_STREAK) {
+      staleLagStreak = 0;
+      // give-up せず毎回張り直す。min-interval(RECONNECT_GRACE_MS)が次発火までの間隔を保証する。
+      forceReconnect(`stale tick lag ${Math.round(primaryLagMs / 1000)}s(price drifted delayed, reconnecting)`);
+    }
+  } else {
+    staleLagStreak = 0;   // fresh に戻ったら streak リセット(sustained 判定のため)。
+  }
 }
 
 /** socket を起動(冪等)。socket.io 透過再接続 + app 層 watchdog で tick 途絶からも復帰する。
@@ -239,6 +275,7 @@ export function stopSocket(): void {
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
   reconnecting = false;
   lastTickAt = 0;
+  primaryLagMs = null; primaryLagAt = 0; staleLagStreak = 0; lastForceReconnectAt = 0;
   connector = defaultConnector;
   if (!socket) { connected = false; lastLoggedState = null; return; }
   try { socket.removeAllListeners(); socket.disconnect(); } catch { /* noop */ }
@@ -252,10 +289,10 @@ export function getSocketPrices(now: number): Price[] {
   return buildSocketPrices(latest, now);
 }
 
-/** 診断/UI 用: 接続状態と最も新しい tick の年齢(ms)。到着時刻ベース(=鮮度判定と同じ基準)。 */
+/** 診断/UI 用: 接続状態と最も新しい tick の年齢(ms)。 */
 export function getSocketStatus(now: number = Date.now()): { connected: boolean; lastTickAgeMs: number | null } {
   let newest = -Infinity;
-  for (const q of latest.values()) if (q.arrivalMs > newest) newest = q.arrivalMs;
+  for (const q of latest.values()) if (q.timestamp > newest) newest = q.timestamp;
   return { connected, lastTickAgeMs: Number.isFinite(newest) ? now - newest : null };
 }
 
@@ -275,6 +312,30 @@ export function _runWatchdogForTest(): void {
 export function _setConnStateForTest(isConnected: boolean, tickAt: number): void {
   connected = isConnected;
   lastTickAt = tickAt;
+}
+/** テスト用: primary(NIY=F)の tick timestamp lag を注入(半死セッション=届くが価格値が古い の検証用)。
+ *  lastTickAt も更新して「tick は届いている(=無 tick watchdog は発火しない)」状態にする。
+ *  grace/min-interval を過去化して stale-lag 判定が有効になるようにする。 */
+export function _setPrimaryLagForTest(lagMs: number): void {
+  const now = Date.now();
+  primaryLagMs = lagMs;
+  primaryLagAt = now;
+  lastTickAt = now;                          // tick は届いている(無 tick 経路には落ちない)。
+  lastForceReconnectAt = now - RECONNECT_GRACE_MS - 1;   // grace/min-interval 明け(stale-lag を評価可能に)。
+}
+/** テスト用: 直近の強制再接続時刻を読む(min-interval の検証用)。0=未再接続。 */
+export function _getLastForceReconnectAtForTest(): number {
+  return lastForceReconnectAt;
+}
+/** テスト用: primary の lag を大きく注入するが、grace/min-interval は据え置く(=直近に再接続した想定)。
+ *  _setPrimaryLagForTest は grace を過去化してしまうので、min-interval が効いている状況の検証にはこちらを使う。
+ *  lastForceReconnectAt=now(min-interval 内)/ primaryLag=lagMs(sustained)を作る。 */
+export function _setLagWithinIntervalForTest(lagMs: number): void {
+  const now = Date.now();
+  primaryLagMs = lagMs;
+  primaryLagAt = now;
+  lastTickAt = now;                 // tick は届いている(無 tick 経路には落ちない)。
+  lastForceReconnectAt = now;       // 直近に再接続した=min-interval 内。
 }
 /** テスト用: watchdog interval が張られているか。 */
 export function _hasWatchdogForTest(): boolean {
