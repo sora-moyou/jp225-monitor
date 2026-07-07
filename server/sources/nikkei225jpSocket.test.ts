@@ -11,9 +11,13 @@ import {
   _clearLatestForTest,
   _runWatchdogForTest,
   _setConnStateForTest,
+  _setPrimaryLagForTest,
+  _getStaleLagReconnectsForTest,
   _hasWatchdogForTest,
   SOCKET_STALE_MS,
   TICK_WATCHDOG_MS,
+  TICK_STALE_LAG_MS,
+  MAX_STALE_LAG_RECONNECTS,
   type SocketConnector,
   type SocketQuote,
 } from './nikkei225jpSocket.js';
@@ -221,5 +225,81 @@ describe('socket watchdog — 半死(tick 途絶)からの強制フル再接続'
     _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 20_000));
     vi.advanceTimersByTime(16_000);
     expect(connector).toHaveBeenCalledTimes(2);   // 点検で1回強制再接続
+  });
+});
+
+// ── stale-timestamp watchdog(2026-07-07): tick は届き続けるが tsMs が古い半死セッション ──
+// 実測: 停止セッションは NIY=F tick を lag≈600s の古い timestamp で配り続ける(別接続では同銘柄 real-time)。
+// arrival ベースの (A) watchdog は tick が来ているので発火しない → tsMs 遅延ベースの (B) が必要。
+
+describe('socket watchdog (B) — stale-timestamp(届くが古い)からの強制再接続', () => {
+  afterEach(() => { stopSocket(); vi.useRealTimers(); });
+
+  it('lag > 閾値の tick が TICK_STALE_LAG_STREAK 回連続で届いたら強制再接続する', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, Date.now());   // connected・無 tick watchdog は発火しない状態
+
+    // 1回目: lag 大 → streak=1 だけで再接続しない(一発ノイズ耐性)。
+    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);   // 約608s 相当
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(1);   // まだ再接続なし
+
+    // 2回目: 連続で lag 大 → streak=2 で強制再接続(connector 再呼び)。
+    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(2);
+    expect(_getStaleLagReconnectsForTest()).toBe(1);
+  });
+
+  it('fresh(lag 小)な tick が届いている間は再接続しない', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, Date.now());
+    for (let i = 0; i < 5; i++) {
+      _setPrimaryLagForTest(2_000);   // real-time(≈2s)
+      _runWatchdogForTest();
+    }
+    expect(connector).toHaveBeenCalledTimes(1);   // 再接続なし
+  });
+
+  it('一発だけ lag 大(単発ノイズ)では再接続しない', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, Date.now());
+    _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000);   // 大
+    _runWatchdogForTest();                                 // streak=1
+    _setPrimaryLagForTest(2_000);                          // 次は fresh → streak リセット
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(1);   // sustained でないので再接続なし
+  });
+
+  it('連続 stale-lag 再接続は MAX_STALE_LAG_RECONNECTS で打ち止め(thrash cap)', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, Date.now());
+    // 毎回 lag 大のままで sustained → 再接続。cap までは張り直す。
+    const forceOnce = (): void => {
+      _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=1
+      _setConnStateForTest(true, Date.now());
+      _setPrimaryLagForTest(TICK_STALE_LAG_MS + 480_000); _runWatchdogForTest();   // streak=2 → reconnect
+      _setConnStateForTest(true, Date.now());   // forceReconnect が connected=false にするので戻す
+    };
+    forceOnce();   // #1
+    forceOnce();   // #2
+    forceOnce();   // #3
+    expect(_getStaleLagReconnectsForTest()).toBe(MAX_STALE_LAG_RECONNECTS);
+    const callsAtCap = (connector as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    // 4回目は cap 到達 → もう再接続しない(give up、alertLoop の抑制に委ねる)。
+    forceOnce();
+    expect((connector as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAtCap);
+  });
+
+  it('無 tick(A)経路は stale-lag(B)と独立に依然として発火する', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 5_000));   // 完全沈黙
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(2);
   });
 });
