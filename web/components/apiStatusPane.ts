@@ -34,11 +34,11 @@ export async function refreshApiStatus(container: HTMLElement): Promise<void> {
     return;
   }
   const now = Date.now();
-  const yahooState: 'ok' | 'paused' = data.yahoo.fallback ? 'paused' : 'ok';
-  const yahooTip = data.yahoo.fallback
-    ? `Yahoo Finance (価格): 取得失敗・リトライ中 (残${fmtRemaining(data.yahoo.skipUntil, now)} / ${fmtClock(data.yahoo.skipUntil)} 再試行) — 直近価格を保持 (stale)。Yahoo News (RSS) とは別系統です`
-    : 'Yahoo Finance (価格): 利用可 (chart API)';
-  const yahoo = renderDot('Y', yahooState, yahooTip);
+  const priceState: 'ok' | 'paused' = data.yahoo.fallback ? 'paused' : 'ok';
+  const priceTip = data.yahoo.fallback
+    ? `価格フィード (225225.jp HTTP): 取得失敗・リトライ中 (残${fmtRemaining(data.yahoo.skipUntil, now)} / ${fmtClock(data.yahoo.skipUntil)} 再試行) — 直近価格を保持 (stale)`
+    : '価格フィード (225225.jp HTTP ajax_cme/ajax_fx): 利用可';
+  const priceDot = renderDot('P', priceState, priceTip);
   const llm = data.llm.map(p => {
     const state: 'ok' | 'paused' | 'off' = !p.enabled ? 'off' : p.paused ? 'paused' : 'ok';
     const tooltip = !p.enabled
@@ -49,7 +49,7 @@ export async function refreshApiStatus(container: HTMLElement): Promise<void> {
     const labelShort = p.name === 'gemini' ? 'G' : p.name === 'groq' ? 'Gr' : 'O';
     return renderDot(labelShort, state, tooltip);
   }).join('');
-  container.innerHTML = yahoo + llm;
+  container.innerHTML = priceDot + llm;
 }
 
 export function initApiStatusPane(container: HTMLElement, intervalMs: number = 5000): void {

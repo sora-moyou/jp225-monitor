@@ -1,8 +1,7 @@
 import type { LevelsResult } from './levels.js';
 
 export type Symbol =
-  | 'NIY=F' | 'NQ=F' | 'YM=F' | '^HSI'
-  | 'JPY=X' | 'CL=F' | '^TNX'
+  | 'NIY=F' | 'NQ=F' | 'YM=F' | 'JPY=X'
   | '6861.T' | '9983.T' | '6146.T' | '6273.T'
   | '8035.T' | '9984.T' | '285A.T';   // 値がさ株7(高株価・日経寄与上位)
 

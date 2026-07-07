@@ -1,16 +1,15 @@
-// 日経225 データ収集デーモン v0.5.00。feed を 2秒ごとに DB へ。起動時に Yahoo 分足で backfill。
+// 日経225 データ収集デーモン v0.5.00。公開 HTTP フィード(ajax_cme/ajax_fx)を 2秒ごとに DB へ。
 // v0.5.00: デーモン単独でアラート検知→DB記録(単一ライター・ハートビート調停)。アプリ閉でも24/7記録。
+// v0.7.20: 価格源を公開 HTTP のみに統一(socket / Yahoo backfill を全廃)。
 import { openDb, resolveDbPath, pruneTicks } from '../server/db/store.js';
-import { recordFeedPrices, backfillBars } from './record.js';
-// v0.7.18: 旧 HTTP フィード fetchFeedPrices(ajax_TOP.js)は上流廃止で死んでいたため撤去。
-// 価格の主経路を monitor の priceLoop と同一にする: NIY=F は ajax_cme(HTTP・毎GET新スナップショット)、
-// 副銘柄(NQ=F/YM=F/^HSI/CL=F/^TNX/JPY=X)は socket。合成は priceLoop の純関数 mergeSources を再利用。
-import { getSocketPrices, startSocket, stopSocket } from '../server/sources/nikkei225jpSocket.js';
-import { fetchAjaxCmePrice } from '../server/sources/ajaxCmePrice.js';
+import { recordFeedPrices } from './record.js';
+// v0.7.20(全銘柄 HTTP 化): 価格の主経路を monitor の priceLoop と同一にする。socket / Yahoo realtime を全廃し、
+// 監視 4 銘柄すべてを公開 HTTP から取る: ajax_cme.js(NIY=F/YM=F/NQ=F)+ ajax_fx.js(JPY=X)。両者とも毎 GET
+// 新スナップショット(long-lived セッション無し=ドリフト無し)。合成は priceLoop の純関数 mergeSources を再利用。
+import { fetchAjaxCmePrices } from '../server/sources/ajaxCmePrice.js';
+import { fetchAjaxFxPrices } from '../server/sources/ajaxFxPrice.js';
 import { mergeSources } from '../server/loops/priceLoop.js';
 import type { Price } from '../server/types.js';
-import { fetchMinuteBars } from '../server/correlation.js';
-import { INSTRUMENTS } from '../server/config.js';
 import { inPollWindow } from './session.js';
 import { acquireLock, releaseLock } from './lock.js';
 import { AlertCollector } from './alertCollector.js';
@@ -26,27 +25,25 @@ process.noDeprecation = true;
 export const COLLECTOR_VERSION = '0.5.00';
 const POLL_MS = 2000;
 const IDLE_MS = 30_000;
-const SYMBOLS = INSTRUMENTS.map(i => i.symbol as string);
 
-// ajax_cme(公開 HTTP)へのポライトネス: collector は 2s ポールだが、monitor の priceLoop も同じ
-// エンドポイントを叩くため、collector 側の GET は ~4s に間引く(直近取得をキャッシュ)。socket 読みは
-// ローカルのメモリスナップショットなので毎ポール(2s)でよい。
-const AJAX_CME_MIN_INTERVAL_MS = 4000;
-let ajaxCmeCache: Price | null = null;
-let ajaxCmeCacheAt = 0;
+// 公開 HTTP(ajax_cme/ajax_fx)へのポライトネス: collector は 2s ポールだが、monitor の priceLoop も同じ
+// エンドポイントを叩くため、collector 側の GET は ~4s に間引く(直近取得をキャッシュ)。
+const AJAX_MIN_INTERVAL_MS = 4000;
+let ajaxCache: Price[] = [];
+let ajaxCacheAt = 0;
 
-/** ~4s に間引いて ajax_cme の NIY=F を取得。前回取得が新しければキャッシュを、その現在値として
- *  「新鮮な timestamp を付け直して」返す(recordFeedPrices が今この瞬間の tick として記録できるように)。
- *  取得不能/古い(stale)キャッシュは null(recordFeedPrices 側で無視される)。 */
-async function fetchAjaxCmeThrottled(now: number): Promise<Price | null> {
-  if (now - ajaxCmeCacheAt >= AJAX_CME_MIN_INTERVAL_MS) {
-    const fresh = await fetchAjaxCmePrice('136');
-    if (fresh) { ajaxCmeCache = fresh; ajaxCmeCacheAt = now; }
+/** ~4s に間引いて ajax_cme(NIY=F/YM=F/NQ=F)+ ajax_fx(JPY=X)の全 fresh 価格を取得。前回取得が新しければ
+ *  キャッシュを、その現在値として「新鮮な timestamp を付け直して」返す(recordFeedPrices が今この瞬間の
+ *  tick として記録できるように)。取得不能は []。stale はここで既に落としてある(mergeSources)。 */
+async function fetchAjaxThrottled(now: number): Promise<Price[]> {
+  if (now - ajaxCacheAt >= AJAX_MIN_INTERVAL_MS) {
+    const [cme, fx] = await Promise.all([fetchAjaxCmePrices(), fetchAjaxFxPrices()]);
+    const fresh = mergeSources([cme, fx]);   // fresh(stale:false)のみ
+    if (fresh.length) { ajaxCache = fresh; ajaxCacheAt = now; }
     return fresh;
   }
   // キャッシュ再利用: 直近取得値をこの瞬間の現在値として timestamp を更新して返す。
-  if (ajaxCmeCache && !ajaxCmeCache.stale) return { ...ajaxCmeCache, timestamp: now };
-  return null;
+  return ajaxCache.map(p => ({ ...p, timestamp: now }));
 }
 
 async function main(): Promise<void> {
@@ -56,19 +53,11 @@ async function main(): Promise<void> {
   console.log(`[collector ${COLLECTOR_VERSION}] db=${dbPath}`);
   console.log(`[collector] started ${new Date().toISOString()} (node ${process.version})`);
 
-  // 起動時 backfill (Yahoo 分足で直近を埋める。失敗は無視)
-  // v0.7.18(実弾安全 v0.7.9 の徹底): NIY=F は Yahoo(CME・約10分ディレイ)から backfill しない。
-  // NIY=F の bars_1m は ajax_cme のリアルタイム tick 経路(recordFeedPrices)だけで積む。
-  // 副銘柄(NQ/YM/HSI/CL/TNX/JPY 等)は従来どおり Yahoo で欠損を埋める(相関/AI 説明の元ネタ)。
-  await Promise.all(SYMBOLS.filter(sym => sym !== 'NIY=F').map(async (sym) => {
-    try { backfillBars(db, sym, await fetchMinuteBars(sym)); }
-    catch (err) { console.warn(`[collector] backfill ${sym} failed:`, err instanceof Error ? err.message : err); }
-  }));
-  console.log('[collector] backfill done');
-
+  // v0.7.20(全銘柄 HTTP 化 / no-Yahoo): 起動時 Yahoo backfill を全廃した。全 4 銘柄(NIY=F/YM=F/NQ=F/JPY=X)の
+  // bars_1m は公開 HTTP のリアルタイム tick 経路(recordFeedPrices)だけで積む。ウォームアップは収集 DB からの
+  // warmFromDb で賄う(Yahoo の遅延足を混ぜない = 実弾安全 v0.7.9 を全銘柄へ徹底)。
   setCooldownMs(resolveCooldownMin() * 60_000);   // match the monitor's configured cooldown (before AlertCollector, which reads it)
   warmFromDb();                                    // freshness-gated seed of the feedBars realtime buffer (reused, tested)
-  startSocket();                                   // 副銘柄(NQ=F/YM=F/^HSI/CL=F/^TNX/JPY=X)のリアルタイム socket を接続
   const alerts = new AlertCollector(db);
   console.log('[collector] alert detection armed');
   let lastFollowup = 0;
@@ -84,12 +73,9 @@ async function main(): Promise<void> {
     writeHeartbeat(db, start);
     if (inPollWindow(start)) {
       try {
-        // 価格の主経路(monitor priceLoop と同一): NIY=F は ajax_cme(HTTP・~4s 間引き)、副銘柄は socket。
-        // mergeSources に yahoo=[] を渡す — collector のリアルタイム記録経路は socket+ajax_cme のみ。
-        // (NIY=F は決して Yahoo(CME・約10分ディレイ)から記録しない。Yahoo は起動 backfillBars 専用。)
-        const ajaxCme = await fetchAjaxCmeThrottled(start);
-        const feed = getSocketPrices(Date.now());
-        const prices = mergeSources([], feed, ajaxCme);
+        // 価格の主経路(monitor priceLoop と同一): 全 4 銘柄を公開 HTTP から(~4s 間引き)。
+        // fetchAjaxThrottled は既に fresh(stale:false)のみを返す(mergeSources 済み)。
+        const prices = await fetchAjaxThrottled(start);
         recordFeedPrices(db, prices);
         // Feed the realtime detector for the SAME set the monitor's priceLoop feeds: all fresh
         // (non-stale) prices, no session gate here. The sink stamps session metadata per alert;
@@ -113,7 +99,6 @@ async function main(): Promise<void> {
     }
     await new Promise(r => setTimeout(r, Math.max(0, wait - (Date.now() - start))));
   }
-  stopSocket();
   releaseLock();
   db.close();
   console.log('[collector] stopped');

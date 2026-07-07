@@ -1,7 +1,7 @@
 import Parser from 'rss-parser';
 import type { NewsItem } from '../types.js';
 import { RSS_FEEDS, NEWS_MAX_ITEMS, FINANCE_RELEVANCE_KEYWORDS, FINANCE_BLACKLIST, HIGH_IMPACT_KEYWORDS } from '../config.js';
-import { fetchNikkei225jpNews } from './nikkei225jp.js';
+import { fetchNikkei225jpNews, fetchNikkei225jpNewsJp, fetchNikkei225jpNewsNy } from './nikkei225jp.js';
 import { fetchEconIndicators } from './econIndicators.js';
 
 // 金融関連かどうかを判定 (v0.3.9 タイトル+本文 ハイブリッド)
@@ -71,6 +71,8 @@ export async function fetchAllNews(): Promise<NewsItem[]> {
   for (const f of RSS_FEEDS.ja) tasks.push(fetchFeed(f.name, f.url, 'ja'));
   for (const f of RSS_FEEDS.en) tasks.push(fetchFeed(f.name, f.url, 'en'));
   tasks.push(fetchNikkei225jpNews());   // nikkei225jp 総合ニュース(他ソースと同列・広く取り込む)
+  tasks.push(fetchNikkei225jpNewsJp()); // 225225.jp /1jp/ 国内ニュース(News_6)
+  tasks.push(fetchNikkei225jpNewsNy()); // 225225.jp /3ny/ 米国ニュース(News_8)
   tasks.push(fetchEconIndicators());    // 米経済指標(minkabu・結果+NK225反応)
   const results = await Promise.allSettled(tasks);
   const items = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);

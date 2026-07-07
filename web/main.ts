@@ -13,7 +13,7 @@ import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
 import { initAlertsHistoryModal } from './components/alertsHistoryModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
-import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader } from './lib/correlationClient.js';
+import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader, getTopSymbolChange1m } from './lib/correlationClient.js';
 import { initLevelsPanel, setLevels, setLevelsPrice } from './components/levelsPanel.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
@@ -264,11 +264,19 @@ function updateLeaderInfo() {
     leaderInfoEl.innerHTML = `相関 (vs ${labelOf(anchor as never)}): <span style="opacity:0.6">取得中 / 市場休場の可能性</span>`;
     return;
   }
+  // v0.7.20: 最も相関の高い銘柄には直近1分の変化率(急落率)を付記する。
+  const { symbol: topSym, change1mPct } = getTopSymbolChange1m();
+  const chg1m = (sym: string): string => {
+    if (sym !== topSym || change1mPct === null) return '';
+    const cls = change1mPct >= 0 ? '#4caf50' : '#e53935';
+    const sign = change1mPct >= 0 ? '+' : '';
+    return ` <span style="color:${cls};font-size:11px">1分 ${sign}${change1mPct.toFixed(2)}%</span>`;
+  };
   const parts = top.map((r, i) => {
     const label = labelOf(r.symbol as never);
     const v = r.absCorr.toFixed(2);
     const n = r.samples;
-    const body = `${label} ${v} <span style="opacity:0.55;font-size:11px">n=${n}</span>`;
+    const body = `${label} ${v} <span style="opacity:0.55;font-size:11px">n=${n}</span>${chg1m(r.symbol)}`;
     return i === 0 ? `<strong>${body}</strong>` : body;
   });
   leaderInfoEl.innerHTML = `相関 (vs ${labelOf(anchor as never)}): ${parts.join(' / ')}`;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { parseAjaxCme, fetchAjaxCmePrice } from './ajaxCmePrice.js';
+import { parseAjaxCme, fetchAjaxCmePrice, fetchAjaxCmePrices, pricesFromAjaxText } from './ajaxCmePrice.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -9,6 +9,11 @@ afterEach(() => { vi.unstubAllGlobals(); });
 const SAMPLE = `A[136]="68320.00_-100.00_-0.15_20:15_1_68665.00_68285.00";
 A[191]="68166.80_-226.80_-0.33_20:14_1_68500.00_68100.00";
 A[131]="39000.00_+50.00_+0.13_07/07_0_39100.00_38900.00";`;
+
+// 複数コード(136 NIY=F / 731 YM=F / 737 NQ=F)を含む実サンプル(21:37 JST・全ライブ)。
+const MULTI = `A[136]="68320.00_-100.00_-0.15_21:37_1_68665.00_68285.00";
+A[731]="53224.40_+130.40_+0.25_21:37_1_53300.00_53000.00";
+A[737]="29451.50_-257.00_-0.87_21:37_1_29800.00_29400.00";`;
 
 describe('parseAjaxCme', () => {
   it('code 136 の値を price/changePct/live/high/low に分解する', () => {
@@ -110,5 +115,60 @@ describe('fetchAjaxCmePrice', () => {
     const [url, opts] = f.mock.calls[0]!;
     expect(String(url)).toContain('ajax_cme.js?_=');
     expect((opts as { headers: Record<string, string> }).headers.Referer).toContain('225225.jp');
+  });
+});
+
+describe('pricesFromAjaxText — 複数コード → Price[]', () => {
+  it('136/731/737 を NIY=F/YM=F/NQ=F の fresh Price に展開する', () => {
+    const prices = pricesFromAjaxText(MULTI);
+    const bySym = Object.fromEntries(prices.map(p => [p.symbol, p]));
+    expect(bySym['NIY=F']!.price).toBe(68320);
+    expect(bySym['NIY=F']!.changePercent).toBe(-0.15);
+    expect(bySym['NIY=F']!.stale).toBe(false);
+    expect(bySym['YM=F']!.price).toBe(53224.4);
+    expect(bySym['YM=F']!.changePercent).toBe(0.25);
+    expect(bySym['NQ=F']!.price).toBe(29451.5);
+    expect(bySym['NQ=F']!.changePercent).toBe(-0.87);
+    expect(prices.length).toBe(3);
+  });
+
+  it('liveFlag=0(清算)の銘柄は stale:true(持ち越しに回す)', () => {
+    const text = `A[136]="68320.00_-100.00_-0.15_21:37_1__";
+A[731]="53000.00_+10.00_+0.02_07/07_0__";`;   // 731 は liveFlag=0
+    const bySym = Object.fromEntries(pricesFromAjaxText(text).map(p => [p.symbol, p]));
+    expect(bySym['NIY=F']!.stale).toBe(false);
+    expect(bySym['YM=F']!.stale).toBe(true);   // 清算 → stale
+    expect(bySym['YM=F']!.price).toBe(53000);  // price 自体は取れる
+  });
+
+  it('存在しないコードは落とす(部分取得に強い)', () => {
+    const text = `A[136]="68320.00_-100.00_-0.15_21:37_1__";`;   // 731/737 無し
+    const prices = pricesFromAjaxText(text);
+    expect(prices.map(p => p.symbol)).toEqual(['NIY=F']);
+  });
+});
+
+describe('fetchAjaxCmePrices — 1 GET で複数コード', () => {
+  it('正常応答を NIY=F/YM=F/NQ=F の Price[] にする(timestamp≈now)', async () => {
+    const before = Date.now();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, text: async () => MULTI })));
+    const prices = await fetchAjaxCmePrices();
+    expect(prices.map(p => p.symbol).sort()).toEqual(['NIY=F', 'NQ=F', 'YM=F']);
+    for (const p of prices) {
+      expect(p.timestamp).toBeGreaterThanOrEqual(before);
+      expect(p.timestamp).toBeLessThanOrEqual(Date.now());
+    }
+  });
+
+  it('両 URL とも失敗 → [](throw しない)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, text: async () => '' })));
+    expect(await fetchAjaxCmePrices()).toEqual([]);
+  });
+
+  it('1 レスポンスから全コードを取る(GET は 1 回)', async () => {
+    const f = vi.fn(async () => ({ ok: true, status: 200, text: async () => MULTI }));
+    vi.stubGlobal('fetch', f);
+    await fetchAjaxCmePrices();
+    expect(f).toHaveBeenCalledTimes(1);   // PRIMARY 成功 → FALLBACK は叩かない
   });
 });

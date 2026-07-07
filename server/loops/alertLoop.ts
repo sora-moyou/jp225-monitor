@@ -1,13 +1,15 @@
-import { fetchMinuteBars, type Bar } from '../correlation.js';
+import { type Bar } from '../correlation.js';
 import { inPollWindow } from '../../collector/session.js';
 import { DEFAULT_PARAMS } from '../alertDetector.js';
 import { emitAlert } from '../alertHistory.js';
 import { INSTRUMENTS } from '../config.js';
-import { getRealtimeBars, isRealtimeBarsReady } from '../feedBars.js';
+import { getRealtimeBars } from '../feedBars.js';
 import { evaluateBarsNiy } from '../alertEngine.js';
 
 // v0.3.17: 1min ごとに全銘柄の 1m bars を取得 → adaptive z-score 検知 → SSE で alert ブロードキャスト。
 // v0.3.35: 横断確認(他資産の同方向確認)を全面廃止。日経自身の z-score(+静寂前提) のみで発火。
+// v0.7.20(no-Yahoo): 全 4 銘柄が 225225.jp の HTTP フィード → feedBars にリアルタイム蓄積されるため、
+// Yahoo 分足(fetchMinuteBars)フォールバックを全廃。評価・AI 元ネタとも getRealtimeBars のみを使う。
 
 const POLL_MS = 60 * 1000;
 // 鮮度ゲート: リアルタイム足の最新バーが現在から MAX_BAR_LAG_MS 以上遅れている(フィード停止→復帰中で
@@ -24,50 +26,32 @@ export function barsAreFresh(bars: Bar[], now: number, maxLagMs: number): boolea
 const META_BY_SYM = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
 const SYMBOLS = INSTRUMENTS.map(i => i.symbol as string);
 
-const barsCache = new Map<string, Bar[]>();
-
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
 export function getCachedBars(symbol: string): Bar[] {
-  return barsCache.get(symbol) ?? [];
+  return getRealtimeBars(symbol);
 }
 
-// v0.3.31: 評価に使う 1m bars。リアルタイム feed バーが溜まっていればそれを、
-// ウォームアップ中は Yahoo 分足を返す。系列は混ぜず全リアルタイム or 全 Yahoo。
-// これで日経(NIY=F)の z-score も横断確認(NQ/YM/HSI/JPY)も同じ実時間軸で評価できる。
-// v0.3.32: 相関ループ・AIチャット文脈でも同じ実時間優先ロジックを使えるよう export。
-// v0.7.18(実弾安全 v0.7.9 の徹底): NIY=F は **リアルタイム足のみ**(Yahoo=CME 約10分ディレイの
-// barsCache には決してフォールバックしない)。ウォームアップ中(リアルタイム足<65)は空配列を返し、
-// 呼び出し側の `bars.length < 65` で単にスキップされる(遅延した Yahoo 足で評価/「足が遅延」ログを
-// 出さない)。リアルタイム足は warmFromDb(DB 種付け)/ajax_cme 蓄積で満たされ次第、新鮮に評価する。
-// 横断確認用の他銘柄は従来どおり Yahoo barsCache フォールバックを残す。
+// v0.7.20(no-Yahoo): 評価に使う 1m bars は **リアルタイム足のみ**(全 4 銘柄が HTTP フィード→feedBars に
+// 蓄積される)。日経(NIY=F)の z-score も横断確認(NQ/YM/JPY)も同じ実時間軸で評価できる。ウォームアップ中
+// (リアルタイム足<65)は空/浅い配列を返し、呼び出し側の `bars.length < 65` で単にスキップされる(遅延した
+// Yahoo 足で評価/「足が遅延」ログを出さない=実弾安全 v0.7.9)。リアルタイム足は warmFromDb(DB 種付け)/
+// ajax_cme・ajax_fx 蓄積で満たされ次第、新鮮に評価する。
+// v0.3.32: 相関ループ・AIチャット文脈でも同じロジックを使えるよう export。
 export function barsFor(symbol: string): Bar[] {
-  if (symbol === 'NIY=F') return getRealtimeBars(symbol);
-  return isRealtimeBarsReady(symbol) ? getRealtimeBars(symbol) : (barsCache.get(symbol) ?? []);
-}
-
-async function refreshAllBars(): Promise<void> {
-  // NIY=F は Yahoo(遅延)を使わない(barsFor がリアルタイム専用)ので、Yahoo 取得の対象から除く。
-  await Promise.all(SYMBOLS.filter(sym => sym !== 'NIY=F').map(async (sym) => {
-    try {
-      const bars = await fetchMinuteBars(sym);
-      if (bars.length > 0) barsCache.set(sym, bars);
-    } catch (err) {
-      console.warn(`[alertLoop] ${sym} fetch failed:`, err instanceof Error ? err.message : err);
-    }
-  }));
+  return getRealtimeBars(symbol);
 }
 
 function evaluateAndFire(): void {
   const now = Date.now();
 
   for (const sym of SYMBOLS) {
-    // v0.3.19: アラートは日経225先物のみ。他銘柄は分足取得のみ続け、AI 説明の元ネタ専用。
+    // v0.3.19: アラートは日経225先物のみ。他銘柄のリアルタイム足は AI 説明/相関の元ネタ専用(feedBars が蓄積)。
     if (sym !== 'NIY=F') continue;
-    // v0.3.30/31 → v0.7.18: NIY=F はリアルタイム OSE バー(ajax_cme / DB 種付け)**のみ**で z-score 評価。
+    // v0.7.20(no-Yahoo): NIY=F はリアルタイム OSE バー(ajax_cme / DB 種付け)**のみ**で z-score 評価。
     // ウォームアップ中(リアルタイム足<65)は barsFor が空を返し、下の length<65 で単にスキップ
-    // (遅延した Yahoo 分足では評価しない=実弾安全 v0.7.9)。
+    // (遅延源を混ぜない=実弾安全 v0.7.9)。
     const bars = barsFor(sym);
     if (!bars || bars.length < 65) continue;
     // フィード停止/復帰中の古い足では発火しない(数分遅れの stale なアラートを防ぐ)。
@@ -84,10 +68,10 @@ function evaluateAndFire(): void {
   }
 }
 
-async function tick(): Promise<void> {
+function tick(): void {
   if (!inPollWindow(Date.now())) return;   // 取引時間外は何もしない(軽量化)
   try {
-    await refreshAllBars();
+    // v0.7.20(no-Yahoo): Yahoo 分足の事前取得は撤去。評価は feedBars のリアルタイム足を直接読む。
     evaluateAndFire();
   } catch (err) {
     console.error('[alertLoop] tick error:', err instanceof Error ? err.message : err);
@@ -96,13 +80,13 @@ async function tick(): Promise<void> {
 
 function schedule(): void {
   if (!running) return;
-  timer = setTimeout(async () => { await tick(); schedule(); }, POLL_MS);
+  timer = setTimeout(() => { tick(); schedule(); }, POLL_MS);
 }
 
 export function startAlertLoop(): void {
   if (running) return;
   running = true;
-  void tick();
+  tick();
   schedule();
 }
 

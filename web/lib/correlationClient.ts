@@ -8,6 +8,8 @@ interface ServerResponse {
   ranked: { symbol: string; corr: number; absCorr: number; samples: number }[];
   anchor: string;
   updatedAt: number;
+  topSymbol?: string | null;       // v0.7.20: 最も相関の高い銘柄
+  topChange1mPct?: number | null;  // v0.7.20: その銘柄の直近1分変化率(%)
 }
 
 interface TopEntry { symbol: string; absCorr: number; samples: number; }
@@ -15,11 +17,17 @@ interface TopEntry { symbol: string; absCorr: number; samples: number; }
 let lastTop: TopEntry[] = [];
 let anchor = 'NIY=F';
 let lastFetchedAt = 0;
+let topSymbol: string | null = null;
+let topChange1mPct: number | null = null;
 
 export function getCorrelationTop(n: number): TopEntry[] { return lastTop.slice(0, n); }
 export function getAnchorSymbol(): string { return anchor; }
 export function getCorrelationFetchedAt(): number { return lastFetchedAt; }
 export function getCurrentLeader(): string { return lastTop[0]?.symbol ?? 'JPY=X'; }
+/** v0.7.20: 最も相関の高い銘柄と、その直近1分変化率(%)。取れなければ null。 */
+export function getTopSymbolChange1m(): { symbol: string | null; change1mPct: number | null } {
+  return { symbol: topSymbol, change1mPct: topChange1mPct };
+}
 
 export function startCorrelationPolling(onUpdate: () => void, intervalMs = 60_000): void {
   const tick = async () => {
@@ -29,6 +37,8 @@ export function startCorrelationPolling(onUpdate: () => void, intervalMs = 60_00
       const data = await res.json() as ServerResponse;
       anchor = data.anchor;
       lastTop = data.ranked.map(r => ({ symbol: r.symbol, absCorr: r.absCorr, samples: r.samples }));
+      topSymbol = data.topSymbol ?? null;
+      topChange1mPct = data.topChange1mPct ?? null;
       lastFetchedAt = Date.now();
       onUpdate();
     } catch { /* ignore — server may be starting */ }

@@ -44,4 +44,33 @@ describe('parseNikkei225jpNews', () => {
   it('フィールド不足の行はスキップ', () => {
     expect(parseNikkei225jpNews(`News[n]='1__2026/06/12 06:55__x';n++;`)).toEqual([]);
   });
+
+  // 225225.jp /1jp/(国内・News_6)実サンプル行。
+  it('News_6(国内)の行をパースする', () => {
+    const sample = `var News=[],n=0;
+News[n]='42__2026/07/07 20:01__6__69__2__財経新聞__https://www.zaikei.co.jp/article/20260707/860180.html__欧州為替:ドル・円は小動き、材料難で様子見__18__9';n++;`;
+    const items = parseNikkei225jpNews(sample);
+    expect(items).toHaveLength(1);
+    const it0 = items[0]!;
+    expect(it0.title).toBe('欧州為替:ドル・円は小動き、材料難で様子見');
+    expect(it0.url).toBe('https://www.zaikei.co.jp/article/20260707/860180.html');
+    expect(it0.source).toBe('財経新聞');
+    expect(it0.lang).toBe('ja');
+    expect(it0.id).toBe('n225jp:https://www.zaikei.co.jp/article/20260707/860180.html');
+    expect(it0.publishedAt).toBe(Date.parse('2026-07-07T20:01:00+09:00'));
+  });
+
+  // 225225.jp /3ny/(米国・News_8)実サンプル行。
+  it('News_8(米国)の行をパースする', () => {
+    const sample = `var News=[],n=0;
+News[n]='7__2026/07/07 22:30__8__801__2__ロイター__https://jp.reuters.com/markets/us/xyz__NY株式市場、主要3指数が上昇して始まる__0__0';n++;`;
+    const items = parseNikkei225jpNews(sample);
+    expect(items).toHaveLength(1);
+    const it0 = items[0]!;
+    expect(it0.title).toBe('NY株式市場、主要3指数が上昇して始まる');
+    expect(it0.url).toBe('https://jp.reuters.com/markets/us/xyz');
+    expect(it0.source).toBe('ロイター');
+    expect(it0.id).toBe('n225jp:https://jp.reuters.com/markets/us/xyz');
+    expect(it0.publishedAt).toBe(Date.parse('2026-07-07T22:30:00+09:00'));
+  });
 });

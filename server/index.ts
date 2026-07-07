@@ -24,7 +24,6 @@ import { mergeHandler } from './routes/merge.js';
 import { exportHandler } from './routes/export.js';
 import { replaceHandler } from './routes/replace.js';
 import { startPriceLoop } from './loops/priceLoop.js';
-import { startSocket, stopSocket } from './sources/nikkei225jpSocket.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
 import { startAlertLoop } from './loops/alertLoop.js';
@@ -104,8 +103,7 @@ if (existsSync(distWeb)) {
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`[server] listening on http://127.0.0.1:${PORT} (LLM ${isLLMEnabled() ? 'enabled' : 'disabled'})`);
   warmFromDb();          // v0.3.37: 収集デーモンの DB から即ウォームアップ (現在進行中なら)
-  startSocket();         // v0.8: OSE mini(NIY=F)等のリアルタイム価格を socket で常時購読(priceLoop が毎ポール読む)
-  startPriceLoop();
+  startPriceLoop();      // v0.7.20: 価格は priceLoop 内で公開 HTTP(ajax_cme/ajax_fx)を直接ポール(socket 廃止)
   startNewsLoop();
   startCorrelationLoop();
   startAlertLoop();
@@ -118,7 +116,6 @@ const server = app.listen(PORT, '127.0.0.1', () => {
 // 終了時にハートビート interval を止めてプロセスが即座に落ちられるようにする。
 function shutdown(): void {
   stopHeartbeat();
-  stopSocket();
   server.close();
 }
 process.on('SIGTERM', shutdown);

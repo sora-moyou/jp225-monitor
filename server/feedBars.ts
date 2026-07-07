@@ -5,15 +5,15 @@ import type { Bar } from './correlation.js';
 //          NQ=F / YM=F / JPY=X 等もリアルタイム足を持てるよう銘柄ごとに一般化。
 //
 // リアルタイム源の 1 分足「履歴」は外部取得できない (nikkei225jp の履歴は robots Disallow)
-// ため、priceLoop が毎ポーリング流すリアルタイム価格を銘柄ごとに 1 分 OHLC(close) に畳む。
-// alertLoop は溜まれば z-score / 横断確認に使い、ウォームアップ中(起動〜約65分)は
-// Yahoo 分足にフォールバックする。系列は混ぜない (全リアルタイム or 全 Yahoo) ので
-// 跨ぎ return が生まれず偽スパイクは出ない。
+// ため、priceLoop が毎ポーリング流すリアルタイム価格(225225.jp HTTP フィード)を銘柄ごとに 1 分
+// OHLC(close) に畳む。alertLoop は溜まれば z-score / 横断確認に、correlationLoop は相関に使う。
+// v0.7.20(no-Yahoo): Yahoo 分足フォールバックは全廃。ウォームアップ中(起動〜約65分)は warmFromDb の
+// DB 種付けとリアルタイム蓄積で満たし、溜まるまでは単にスキップ(浅い足で評価/相関しない)。
 
 // v0.3.32: 相関(MIN_SAMPLES=100, 場中ぶんの深さを志向)も賄えるよう保持本数を拡大。
 // 検知は末尾60〜65本しか見ないので増やしても影響なし。
 const MAX_BARS = 520;            // 60分 baseline + 相関用の深さ(約8.7時間)。古いバーは捨てる。
-const MIN_BARS_READY = 65;       // alertLoop の発火/確認要件 (これ未満は Yahoo フォールバック)
+const MIN_BARS_READY = 65;       // alertLoop の発火/確認要件 (これ未満は評価をスキップ)
 
 interface Series { closed: Bar[]; curMinute: number; curBar: Bar | null; }
 const series = new Map<string, Series>();

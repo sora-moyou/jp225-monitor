@@ -1,8 +1,8 @@
-// v0.3.13: Yahoo chart API (interval=1m, last 60min) で各銘柄の 1 分足 close を取得し、
-// timestamp 同期 paired returns で Pearson 相関を計算する。
+// v0.3.13: timestamp 同期 paired returns で Pearson 相関を計算する。
 // クライアント側の 2 秒ポーリング SSE 蓄積は休場/低活動時に return=0 ノイズを
 // 量産し相関が破綻していたので、業界標準の OHLC bars ベースに置換。
-// yahoo-finance2 v2.14 は chart() を export していないため、Yahoo chart endpoint を直接叩く。
+// v0.7.20(no-Yahoo): 相関のバー源は feedBars のリアルタイム足のみ(Yahoo chart API 取得 fetchMinuteBars は撤去)。
+// このモジュールは純粋な相関計算(pearsonAlignedReturns)だけを提供する。
 
 export interface Bar { t: number; close: number; }
 
@@ -14,46 +14,6 @@ export interface CorrelationResult {
 }
 
 export interface PearsonResult { corr: number; samples: number; }
-
-/**
- * Yahoo chart API から symbol の過去 60 分間 1 分足 close を取得。
- * 休場・データ欠損時は短い配列を返す (相関側で samples < MIN_PAIRS なら除外)。
- */
-interface YahooChartResponse {
-  chart: {
-    result: Array<{
-      meta?: { symbol?: string };
-      timestamp?: number[];
-      indicators?: { quote?: Array<{ close?: (number | null)[] }> };
-    }> | null;
-    error: { code: string; description: string } | null;
-  };
-}
-
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 FinanceMonitor/0.3';
-
-export async function fetchMinuteBars(symbol: string): Promise<Bar[]> {
-  // v0.3.14: range 1h → 1d。CME 24h 銘柄なら 1380 bars/symbol、ペア後 500+ samples 取れる。
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
-  // v0.4: ハングした接続で収集デーモンの起動 backfill が止まらないよう 5秒でタイムアウト。
-  const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(5000) });
-  if (!res.ok) throw new Error(`Yahoo chart ${symbol}: HTTP ${res.status}`);
-  const data = await res.json() as YahooChartResponse;
-  if (data.chart.error) throw new Error(`Yahoo chart ${symbol}: ${data.chart.error.description}`);
-  const result = data.chart.result?.[0];
-  if (!result) return [];
-  const ts = result.timestamp ?? [];
-  const closes = result.indicators?.quote?.[0]?.close ?? [];
-  const bars: Bar[] = [];
-  for (let i = 0; i < ts.length; i++) {
-    const close = closes[i];
-    const tsec = ts[i];
-    if (typeof close === 'number' && Number.isFinite(close) && typeof tsec === 'number') {
-      bars.push({ t: tsec * 1000, close });
-    }
-  }
-  return bars;
-}
 
 /**
  * 2 銘柄の bars を timestamp 整合させて return を作り、Pearson 相関を算出。
