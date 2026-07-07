@@ -676,6 +676,177 @@ export async function chat(input: ChatInput): Promise<string> {
   }, 'chat');
 }
 
+// ─── スキャル計画 (POST /api/scalp-plan) ─────────────────────────────
+// 兄弟アプリ jp225-trade2(AI トレーダー)が呼ぶ。monitor の LLM を「固定のスキャル戦略質問」で走らせ、
+// buildMonitorContext + データツール(explain_move/query_alerts/price_history/web_search)を使って
+// ライブデータに基づく構造化プランを返す。既存の chat と同じプロバイダ選択・キー解決・tool ループを再利用する。
+
+/** trade2 が受け取る構造化スキャルプラン。 */
+export interface AiPlan {
+  direction: 'buy' | 'sell';
+  limitEntry: number;        // 指値(押し目/戻り側の新規)
+  stopEntry: number;         // 逆指値(ブレイク側の新規)
+  stopLossForLimit: number;  // 指値約定時の損切り逆指値
+  stopLossForStop: number;   // 逆指値約定時の損切り逆指値
+  rationale: string;         // 判断理由(日本語)
+  refPrice: number;          // 計画時に見た現在値(NIY=F)
+}
+
+export type ScalpPlanResult = { ok: true; plan: AiPlan } | { ok: false; error: string };
+
+// 固定のスキャル戦略質問(ユーザー指定・日本語)。
+const SCALP_QUESTION =
+  'あなたが考える現在のスキャル戦略を教えてください。' +
+  '①最初に買い/売りのどちらかを判断 ' +
+  '②指値と逆指値の両方の新規注文を作り、先に約定した方で取引します ' +
+  '③それぞれのストップ(逆指値の損切り)を定めてください。ただしストップ幅に5円加えること。';
+
+const SCALP_SYSTEM_PROMPT = `あなたは日経225先物(NIY=F)のスキャルピングを専門とするトレーダーです。
+手元の【市場の現状】(現在価格・テクニカル節目・直近アラート・本日OHLC・ニュース)と、
+利用可能なデータツール(explain_move / query_alerts / price_history / web_search)を必要に応じて使い、
+現在の相場に対する具体的なスキャルのエントリー計画を1つ立ててください。
+
+制約:
+- direction は buy か sell のどちらか一方に必ず決める。
+- 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規として、両方の価格を出す。
+- それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。
+- すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
+- rationale は日本語で判断根拠を簡潔に述べる。`;
+
+// LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
+function scalpJsonInstruction(refPrice: number): string {
+  return `最終的な回答は、次のスキーマに厳密に一致する JSON オブジェクトのみを出力してください(前後の説明文・コードフェンス・マークダウンは一切付けない)。\n` +
+    `{\n` +
+    `  "direction": "buy" | "sell",\n` +
+    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)\n` +
+    `  "stopEntry": number,         // 逆指値(ブレイク側の新規)\n` +
+    `  "stopLossForLimit": number,  // 指値約定時の損切り逆指値(ストップ幅+5円)\n` +
+    `  "stopLossForStop": number,   // 逆指値約定時の損切り逆指値(ストップ幅+5円)\n` +
+    `  "rationale": string,         // 判断理由(日本語)\n` +
+    `  "refPrice": number           // 計画時に見た現在値(${refPrice})\n` +
+    `}\n` +
+    `refPrice は ${refPrice} を使うこと。数値はすべて円単位の実数(引用符なし)。`;
+}
+
+/** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
+ *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
+export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
+  const text = (raw ?? '').trim();
+  if (!text) return { ok: false, error: 'empty response' };
+  // ```json … ``` を剥がし、最初の { から最後の } までを候補にする。
+  const fenced = text.replace(/```(?:json)?/gi, '').trim();
+  const start = fenced.indexOf('{');
+  const end = fenced.lastIndexOf('}');
+  if (start < 0 || end <= start) return { ok: false, error: 'no JSON object found' };
+  let obj: unknown;
+  try {
+    obj = JSON.parse(fenced.slice(start, end + 1));
+  } catch (e) {
+    return { ok: false, error: `JSON parse failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (typeof obj !== 'object' || obj === null) return { ok: false, error: 'not an object' };
+  const o = obj as Record<string, unknown>;
+  if (o.direction !== 'buy' && o.direction !== 'sell') return { ok: false, error: 'invalid direction' };
+  const num = (v: unknown): number | null =>
+    (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+  const limitEntry = num(o.limitEntry);
+  const stopEntry = num(o.stopEntry);
+  const stopLossForLimit = num(o.stopLossForLimit);
+  const stopLossForStop = num(o.stopLossForStop);
+  if (limitEntry === null || stopEntry === null || stopLossForLimit === null || stopLossForStop === null) {
+    return { ok: false, error: 'invalid price field(s)' };
+  }
+  const rationale = typeof o.rationale === 'string' ? o.rationale.trim() : '';
+  if (!rationale) return { ok: false, error: 'missing rationale' };
+  // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
+  return {
+    ok: true,
+    plan: { direction: o.direction, limitEntry, stopEntry, stopLossForLimit, stopLossForStop, rationale, refPrice },
+  };
+}
+
+/** スキャルプラン生成の純ループ(LLM 非依存=テスト可能)。tool ループで回答→parse、失敗なら tools 無しで
+ *  厳格に1回だけ再要求→再parse。成功で AiPlan、失敗で例外。create/handlers を注入してテストする。 */
+export async function runScalpPlan(
+  create: CreateFn, systemPrompt: string, userPrompt: string,
+  tools: unknown[], handlers: ToolHandlers, refPrice: number,
+): Promise<AiPlan> {
+  const baseMessages: any[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
+  const first = await runChatWithTools(create, baseMessages, tools, handlers);
+  const parsed = parseScalpPlan(first, refPrice);
+  if (parsed.ok) return parsed.plan;
+  // パース失敗 → 厳格に1回だけ再要求(tools 無し・JSON のみ)。
+  const retry = await create({
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+      { role: 'assistant', content: first },
+      { role: 'user', content: `直前の応答は指定 JSON スキーマに一致していません(${parsed.error})。説明やコードフェンスを一切付けず、スキーマに厳密一致する JSON オブジェクトだけを出力し直してください。` },
+    ],
+  });
+  const retryText = retry.choices?.[0]?.message?.content?.trim() ?? '';
+  const parsed2 = parseScalpPlan(retryText, refPrice);
+  if (parsed2.ok) return parsed2.plan;
+  throw new Error(`parse failed after retry: ${parsed2.error}`);
+}
+
+export interface ScalpPlanInput {
+  symbol?: string;
+  prices?: Price[];
+  news?: NewsItem[];
+  technical?: string | null;
+}
+
+/** 固定のスキャル質問で LLM を走らせ、構造化 AiPlan を返す。既存の chat と同じ tool ループ・プロバイダ選択・
+ *  キー解決を再利用する。キー未設定は { ok:false, error:'LLM未設定' }。パース失敗は1回だけ厳格に再要求する。
+ *  refPrice は monitor の現在 NIY=F 価格。 */
+export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpPlanResult> {
+  if (!isLLMEnabled()) return { ok: false, error: 'LLM未設定' };
+  const now = Date.now();
+  const symbol = typeof input.symbol === 'string' && input.symbol ? input.symbol : NIKKEI_SYMBOL;
+  const prices = input.prices ?? getPrices();
+  const news = input.news ?? [];
+  const refPrice = prices.find(p => p.symbol === symbol)?.price ?? 0;
+  const monitorCtx = buildMonitorContext(now);
+  const systemPrompt =
+    `${SCALP_SYSTEM_PROMPT}\n\n` +
+    `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
+    `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
+    (input.technical ? `${input.technical}\n\n` : '') +
+    (monitorCtx ? `${monitorCtx}\n\n` : '') +
+    `■ 関連ニュース:\n${formatNewsForChat(news, now, SCALP_QUESTION)}`;
+
+  // chat と同じデータツール(常時有効)+ web_search(Tavily キーがある時のみ)。
+  const tools: unknown[] = [EXPLAIN_MOVE_TOOL, QUERY_ALERTS_TOOL, PRICE_HISTORY_TOOL];
+  const handlers: ToolHandlers = buildDataToolHandlers();
+  if (isWebSearchEnabled()) {
+    tools.push(WEB_SEARCH_TOOL);
+    handlers.web_search = async (a: { query?: string }) => {
+      const q = typeof a.query === 'string' ? a.query : '';
+      return q ? formatHits(await tavilySearch(q)) : '(クエリ空)';
+    };
+  }
+
+  const userPrompt = `${SCALP_QUESTION}\n\n${scalpJsonInstruction(refPrice)}`;
+
+  try {
+    const raw = await callWithFallback(async (p) => {
+      const create: CreateFn = (params) => p.client!.chat.completions.create({
+        model: p.config.chatModel, temperature: 0.4, max_tokens: 8000, ...params,
+      } as any);
+      // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。
+      return JSON.stringify(await runScalpPlan(create, systemPrompt, userPrompt, tools, handlers, refPrice));
+    }, 'scalp-plan');
+    // callWithFallback から返った plan JSON を再パースして返す。
+    return parseScalpPlan(raw, refPrice);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // ─── 翻訳 ─────────────────────────────────────────
 // 英文ニュースタイトルを簡潔な日本語に翻訳。同一テキストは LRU でキャッシュ。
 
