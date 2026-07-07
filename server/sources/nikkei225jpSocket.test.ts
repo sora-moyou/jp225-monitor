@@ -1,13 +1,20 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   parseTick,
   parsePriceTChangePercent,
   isStale,
   buildSocketPrices,
   getSocketPrices,
+  startSocket,
+  stopSocket,
   _setLatestForTest,
   _clearLatestForTest,
+  _runWatchdogForTest,
+  _setConnStateForTest,
+  _hasWatchdogForTest,
   SOCKET_STALE_MS,
+  TICK_WATCHDOG_MS,
+  type SocketConnector,
   type SocketQuote,
 } from './nikkei225jpSocket.js';
 import type { Symbol } from '../types.js';
@@ -118,5 +125,101 @@ describe('getSocketPrices — シングルトン latest 経由(注入)', () => {
     _setLatestForTest('NIY=F', { price: 70050, timestamp: now - (SOCKET_STALE_MS + 1), changePercent: 0 });
     expect(getSocketPrices(now).find(p => p.symbol === 'NIY=F')!.stale).toBe(true);
     _clearLatestForTest();
+  });
+});
+
+// ── tick watchdog + 強制再接続(2026-07-07 NIY=F 恒久 stale 事故対策) ────────────────
+// 実 socket.io は張らず、connector シームで fake Socket を注入する。
+
+interface FakeSocket {
+  on: ReturnType<typeof vi.fn>;
+  io: { on: ReturnType<typeof vi.fn> };
+  disconnect: ReturnType<typeof vi.fn>;
+  removeAllListeners: ReturnType<typeof vi.fn>;
+}
+function makeFakeSocket(): FakeSocket {
+  return {
+    on: vi.fn(),
+    io: { on: vi.fn() },
+    disconnect: vi.fn(),
+    removeAllListeners: vi.fn(),
+  };
+}
+
+describe('socket watchdog — 半死(tick 途絶)からの強制フル再接続', () => {
+  afterEach(() => { stopSocket(); vi.useRealTimers(); });
+
+  it('startSocket は connector を1回呼び watchdog interval を張る(冪等)', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    expect(connector).toHaveBeenCalledTimes(1);
+    expect(_hasWatchdogForTest()).toBe(true);
+    // 二重起動ガード: 再呼び出しでも connector は増えない。
+    startSocket(connector);
+    expect(connector).toHaveBeenCalledTimes(1);
+  });
+
+  it('connected 中に TICK_WATCHDOG_MS 超で tick 途絶 → フル再接続(connector 再呼び + 旧 socket 破棄)', () => {
+    const sockets: FakeSocket[] = [];
+    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
+    startSocket(connector);
+    expect(connector).toHaveBeenCalledTimes(1);
+    const first = sockets[0]!;
+
+    // connected=true・直近 tick が watchdog 閾値を超えて古い状態を注入。
+    _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 5_000));
+    _runWatchdogForTest();
+
+    // 旧 socket は破棄(removeAllListeners+disconnect)され、connector が再度呼ばれて再作成される。
+    expect(first.removeAllListeners).toHaveBeenCalled();
+    expect(first.disconnect).toHaveBeenCalled();
+    expect(connector).toHaveBeenCalledTimes(2);
+  });
+
+  it('tick が新しい(閾値内)なら再接続しない', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, Date.now() - 5_000);   // 新しい
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(1);   // 再接続なし
+  });
+
+  it('disconnected 中は watchdog で再作成しない(透過再接続に任せる)', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(false, Date.now() - (TICK_WATCHDOG_MS + 5_000));
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(1);
+  });
+
+  it('まだ一度も tick が無い(起動直後)なら誤発火しない', () => {
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    _setConnStateForTest(true, 0);   // lastTickAt=0 = 未受信
+    _runWatchdogForTest();
+    expect(connector).toHaveBeenCalledTimes(1);
+  });
+
+  it('stopSocket は watchdog interval をクリアし socket を破棄する(冪等)', () => {
+    const sockets: FakeSocket[] = [];
+    const connector = vi.fn(() => { const s = makeFakeSocket(); sockets.push(s); return s; }) as unknown as SocketConnector;
+    startSocket(connector);
+    const s = sockets[0]!;
+    stopSocket();
+    expect(_hasWatchdogForTest()).toBe(false);
+    expect(s.removeAllListeners).toHaveBeenCalled();
+    expect(s.disconnect).toHaveBeenCalled();
+    // 2回目の stopSocket も throw しない(冪等)。
+    expect(() => stopSocket()).not.toThrow();
+  });
+
+  it('setInterval 経路でも watchdog が発火する(fake timers)', () => {
+    vi.useFakeTimers();
+    const connector = vi.fn(makeFakeSocket) as unknown as SocketConnector;
+    startSocket(connector);
+    // 十分古い tick 状態にして 15s の点検間隔を進める。
+    _setConnStateForTest(true, Date.now() - (TICK_WATCHDOG_MS + 20_000));
+    vi.advanceTimersByTime(16_000);
+    expect(connector).toHaveBeenCalledTimes(2);   // 点検で1回強制再接続
   });
 });

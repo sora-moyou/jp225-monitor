@@ -36,4 +36,15 @@ describe('streamHandler connect snapshot', () => {
     expect(joined).toContain('event: levels');
     expect(joined).toContain('67100');
   });
+
+  // 回帰(2026-07-07): socket が半死で現値が凍結し levels の signature が変わらず再 broadcast されない間でも、
+  // 新規 SSE クライアントは getLevelsSnapshot()(= last computed levels)を接続時に必ず受け取る。
+  // getLevelsSnapshot は signature de-dupe と独立に「最後に計算した水準」を返す(levelsLoop の last=result)。
+  it('replays last-computed levels regardless of the steady-state signature de-dupe', () => {
+    const res = mockRes();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    streamHandler(mockReq() as any, res as any);
+    // levelsSnap(mock)がそのまま接続時に配信される。
+    expect(res.writes.join('')).toContain('event: levels');
+  });
 });

@@ -392,7 +392,9 @@ connectStream({
     const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
     renderPriceGrid(priceGridEl, prices, displayed);
     const niy = prices.find(p => p.symbol === 'NIY=F');
-    if (niy) setLevelsPrice(niy.price);
+    // stale(socket 停止/取得不能)フラグも渡す。stale の凍結値をライブ風に見せず、
+    // 水準パネルの現値マーカーを「取得不能」にする(価格カードと整合)。
+    if (niy) setLevelsPrice(niy.price, niy.stale === true);
   },
   onLevels: (levels) => setLevels(levels),
   onAlert: (alert) => {

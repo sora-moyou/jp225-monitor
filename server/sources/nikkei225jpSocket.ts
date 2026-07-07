@@ -101,10 +101,33 @@ export function buildSocketPrices(latest: ReadonlyMap<Symbol, SocketQuote>, now:
 
 // ── socket シングルトン(薄い I/O 層) ──────────────────────────────────
 
+/** watchdog: connected でも tick がこの時間途絶したら「半死(half-dead)」とみなし強制再接続する。
+ *  socket.io の透過再接続(reconnection:true)は「transport は生きているが tick が来ない」半死状態や
+ *  上流の code 136 配信停止からは復帰しない(2026-07-07 の NIY=F 恒久 stale 事故の実因)。
+ *  30s の SOCKET_STALE_MS より十分長くして「市場が静か」での誤再接続 churn を避ける。 */
+export const TICK_WATCHDOG_MS = 75_000;
+/** watchdog の点検間隔。 */
+export const TICK_WATCHDOG_CHECK_MS = 15_000;
+
+/** socket.io の接続を生成するシーム(テストで差し替え可能)。既定は本物の io(...)。 */
+export type SocketConnector = () => Socket;
+const defaultConnector: SocketConnector = () =>
+  io(SOCKET_URL, {
+    path: '/socket.io/',
+    query: { node: 'ch225' },
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    extraHeaders: { Origin: SOCKET_ORIGIN },
+  });
+
 const latest = new Map<Symbol, SocketQuote>();
 let socket: Socket | null = null;
 let connected = false;
 let lastLoggedState: string | null = null;
+let connector: SocketConnector = defaultConnector;
+let lastTickAt = 0;          // 直近に有効な tick を受けた時刻(0=未受信)。watchdog の鮮度基準。
+let watchdogTimer: NodeJS.Timeout | null = null;
+let reconnecting = false;    // 強制再接続の多重発火ガード(タイマ/ソケットを積み上げない)。
 
 function logState(state: string, detail?: string): void {
   if (lastLoggedState === state) return;   // 状態変化時のみ1回ログ(スパム防止)。
@@ -118,6 +141,7 @@ function applyTick(arr: unknown): void {
   if (!t) return;
   const prev = latest.get(t.symbol);
   latest.set(t.symbol, { price: t.price, timestamp: t.timestamp, changePercent: prev?.changePercent ?? 0 });
+  lastTickAt = Date.now();   // watchdog 用に「有効 tick を受けた壁時計時刻」を更新。
 }
 
 /** priceT を latest の changePercent へ反映(price/timestamp は tick を正とするため触らない)。 */
@@ -131,31 +155,69 @@ function applyPriceT(text: unknown): void {
   }
 }
 
-/** socket を起動(冪等)。socket.io の自動再接続に任せる。エラーは throw せずログのみ。 */
-export function startSocket(): void {
-  if (socket) return;   // 二重起動ガード。
+/** connector で socket を作りリスナを張る(startSocket と forceReconnect で共有)。 */
+function createSocket(): void {
+  socket = connector();
+  socket.on('connect', () => { connected = true; logState('connected'); });
+  socket.on('disconnect', (reason: string) => { connected = false; logState('disconnected', reason); });
+  socket.on('connect_error', (err: Error) => { connected = false; logState('connect_error', err.message); });
+  socket.on('tick', (arr: unknown) => applyTick(arr));
+  socket.on('priceT', (text: unknown) => applyPriceT(text));
+  // socket.io マネージャの透過再接続(reconnect)。ログのみ。tick が戻らなければ watchdog が強制再作成する。
+  // io() の Socket は Manager イベントを socket.io.on(...) で購読する。
+  try { socket.io.on('reconnect', (n: number) => logState('io_reconnect', `attempt ${n}`)); } catch { /* manager 無し(テスト mock)は無視 */ }
+  // 'server' 等その他イベントは無視。
+}
+
+/** watchdog が半死(tick 途絶)を検知したときの強制フル再接続。透過再接続では tick が戻らないため
+ *  現ソケットを完全に破棄して io(...) から作り直す。多重発火は reconnecting ガードで防ぐ。 */
+function forceReconnect(reason: string): void {
+  if (reconnecting) return;   // 進行中の再接続にタイマ/ソケットを積み上げない。
+  reconnecting = true;
+  logState('force_reconnect', reason);
   try {
-    socket = io(SOCKET_URL, {
-      path: '/socket.io/',
-      query: { node: 'ch225' },
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      extraHeaders: { Origin: SOCKET_ORIGIN },
-    });
-    socket.on('connect', () => { connected = true; logState('connected'); });
-    socket.on('disconnect', (reason: string) => { connected = false; logState('disconnected', reason); });
-    socket.on('connect_error', (err: Error) => { connected = false; logState('connect_error', err.message); });
-    socket.on('tick', (arr: unknown) => applyTick(arr));
-    socket.on('priceT', (text: unknown) => applyPriceT(text));
-    // 'server' 等その他イベントは無視。
+    if (socket) { socket.removeAllListeners(); socket.disconnect(); }
+  } catch { /* noop */ }
+  socket = null;
+  connected = false;
+  // 状態機の logState は「同一状態は1回」なので、再接続後の 'connected' を必ず出せるようリセット。
+  lastLoggedState = null;
+  try { createSocket(); } catch (err) {
+    logState('start_error', err instanceof Error ? err.message : String(err));
+  }
+  reconnecting = false;
+}
+
+/** watchdog: connected の間、直近 tick の年齢が TICK_WATCHDOG_MS を超えたら強制フル再接続する。
+ *  disconnected 中は socket.io の透過再接続に任せる(そこは正しく復帰する)。 */
+function watchdogCheck(): void {
+  if (!connected) return;          // 切断中は透過再接続に任せる(接続の張り直しはしない)。
+  if (lastTickAt === 0) return;    // まだ一度も tick が無い(起動直後)。誤発火しない。
+  const age = Date.now() - lastTickAt;
+  if (age > TICK_WATCHDOG_MS) forceReconnect(`no tick ${age}ms(half-dead socket)`);
+}
+
+/** socket を起動(冪等)。socket.io 透過再接続 + app 層 watchdog で tick 途絶からも復帰する。
+ *  エラーは throw せずログのみ。テスト用に connector を注入できる。 */
+export function startSocket(conn?: SocketConnector): void {
+  if (socket) return;   // 二重起動ガード。
+  connector = conn ?? defaultConnector;
+  try {
+    createSocket();
   } catch (err) {
     logState('start_error', err instanceof Error ? err.message : String(err));
   }
+  // watchdog を1本だけ張る(冪等)。stopSocket でクリアする。
+  if (!watchdogTimer) watchdogTimer = setInterval(watchdogCheck, TICK_WATCHDOG_CHECK_MS);
 }
 
-/** socket を停止(冪等)。プロセス終了時に呼ぶ。 */
+/** socket を停止(冪等)。プロセス終了時に呼ぶ。watchdog も止める。 */
 export function stopSocket(): void {
-  if (!socket) return;
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  reconnecting = false;
+  lastTickAt = 0;
+  connector = defaultConnector;
+  if (!socket) { connected = false; lastLoggedState = null; return; }
   try { socket.removeAllListeners(); socket.disconnect(); } catch { /* noop */ }
   socket = null;
   connected = false;
@@ -181,4 +243,17 @@ export function _setLatestForTest(symbol: Symbol, quote: SocketQuote): void {
 /** テスト用: latest をクリア。 */
 export function _clearLatestForTest(): void {
   latest.clear();
+}
+/** テスト用: watchdog の1回分の点検を直接駆動する(setInterval を待たずに検証する)。 */
+export function _runWatchdogForTest(): void {
+  watchdogCheck();
+}
+/** テスト用: connected と直近 tick 時刻を注入して watchdog の分岐を検証する。 */
+export function _setConnStateForTest(isConnected: boolean, tickAt: number): void {
+  connected = isConnected;
+  lastTickAt = tickAt;
+}
+/** テスト用: watchdog interval が張られているか。 */
+export function _hasWatchdogForTest(): boolean {
+  return watchdogTimer !== null;
 }
