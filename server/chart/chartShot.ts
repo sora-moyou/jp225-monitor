@@ -4,13 +4,19 @@
 // すべての失敗経路(Chrome 不在・タイムアウト・撮影失敗)は null を返し、呼び出し側はテキストのみへフォールバックする。
 
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { loadConfig } from '../configStore.js';
 
 const CAPTURE_TIMEOUT_MS = 8000;
 const WINDOW = '1280,760';
+
+// 撮影した最新1枚を Desktop に上書き保存する(確認用)。実弾ロジックには無関係・失敗は無視。
+const DESKTOP_SHOT_PATH = join(homedir(), 'Desktop', 'jp225-chart-shot.png');
+function saveShotToDesktop(buf: Buffer): void {
+  try { writeFileSync(DESKTOP_SHOT_PATH, buf); } catch { /* ignore: 確認用コピーなので失敗は無視 */ }
+}
 
 /** レジストリから chrome.exe のパスを引く(Chrome 自動更新後もインストール場所を追える)。 */
 function chromeFromRegistry(): string | null {
@@ -147,6 +153,7 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
     try {
       buffer = readFileSync(outPng);
       if (buffer.length === 0) { buffer = null; readReason = 'empty-png'; }
+      else { saveShotToDesktop(buffer); }   // 確認用: 最新1枚を Desktop に上書き保存。
     } catch (e) {
       readReason = `read: ${e instanceof Error ? e.message : String(e)}`;
     }
