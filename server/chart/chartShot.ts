@@ -4,7 +4,7 @@
 // すべての失敗経路(Chrome 不在・タイムアウト・撮影失敗)は null を返し、呼び出し側はテキストのみへフォールバックする。
 
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { loadConfig } from '../configStore.js';
@@ -12,10 +12,59 @@ import { loadConfig } from '../configStore.js';
 const CAPTURE_TIMEOUT_MS = 8000;
 const WINDOW = '1280,760';
 
-// 撮影した最新1枚を Desktop に上書き保存する(確認用)。実弾ロジックには無関係・失敗は無視。
-const DESKTOP_SHOT_PATH = join(homedir(), 'Desktop', 'jp225-chart-shot.png');
+/** '%USERPROFILE%\\OneDrive\\Desktop' のような文字列の %ENV% を展開する。 */
+function expandEnv(s: string, env: NodeJS.ProcessEnv = process.env): string {
+  return s.replace(/%([^%]+)%/g, (_, name) => env[name] ?? env[String(name).toUpperCase()] ?? `%${name}%`);
+}
+
+/**
+ * 実際のデスクトップ フォルダを解決する。OneDrive リダイレクト(既定のデスクトップが
+ * %USERPROFILE%\OneDrive\Desktop になっている環境)に対応するため、まず User Shell Folders
+ * レジストリの Desktop 値を見る。ダメなら OneDrive/通常の候補を順に試し、存在する最初のものを返す。
+ */
+function resolveDesktopDir(env: NodeJS.ProcessEnv = process.env): string {
+  const candidates: string[] = [];
+  // 1) レジストリの User Shell Folders → Desktop(REG_EXPAND_SZ・%USERPROFILE% 等を含む)。
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync(
+        'reg',
+        ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Desktop'],
+        { encoding: 'utf-8', timeout: 3000 },
+      );
+      const m = out.match(/Desktop\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
+      if (m && m[1]) candidates.push(expandEnv(m[1].trim(), env));
+    } catch { /* レジストリ取得不可 → 候補で代替 */ }
+  }
+  // 2) 既知の候補(OneDrive を通常より優先)。
+  const up = env.USERPROFILE || homedir();
+  const od = env.OneDrive || env.OneDriveConsumer || env.OneDriveCommercial;
+  if (od) candidates.push(join(od, 'Desktop'));
+  candidates.push(join(up, 'OneDrive', 'Desktop'));
+  candidates.push(join(homedir(), 'OneDrive', 'Desktop'));
+  candidates.push(join(up, 'Desktop'));
+  candidates.push(join(homedir(), 'Desktop'));
+  // 存在する最初のディレクトリを採用。
+  for (const c of candidates) {
+    try { if (existsSync(c)) return c; } catch { /* 次へ */ }
+  }
+  // どれも無ければ homedir\Desktop を作成対象として返す。
+  return join(homedir(), 'Desktop');
+}
+
+// 撮影した最新1枚を実デスクトップに上書き保存する(確認用)。実弾ロジックには無関係。
+// 書込の実パスと成否を必ずログに出す(サイレント失敗の撲滅=自己診断)。失敗しても throw しない。
 function saveShotToDesktop(buf: Buffer): void {
-  try { writeFileSync(DESKTOP_SHOT_PATH, buf); } catch { /* ignore: 確認用コピーなので失敗は無視 */ }
+  let target = '(unresolved)';
+  try {
+    const dir = resolveDesktopDir();
+    try { mkdirSync(dir, { recursive: true }); } catch { /* 既存 or 作成不可 → 書込側で判定 */ }
+    target = join(dir, 'jp225-chart-shot.png');
+    writeFileSync(target, buf);
+    console.log(`[chart-shot] Desktop 保存OK: ${target} (${buf.length}B)`);
+  } catch (e) {
+    console.warn(`[chart-shot] Desktop 保存失敗: ${target} — ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** レジストリから chrome.exe のパスを引く(Chrome 自動更新後もインストール場所を追える)。 */
