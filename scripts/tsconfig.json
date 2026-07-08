@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022"],
+    "types": ["node"],
+    // Standalone research/analysis scripts use dense numeric index loops where every
+    // access is provably in-bounds. Relax only this flag here (the rest of strict stays on)
+    // to keep the analysis readable without 70+ non-null assertions.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["swing-meta-backtest.mts", "swing-accum-backtest.mts", "node-sqlite-shim.d.ts"]
+}
