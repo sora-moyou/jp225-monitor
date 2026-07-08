@@ -12,6 +12,7 @@ import { startHeartbeat, stopHeartbeat } from './sse/broker.js';
 import { explainHandler } from './routes/explain.js';
 import { chatHandler } from './routes/chat.js';
 import { scalpPlanHandler } from './routes/scalpPlan.js';
+import { chartShotHandler } from './routes/chartShot.js';
 import { getSettingsHandler, postSettingsHandler } from './routes/settings.js';
 import { statusHandler } from './routes/status.js';
 import { logsHandler } from './routes/logs.js';
@@ -87,6 +88,8 @@ app.post('/api/basedata/import', basedataImportHandler);
 app.post('/api/merge', mergeHandler);
 app.post('/api/export', exportHandler);
 app.post('/api/replace', replaceHandler);
+// スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
+app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
 app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor' }));
 

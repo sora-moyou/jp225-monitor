@@ -14,6 +14,7 @@ export interface UserConfig {
   groqKey?: string;
   openaiKey?: string;
   tavilyKey?: string;     // チャットの web_search(Tavily)用
+  chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
   pricePollMs?: number;
   newsPollMs?: number;
   port?: number;

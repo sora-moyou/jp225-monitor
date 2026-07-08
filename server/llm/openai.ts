@@ -74,6 +74,31 @@ function isAvailable(p: ProviderState): boolean {
   return p.client !== null && Date.now() >= p.circuitOpenUntil;
 }
 
+// ─── ビジョン(チャート画像入力)対応判定 ───
+// Gemini(OpenAI 互換エンドポイント)と OpenAI(gpt-4o 系)はマルチモーダル対応。
+// Groq(llama-3.3-70b, テキスト専用)は非対応。プロバイダ名で判定する(chatModel も参照)。
+const VISION_PROVIDERS = new Set(['gemini', 'openai']);
+
+/** プロバイダ名(+チャットモデル)がチャート画像入力に対応するか。テキスト専用(groq)は false。 */
+export function isVisionCapableProvider(name: string, chatModel = ''): boolean {
+  if (!VISION_PROVIDERS.has(name)) return false;
+  // モデル名に画像非対応が明示されていれば除外(将来のモデル差し替え対策)。
+  if (/text-only|-tts|whisper|embedding/i.test(chatModel)) return false;
+  return true;
+}
+
+/** 現在「利用可能(キーあり・非ポーズ)」で、かつビジョン対応の先頭プロバイダ名。無ければ null。
+ *  scalp-plan が「画像を撮るべきか」を事前判断するために使う(callWithFallback の選択順と同じ優先順)。 */
+export function firstAvailableVisionProvider(): { name: string; chatModel: string } | null {
+  for (const p of providers) {
+    if (!isAvailable(p)) continue;
+    if (isVisionCapableProvider(p.config.name, p.config.chatModel)) {
+      return { name: p.config.name, chatModel: p.config.chatModel };
+    }
+  }
+  return null;
+}
+
 function tripCircuit(p: ProviderState, err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   if (!/429|rate[_ ]limit|exhausted/i.test(msg)) return false;
@@ -766,15 +791,29 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   };
 }
 
+/** マルチモーダルなユーザメッセージ content を組み立てる。画像があればテキスト+image_url の配列、
+ *  無ければ従来どおりプレーン文字列(テキストのみ)を返す。OpenAI/Gemini(OpenAI 互換)共通形式。
+ *  data URL は `data:image/png;base64,<...>`。テスト可能な純関数。 */
+export function buildScalpUserContent(userPrompt: string, imageDataUrl?: string | null): any {
+  if (!imageDataUrl) return userPrompt;
+  return [
+    { type: 'text', text: userPrompt },
+    { type: 'image_url', image_url: { url: imageDataUrl } },
+  ];
+}
+
 /** スキャルプラン生成の純ループ(LLM 非依存=テスト可能)。tool ループで回答→parse、失敗なら tools 無しで
- *  厳格に1回だけ再要求→再parse。成功で AiPlan、失敗で例外。create/handlers を注入してテストする。 */
+ *  厳格に1回だけ再要求→再parse。成功で AiPlan、失敗で例外。create/handlers を注入してテストする。
+ *  imageDataUrl を渡すと初回・再要求ともにチャート画像を添付する(ビジョン対応プロバイダ時のみ呼び出し側で渡す)。 */
 export async function runScalpPlan(
   create: CreateFn, systemPrompt: string, userPrompt: string,
   tools: unknown[], handlers: ToolHandlers, refPrice: number,
+  imageDataUrl?: string | null,
 ): Promise<AiPlan> {
+  const userContent = buildScalpUserContent(userPrompt, imageDataUrl);
   const baseMessages: any[] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt },
+    { role: 'user', content: userContent },
   ];
   const first = await runChatWithTools(create, baseMessages, tools, handlers);
   const parsed = parseScalpPlan(first, refPrice);
@@ -783,7 +822,7 @@ export async function runScalpPlan(
   const retry = await create({
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
+      { role: 'user', content: userContent },
       { role: 'assistant', content: first },
       { role: 'user', content: `直前の応答は指定 JSON スキーマに一致していません(${parsed.error})。説明やコードフェンスを一切付けず、スキーマに厳密一致する JSON オブジェクトだけを出力し直してください。` },
     ],
@@ -799,6 +838,8 @@ export interface ScalpPlanInput {
   prices?: Price[];
   news?: NewsItem[];
   technical?: string | null;
+  /** チャート画像(data URL: `data:image/png;base64,<...>`)。渡されるとビジョン対応プロバイダに添付する。 */
+  chartImageDataUrl?: string | null;
 }
 
 /** 固定のスキャル質問で LLM を走らせ、構造化 AiPlan を返す。既存の chat と同じ tool ループ・プロバイダ選択・
@@ -831,15 +872,21 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     };
   }
 
-  const userPrompt = `${SCALP_QUESTION}\n\n${scalpJsonInstruction(refPrice)}`;
+  // チャート画像がある時は判断材料にするよう明示的に指示する(ビジョン対応プロバイダ時のみ添付される)。
+  const img = input.chartImageDataUrl && input.chartImageDataUrl.startsWith('data:image/')
+    ? input.chartImageDataUrl : null;
+  const visionNote = img ? '添付のチャート画像(当日の日経225先物のローソク足・主要水準・直近アラート)も判断材料にすること。\n\n' : '';
+  const userPrompt = `${SCALP_QUESTION}\n\n${visionNote}${scalpJsonInstruction(refPrice)}`;
 
   try {
     const raw = await callWithFallback(async (p) => {
       const create: CreateFn = (params) => p.client!.chat.completions.create({
         model: p.config.chatModel, temperature: 0.4, max_tokens: 8000, ...params,
       } as any);
+      // ビジョン非対応プロバイダに切り替わった場合は画像を外す(image_url をテキスト専用モデルへ送らない)。
+      const imgForThis = img && isVisionCapableProvider(p.config.name, p.config.chatModel) ? img : null;
       // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。
-      return JSON.stringify(await runScalpPlan(create, systemPrompt, userPrompt, tools, handlers, refPrice));
+      return JSON.stringify(await runScalpPlan(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis));
     }, 'scalp-plan');
     // callWithFallback から返った plan JSON を再パースして返す。
     return parseScalpPlan(raw, refPrice);
