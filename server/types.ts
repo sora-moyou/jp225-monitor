@@ -62,4 +62,6 @@ export type SSEEvent =
   | { type: 'prices'; payload: Price[] }
   | { type: 'news'; payload: NewsItem[] }
   | { type: 'alert'; payload: AlertEventPayload }
-  | { type: 'levels'; payload: LevelsResult };
+  | { type: 'levels'; payload: LevelsResult }
+  // v0.7.24: 市場開場フラグ。価格ボードが「取引時間外(閉場・正常)」と「取得不能(フィード障害)」を区別する。
+  | { type: 'market'; payload: { open: boolean } };

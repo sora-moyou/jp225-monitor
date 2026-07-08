@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifySession, inPollWindow, tokyoCashOpen } from './session.js';
+import { classifySession, inPollWindow, isMarketOpen, tokyoCashOpen } from './session.js';
 
 // JST epoch helper: y-m-d h:mm (JST) → epoch ms.  (JST = UTC+9, no DST)
 function jst(y: number, mo: number, d: number, h: number, mi: number): number {
@@ -98,5 +98,23 @@ describe('inPollWindow', () => {
   it('false well outside any session (and its margins)', () => {
     expect(inPollWindow(jst(...MON, 16, 0))).toBe(false);   // mid-break
     expect(inPollWindow(jst(...SUN, 12, 0))).toBe(false);   // weekend
+  });
+});
+
+describe('isMarketOpen (価格ボードの「取引時間外」表示用)', () => {
+  it('true 場中(セッション内)', () => {
+    expect(isMarketOpen(jst(...MON, 9, 0))).toBe(true);     // Day session
+    expect(isMarketOpen(jst(...MON, 18, 0))).toBe(true);    // Night session
+    expect(isMarketOpen(jst(...TUE, 3, 0))).toBe(true);     // Night 早朝継続
+  });
+  it('false 週末', () => {
+    expect(isMarketOpen(jst(...SAT, 10, 0))).toBe(false);   // Saturday day
+    expect(isMarketOpen(jst(...SUN, 12, 0))).toBe(false);   // Sunday
+  });
+  it('false 休場日(元日=HOLIDAYS)', () => {
+    expect(isMarketOpen(jst(2026, 1, 1, 12, 0))).toBe(false);
+  });
+  it('false セッション間(引け後の休憩帯)', () => {
+    expect(isMarketOpen(jst(...MON, 16, 0))).toBe(false);   // Day 引け〜Night 開場の間
   });
 });

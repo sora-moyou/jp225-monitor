@@ -394,15 +394,29 @@ function setStatus(status: 'connecting' | 'online' | 'offline') {
   }
 }
 
+// v0.7.24: 市場開場フラグ。閉場(取引時間外)なら価格ボードで NIY=F を「取引時間外」と表示する。
+// 既定 true(未受信のうちは従来どおり)。最新の prices を保持して market 変化時に再描画する。
+let marketOpen = true;
+let lastPrices: Parameters<typeof renderPriceGrid>[1] = [];
+function paintPrices(): void {
+  const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
+  renderPriceGrid(priceGridEl, lastPrices, displayed, marketOpen);
+}
+
 connectStream({
   onStatusChange: setStatus,
   onPrices: (prices) => {
-    const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
-    renderPriceGrid(priceGridEl, prices, displayed);
+    lastPrices = prices;
+    paintPrices();
     const niy = prices.find(p => p.symbol === 'NIY=F');
     // stale(socket 停止/取得不能)フラグも渡す。stale の凍結値をライブ風に見せず、
     // 水準パネルの現値マーカーを「取得不能」にする(価格カードと整合)。
     if (niy) setLevelsPrice(niy.price, niy.stale === true);
+  },
+  onMarket: (open) => {
+    if (open === marketOpen) return;
+    marketOpen = open;
+    paintPrices();   // 市場開閉が切り替わったら再描画(取引時間外↔取得不能の表示を更新)
   },
   onLevels: (levels) => setLevels(levels),
   onAlert: (alert) => {

@@ -90,3 +90,12 @@ export function inPollWindow(epochMs: number): boolean {
     || classifySession(epochMs + LEAD_MS) !== null
     || classifySession(epochMs - TRAIL_MS) !== null;
 }
+
+/**
+ * 市場(日経225先物)が開いているか。価格ボードの「取引時間外」表示用。
+ * ポーリング窓(セッション ± マージン)を市場開場とみなす。窓外(週末/休場日/セッション間)は false。
+ * これにより「フィード障害(取得不能)」と「そもそも市場が閉まっている(取引時間外)」を UI が区別できる。
+ */
+export function isMarketOpen(epochMs: number): boolean {
+  return inPollWindow(epochMs);
+}

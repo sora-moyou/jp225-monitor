@@ -19,7 +19,30 @@ function renderMomentum(m: NonNullable<Price['momentum']>): string {
   return `<span class="change mom">${pct}${yen}</span>`;
 }
 
-export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnly?: Set<string>): void {
+// NIY=F(実際に建てる大阪日経先物)が stale のときのカード内容を組み立てる純関数(DOM 非依存・テスト容易化)。
+// 「取引時間外(市場が閉まっている=正常)」と「取得不能(取引時間中のフィード障害)」を明確に区別する:
+//   ・marketOpen=false → 「取引時間外」(中立表示。異常ではない・数字は出さない)
+//   ・marketOpen=true(取引時間中の stale)→ 「取得不能 / 停止」(実際の障害。従来どおり赤=down)
+export function buildNiyStaleCard(labelJa: string, marketOpen: boolean): { classes: string[]; html: string } {
+  if (!marketOpen) {
+    return {
+      classes: ['stale', 'offhours'],
+      html: `
+          <div class="label"><span>${labelJa}</span><span class="source-badge offhours">取引時間外</span></div>
+          <div class="value"><span class="num offhours-num">取引時間外</span></div>
+        `,
+    };
+  }
+  return {
+    classes: ['down', 'stale', 'unavailable'],
+    html: `
+          <div class="label"><span>${labelJa}</span><span class="source-badge unavail">取得不能</span></div>
+          <div class="value"><span class="num unavail-num">停止</span></div>
+        `,
+  };
+}
+
+export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnly?: Set<string>, marketOpen = true): void {
   const priceMap = new Map(prices.map(p => [p.symbol, p]));
   container.innerHTML = '';
   const visible = showOnly
@@ -31,14 +54,12 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
     card.className = 'price-card';
     card.dataset.symbol = meta.symbol;
     if (p) {
-      // 実弾安全(NIY=F): 実際に建てる大阪日経先物が取得不能(stale)のときは、
-      // もっともらしい遅延値を出さず「取得不能 / 停止」と明示する。数字は捏造しない。
+      // 実弾安全(NIY=F): 実際に建てる大阪日経先物が取得不能(stale)のとき。数字は捏造しない。
+      // 「取引時間外」/「取得不能」の出し分けは buildNiyStaleCard(純関数)に集約(テスト対象)。
       if (meta.symbol === 'NIY=F' && p.stale) {
-        card.classList.add('down', 'stale', 'unavailable');
-        card.innerHTML = `
-          <div class="label"><span>${meta.labelJa}</span><span class="source-badge unavail">取得不能</span></div>
-          <div class="value"><span class="num unavail-num">停止</span></div>
-        `;
+        const { classes, html } = buildNiyStaleCard(meta.labelJa, marketOpen);
+        card.classList.add(...classes);
+        card.innerHTML = html;
         container.appendChild(card);
         continue;
       }

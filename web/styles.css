@@ -342,6 +342,24 @@ body {
   font-weight: 800;
   letter-spacing: 0.04em;
 }
+/* 取引時間外(市場が閉まっている=正常)。障害ではないので警告色ではなく中立(muted)で表示。 */
+.price-card.offhours {
+  opacity: 0.85;
+  border-color: var(--border, #333);
+  background: transparent;
+}
+.price-card .source-badge.offhours {
+  color: var(--muted, #888);
+  background: transparent;
+  border-color: var(--muted, #888);
+  font-weight: 600;
+}
+.price-card .value .num.offhours-num {
+  color: var(--muted, #888);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
 .price-card.flash-up { animation: flashUp 500ms 2; }
 .price-card.flash-down { animation: flashDown 500ms 2; }
 

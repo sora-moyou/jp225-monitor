@@ -13,6 +13,7 @@ import { explainHandler } from './routes/explain.js';
 import { chatHandler } from './routes/chat.js';
 import { scalpPlanHandler } from './routes/scalpPlan.js';
 import { chartShotHandler } from './routes/chartShot.js';
+import { captureChartPng } from './chart/chartShot.js';
 import { getSettingsHandler, postSettingsHandler } from './routes/settings.js';
 import { statusHandler } from './routes/status.js';
 import { logsHandler } from './routes/logs.js';
@@ -116,6 +117,22 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startLevelsLoop();
   startForecastLoop();
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
+
+  // 起動時に一度だけチャットショット(~/Desktop/jp225-chart-shot.png)を撮って確認用画像を更新する。
+  // 撮影パイプライン(Chrome ヘッドレス→/chart-shot)が起動直後に動く証拠にもなる。ベストエフォート:
+  // Chrome 不在・取引時間外の空チャート等はすべて許容(撮れた分を保存 or 失敗理由をログするだけ)。
+  // 起動を絶対にブロック/throw しない(try/catch で握りつぶす)。ルートが温まるよう少し遅延させる。
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const r = await captureChartPng(PORT);
+        if (r.buffer) console.log('[startup] chart-shot saved (~/Desktop/jp225-chart-shot.png)');
+        else console.warn(`[startup] chart-shot skipped: ${r.reason ?? 'unknown'}`);
+      } catch (e) {
+        console.warn('[startup] chart-shot error:', e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }, 1500);
 });
 
 // 終了時にハートビート interval を止めてプロセスが即座に落ちられるようにする。

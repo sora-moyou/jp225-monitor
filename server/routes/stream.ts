@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { register, unregister } from '../sse/broker.js';
 import { getPrices, getNews } from '../cache.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
+import { isMarketOpen } from '../../collector/session.js';
 
 export function streamHandler(req: Request, res: Response): void {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -24,6 +25,8 @@ export function streamHandler(req: Request, res: Response): void {
   if (levels.up.length > 0 || levels.down.length > 0) {
     res.write(`event: levels\ndata: ${JSON.stringify(levels)}\n\n`);
   }
+  // v0.7.24: 接続直後に市場開場フラグを一回送る(price ループの state 変化 broadcast を取りこぼす新規接続を補う)。
+  res.write(`event: market\ndata: ${JSON.stringify({ open: isMarketOpen(Date.now()) })}\n\n`);
 
   register(res);
   req.on('close', () => unregister(res));

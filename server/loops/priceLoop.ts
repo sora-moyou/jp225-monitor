@@ -5,7 +5,7 @@ import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
-import { inPollWindow } from '../../collector/session.js';
+import { inPollWindow, isMarketOpen } from '../../collector/session.js';
 import type { Price } from '../types.js';
 import { feedPrice as tickDetectorFeed, getMomentum } from '../tickDetector.js';
 
@@ -63,8 +63,21 @@ export function mergeWithCached(fresh: Price[]): Price[] {
     .filter((p): p is Price => p !== undefined);
 }
 
+// v0.7.24: 市場開場フラグを SSE で配信する(価格ボードの「取引時間外」表示用)。
+// 状態変化時のみ broadcast(スパム抑制)。stream 接続時のスナップショットは stream.ts が別途送る。
+let lastMarketOpen: boolean | null = null;
+function broadcastMarket(open: boolean): void {
+  if (open === lastMarketOpen) return;
+  lastMarketOpen = open;
+  broadcast({ type: 'market', payload: { open } });
+}
+
 async function tick(): Promise<number> {
-  if (!inPollWindow(Date.now())) return OFFHOURS_IDLE_MS;   // 取引時間外は何もしない(軽量化)
+  if (!inPollWindow(Date.now())) {
+    broadcastMarket(false);              // 取引時間外は「閉場」を明示(取得不能=障害 と区別)
+    return OFFHOURS_IDLE_MS;             // 取引時間外は何もしない(軽量化)
+  }
+  broadcastMarket(isMarketOpen(Date.now()));   // 窓内 = 開場
   try {
     // v0.7.20: 監視 4 銘柄をすべて公開 HTTP から並行取得。
     //   ajax_cme.js を 1 GET → NIY=F(136)/YM=F(731)/NQ=F(737)、ajax_fx.js を 1 GET → JPY=X(511)。

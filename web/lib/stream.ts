@@ -7,6 +7,8 @@ interface StreamHandlers {
   onAlert: (alert: AlertEvent) => void;
   onLevels: (levels: LevelsResult) => void;
   onStatusChange: (status: 'connecting' | 'online' | 'offline') => void;
+  // v0.7.24: 市場開場フラグ。閉場(取引時間外)なら価格ボードが「取引時間外」と表示する。省略可(任意ハンドラ)。
+  onMarket?: (open: boolean) => void;
 }
 
 export function connectStream(handlers: StreamHandlers): () => void {
@@ -38,6 +40,13 @@ export function connectStream(handlers: StreamHandlers): () => void {
     es.addEventListener('levels', (e) => {
       try { handlers.onLevels(JSON.parse((e as MessageEvent).data)); }
       catch (err) { console.error('parse levels', err); }
+    });
+
+    es.addEventListener('market', (e) => {
+      try {
+        const { open } = JSON.parse((e as MessageEvent).data) as { open: boolean };
+        handlers.onMarket?.(open === true);
+      } catch (err) { console.error('parse market', err); }
     });
 
     es.addEventListener('error', () => {
