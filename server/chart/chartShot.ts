@@ -4,8 +4,8 @@
 // すべての失敗経路(Chrome 不在・タイムアウト・撮影失敗)は null を返し、呼び出し側はテキストのみへフォールバックする。
 
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { loadConfig } from '../configStore.js';
 
@@ -143,17 +143,56 @@ export function resolveChromePath(env: NodeJS.ProcessEnv = process.env): string 
   return chromeFromRegistry();
 }
 
-/** chrome --version の出力(ログ用)。取得失敗/非バージョン応答は null。
- *  既存 Chrome セッションがあると「別のブラウザセッションで開いています」等の別メッセージが返るため、
- *  "Chrome" と数字を含む行だけを採用する(ログの誤情報を避ける)。 */
+/** Chrome のバージョン文字列(ログ用のみ)。取得できなければ null。
+ *
+ *  重要: ここで chrome.exe を絶対に実行しない。Windows では `chrome.exe --version` が
+ *  コンソール非接続時に自分自身を GUI 本体として再起動する既知の挙動があり、
+ *  既存 Chrome 起動中/複数プロファイル環境では「どなたが使用しますか?」プロファイルピッカーが
+ *  表示される事故になる(captureChartPng は /api/scalp-plan の毎回この関数を呼ぶため頻発)。
+ *  そのためバージョンは exe を起動せず、以下の順でファイル/レジストリから読み取る:
+ *    1) chrome.exe と同じ Application フォルダ内のバージョン名サブフォルダ
+ *       (例 ...\Application\126.0.6478.127\)。複数あれば最大版を採用。
+ *    2) レジストリ HKCU\Software\Google\Chrome\BLBeacon の version(reg.exe は GUI を出さない)。
+ *  診断専用なので全体を try/catch で包み、例外は決して投げない。 */
 export function chromeVersion(chromePath: string): string | null {
+  // 1) Application フォルダ内の「x.x.x.x」形式のサブフォルダ名からバージョンを得る。
   try {
-    const out = execFileSync(chromePath, ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim();
-    if (/chrome/i.test(out) && /\d+\.\d+/.test(out)) return out;
-    return null;
-  } catch {
-    return null;
+    const dir = dirname(chromePath);
+    const verRe = /^\d+\.\d+\.\d+\.\d+$/;
+    const versions = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && verRe.test(e.name))
+      .map((e) => e.name);
+    if (versions.length > 0) {
+      // 数値コンポーネントで降順ソートし、最も新しいバージョンを採用。
+      versions.sort((a, b) => {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < 4; i++) {
+          const da = pa[i] ?? 0;
+          const db = pb[i] ?? 0;
+          if (da !== db) return db - da;
+        }
+        return 0;
+      });
+      return `Google Chrome ${versions[0]}`;
+    }
+  } catch { /* フォルダ走査に失敗してもレジストリを試す */ }
+
+  // 2) レジストリ(Windows のみ)。reg.exe は GUI を起動しないので安全。
+  if (process.platform === 'win32') {
+    try {
+      const out = execFileSync(
+        'reg',
+        ['query', 'HKCU\\Software\\Google\\Chrome\\BLBeacon', '/v', 'version'],
+        { encoding: 'utf-8', timeout: 3000 },
+      );
+      // 出力例: "    version    REG_SZ    126.0.6478.127"
+      const m = out.match(/version\s+REG_SZ\s+(\d+\.\d+\.\d+\.\d+)/i);
+      if (m) return `Google Chrome ${m[1]}`;
+    } catch { /* レジストリ未登録/失敗は null へ */ }
   }
+
+  return null;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // fs / configStore をモックしてパス解決の分岐を検証する。
 const existsMock = vi.fn<[string], boolean>();
@@ -10,7 +10,10 @@ vi.mock('../configStore.js', () => ({ loadConfig: () => loadConfigReturn }));
 
 let loadConfigReturn: Record<string, unknown> = {};
 
-import { resolveChromePath, buildChromeArgs, captureChartPng } from './chartShot.js';
+import { resolveChromePath, buildChromeArgs, captureChartPng, chromeVersion } from './chartShot.js';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const WIN_ENV = {
   ProgramFiles: 'C:\\Program Files',
@@ -94,5 +97,58 @@ describe('captureChartPng (Chrome 不在)', () => {
       // win32 実機でレジストリから見つかった場合は撮影を試みる(このテストの対象外)。
       expect(typeof r.chromePath).toBe('string');
     }
+  });
+});
+
+describe('chromeVersion (no GUI launch)', () => {
+  // chrome.exe を絶対に起動しない(GUI/プロファイルピッカー事故防止)。
+  // Application フォルダ内のバージョン名サブフォルダから読み取れることを検証する。
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    while (tmpDirs.length) {
+      const d = tmpDirs.pop()!;
+      try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('Application フォルダ内のバージョン名サブフォルダから版を得る(exe 非実行)', () => {
+    const base = mkdtempSync(join(tmpdir(), 'chromever-'));
+    tmpDirs.push(base);
+    const appDir = join(base, 'Application');
+    mkdirSync(appDir, { recursive: true });
+    const chromePath = join(appDir, 'chrome.exe');
+    writeFileSync(chromePath, '');                       // 空の exe(実行されないことの担保)
+    mkdirSync(join(appDir, '126.0.6478.127'));           // バージョン名サブフォルダ
+    const r = chromeVersion(chromePath);
+    expect(r).not.toBeNull();
+    expect(r).toContain('126.0.6478.127');
+  });
+
+  it('複数バージョンがあれば最大版を採用する', () => {
+    const base = mkdtempSync(join(tmpdir(), 'chromever-'));
+    tmpDirs.push(base);
+    const appDir = join(base, 'Application');
+    mkdirSync(appDir, { recursive: true });
+    const chromePath = join(appDir, 'chrome.exe');
+    writeFileSync(chromePath, '');
+    mkdirSync(join(appDir, '120.0.6099.109'));
+    mkdirSync(join(appDir, '126.0.6478.127'));
+    mkdirSync(join(appDir, '99.0.4844.51'));
+    const r = chromeVersion(chromePath);
+    expect(r).toContain('126.0.6478.127');
+  });
+
+  it('バージョンフォルダが無ければ null かレジストリ版(実 chrome は起動しない)', () => {
+    const base = mkdtempSync(join(tmpdir(), 'chromever-'));
+    tmpDirs.push(base);
+    const appDir = join(base, 'Application');
+    mkdirSync(appDir, { recursive: true });
+    const chromePath = join(appDir, 'chrome.exe');
+    writeFileSync(chromePath, '');
+    // バージョンサブフォルダ無し → フォルダ走査は不発。
+    // win32 実機ではレジストリ(実インストール済み Chrome)から拾い得るため許容。
+    const r = chromeVersion(chromePath);
+    expect(r === null || r.includes('Google Chrome')).toBe(true);
   });
 });
