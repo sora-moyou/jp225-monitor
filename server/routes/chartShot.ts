@@ -1,19 +1,48 @@
 import type { Request, Response } from 'express';
-import { openDb, resolveDbPath } from '../db/store.js';
-import { buildChartSnapshot, type ChartSnapshot } from '../chart/chartData.js';
 
-// スクリーンショット専用の軽量チャートページ(SSE 非依存)。
-// 当日セッションのローソク足 + 主要水準 + 直近アラートマーカーを、外部依存なしの inline canvas で描く。
-// ヘッドレス Chrome がこの URL を撮影する。描画完了で document.title='chart-ready' を立て、
+// スクリーンショット専用のチャートページ(SSE 非依存)。
+// 監視ボード(web/components/chart.ts)と同じ TradingView 埋め込みウィジェットを全画面で描画し、
+// ヘッドレス Chrome がこの URL を撮影する。=> AI に渡る画像は「ボードでユーザーが見ている TradingView チャート」そのもの。
+// チャート準備完了(onChartReady)で document.title='chart-ready' / data-ready を立て、
 // --virtual-time-budget と合わせて「描き切ってから撮る」安全網にする。localhost 診断用途・秘匿情報なし。
+// tv.js の読込失敗など全ての失敗経路でもページはハングせず、撮影側のタイムアウトで有界。
 
 const VIEW_W = 1280;
 const VIEW_H = 760;
 
-/** スナップショット JSON を埋め込んだ自己完結 HTML を生成する(純粋・テスト可能)。 */
-export function renderChartShotHtml(snap: ChartSnapshot): string {
-  // JSON はスクリプト終了タグ注入を避けるため </ をエスケープ(XSS/破損対策)。localhost だが二重の安全網。
-  const dataJson = JSON.stringify(snap).replace(/</g, '\\u003c');
+// ボード(web/components/chart.ts)の new TradingView.widget({...}) 設定を複製する。
+// 撮影用途なのでツールバー等は非表示・非インタラクティブに寄せるが、
+// 銘柄/足/スタジオ/テーマ/timezone/locale はボードと一致させる(AI が見る絵をボードと揃える)。
+const TV_SCRIPT_URL = 'https://s3.tradingview.com/tv.js';
+const CHART_SYMBOL = 'FOREXCOM:JP225';   // FOREXCOM Japan 225 CFD(ボードと同一)
+const CHART_INTERVAL = '5';              // 5分足(ボードと同一)
+const CHART_STUDIES = ['MovingAvgRibbon@tv-basicstudies'];   // MA Ribbon(ボードと同一)
+
+/** ボードの TradingView ウィジェットを全画面で描く自己完結 HTML を生成する(純粋・テスト可能)。 */
+export function renderChartShotHtml(): string {
+  // ウィジェット設定(ボードと一致)。撮影用に非インタラクティブ寄せ(hide_top_toolbar 等)。
+  const widgetConfig = {
+    autosize: true,
+    symbol: CHART_SYMBOL,
+    interval: CHART_INTERVAL,
+    timezone: 'Asia/Tokyo',
+    theme: 'dark',
+    style: '1',
+    locale: 'ja',
+    enable_publishing: false,
+    hide_top_toolbar: true,       // 撮影なのでツールバー非表示
+    hide_side_toolbar: true,      // 描画ツール非表示
+    hide_legend: false,
+    hide_volume: true,            // 出来高ペイン非表示(ボードと同一)
+    save_image: false,
+    container_id: 'tradingview-shot',
+    allow_symbol_change: false,   // 撮影なので銘柄変更不可
+    withdateranges: false,
+    studies: CHART_STUDIES,       // MA Ribbon(ボードと同一)
+    disabled_features: ['create_volume_indicator_by_default', 'header_widget', 'left_toolbar'],
+  };
+  // JSON はスクリプト終了タグ注入を避けるため </ をエスケープ(破損対策)。localhost だが二重の安全網。
+  const cfgJson = JSON.stringify(widgetConfig).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -21,150 +50,67 @@ export function renderChartShotHtml(snap: ChartSnapshot): string {
 <title>chart-loading</title>
 <style>
   html, body { margin: 0; padding: 0; background: #0b0e14; overflow: hidden; }
-  #wrap { width: ${VIEW_W}px; height: ${VIEW_H}px; position: relative; }
-  canvas { display: block; }
-  #hdr { position: absolute; left: 14px; top: 10px; color: #c8d0dc;
-    font: 600 15px/1.3 "Segoe UI", system-ui, sans-serif; }
-  #hdr .sub { color: #7f8b9c; font-weight: 400; font-size: 12px; }
+  #tradingview-shot { width: ${VIEW_W}px; height: ${VIEW_H}px; }
 </style>
 </head>
 <body>
-<div id="wrap">
-  <canvas id="c" width="${VIEW_W}" height="${VIEW_H}"></canvas>
-  <div id="hdr"></div>
-</div>
-<script id="chart-data" type="application/json">${dataJson}</script>
+<div id="tradingview-shot"></div>
+<script id="tv-config" type="application/json">${cfgJson}</script>
+<script src="${TV_SCRIPT_URL}"></script>
 <script>
 (function () {
-  var W = ${VIEW_W}, H = ${VIEW_H};
-  var snap;
-  try { snap = JSON.parse(document.getElementById('chart-data').textContent); }
-  catch (e) { snap = { candles: [], levels: [], markers: [], current: 0, symbolLabel: '' }; }
+  function ready() {
+    if (document.title === 'chart-ready') return;
+    document.title = 'chart-ready';
+    document.body.setAttribute('data-ready', '1');
+    window.__chartReady = true;
+  }
+  var cfg;
+  try { cfg = JSON.parse(document.getElementById('tv-config').textContent); }
+  catch (e) { cfg = { symbol: '${CHART_SYMBOL}', interval: '${CHART_INTERVAL}', container_id: 'tradingview-shot' }; }
 
-  var canvas = document.getElementById('c');
-  var ctx = canvas.getContext('2d');
-  var PAD_L = 8, PAD_R = 78, PAD_T = 46, PAD_B = 22;
-  var plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  // 保険: onChartReady が来なくても撮影がハングしないよう、一定時間で settle させる。
+  // --virtual-time-budget(~14s)より短く置き、通常はウィジェットの onChartReady が先に立つ。
+  var settleTimer = setTimeout(ready, 12000);
 
-  function ready() { document.title = 'chart-ready'; document.body.setAttribute('data-ready', '1'); window.__chartReady = true; }
-
-  var candles = snap.candles || [];
-  var levels = snap.levels || [];
-  var markers = snap.markers || [];
-
-  // 価格レンジ(足 + 水準 + 現値 から)。
-  var lo = Infinity, hi = -Infinity;
-  candles.forEach(function (b) { if (b.l < lo) lo = b.l; if (b.h > hi) hi = b.h; });
-  levels.forEach(function (l) { if (l.price < lo) lo = l.price; if (l.price > hi) hi = l.price; });
-  if (snap.current > 0) { if (snap.current < lo) lo = snap.current; if (snap.current > hi) hi = snap.current; }
-  if (!isFinite(lo) || !isFinite(hi) || hi <= lo) { lo = (snap.current || 0) - 100; hi = (snap.current || 0) + 100; }
-  var padY = (hi - lo) * 0.06 || 1; lo -= padY; hi += padY;
-
-  function yOf(p) { return PAD_T + (hi - p) / (hi - lo) * plotH; }
-  var n = candles.length;
-  function xOf(i) { return n <= 1 ? PAD_L + plotW / 2 : PAD_L + (i / (n - 1)) * plotW; }
-
-  // 背景
-  ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, W, H);
-
-  // 横グリッド + 右軸ラベル
-  ctx.strokeStyle = '#1b2130'; ctx.fillStyle = '#5f6b7c';
-  ctx.font = '11px "Segoe UI", system-ui, sans-serif'; ctx.textBaseline = 'middle';
-  var ticks = 6;
-  for (var g = 0; g <= ticks; g++) {
-    var p = lo + (hi - lo) * (g / ticks); var y = yOf(p);
-    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y); ctx.stroke();
-    ctx.fillText(Math.round(p).toLocaleString('ja-JP'), PAD_L + plotW + 6, y);
+  function boot() {
+    if (!window.TradingView || !window.TradingView.widget) {
+      // tv.js が読めない(オフライン/ブロック)。ページを解決させて撮影側のタイムアウトで有界に。
+      clearTimeout(settleTimer); ready(); return;
+    }
+    try {
+      var widget = new window.TradingView.widget(cfg);
+      // tv.js ウィジェットは onChartReady(cb) を公開する版が多い。あれば実 ready で立てる。
+      if (widget && typeof widget.onChartReady === 'function') {
+        widget.onChartReady(function () { clearTimeout(settleTimer); ready(); });
+      }
+      // onChartReady 非対応版でも settleTimer で確実に ready になる。
+    } catch (e) {
+      clearTimeout(settleTimer); ready();
+    }
   }
 
-  // 水準線(tier で色/強調)。上=緑寄り抵抗、下=赤寄り支持。
-  levels.forEach(function (l) {
-    var y = yOf(l.price);
-    var strong = l.tier >= 2;
-    ctx.strokeStyle = l.side === 'up' ? (strong ? '#3fb56a' : '#2c6e46') : (strong ? '#d15b5b' : '#8a3b3b');
-    ctx.lineWidth = strong ? 1.5 : 1; ctx.setLineDash(strong ? [] : [4, 3]);
-    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = l.side === 'up' ? '#7fd6a0' : '#e79a9a';
-    ctx.font = '10px "Segoe UI", system-ui, sans-serif'; ctx.textBaseline = 'bottom';
-    ctx.fillText(String(l.label).slice(0, 14), PAD_L + 4, y - 1);
-    ctx.textBaseline = 'middle';
-  });
-
-  // ローソク足
-  var cw = n > 0 ? Math.max(1, Math.min(9, plotW / n * 0.7)) : 3;
-  for (var i = 0; i < n; i++) {
-    var b = candles[i]; var x = xOf(i);
-    var up = b.c >= b.o;
-    ctx.strokeStyle = up ? '#26a69a' : '#ef5350'; ctx.fillStyle = up ? '#26a69a' : '#ef5350';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x, yOf(b.h)); ctx.lineTo(x, yOf(b.l)); ctx.stroke();
-    var yO = yOf(b.o), yC = yOf(b.c);
-    var top = Math.min(yO, yC), bh = Math.max(1, Math.abs(yC - yO));
-    ctx.fillRect(x - cw / 2, top, cw, bh);
-  }
-
-  // 現値ライン
-  if (snap.current > 0) {
-    var yc = yOf(snap.current);
-    ctx.strokeStyle = '#e8b23a'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
-    ctx.beginPath(); ctx.moveTo(PAD_L, yc); ctx.lineTo(PAD_L + plotW, yc); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#e8b23a'; ctx.fillRect(PAD_L + plotW, yc - 8, PAD_R, 16);
-    ctx.fillStyle = '#0b0e14'; ctx.font = '11px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText(Math.round(snap.current).toLocaleString('ja-JP'), PAD_L + plotW + 5, yc);
-  }
-
-  // アラートマーカー(時刻→最寄り足のx、価格→y)。上向き=▲下、下向き=▼上。
-  function xForTime(t) {
-    if (n === 0) return PAD_L + plotW;
-    var best = 0, bd = Infinity;
-    for (var i = 0; i < n; i++) { var d = Math.abs(candles[i].t - t); if (d < bd) { bd = d; best = i; } }
-    return xOf(best);
-  }
-  markers.forEach(function (m) {
-    var mx = xForTime(m.t);
-    var my = m.price != null && m.price > 0 ? yOf(m.price) : PAD_T + 12;
-    var down = m.direction === 'down';
-    ctx.fillStyle = down ? '#ef5350' : (m.direction === 'up' ? '#26a69a' : '#c0a020');
-    ctx.beginPath();
-    if (down) { ctx.moveTo(mx, my - 9); ctx.lineTo(mx - 5, my - 18); ctx.lineTo(mx + 5, my - 18); }
-    else { ctx.moveTo(mx, my + 9); ctx.lineTo(mx - 5, my + 18); ctx.lineTo(mx + 5, my + 18); }
-    ctx.closePath(); ctx.fill();
-  });
-
-  // ヘッダ
-  var hdr = document.getElementById('hdr');
-  var d = new Date(snap.asOf || Date.now());
-  var when = d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' });
-  hdr.innerHTML = (snap.symbolLabel || '') + ' ' +
-    (snap.current > 0 ? Math.round(snap.current).toLocaleString('ja-JP') : '') +
-    '<div class="sub">' + snap.barCount + '本 / 水準' + levels.length + ' / アラート' + markers.length + ' — ' + when + ' JST</div>';
-
-  // 描画完了マーカー(次フレームで確実に反映してから立てる)。
-  requestAnimationFrame(function () { requestAnimationFrame(ready); });
+  // tv.js は同期 <script> なので通常この時点で TradingView は存在するが、
+  // 念のため読込完了(load)後にブートする。
+  if (document.readyState === 'complete') boot();
+  else window.addEventListener('load', boot);
 })();
 </script>
 </body>
 </html>`;
 }
 
-/** GET /chart-shot — スクショ用の自己完結チャートページを返す。localhost 診断用途。 */
+/** GET /chart-shot — ボードの TradingView ウィジェットを全画面描画したページを返す。localhost 診断用途。 */
 export function chartShotHandler(_req: Request, res: Response): void {
-  let db: ReturnType<typeof openDb> | null = null;
   try {
-    db = openDb(resolveDbPath());
-    const snap = buildChartSnapshot(db);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
-    res.send(renderChartShotHtml(snap));
+    res.send(renderChartShotHtml());
   } catch (err) {
     // 失敗しても最低限の HTML(readiness マーカー付き)を返し、撮影側がタイムアウトせず null 判定できるようにする。
     const msg = err instanceof Error ? err.message : String(err);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(`<!DOCTYPE html><html><head><title>chart-ready</title></head>`
       + `<body data-ready="1" style="background:#0b0e14;color:#889"><pre>chart unavailable: ${msg.slice(0, 200)}</pre></body></html>`);
-  } finally {
-    try { db?.close(); } catch { /* ignore */ }
   }
 }

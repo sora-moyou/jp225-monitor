@@ -60,14 +60,18 @@ describe('resolveChromePath', () => {
 });
 
 describe('buildChromeArgs', () => {
-  it('ヘッドレス撮影に必要なフラグと URL/出力/プロファイルを含む', () => {
-    const args = buildChromeArgs('http://127.0.0.1:3000/chart-shot', 'C:\\tmp\\a.png', 'C:\\tmp\\ud');
+  it('CDP 撮影に必要なフラグ(リモートデバッグ)と URL/プロファイルを含む', () => {
+    const args = buildChromeArgs('http://127.0.0.1:3000/chart-shot', 47821, 'C:\\tmp\\ud');
     expect(args).toContain('--headless=new');
     expect(args).toContain('--hide-scrollbars');
     expect(args).toContain('--window-size=1280,760');
-    expect(args).toContain('--screenshot=C:\\tmp\\a.png');
+    expect(args).toContain('--remote-debugging-port=47821');
+    expect(args).toContain('--remote-allow-origins=*');
     expect(args).toContain('--user-data-dir=C:\\tmp\\ud');
     expect(args).toContain('http://127.0.0.1:3000/chart-shot');
+    // 旧単発撮影フラグは使わない(widget 描画前に撮って真っ黒になっていた)。
+    expect(args.some((a) => a.startsWith('--screenshot'))).toBe(false);
+    expect(args.some((a) => a.startsWith('--virtual-time-budget'))).toBe(false);
     // URL は末尾(chrome CLI の位置引数)。
     expect(args[args.length - 1]).toBe('http://127.0.0.1:3000/chart-shot');
   });
