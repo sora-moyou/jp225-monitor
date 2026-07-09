@@ -67,6 +67,33 @@ describe('parseScalpPlan', () => {
     const r = parseScalpPlan('', REF);
     expect(r.ok).toBe(false);
   });
+
+  it('direction:"none"(見送り)は ok:true・価格欠落は不正としない', () => {
+    // rationale + refPrice のみ(価格フィールドなし)でも見送りとして正当。
+    const r = parseScalpPlan(JSON.stringify({ direction: 'none', rationale: '良い場面なし。様子見。' }), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.plan.rationale).toContain('様子見');
+      expect(r.plan.refPrice).toBe(REF);   // refPrice は monitor 値で上書き
+      expect(r.plan.limitEntry).toBeUndefined();
+      expect(r.plan.stopEntry).toBeUndefined();
+    }
+  });
+
+  it('direction:"none" は rationale 欠落なら ok:false(見送り理由は必須)', () => {
+    const r = parseScalpPlan(JSON.stringify({ direction: 'none' }), REF);
+    expect(r.ok).toBe(false);
+  });
+
+  it('buy で価格欠落→従来どおり ok:false(none だけ緩和)', () => {
+    // buy/sell は全価格必須のまま。none の緩和が buy に波及しないことを確認。
+    const { limitEntry, ...noLimit } = goodPlan;
+    void limitEntry;
+    const r = parseScalpPlan(JSON.stringify(noLimit), REF);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('price');
+  });
 });
 
 // runScalpPlan: create を注入して tool ループ+parse+再要求を検証(実 API 非依存)。
