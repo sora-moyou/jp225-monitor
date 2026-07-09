@@ -12,10 +12,13 @@ import { loadConfig } from '../configStore.js';
 // TradingView ウィジェット(tv.js + iframe + ローソク描画)はネット依存で 12〜15 秒かかる。
 // 旧方式(--headless --screenshot --virtual-time-budget)は widget が描画される前に撮影して
 // 真っ黒 PNG になっていた。現方式は CDP(Chrome DevTools Protocol)で実時間 window.__chartReady を
-// 待ってから Page.captureScreenshot する。ハードタイムアウトは全体で ~28s。
-const CAPTURE_TIMEOUT_MS = 28000;        // 全体のハードキャップ(launch+ws+ready+settle+shot)
+// 待ってから Page.captureScreenshot する。
+// ユーザー方針=生成優先・遅延許容。遅い TradingView 描画でも撮り切れるよう延長(トレード PC は
+// 撮影が遅いだけで実際には画像生成できていた実績あり=過去に 46948B の PNG が Desktop にあった)。
+// 全体 ~42s / ready ~30s。
+const CAPTURE_TIMEOUT_MS = 42000;        // 全体のハードキャップ(launch+ws+ready+settle+shot)
 const WS_TARGET_TIMEOUT_MS = 10000;      // /json/list で page ターゲット(ws URL)を得るまでの上限
-const CHART_READY_TIMEOUT_MS = 18000;    // window.__chartReady が立つまでの上限(実時間)
+const CHART_READY_TIMEOUT_MS = 30000;    // window.__chartReady が立つまでの上限(実時間)
 const READY_POLL_INTERVAL_MS = 500;      // __chartReady ポーリング間隔
 const SETTLE_AFTER_READY_MS = 1500;      // ready 後の追加待ち(描画確定用)
 const WINDOW = '1280,760';
@@ -203,6 +206,13 @@ export function chromeVersion(chromePath: string): string | null {
 export function buildChromeArgs(url: string, debugPort: number, userDataDir: string): string[] {
   return [
     '--headless=new',
+    // ★可視ウィンドウ対策(Chrome 版依存の保険): 実機で「白紙のウィンドウが出る」報告あり。
+    //   古い Chrome は --headless=new を認識せずヘッドフル起動する / 一部ビルドは new headless でも
+    //   ウィンドウを表示する。どの場合でも画面外へ飛ばして不可視化する(-32000 は Windows の
+    //   「画面外」慣用値)。画面外ウィンドウは最小化と違い描画スロットルされないので撮影は成立する。
+    '--window-position=-32000,-32000',
+    '--no-first-run',
+    '--no-default-browser-check',
     '--disable-gpu',
     '--hide-scrollbars',
     '--force-device-scale-factor=1',

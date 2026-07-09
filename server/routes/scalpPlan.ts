@@ -8,8 +8,14 @@ import { resolvePort } from '../configStore.js';
 // 兄弟アプリ jp225-trade2(AI トレーダー)向け。monitor の LLM を固定のスキャル戦略質問で走らせ、
 // buildMonitorContext + データツール + 既存プロバイダ/キーを再利用して構造化プラン(AiPlan)を返す。
 // v0.7.22: ビジョン対応プロバイダ(Gemini/OpenAI)時は当日チャートのスクリーンショットを添付し、
-// AI が「実際にチャートを見て」方向・指値/逆指値を決められるようにする。撮影失敗/非対応/Chrome 不在は
-// 従来どおりのテキストのみ判断へフォールバックする(既存エンドポイントを決して壊さない)。
+// AI が「実際にチャートを見て」方向・指値/逆指値を決められるようにする。
+//
+// 逐次オンデマンドゲート(ユーザー指定の厳密順序 ①建玉なし確認[trade2]→②画像生成→③画像生成確認→④戦略作成):
+//   チャートを使う設定(vision 対応プロバイダあり かつ SCALP_CHART_VISION 有効)の時は、
+//   このリクエスト内で②新規撮影→③生成確認を行い、③で画像が生成できなければ AI を一切呼ばず見送る。
+//   画像が生成できた時だけ④ buildScalpPlan を呼ぶ(「生成→確認→(OKなら)戦略」)。
+//   一方「チャートを使わない設定」(vision プロバイダ無し / SCALP_CHART_VISION 無効)はゲート対象外=
+//   従来どおり画像なしテキストのみで判断する(既存エンドポイントを決して壊さない)。
 
 const NIKKEI_SYMBOL = 'NIY=F';
 
@@ -31,27 +37,34 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
     const prices = getPrices();
     const price = prices.find(p => p.symbol === symbol)?.price;
 
-    // ── チャートビジョン: 有効 かつ 現在の(利用可能な)先頭プロバイダがビジョン対応の時だけ撮影する。
+    // ── チャートビジョン + 逐次オンデマンドゲート(②生成→③確認→④戦略)。
+    // チャートを使う設定(vision 対応プロバイダあり かつ SCALP_CHART_VISION 有効)の時だけゲートをかける。
     let chartImageDataUrl: string | null = null;
-    if (chartVisionEnabled()) {
-      const vision = firstAvailableVisionProvider();
-      if (!vision) {
-        console.log('[scalp-plan] vision: skip (no vision-capable provider available) → text-only');
-      } else {
-        const shot = await captureChartPng(resolvePort());
-        if (shot.buffer) {
-          chartImageDataUrl = `data:image/png;base64,${shot.buffer.toString('base64')}`;
-          console.log(`[scalp-plan] vision: image attached (${(shot.buffer.length / 1024).toFixed(0)}KB) `
-            + `provider=${vision.name} chrome="${shot.chromeVersion ?? '?'}"`);
-        } else {
-          console.log(`[scalp-plan] vision: capture failed (${shot.reason ?? 'unknown'}) `
-            + `chrome=${shot.chromePath ? 'found' : 'not-found'} → text-only`);
-        }
+    const visionOn = chartVisionEnabled();
+    const vision = visionOn ? firstAvailableVisionProvider() : null;
+    if (visionOn && vision) {
+      // ② 画像生成(オンデマンド新規撮影)。captureChartPng 内の saveShotToDesktop が
+      //    最新1枚を Desktop(kabu- 機なら C:\Users\kabu-\Desktop\jp225-chart-shot.png)へ上書き保存する。
+      const shot = await captureChartPng(resolvePort());
+      // ③ 画像生成確認。生成できなければ AI を一切呼ばず見送る(戦略を作らせない)。
+      if (!shot.buffer) {
+        console.log('[scalp-plan] vision: 画像生成できず → 見送り(AI呼ばない) reason=' + (shot.reason ?? 'unknown'));
+        res.json({ ok: false, error: 'chart-not-generated' });
+        return;
       }
-    } else {
+      // 画像あり → 添付して④戦略作成へ。
+      chartImageDataUrl = `data:image/png;base64,${shot.buffer.toString('base64')}`;
+      console.log(`[scalp-plan] vision: 画像生成OK (${(shot.buffer.length / 1024).toFixed(0)}kB) → 戦略作成 `
+        + `provider=${vision.name}`);
+    } else if (!visionOn) {
+      // チャートを使わない設定(明示的に無効)→ ゲート対象外。テキストのみで判断。
       console.log('[scalp-plan] vision: disabled (SCALP_CHART_VISION=0) → text-only');
+    } else {
+      // vision 対応プロバイダが無い → ゲート対象外。テキストのみで判断。
+      console.log('[scalp-plan] vision: skip (no vision-capable provider available) → text-only');
     }
 
+    // ④ 戦略作成。
     const result = await buildScalpPlan({
       symbol,
       prices,

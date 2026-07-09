@@ -66,6 +66,8 @@ describe('buildChromeArgs', () => {
   it('CDP 撮影に必要なフラグ(リモートデバッグ)と URL/プロファイルを含む', () => {
     const args = buildChromeArgs('http://127.0.0.1:3000/chart-shot', 47821, 'C:\\tmp\\ud');
     expect(args).toContain('--headless=new');
+    // 可視ウィンドウ対策: 画面外配置(Chrome 版依存でヘッドフル/新ヘッドレスがウィンドウを出す場合の保険)。
+    expect(args).toContain('--window-position=-32000,-32000');
     expect(args).toContain('--hide-scrollbars');
     expect(args).toContain('--window-size=1280,760');
     expect(args).toContain('--remote-debugging-port=47821');
