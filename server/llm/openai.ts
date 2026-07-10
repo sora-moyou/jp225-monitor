@@ -74,6 +74,41 @@ function isAvailable(p: ProviderState): boolean {
   return p.client !== null && Date.now() >= p.circuitOpenUntil;
 }
 
+// ─── APIキーの実効性テスト(ライブ ping) ───
+// 「設定済み(=キー文字列がある)」と「実際に有効(=そのキーで叩ける)」は別問題なので、
+// プロバイダごとに1トークンだけの極小 chat リクエストを投げてキーの有効性を確認する。
+// 検知/アラート/チャットのロジックには一切触れない、設定画面専用の診断機能。
+export interface KeyTestResult { name: string; ok: boolean; notset?: boolean; error?: string; }
+
+/** client を持つプロバイダ状態に対し、1トークンの ping を投げて有効性を判定する(テスト可能な純ヘルパ)。
+ *  client が無ければ notset。成功で ok:true。失敗はエラーメッセージ(300字まで)を返す。 */
+export async function testProviderState(
+  p: { config: LLMProvider; client: OpenAI | null } | undefined,
+  name: string,
+): Promise<KeyTestResult> {
+  if (!p || !p.client) return { name, ok: false, notset: true };   // キー未設定/プレースホルダ
+  try {
+    await p.client.chat.completions.create({
+      model: p.config.chatModel,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+    });
+    return { name, ok: true };
+  } catch (e) {
+    return { name, ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
+  }
+}
+
+/** 指定プロバイダのキーが実際に有効か、1トークンの ping で確認する。キー未設定は notset。 */
+export async function testProvider(name: string): Promise<KeyTestResult> {
+  return testProviderState(providers.find(x => x.config.name === name), name);
+}
+
+/** 全プロバイダのキー有効性を並列に ping で確認する(LLM_PROVIDERS 順)。各プロバイダ1トークン消費。 */
+export async function testAllProviders(): Promise<KeyTestResult[]> {
+  return Promise.all(LLM_PROVIDERS.map(cfg => testProvider(cfg.name)));
+}
+
 // ─── ビジョン(チャート画像入力)対応判定 ───
 // Gemini(OpenAI 互換エンドポイント)と OpenAI(gpt-4o 系)はマルチモーダル対応。
 // Groq(llama-3.3-70b, テキスト専用)は非対応。プロバイダ名で判定する(chatModel も参照)。

@@ -224,13 +224,14 @@ export interface LLMProvider {
 }
 
 export const LLM_PROVIDERS: LLMProvider[] = [
-  // 1. Gemini (品質高、無料、日次1500回)
+  // 1. Gemini (品質高、無料)。モデルは "latest" エイリアスで固定=新版に自動追従し、
+  //    バージョン固定モデルの廃止(例: gemini-2.5-flash 廃止→404)で壊れないようにする。
   {
     name: 'gemini',
     envVar: 'GEMINI_API_KEY',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-    model: 'gemini-2.5-flash-lite',
-    chatModel: 'gemini-2.5-flash',
+    model: 'gemini-flash-latest',       // 旧 gemini-2.5-flash-lite(廃止)。latest=現行GA Flash に追従。
+    chatModel: 'gemini-flash-latest',   // 旧 gemini-2.5-flash(廃止→404)。scalp-plan/chat が使用。
   },
   // 2. Groq (高速、無料、日次14400回 — 実質無制限)
   {

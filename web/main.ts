@@ -158,6 +158,8 @@ initSettingsModal({
   exportResult:   document.getElementById('settings-export-result') as HTMLElement,
   replaceDbBtn:   document.getElementById('settings-replace-db') as HTMLButtonElement,
   replaceResult:  document.getElementById('settings-replace-result') as HTMLElement,
+  testKeysBtn:    document.getElementById('settings-test-keys') as HTMLButtonElement,
+  testResult:     document.getElementById('settings-test-result') as HTMLElement,
 });
 
 // 詳細パラメータ モーダル (定期ポーリング / クールダウン等。設定とは別ボタン 🎛️)

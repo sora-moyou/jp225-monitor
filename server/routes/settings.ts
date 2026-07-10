@@ -5,7 +5,7 @@ import {
   resolveAllNumericParams, PARAM_BOUNDS,
   type UserConfig,
 } from '../configStore.js';
-import { reloadProviders, getProviderStatus } from '../llm/openai.js';
+import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
 import { restartNewsLoop } from '../loops/newsLoop.js';
 import { setCooldownMs } from '../alertCooldown.js';
@@ -41,6 +41,17 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     providers: getProviderStatus(),
     configFile: configFilePath(),
   });
+}
+
+// GET /api/settings/test — 各プロバイダのAPIキーが「実際に有効か」を1トークンの ping で確認する。
+// 「設定済み」と「有効」は別なので、キーが本当に通るかを診断する設定画面専用エンドポイント。
+export async function testSettingsHandler(_req: Request, res: Response): Promise<void> {
+  try {
+    const results = await testAllProviders();
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 interface SettingsBody {

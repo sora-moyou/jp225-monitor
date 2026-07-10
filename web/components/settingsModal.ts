@@ -95,6 +95,13 @@ export interface SettingsElements {
   exportResult: HTMLElement;
   replaceDbBtn: HTMLButtonElement;
   replaceResult: HTMLElement;
+  testKeysBtn: HTMLButtonElement;
+  testResult: HTMLElement;
+}
+
+interface KeyTestResponse {
+  results?: Array<{ name: string; ok: boolean; notset?: boolean; error?: string }>;
+  error?: string;
 }
 
 export function initSettingsModal(el: SettingsElements): void {
@@ -339,6 +346,37 @@ export function initSettingsModal(el: SettingsElements): void {
     } catch (err) {
       setReplaceResult('err', `❌ 失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`);
       el.replaceDbBtn.disabled = false;
+    }
+  });
+
+  // --- APIキーの実効性検証(各プロバイダへ1トークンの ping。保存済みキーが対象) ---
+  el.testKeysBtn.addEventListener('click', async () => {
+    el.testKeysBtn.disabled = true;
+    const originalText = el.testKeysBtn.textContent ?? 'キーを検証';
+    el.testKeysBtn.textContent = '検証中…';
+    el.testResult.className = 'update-result';
+    el.testResult.innerHTML = '検証中…';
+    try {
+      const res = await fetch(apiUrl('/api/settings/test'));
+      const data = await res.json() as KeyTestResponse;
+      if (!res.ok || data.error) {
+        el.testResult.className = 'update-result err';
+        el.testResult.innerHTML = `❌ 検証失敗: ${escapeHtml(data.error ?? `HTTP ${res.status}`)}`;
+        return;
+      }
+      const lines = (data.results ?? []).map(r => {
+        if (r.notset) return `<div>⚪ ${escapeHtml(r.name)}: 未設定</div>`;
+        if (r.ok) return `<div>✅ ${escapeHtml(r.name)}: 有効</div>`;
+        return `<div>❌ ${escapeHtml(r.name)}: ${escapeHtml(r.error ?? 'エラー')}</div>`;
+      });
+      el.testResult.className = 'update-result';
+      el.testResult.innerHTML = lines.length > 0 ? lines.join('') : '(プロバイダなし)';
+    } catch (err) {
+      el.testResult.className = 'update-result err';
+      el.testResult.innerHTML = `❌ 検証失敗: ${escapeHtml(err instanceof Error ? err.message : 'unknown')}`;
+    } finally {
+      el.testKeysBtn.disabled = false;
+      el.testKeysBtn.textContent = originalText;
     }
   });
 

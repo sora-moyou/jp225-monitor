@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { formatCrossAsset, explain, selectNewsPool } from './openai.js';
+import { formatCrossAsset, explain, selectNewsPool, testProviderState } from './openai.js';
+import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
 import type { NewsItem } from '../types.js';
 
@@ -31,6 +32,41 @@ describe('selectNewsPool sinceFloor (①: 直前の急変以降)', () => {
     const since = now - 20 * 60_000;   // 20分前以降のみ
     const pool = selectNewsPool(items, now, since);
     expect(pool.map(n => n.id)).toEqual(['new']);
+  });
+});
+
+describe('testProviderState (APIキー実効性 ping)', () => {
+  const cfg: LLMProvider = {
+    name: 'fake', envVar: 'FAKE_KEY', baseURL: undefined,
+    model: 'm', chatModel: 'fake-chat-model',
+  };
+  // OpenAI クライアントの chat.completions.create だけを持つ最小フェイク。
+  const fakeClient = (create: (params: unknown) => Promise<unknown>) =>
+    ({ chat: { completions: { create } } } as any);
+
+  it('client が ping に成功 → { ok: true }', async () => {
+    const calls: unknown[] = [];
+    const p = { config: cfg, client: fakeClient(async (params) => { calls.push(params); return { choices: [] }; }) };
+    const r = await testProviderState(p, 'fake');
+    expect(r).toEqual({ name: 'fake', ok: true });
+    // 極小 ping (1トークン・正しいモデル) で叩いている
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ model: 'fake-chat-model', max_tokens: 1 });
+  });
+
+  it('client が 401 を投げる → { ok: false, error にメッセージ }', async () => {
+    const p = { config: cfg, client: fakeClient(async () => { throw new Error('401 Unauthorized: invalid api key'); }) };
+    const r = await testProviderState(p, 'fake');
+    expect(r.ok).toBe(false);
+    expect(r.notset).toBeUndefined();
+    expect(r.error).toContain('401');
+  });
+
+  it('client 無し(キー未設定/プレースホルダ) → { ok: false, notset: true }', async () => {
+    const p = { config: cfg, client: null };
+    expect(await testProviderState(p, 'fake')).toEqual({ name: 'fake', ok: false, notset: true });
+    // プロバイダ状態自体が無い場合も notset
+    expect(await testProviderState(undefined, 'gone')).toEqual({ name: 'gone', ok: false, notset: true });
   });
 });
 

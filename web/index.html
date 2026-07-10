@@ -64,6 +64,12 @@
         <input type="password" id="key-tavily" autocomplete="off" />
       </div>
 
+      <div class="setting-row">
+        <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
+        <div id="settings-test-result" class="update-result"></div>
+        <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。</div>
+      </div>
+
       <fieldset class="settings-section">
         <legend>更新</legend>
         <div class="version-row">
