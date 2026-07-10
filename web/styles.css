@@ -131,7 +131,7 @@ body {
 /* [星][価格][価格差][説明][スコア] を Grid で縦に揃える。星を独立カラムにして
    ★★/★/無星でも価格の桁位置がズレない(旧: 星と価格が同じ72px枠で★★が溢れ価格が次行へ折返し崩れていた)。
    align-items:start=星/価格/価格差/スコアは先頭行で縦揃え、長い説明はその列内で折り返す。 */
-.levels-row { display: grid; grid-template-columns: 32px 72px 52px minmax(0, 1fr) 32px; gap: 8px; align-items: start; padding: 1px 4px; }
+.levels-row { display: grid; grid-template-columns: 30px 52px 34px minmax(0, 1fr) 30px; gap: 4px; align-items: start; padding: 1px 4px; }
 .levels-row .lv-star { text-align: left; white-space: nowrap; }
 .levels-row .lv-price { text-align: right; white-space: nowrap; }
 /* dist / label は薄くせず、その行の価格と同じ色（行の color を継承）にする。 */
