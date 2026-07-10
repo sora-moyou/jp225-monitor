@@ -522,6 +522,17 @@ body {
   z-index: 1;
 }
 .modal-content h2 { margin: 0 0 8px; font-size: 16px; }
+/* モーダル上部固定バー: タイトル + 閉じる/保存 を最上部に置き、スクロールしても常に見えるよう sticky。
+   modal-content の padding(20px 24px)を負マージンで打ち消して全幅に張り、中身が上や横から覗かないようにする。 */
+.modal-topbar {
+  position: sticky; top: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: -20px -24px 12px; padding: 14px 24px 10px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+}
+.modal-topbar h2 { margin: 0; }
+.modal-topbar .modal-actions { margin-top: 0; flex-shrink: 0; }
 .modal-hint { font-size: 12px; color: var(--muted); margin: 4px 0 14px; line-height: 1.5; }
 /* v0.3.37: 終了オプション (完全終了チェックボックス) */
 .exit-check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }

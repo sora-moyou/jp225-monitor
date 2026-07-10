@@ -24,7 +24,13 @@
   <div id="settings-modal" class="modal hidden">
     <div id="settings-backdrop" class="modal-backdrop"></div>
     <div class="modal-content">
-      <h2>API キー設定</h2>
+      <div class="modal-topbar">
+        <h2>API キー設定</h2>
+        <div class="modal-actions">
+          <button type="button" id="settings-close" class="btn-secondary">閉じる</button>
+          <button type="button" id="settings-save" class="btn-primary">保存</button>
+        </div>
+      </div>
       <p class="modal-hint">
         最低1つ設定すれば動作。複数設定で 429 時に自動フォールバック。<br>
         <strong>保存先:</strong> <code id="config-file-path">~/.jp225-monitor/config.json</code> (ローカルのみ、送信されません)
@@ -109,11 +115,6 @@
       </fieldset>
 
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
-
-      <div class="modal-actions">
-        <button type="button" id="settings-close" class="btn-secondary">閉じる</button>
-        <button type="button" id="settings-save" class="btn-primary">保存</button>
-      </div>
     </div>
   </div>
 
@@ -121,7 +122,13 @@
   <div id="params-modal" class="modal hidden">
     <div id="params-backdrop" class="modal-backdrop"></div>
     <div class="modal-content">
-      <h2>詳細パラメータ</h2>
+      <div class="modal-topbar">
+        <h2>詳細パラメータ</h2>
+        <div class="modal-actions">
+          <button type="button" id="params-close" class="btn-secondary">閉じる</button>
+          <button type="button" id="params-save" class="btn-primary">保存</button>
+        </div>
+      </div>
       <fieldset class="settings-section">
         <legend>定期 API ポーリング / アラート</legend>
         <label>
@@ -227,10 +234,6 @@
         </label>
       </fieldset>
       <div id="params-status" class="settings-status"></div>
-      <div class="modal-actions">
-        <button type="button" id="params-close" class="btn-secondary">閉じる</button>
-        <button type="button" id="params-save" class="btn-primary">保存</button>
-      </div>
     </div>
   </div>
 
@@ -238,12 +241,14 @@
   <div id="alerts-history-modal" class="modal hidden">
     <div id="alerts-history-backdrop" class="modal-backdrop"></div>
     <div class="modal-content modal-content-wide">
-      <h2>アラート履歴・的中率</h2>
+      <div class="modal-topbar">
+        <h2>アラート履歴・的中率</h2>
+        <div class="modal-actions">
+          <button type="button" id="alerts-history-close" class="btn-secondary">閉じる</button>
+        </div>
+      </div>
       <div id="alerts-history-summary" class="ah-summary"></div>
       <div id="alerts-history-body" class="ah-body"></div>
-      <div class="modal-actions">
-        <button type="button" id="alerts-history-close" class="btn-secondary">閉じる</button>
-      </div>
     </div>
   </div>
 
