@@ -29,6 +29,18 @@ interface ProviderState {
 
 const PAUSE_LADDER_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3600_000, 8 * 3600_000];
 const CONSECUTIVE_WINDOW_MS = 10 * 60_000;
+// 一過性エラー(5xx / タイムアウト / ネットワーク)の短時間ポーズ。429(quota)の長い ladder とは別扱い:
+// 503 等はすぐ復帰するので、そのプロバイダを少しだけ休ませて次に回す(8時間も止めない)。
+const TRANSIENT_PAUSE_MS = 30_000;
+
+/** LLM エラーを分類。'quota'=429/枯渇(長 ladder), 'transient'=5xx/timeout/network(短ポーズ),
+ *  null=恒久/設定エラー(401/404 等=フォールバックせず即 throw=誤設定を隠さない)。
+ *  quota/transient はどちらも「次プロバイダへフォールバック」する(1つが落ちても他で継続)。 */
+export function classifyLLMError(msg: string): 'quota' | 'transient' | null {
+  if (/429|rate[_ ]limit|exhausted|quota/i.test(msg)) return 'quota';
+  if (/\b50[0-4]\b|\b52\d\b|timeout|timed out|aborted|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|network|fetch failed|overloaded|temporarily unavailable/i.test(msg)) return 'transient';
+  return null;
+}
 
 function buildProvider(config: LLMProvider): ProviderState {
   const name = config.name as 'gemini' | 'groq' | 'openai';
@@ -134,20 +146,32 @@ export function firstAvailableVisionProvider(): { name: string; chatModel: strin
   return null;
 }
 
+// エラーに応じてプロバイダを一時停止し「次へフォールバックすべきか」を返す。
+//   quota(429)     → 連続回数に応じた長い ladder(枠回復まで待つ)+ フォールバック
+//   transient(5xx等)→ 短い固定ポーズ(すぐ復帰想定)+ フォールバック
+//   それ以外(401/404)→ false(=フォールバックせず即 throw。誤設定を握り潰さない)
 function tripCircuit(p: ProviderState, err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  if (!/429|rate[_ ]limit|exhausted/i.test(msg)) return false;
+  const kind = classifyLLMError(msg);
+  if (!kind) return false;
   const now = Date.now();
-  if (now - p.lastFailAt < CONSECUTIVE_WINDOW_MS) {
-    p.consecutiveFails = Math.min(p.consecutiveFails + 1, PAUSE_LADDER_MS.length - 1);
+  if (kind === 'quota') {
+    if (now - p.lastFailAt < CONSECUTIVE_WINDOW_MS) {
+      p.consecutiveFails = Math.min(p.consecutiveFails + 1, PAUSE_LADDER_MS.length - 1);
+    } else {
+      p.consecutiveFails = 0;
+    }
+    p.lastFailAt = now;
+    const pause = PAUSE_LADDER_MS[p.consecutiveFails]!;
+    p.circuitOpenUntil = now + pause;
+    const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
+    console.warn(`[LLM:${p.config.name}] 429 #${p.consecutiveFails + 1} — paused for ${human}`);
   } else {
-    p.consecutiveFails = 0;
+    // 一過性: ladder を進めず短時間だけ休ませる(枠切れと違い恒久化させない)。
+    p.lastFailAt = now;
+    p.circuitOpenUntil = now + TRANSIENT_PAUSE_MS;
+    console.warn(`[LLM:${p.config.name}] transient (${msg.slice(0, 60)}) — paused ${Math.round(TRANSIENT_PAUSE_MS / 1000)}s → 次へフォールバック`);
   }
-  p.lastFailAt = now;
-  const pause = PAUSE_LADDER_MS[p.consecutiveFails]!;
-  p.circuitOpenUntil = now + pause;
-  const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
-  console.warn(`[LLM:${p.config.name}] 429 #${p.consecutiveFails + 1} — paused for ${human}`);
   return true;
 }
 

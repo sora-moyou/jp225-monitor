@@ -1,8 +1,30 @@
 import { describe, it, expect } from 'vitest';
-import { formatCrossAsset, explain, selectNewsPool, testProviderState } from './openai.js';
+import { formatCrossAsset, explain, selectNewsPool, testProviderState, classifyLLMError } from './openai.js';
 import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
 import type { NewsItem } from '../types.js';
+
+describe('classifyLLMError (5xx/timeout もフォールバック対象に)', () => {
+  it('429/枯渇 → quota(長 ladder)', () => {
+    expect(classifyLLMError('429 Too Many Requests')).toBe('quota');
+    expect(classifyLLMError('Resource has been exhausted')).toBe('quota');
+    expect(classifyLLMError('rate_limit exceeded')).toBe('quota');
+  });
+  it('5xx / タイムアウト / ネットワーク → transient(短ポーズ+フォールバック)', () => {
+    expect(classifyLLMError('503 status code (no body)')).toBe('transient');
+    expect(classifyLLMError('500 Internal Server Error')).toBe('transient');
+    expect(classifyLLMError('529 overloaded')).toBe('transient');
+    expect(classifyLLMError('aborted after 55000ms')).toBe('transient');
+    expect(classifyLLMError('request timed out')).toBe('transient');
+    expect(classifyLLMError('ECONNRESET')).toBe('transient');
+    expect(classifyLLMError('fetch failed')).toBe('transient');
+  });
+  it('401/404/400 等の恒久・設定エラー → null(フォールバックせず即 throw)', () => {
+    expect(classifyLLMError('401 Incorrect API key provided')).toBeNull();
+    expect(classifyLLMError('404 status code (no body)')).toBeNull();
+    expect(classifyLLMError('400 Bad Request: invalid model')).toBeNull();
+  });
+});
 
 describe('formatCrossAsset', () => {
   it('returns a "no linkage" line when there are no movers', () => {
