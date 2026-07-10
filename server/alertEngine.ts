@@ -40,7 +40,7 @@ export function _resetMaCrossDedup(): void { lastMaCrossKeys = new Set(); }
 // ①乖離ゲート: |乖離| が小さい(MA上をなぞっているだけ/フラットMAのチョップ)ものは出さない。
 //   監査の実値分布(本物=0.11/0.20/0.48% vs ノイズ=0.00〜0.04%)から 0.08% で明瞭に分離できる。
 // ②方向別クールダウン: 同種・同方向の連発を抑制(グランビルは従来 un-gated だったが監査により導入)。
-const L2_MIN_DEV_PCT = 0.08;
+const L2_MIN_DEV_PCT = 0.13;   // 0.08→0.13(ユーザー: 頻度が多い→条件を少し強く。0.08-0.12%の弱い乖離を除外)
 const L2_COOLDOWN_MS = 15 * 60_000;
 const lastL2Emit = new Map<string, number>();
 export function _resetL2Cooldown(): void { lastL2Emit.clear(); }
