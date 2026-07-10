@@ -780,7 +780,7 @@ export interface AiPlan {
 export type ScalpPlanResult = { ok: true; plan: AiPlan } | { ok: false; error: string };
 
 // 固定のスキャル戦略質問(ユーザー指定・日本語)。
-const SCALP_QUESTION =
+export const SCALP_QUESTION =
   'あなたが考える現在のスキャル戦略を教えてください。' +
   '①最初に買い/売りのどちらかを判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい) ' +
   '②指値と逆指値の両方の新規注文を作り、先に約定した方で取引します ' +
@@ -789,18 +789,25 @@ const SCALP_QUESTION =
   '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。' +
   'ゆえに初期の損切り(LC)幅は原則45〜75円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)。' +
   '損切りは直近の節目/スイングの外側に置き、狭すぎ(往復ビンタ)・広すぎ(ドカン)を避ける。' +
-  '構造上どうしても必要な場合のみ95円まで許容し、その理由を rationale に明記する。95円を超える損切りは出さない。';
+  '構造上どうしても必要な場合のみ95円まで許容し、その理由を rationale に明記する。95円を超える損切りは出さない。' +
+  'この LC 上限(≤95円)は、指値レッグ・逆指値レッグ それぞれ独立に満たすこと。' +
+  '逆指値(ブレイク追随)の新規は現在値/節目から離れるほど LC が広がりやすい。' +
+  '逆指値レッグの LC が95円を超える場合は、(a)逆指値の新規価格を SL 側に近づけて LC≤95 に収めるか、' +
+  '(b)逆指値レッグを出さず「指値のみ」で取引する(stopEntry と stopLossForStop を出さない)。' +
+  '対称に、指値レッグが構造上どうしても95円超になるなら、指値レッグを省いて逆指値のみにしてもよい。' +
+  'どちらのレッグも95円超の LC は絶対に出さない。両レッグとも95円以内に収まらなければ direction:"none" で見送ること。';
 
-const SCALP_SYSTEM_PROMPT = `あなたは日経225先物(NIY=F)のスキャルピングを専門とするトレーダーです。
+export const SCALP_SYSTEM_PROMPT = `あなたは日経225先物(NIY=F)のスキャルピングを専門とするトレーダーです。
 手元の【市場の現状】(現在価格・テクニカル節目・直近アラート・本日OHLC・ニュース)と、
 利用可能なデータツール(explain_move / query_alerts / price_history / web_search)を必要に応じて使い、
 現在の相場に対する具体的なスキャルのエントリー計画を1つ立ててください。
 
 制約:
 - direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。
-- buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規として、両方の価格を出す。
-- それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。
+- buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/逆指値のみ)でもよい。
+- それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、逆指値レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は原則45〜75円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復ビンタ)・広すぎ(ドカン)を避ける。構造上どうしても必要な場合のみ95円まで許容し、その理由を rationale に明記する。95円を超える損切りは出さない。
+- ★この LC 上限(≤95円)は 指値レッグ・逆指値レッグ それぞれ独立に 満たすこと。逆指値(ブレイク追随)は現在値/節目から離れるほど LC が広がりやすい。逆指値レッグの LC が95円を超えるなら、(a)逆指値の新規価格を SL 側に近づけて LC≤95 に収めるか、(b)逆指値レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上95円超になるなら指値レッグを省いて逆指値のみにしてもよい。どちらのレッグも95円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
 - すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
 - rationale は日本語で判断根拠を簡潔に述べる。`;
 
@@ -809,10 +816,10 @@ function scalpJsonInstruction(refPrice: number): string {
   return `最終的な回答は、次のスキーマに厳密に一致する JSON オブジェクトのみを出力してください(前後の説明文・コードフェンス・マークダウンは一切付けない)。\n` +
     `{\n` +
     `  "direction": "buy" | "sell" | "none",  // none=見送り(良い場面が無い)。none の時は下の価格4つは不要(rationale と refPrice のみ)\n` +
-    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none の時は省略可\n` +
-    `  "stopEntry": number,         // 逆指値(ブレイク側の新規)。none の時は省略可\n` +
-    `  "stopLossForLimit": number,  // 指値約定時の損切り逆指値(ストップ幅+5円・初期LC幅45〜75円/構造上必要時のみ95円まで)。none の時は省略可\n` +
-    `  "stopLossForStop": number,   // 逆指値約定時の損切り逆指値(ストップ幅+5円・初期LC幅45〜75円/構造上必要時のみ95円まで)。none の時は省略可\n` +
+    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none または指値レッグ不採用(逆指値のみ)の時は省略(stopLossForLimit と対で省く)\n` +
+    `  "stopEntry": number,         // 逆指値(ブレイク側の新規)。none または逆指値レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
+    `  "stopLossForLimit": number,  // 指値約定時の損切り逆指値(ストップ幅+5円・LC幅45〜75円/構造上必要時のみ≤95円・レッグ独立で95円超は出さない)。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
+    `  "stopLossForStop": number,   // 逆指値約定時の損切り逆指値(ストップ幅+5円・LC幅45〜75円/構造上必要時のみ≤95円・レッグ独立で95円超は出さない)。逆指値レッグを出さない/none の時は stopEntry と対で省略\n` +
     `  "rationale": string,         // 判断理由(日本語)。none の時は見送り理由\n` +
     `  "refPrice": number           // 計画時に見た現在値(${refPrice})\n` +
     `}\n` +
@@ -851,14 +858,34 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   const stopEntry = num(o.stopEntry);
   const stopLossForLimit = num(o.stopLossForLimit);
   const stopLossForStop = num(o.stopLossForStop);
-  if (limitEntry === null || stopEntry === null || stopLossForLimit === null || stopLossForStop === null) {
-    return { ok: false, error: 'invalid price field(s)' };
+  // ★レッグ単位の検証: 指値レッグ=limitEntry+stopLossForLimit の対、逆指値レッグ=stopEntry+stopLossForStop の対。
+  //   各レッグは「両方あり」か「両方なし」のみ有効(片方だけは不整合=invalid)。少なくとも1レッグあれば ok。
+  //   LC≤95 等の数値強制はここではしない(trade2 側の責務)。ここは幾何的なレッグ対の整合のみ。
+  const hasLimitLeg = limitEntry !== null && stopLossForLimit !== null;
+  const hasStopLeg = stopEntry !== null && stopLossForStop !== null;
+  // 片側だけ埋まっているレッグ(対の不整合)は不正。
+  if ((limitEntry !== null) !== (stopLossForLimit !== null)) {
+    return { ok: false, error: 'invalid limit leg (limitEntry/stopLossForLimit must be paired)' };
+  }
+  if ((stopEntry !== null) !== (stopLossForStop !== null)) {
+    return { ok: false, error: 'invalid stop leg (stopEntry/stopLossForStop must be paired)' };
+  }
+  // 両レッグとも欠落(direction≠none なのに価格皆無)は不正。
+  if (!hasLimitLeg && !hasStopLeg) {
+    return { ok: false, error: 'invalid price field(s): at least one leg required' };
   }
   // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
-  return {
-    ok: true,
-    plan: { direction: o.direction, limitEntry, stopEntry, stopLossForLimit, stopLossForStop, rationale, refPrice },
-  };
+  // 存在するレッグの価格のみ plan に入れる(欠落レッグは省略=undefined)。
+  const plan: AiPlan = { direction: o.direction, rationale, refPrice };
+  if (hasLimitLeg) {
+    plan.limitEntry = limitEntry;
+    plan.stopLossForLimit = stopLossForLimit;
+  }
+  if (hasStopLeg) {
+    plan.stopEntry = stopEntry;
+    plan.stopLossForStop = stopLossForStop;
+  }
+  return { ok: true, plan };
 }
 
 /** マルチモーダルなユーザメッセージ content を組み立てる。画像があればテキスト+image_url の配列、

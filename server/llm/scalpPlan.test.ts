@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   parseScalpPlan, runScalpPlan, buildScalpPlan, isLLMEnabled,
+  SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
   type ToolHandlers, type AiPlan,
 } from './openai.js';
 
@@ -86,13 +87,70 @@ describe('parseScalpPlan', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('buy で価格欠落→従来どおり ok:false(none だけ緩和)', () => {
-    // buy/sell は全価格必須のまま。none の緩和が buy に波及しないことを確認。
+  it('指値レッグの片側だけ(limitEntry 欠落・stopLossForLimit 残)→ok:false(対の不整合)', () => {
+    // レッグは対で出す規約: 片方だけは不正。
     const { limitEntry, ...noLimit } = goodPlan;
     void limitEntry;
     const r = parseScalpPlan(JSON.stringify(noLimit), REF);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('price');
+    if (!r.ok) expect(r.error).toContain('limit leg');
+  });
+
+  it('逆指値レッグの片側だけ(stopEntry 欠落・stopLossForStop 残)→ok:false(対の不整合)', () => {
+    const { stopEntry, ...noStop } = goodPlan;
+    void stopEntry;
+    const r = parseScalpPlan(JSON.stringify(noStop), REF);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('stop leg');
+  });
+
+  it('指値のみプラン(逆指値レッグ欠落)→ok:true・plan に limit だけ入る', () => {
+    // stopEntry / stopLossForStop を省いた「指値のみ」。逆指値レッグの LC が95円超の時の回避策。
+    const { stopEntry, stopLossForStop, ...limitOnly } = goodPlan;
+    void stopEntry; void stopLossForStop;
+    const r = parseScalpPlan(JSON.stringify(limitOnly), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopLossForLimit).toBe(38150);
+      expect(r.plan.stopEntry).toBeUndefined();
+      expect(r.plan.stopLossForStop).toBeUndefined();
+      expect(r.plan.refPrice).toBe(REF);
+    }
+  });
+
+  it('逆指値のみプラン(指値レッグ欠落)→ok:true・plan に stop だけ入る', () => {
+    const { limitEntry, stopLossForLimit, ...stopOnly } = goodPlan;
+    void limitEntry; void stopLossForLimit;
+    const r = parseScalpPlan(JSON.stringify(stopOnly), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.stopEntry).toBe(38350);
+      expect(r.plan.stopLossForStop).toBe(38300);
+      expect(r.plan.limitEntry).toBeUndefined();
+      expect(r.plan.stopLossForLimit).toBeUndefined();
+      expect(r.plan.refPrice).toBe(REF);
+    }
+  });
+
+  it('両レッグありは従来どおり ok:true(全価格が入る)', () => {
+    const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopEntry).toBe(38350);
+      expect(r.plan.stopLossForLimit).toBe(38150);
+      expect(r.plan.stopLossForStop).toBe(38300);
+    }
+  });
+
+  it('buy で両レッグとも欠落(価格皆無)→ok:false', () => {
+    // direction≠none なのに価格が1つも無いのは不正。
+    const r = parseScalpPlan(JSON.stringify({ direction: 'buy', rationale: '理由' }), REF);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('at least one leg');
   });
 });
 
@@ -144,6 +202,19 @@ describe('runScalpPlan (create 注入)', () => {
     const plan = await runScalpPlan(create as any, 'sys', 'user', [{}], { query_alerts: data }, REF);
     expect(plan.direction).toBe('buy');
     expect(data).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('scalp プロンプト文言(レッグ独立95円・指値のみ回避)', () => {
+  it('SCALP_QUESTION にレッグ独立の LC 上限と指値のみ回避が含まれる', () => {
+    expect(SCALP_QUESTION).toContain('それぞれ独立');
+    expect(SCALP_QUESTION).toContain('95');
+    expect(SCALP_QUESTION).toContain('指値のみ');
+  });
+  it('SCALP_SYSTEM_PROMPT にレッグ独立の LC 上限とレッグ省略の指針が含まれる', () => {
+    expect(SCALP_SYSTEM_PROMPT).toContain('それぞれ独立');
+    expect(SCALP_SYSTEM_PROMPT).toContain('指値のみ');
+    expect(SCALP_SYSTEM_PROMPT).toContain('逆指値のみ');
   });
 });
 
