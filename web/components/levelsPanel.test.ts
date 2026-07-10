@@ -32,6 +32,21 @@ describe('buildLevelsHtml — 水準パネルのグレースフル劣化', () =>
     expect(html).not.toContain('取得不能');
   });
 
+  it('星は独立カラム(lv-star)にして価格(lv-price)と分離する(縦揃えの前提・★★でも桁がズレない)', () => {
+    const r = result({
+      up: [lvl(67200, { tier: 2, labels: ['合流'] })],    // ★★
+      down: [lvl(66800, { tier: 1, labels: ['節目'] })],  // ★
+    });
+    const html = buildLevelsHtml(r, 67000, false, '');
+    expect(html).toContain('<span class="lv-star">★★</span>');
+    expect(html).toContain('<span class="lv-star">★</span>');
+    expect(html).toContain('<span class="lv-price">67,200</span>');
+    expect(html).toContain('<span class="lv-price">66,800</span>');
+    // 星が価格スパンに混入していない(旧バグ: '★★ 67,200' が同枠で桁ズレ)。
+    expect(html).not.toContain('★★67,200');
+    expect(html).not.toContain('★★ 67,200');
+  });
+
   it('現値 stale: 水準行は残し、現値行だけ「現値 取得不能」に置換(蓄積中…にはしない)', () => {
     const r = result({ up: [lvl(67200)], down: [lvl(66800)] });
     const html = buildLevelsHtml(r, 67000, true, '');   // stale=true(凍結値でも)

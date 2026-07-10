@@ -49,11 +49,14 @@ function rowHtml(l: Level, cur: number): string {
   if (l.strong) cls.push('strong');
   if (l.tier === 2) cls.push('confluence');
   if (l.reversalLine) cls.push('reversal');
-  const star = l.tier === 2 ? '★★ ' : l.tier === 1 ? '★ ' : '';
+  const star = l.tier === 2 ? '★★' : l.tier === 1 ? '★' : '';
   const flag = l.reversalLine ? ' ⚑転換' : '';
   const labels = l.labels.join('・');
+  // 星は独立カラム(lv-star)にして価格の桁位置がズレないようにする。行は CSS Grid で
+  // [星][価格][価格差][説明][スコア] を縦に揃える(styles.css .levels-row)。
   return `<div class="${cls.join(' ')}">` +
-    `<span class="lv-price">${star}${fmtPrice(l.price)}</span>` +
+    `<span class="lv-star">${star}</span>` +
+    `<span class="lv-price">${fmtPrice(l.price)}</span>` +
     `<span class="lv-dist">${fmtDist(dist)}</span>` +
     `<span class="lv-label">${labels}${flag}</span>` +
     `<span class="lv-score">${l.score.toFixed(1)}</span></div>`;

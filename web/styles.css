@@ -128,15 +128,19 @@ body {
 .levels-panel { overflow-y: auto; }
 .levels-meta { font-size: 11px; color: var(--muted); padding: 0 4px 2px; }
 .levels-body { font-variant-numeric: tabular-nums; font-size: 13px; }
-.levels-row { display: flex; gap: 8px; padding: 1px 4px; }
-.levels-row .lv-price { width: 72px; text-align: right; }
+/* [星][価格][価格差][説明][スコア] を Grid で縦に揃える。星を独立カラムにして
+   ★★/★/無星でも価格の桁位置がズレない(旧: 星と価格が同じ72px枠で★★が溢れ価格が次行へ折返し崩れていた)。
+   align-items:start=星/価格/価格差/スコアは先頭行で縦揃え、長い説明はその列内で折り返す。 */
+.levels-row { display: grid; grid-template-columns: 32px 72px 52px minmax(0, 1fr) 32px; gap: 8px; align-items: start; padding: 1px 4px; }
+.levels-row .lv-star { text-align: left; white-space: nowrap; }
+.levels-row .lv-price { text-align: right; white-space: nowrap; }
 /* dist / label は薄くせず、その行の価格と同じ色（行の color を継承）にする。 */
-.levels-row .lv-dist { width: 48px; text-align: right; }
-.levels-row .lv-label { font-size: 12px; }
+.levels-row .lv-dist { text-align: right; white-space: nowrap; }
+.levels-row .lv-label { font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
 .levels-row.strong .lv-price { font-weight: bold; }
 .levels-row.confluence { color: #f0c674; }   /* 合流帯(★★): 強調色 */
 .levels-row.confluence .lv-price { font-weight: bold; }
-.levels-row .lv-score { margin-left: auto; color: var(--muted); font-size: 11px; opacity: 0.75; }
+.levels-row .lv-score { text-align: right; color: var(--muted); font-size: 11px; opacity: 0.75; }
 .levels-row.reversal { color: #ffb454; }   /* 転換ライン: 明度を上げて視認性UP */
 .levels-cur { padding: 2px 4px; color: #58a6ff; font-size: 12px; }
 .levels-cur-stale { color: var(--down, #f85149); }   /* 現値 取得不能(socket 停止/stale)。水準行は残す。 */
