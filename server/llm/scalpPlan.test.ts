@@ -216,6 +216,12 @@ describe('scalp プロンプト文言(レッグ独立95円・指値のみ回避)
     expect(SCALP_SYSTEM_PROMPT).toContain('指値のみ');
     expect(SCALP_SYSTEM_PROMPT).toContain('逆指値のみ');
   });
+  it('SCALP_SYSTEM_PROMPT にギャップ戦略の検証済み知見(優位性ゼロ・提案しない)が含まれる', () => {
+    // 9年バックテストでギャップ起点戦略(フィル/反転/継続)は全否定。AIが寄りでギャップ狙いを提案しないためのガードレール。
+    expect(SCALP_SYSTEM_PROMPT).toContain('ギャップ');
+    expect(SCALP_SYSTEM_PROMPT).toContain('検証済みの知見');
+    expect(SCALP_SYSTEM_PROMPT).toContain('提案しない');
+  });
 });
 
 describe('buildScalpPlan (no-key path)', () => {
