@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   parseScalpPlan, runScalpPlan, buildScalpPlan, isLLMEnabled,
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
+  buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
+  DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan,
 } from './openai.js';
 
@@ -205,22 +207,103 @@ describe('runScalpPlan (create 注入)', () => {
   });
 });
 
-describe('scalp プロンプト文言(レッグ独立95円・指値のみ回避)', () => {
-  it('SCALP_QUESTION にレッグ独立の LC 上限と指値のみ回避が含まれる', () => {
+describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 幅パラメータ)', () => {
+  it('SCALP_QUESTION(既定)にレッグ独立の LC 上限と指値のみ回避が含まれる', () => {
     expect(SCALP_QUESTION).toContain('それぞれ独立');
-    expect(SCALP_QUESTION).toContain('95');
     expect(SCALP_QUESTION).toContain('指値のみ');
+    // ★新既定: 上限65・下限45(旧75/95 は撤去)。
+    expect(SCALP_QUESTION).toContain('65');
+    expect(SCALP_QUESTION).toContain('45');
+    expect(SCALP_QUESTION).not.toContain('95');
+    expect(SCALP_QUESTION).not.toContain('75');
   });
-  it('SCALP_SYSTEM_PROMPT にレッグ独立の LC 上限とレッグ省略の指針が含まれる', () => {
+  it('SCALP_SYSTEM_PROMPT(既定)にレッグ独立の LC 上限とレッグ省略の指針が含まれる', () => {
     expect(SCALP_SYSTEM_PROMPT).toContain('それぞれ独立');
     expect(SCALP_SYSTEM_PROMPT).toContain('指値のみ');
     expect(SCALP_SYSTEM_PROMPT).toContain('逆指値のみ');
+    // ★新既定: 上限65(旧95 は撤去)。
+    expect(SCALP_SYSTEM_PROMPT).toContain('65');
+    expect(SCALP_SYSTEM_PROMPT).not.toContain('95');
+    expect(SCALP_SYSTEM_PROMPT).not.toContain('75');
   });
-  it('SCALP_SYSTEM_PROMPT にギャップ戦略の検証済み知見(優位性ゼロ・提案しない)が含まれる', () => {
+  it('SCALP_SYSTEM_PROMPT にギャップ戦略の検証済み知見(優位性ゼロ・提案しない)が含まれる(v0.7.38 回帰)', () => {
     // 9年バックテストでギャップ起点戦略(フィル/反転/継続)は全否定。AIが寄りでギャップ狙いを提案しないためのガードレール。
     expect(SCALP_SYSTEM_PROMPT).toContain('ギャップ');
     expect(SCALP_SYSTEM_PROMPT).toContain('検証済みの知見');
     expect(SCALP_SYSTEM_PROMPT).toContain('提案しない');
+  });
+
+  it('既定(引数なし)は floor=45/ceiling=65 を使う', () => {
+    expect(DEFAULT_LC_FLOOR_YEN).toBe(45);
+    expect(DEFAULT_LC_CEILING_YEN).toBe(65);
+    expect(buildScalpQuestion()).toBe(SCALP_QUESTION);
+    expect(buildScalpSystemPrompt()).toBe(SCALP_SYSTEM_PROMPT);
+  });
+
+  it('lcCeilingYen=65 でプロンプトに 65 が入り 95 が入らない(明示指定)', () => {
+    const q = buildScalpQuestion(45, 65);
+    const s = buildScalpSystemPrompt(45, 65);
+    expect(q).toContain('65');
+    expect(q).not.toContain('95');
+    expect(s).toContain('65');
+    expect(s).not.toContain('95');
+  });
+
+  it('lcFloorYen/lcCeilingYen をプロンプトに反映(例: 50〜120)', () => {
+    const q = buildScalpQuestion(50, 120);
+    const s = buildScalpSystemPrompt(50, 120);
+    expect(q).toContain('50');
+    expect(q).toContain('120');
+    expect(q).toContain(`50〜120円`);
+    expect(s).toContain(`50〜120円`);
+    // v0.7.37 のレッグ独立・指値のみ/逆指値のみ回避は上限が変わっても保持。
+    expect(q).toContain('それぞれ独立');
+    expect(q).toContain('指値のみ');
+    expect(s).toContain('逆指値のみ');
+    // v0.7.38 のギャップ知見も保持。
+    expect(s).toContain('ギャップ');
+    expect(s).toContain('検証済みの知見');
+  });
+});
+
+describe('resolveLcRange(サニタイズ/クランプ)', () => {
+  it('未指定は既定 45/65', () => {
+    expect(resolveLcRange()).toEqual({ floorYen: 45, ceilingYen: 65 });
+    expect(resolveLcRange(undefined, undefined)).toEqual({ floorYen: 45, ceilingYen: 65 });
+  });
+  it('正常値はそのまま', () => {
+    expect(resolveLcRange(50, 120)).toEqual({ floorYen: 50, ceilingYen: 120 });
+  });
+  it('非有限/非数値は既定へフォールバック', () => {
+    expect(resolveLcRange(NaN, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
+    expect(resolveLcRange(Infinity, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
+    // @ts-expect-error 実行時の不正入力を想定
+    expect(resolveLcRange('x', 'y')).toEqual({ floorYen: 45, ceilingYen: 65 });
+  });
+  it('範囲外(<20 / >300)は該当側を既定へ', () => {
+    expect(resolveLcRange(10, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
+    expect(resolveLcRange(50, 999)).toEqual({ floorYen: 50, ceilingYen: 65 });
+  });
+  it('floor>ceiling は両方とも既定へ戻す', () => {
+    expect(resolveLcRange(120, 50)).toEqual({ floorYen: 45, ceilingYen: 65 });
+  });
+});
+
+describe('scalpJsonInstruction フィールド注記の LC 反映', () => {
+  it('既定(引数なし)の JSON 注記に LC幅45〜65 が入り 95/75 が入らない', () => {
+    const j = scalpJsonInstruction(38250);
+    expect(j).toContain('LC幅45〜65円');
+    expect(j).toContain('65円超は出さない');
+    expect(j).not.toContain('95');
+    expect(j).not.toContain('75');
+    // refPrice は反映される。
+    expect(j).toContain('38250');
+  });
+  it('明示 ceiling(120)を JSON 注記に反映', () => {
+    const j = scalpJsonInstruction(38250, 50, 120);
+    expect(j).toContain('LC幅50〜120円');
+    expect(j).toContain('120円超は出さない');
+    expect(j).not.toContain('95');
   });
 });
 

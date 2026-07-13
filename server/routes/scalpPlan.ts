@@ -21,6 +21,21 @@ const NIKKEI_SYMBOL = 'NIY=F';
 
 interface Body {
   symbol?: string;
+  /** 初期 LC(損切り)幅の下限[円]。未指定は buildScalpPlan 側の既定(45)。数値化して optional で受理する。 */
+  lcFloorYen?: number;
+  /** 初期 LC(損切り)幅の上限[円]。未指定は buildScalpPlan 側の既定(65)。これを超える損切りは出さない。 */
+  lcCeilingYen?: number;
+}
+
+/** body/query から数値を optional に受理する(文字列でも数値化)。非有限は undefined を返し、既定に委ねる。
+ *  範囲/floor<=ceiling のクランプは buildScalpPlan 側 resolveLcRange が担う(単一責務)。 */
+function optionalNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
 }
 
 /** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
@@ -32,7 +47,11 @@ function chartVisionEnabled(): boolean {
 
 export async function scalpPlanHandler(req: Request, res: Response): Promise<void> {
   const body = (req.body ?? {}) as Body;
+  const query = (req.query ?? {}) as Record<string, unknown>;
   const symbol = typeof body.symbol === 'string' && body.symbol ? body.symbol : NIKKEI_SYMBOL;
+  // 初期 LC 幅の下限/上限を optional で受理(body 優先・なければ query)。範囲/整合クランプは buildScalpPlan 側。
+  const lcFloorYen = optionalNumber(body.lcFloorYen ?? query.lcFloorYen);
+  const lcCeilingYen = optionalNumber(body.lcCeilingYen ?? query.lcCeilingYen);
   try {
     const prices = getPrices();
     const price = prices.find(p => p.symbol === symbol)?.price;
@@ -72,6 +91,8 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
       // chat と同じく、バー蓄積中でも節目メドを出せるよう fallbackPrice を渡す。
       technical: buildNikkeiTechnical(undefined, price),
       chartImageDataUrl,
+      lcFloorYen,
+      lcCeilingYen,
     });
     if (result.ok) {
       res.json({ ok: true, plan: result.plan });
