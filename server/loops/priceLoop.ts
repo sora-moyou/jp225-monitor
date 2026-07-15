@@ -8,6 +8,7 @@ import { resolvePricePollMs } from '../configStore.js';
 import { inPollWindow, isMarketOpen } from '../../collector/session.js';
 import type { Price } from '../types.js';
 import { feedPrice as tickDetectorFeed, getMomentum } from '../tickDetector.js';
+import { feedSignalEngine } from '../signalTrade/engine.js';
 
 // v0.7.20(全銘柄 HTTP 化): 価格の全経路を公開 HTTP(ajax_cme.js / ajax_fx.js)に統一。socket と Yahoo を
 // 全廃した。ajax_cme.js を 1 GET して NIY=F(136)/YM=F(731)/NQ=F(737)、ajax_fx.js を 1 GET して JPY=X(511)。
@@ -110,6 +111,9 @@ async function tick(): Promise<number> {
     }
     setPrices(merged);
     broadcast({ type: 'prices', payload: merged });
+    // トレードシグナル紙エンジンに現在値を供給(擬似約定/擬似決済 → signalTrade を別途 broadcast)。
+    // エンジン未起動時は no-op。既存の 'prices' イベントは不変。
+    if (niy && !niy.stale) feedSignalEngine(niy.price, Date.now());
     degradedUntil = 0;
     backoffIndex = -1;
     return intervalMs;

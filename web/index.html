@@ -14,6 +14,7 @@
       <span id="connection-status" class="badge offline">offline</span>
       <div id="api-status" class="api-status"></div>
       <button id="alerts-history-btn" class="topbar-btn" title="アラート履歴・的中率">📊</button>
+      <button id="signal-trades-btn" class="topbar-btn" title="トレードシグナル履歴・収益曲線">📈</button>
       <button id="open-logs" class="topbar-btn" title="サーバログを見る">📋</button>
       <button id="params-btn" class="topbar-btn" title="詳細パラメータ設定">🎛️</button>
       <button id="settings-btn" class="settings-btn" title="API設定">⚙️</button>
@@ -117,6 +118,19 @@
         </div>
         <div id="settings-replace-result" class="update-result"></div>
         <div class="exit-hint">選んだ DB の内容で現在の DB を<b>丸ごと置き換え</b>ます（既存データは消去・自動バックアップ後）。2台を完全に同一データにしたい時用。collector/jp225-Trade を停止し自動再起動。パッケージ版でのみ利用可。</div>
+      </fieldset>
+
+      <fieldset class="settings-section">
+        <legend>トレードシグナル（表示専用）</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="settings-signal-sound" checked />
+          シグナル発生時にアラート音を鳴らす
+        </label>
+        <div class="version-row" style="margin-top:8px">
+          <button type="button" id="settings-clear-signal" class="btn-secondary">トレードシグナル履歴を消去</button>
+        </div>
+        <div id="settings-clear-signal-result" class="update-result"></div>
+        <div class="exit-hint">AIエントリー＋phase-exit決済を紙トラッキングした表示専用のシグナルです。売買命令は送りません。履歴の消去は元に戻せません。</div>
       </fieldset>
 
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
@@ -257,6 +271,22 @@
     </div>
   </div>
 
+  <!-- トレードシグナル履歴モーダル (履歴 + 収益曲線・表示専用) -->
+  <div id="signal-trades-modal" class="modal hidden">
+    <div id="signal-trades-backdrop" class="modal-backdrop"></div>
+    <div class="modal-content modal-content-wide">
+      <div class="modal-topbar">
+        <h2>トレードシグナル履歴・収益曲線</h2>
+        <div class="modal-actions">
+          <button type="button" id="signal-trades-close" class="btn-secondary">閉じる</button>
+        </div>
+      </div>
+      <div id="signal-trades-summary" class="ah-summary"></div>
+      <canvas id="signal-trades-equity" class="signal-equity"></canvas>
+      <div id="signal-trades-body" class="ah-body"></div>
+    </div>
+  </div>
+
   <!-- ログモーダル -->
   <div id="logs-modal" class="modal hidden">
     <div id="logs-backdrop" class="modal-backdrop"></div>
@@ -275,6 +305,11 @@
     <!-- 左 1/3: 価格カード → 主要レベル → AIチャット -->
     <div class="left-col">
       <section id="price-grid" class="price-grid"></section>
+
+      <!-- トレードシグナル (表示専用・紙トラッキング)。主要レベルの直上に目立つパネルで現在シグナルを表示。 -->
+      <section id="signal-panel" class="signal-panel signal-flat">
+        <div class="signal-main">シグナル待機</div>
+      </section>
 
       <section id="levels-panel" class="levels-panel">
         <div id="levels-body" class="levels-body"><div class="levels-empty">蓄積中…</div></div>

@@ -26,6 +26,8 @@ import { basedataImportHandler, basedataStatusHandler } from './routes/basedata.
 import { mergeHandler } from './routes/merge.js';
 import { exportHandler } from './routes/export.js';
 import { replaceHandler } from './routes/replace.js';
+import { signalTradesHandler, signalTradesClearHandler } from './routes/signalTrades.js';
+import { startSignalEngine } from './signalTrade/engine.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
@@ -90,6 +92,8 @@ app.post('/api/basedata/import', basedataImportHandler);
 app.post('/api/merge', mergeHandler);
 app.post('/api/export', exportHandler);
 app.post('/api/replace', replaceHandler);
+app.get('/api/signal-trades', signalTradesHandler);
+app.post('/api/signal-trades/clear', signalTradesClearHandler);
 // スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
 app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
@@ -117,6 +121,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startAlertHistoryLoop();
   startLevelsLoop();
   startForecastLoop();
+  void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
 
   // 起動時に一度だけチャットショット(~/Desktop/jp225-chart-shot.png)を撮って確認用画像を更新する。

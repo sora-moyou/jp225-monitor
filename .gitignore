@@ -8,3 +8,5 @@ src-tauri/binaries/
 .env
 *.log
 .DS_Store
+# トレードシグナルの非公開 phase-exit(数値・段階ルールは公開しない)
+server/signalTrade/exit/private.ts

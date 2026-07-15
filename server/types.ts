@@ -58,10 +58,30 @@ export interface AlertEventPayload {
   referencePrice?: number;  // v0.6.0: 基準価格(MA値含む)。
 }
 
+// トレードシグナル(表示専用・紙トラッキング)の SSE state。エントリーは AI(scalp-plan)、
+// 決済は非公開 phase-exit。売買命令は送らず、現在シグナルの表示のみ(backend→frontend の唯一の IF)。
+export interface SignalTradeState {
+  phase: 'flat' | 'armed' | 'filled';
+  // armed(エントリー注文中)。指値/逆指値の新規と初期LC(1つに正規化・途中のLC移動は出さない)。
+  entry?: {
+    direction: 'buy' | 'sell';
+    limitEntry?: number; stopEntry?: number;
+    initialStop?: number;
+    rationale?: string; at: number;
+  };
+  // filled(保有中)。決済逆指値は非表示。建値と含み(pt)のみ。
+  position?: { direction: 'buy' | 'sell'; entryPrice: number; qty: number; unrealized: number; at: number };
+  // 直近決済(決済時に一時表示するため)。
+  lastExit?: { exitPrice: number; pnl: number; at: number };
+  updatedAt: number;
+}
+
 export type SSEEvent =
   | { type: 'prices'; payload: Price[] }
   | { type: 'news'; payload: NewsItem[] }
   | { type: 'alert'; payload: AlertEventPayload }
   | { type: 'levels'; payload: LevelsResult }
   // v0.7.24: 市場開場フラグ。価格ボードが「取引時間外(閉場・正常)」と「取得不能(フィード障害)」を区別する。
-  | { type: 'market'; payload: { open: boolean } };
+  | { type: 'market'; payload: { open: boolean } }
+  // トレードシグナルの現在状態(flat/armed/filled)。既存イベントは不変・これは新規追加。
+  | { type: 'signalTrade'; payload: SignalTradeState };

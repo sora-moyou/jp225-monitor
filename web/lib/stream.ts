@@ -1,4 +1,5 @@
 import type { Price, NewsItem, AlertEvent, LevelsResult } from '../types.js';
+import type { SignalTradeState } from '../components/signalPanel.js';
 import { apiUrl } from './apiBase.js';
 
 interface StreamHandlers {
@@ -9,6 +10,8 @@ interface StreamHandlers {
   onStatusChange: (status: 'connecting' | 'online' | 'offline') => void;
   // v0.7.24: 市場開場フラグ。閉場(取引時間外)なら価格ボードが「取引時間外」と表示する。省略可(任意ハンドラ)。
   onMarket?: (open: boolean) => void;
+  // トレードシグナル (表示専用・紙トラッキング)。backend の broadcast({type:'signalTrade'}) を受ける。省略可。
+  onSignalTrade?: (s: SignalTradeState) => void;
 }
 
 export function connectStream(handlers: StreamHandlers): () => void {
@@ -40,6 +43,11 @@ export function connectStream(handlers: StreamHandlers): () => void {
     es.addEventListener('levels', (e) => {
       try { handlers.onLevels(JSON.parse((e as MessageEvent).data)); }
       catch (err) { console.error('parse levels', err); }
+    });
+
+    es.addEventListener('signalTrade', (e) => {
+      try { handlers.onSignalTrade?.(JSON.parse((e as MessageEvent).data)); }
+      catch (err) { console.error('parse signalTrade', err); }
     });
 
     es.addEventListener('market', (e) => {

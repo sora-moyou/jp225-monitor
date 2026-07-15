@@ -43,6 +43,12 @@ export function initSchema(db: DatabaseSync): void {
       ret5 REAL, ret15 REAL, ret30 REAL,
       reference_kind TEXT, reference_price REAL
     );
+    CREATE TABLE IF NOT EXISTS signal_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_t INTEGER NOT NULL, entry_price REAL NOT NULL, dir TEXT NOT NULL,
+      exit_t INTEGER NOT NULL, exit_price REAL NOT NULL, pnl REAL NOT NULL,
+      qty INTEGER NOT NULL, rationale TEXT, meta TEXT
+    );
   `);
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
@@ -263,4 +269,42 @@ export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number):
     }
   }
   return [...map.values()].sort((a, b) => b.openT - a.openT).slice(0, limit);
+}
+
+// ─── トレードシグナル(表示専用・紙トラッキング)の決済履歴 ───
+// エントリーは AI(scalp-plan)、決済は非公開 phase-exit。実発注はせず SSE 現在値で擬似約定した
+// 1トレード(entry→exit)を決済確定ごとに1行記録する。既存テーブルとは独立(trade2 非干渉)。
+
+export interface SignalTradeRow {
+  id: number;
+  entry_t: number; entry_price: number; dir: string;
+  exit_t: number; exit_price: number; pnl: number; qty: number;
+  rationale: string | null; meta: string | null;
+}
+
+export interface SignalTradeInsert {
+  entryT: number; entryPrice: number; dir: 'buy' | 'sell';
+  exitT: number; exitPrice: number; pnl: number; qty: number;
+  rationale?: string | null; meta?: string | null;
+}
+
+export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
+  db.prepare(`
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
+    t.rationale ?? null, t.meta ?? null);
+}
+
+/** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。 */
+export function getSignalTrades(db: DatabaseSync, limit = 500): SignalTradeRow[] {
+  return db.prepare('SELECT * FROM signal_trades ORDER BY exit_t DESC LIMIT ?')
+    .all(Math.max(1, Math.min(2000, limit))) as unknown as SignalTradeRow[];
+}
+
+/** 全トレードを削除し、削除件数を返す(設定からの履歴消去用)。 */
+export function clearSignalTrades(db: DatabaseSync): number {
+  const before = (db.prepare('SELECT COUNT(*) AS n FROM signal_trades').get() as { n: number }).n;
+  db.prepare('DELETE FROM signal_trades').run();
+  return before;
 }

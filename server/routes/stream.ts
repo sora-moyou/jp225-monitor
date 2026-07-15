@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { register, unregister } from '../sse/broker.js';
 import { getPrices, getNews } from '../cache.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
+import { getSignalTradeState } from '../signalTrade/engine.js';
 import { isMarketOpen } from '../../collector/session.js';
 
 export function streamHandler(req: Request, res: Response): void {
@@ -27,6 +28,9 @@ export function streamHandler(req: Request, res: Response): void {
   }
   // v0.7.24: 接続直後に市場開場フラグを一回送る(price ループの state 変化 broadcast を取りこぼす新規接続を補う)。
   res.write(`event: market\ndata: ${JSON.stringify({ open: isMarketOpen(Date.now()) })}\n\n`);
+
+  // トレードシグナルの現在状態を接続直後に一回送る(engine の tick broadcast を取りこぼす新規接続を補う)。
+  res.write(`event: signalTrade\ndata: ${JSON.stringify(getSignalTradeState())}\n\n`);
 
   register(res);
   req.on('close', () => unregister(res));

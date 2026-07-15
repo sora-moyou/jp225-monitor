@@ -15,6 +15,8 @@ import { initAlertsHistoryModal } from './components/alertsHistoryModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
 import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader, getTopSymbolChange1m } from './lib/correlationClient.js';
 import { initLevelsPanel, setLevels, setLevelsPrice } from './components/levelsPanel.js';
+import { renderSignalPanel, initSignalSoundToggle } from './components/signalPanel.js';
+import { initSignalTradesModal, initSignalClearButton } from './components/signalTradesModal.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
@@ -235,6 +237,31 @@ initAlertsHistoryModal({
   body:     document.getElementById('alerts-history-body') as HTMLElement,
 });
 
+// トレードシグナル履歴・収益曲線モーダル
+const signalTradesModalEl = document.getElementById('signal-trades-modal') as HTMLElement | null;
+if (signalTradesModalEl) {
+  initSignalTradesModal({
+    openBtn:  document.getElementById('signal-trades-btn') as HTMLButtonElement,
+    modal:    signalTradesModalEl,
+    backdrop: document.getElementById('signal-trades-backdrop') as HTMLElement,
+    closeBtn: document.getElementById('signal-trades-close') as HTMLButtonElement,
+    summary:  document.getElementById('signal-trades-summary') as HTMLElement,
+    body:     document.getElementById('signal-trades-body') as HTMLElement,
+    canvas:   document.getElementById('signal-trades-equity') as HTMLCanvasElement,
+  });
+}
+
+// 設定モーダル内: シグナル音トグル + 履歴消去ボタン
+const signalSoundToggle = document.getElementById('settings-signal-sound') as HTMLInputElement | null;
+if (signalSoundToggle) initSignalSoundToggle(signalSoundToggle);
+const clearSignalBtn = document.getElementById('settings-clear-signal') as HTMLButtonElement | null;
+const clearSignalResult = document.getElementById('settings-clear-signal-result') as HTMLElement | null;
+if (clearSignalBtn && clearSignalResult) {
+  initSignalClearButton(clearSignalBtn, clearSignalResult, () => {
+    (signalTradesModalEl as unknown as { _reloadSignalTrades?: () => void } | null)?._reloadSignalTrades?.();
+  });
+}
+
 const logsOpenBtn = document.getElementById('open-logs') as HTMLButtonElement | null;
 if (logsOpenBtn) {
   initLogsModal({
@@ -253,6 +280,7 @@ const newsListEl = document.getElementById('news-list')!;
 const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
 if (levelsBodyEl) initLevelsPanel(levelsBodyEl);
+const signalPanelEl = document.getElementById('signal-panel');
 // 当面、再起動後も直近アラートを残す（localStorage から復元）。
 restoreSavedBanners(bannerEl);
 const statusEl = document.getElementById('connection-status')!;
@@ -429,6 +457,7 @@ connectStream({
     scheduleExplanation(alert, banner);
   },
   onNews: (news) => renderNews(newsListEl, news),
+  onSignalTrade: (s) => { if (signalPanelEl) renderSignalPanel(signalPanelEl, s); },
 });
 
 const updateToastEl = document.getElementById('update-toast');
