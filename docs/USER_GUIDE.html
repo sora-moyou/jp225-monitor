@@ -772,7 +772,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.8</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.42</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
@@ -1028,7 +1028,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="flow">
       <figure class="flow-img">
         <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル">
-        <figcaption>設定モーダル — 上から状態表示、4 つの API キー欄 (Gemini / Groq / OpenAI / <strong>Tavily=チャットの Web 検索用</strong>)、更新 (現在バージョン + 「更新をチェック」でアプリ本体と基礎データを同時確認)</figcaption>
+        <figcaption>設定モーダル — 上から状態表示、API キー欄 (Gemini / Groq / OpenAI) + <strong>チャット Web 検索用の「Web検索キー」と「Web検索モデル」</strong>、更新 (現在バージョン + 「更新をチェック」でアプリ本体と基礎データを同時確認)</figcaption>
       </figure>
       <figure class="flow-img">
         <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/db-manage.png" alt="DB 管理">
@@ -1167,7 +1167,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div class="feature">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
       <h3>AI チャット (モニターのデータを参照 + Web 検索)</h3>
-      <p>「今の地合いは?」「<strong>なぜ急落した?</strong>」など自由質問。現在価格・テクニカル要約・<strong>会話の文脈に沿ったニュース</strong>に加え、<strong>このアプリ自身の監視データ(直近アラートの要約・本日のセッション OHLC)</strong>を自動でコンテキストに渡し、必要なら直近の急変を特定して原因を分析・種別ごとの的中率や本日/直近の値動きも即答します。<strong>Web 検索 (Tavily)</strong> も搭載し、手元に無い最新の出来事は AI が自分で検索して出典付きで答えます (設定で Tavily キーを入れると有効・未設定でも従来どおり動作)。<strong>ワンタップの定型質問</strong>(① テクニカル分析 ② ファンダメンタル分析 ③ スイング分析〔上昇/下落/レンジ の3シナリオ〕)も用意、入力欄に「1」「2」「3」と打っても送れます。</p>
+      <p>「今の地合いは?」「<strong>なぜ急落した?</strong>」など自由質問。現在価格・テクニカル要約・<strong>会話の文脈に沿ったニュース</strong>に加え、<strong>このアプリ自身の監視データ(直近アラートの要約・本日のセッション OHLC)</strong>を自動でコンテキストに渡し、必要なら直近の急変を特定して原因を分析・種別ごとの的中率や本日/直近の値動きも即答します。<strong>Web 検索 (Gemini の Google 検索グラウンディング)</strong> も搭載し、手元に無い最新の出来事は AI が自分で検索して出典付きで答えます。設定の「<strong>Web検索キー</strong>」に Gemini キーを入れると有効 (空欄なら共通の Gemini キーを使用)、「<strong>Web検索モデル</strong>」で使用モデルを指定 (既定 <code>gemini-flash-latest</code>)。未設定/枠切れでも従来どおり検索なしで回答します。<strong>ワンタップの定型質問</strong>(① テクニカル分析 ② ファンダメンタル分析 ③ スイング分析〔上昇/下落/レンジ の3シナリオ〕)も用意、入力欄に「1」「2」「3」と打っても送れます。</p>
       <span class="tag">v0.7.7</span>
     </div>
     <div class="feature">
