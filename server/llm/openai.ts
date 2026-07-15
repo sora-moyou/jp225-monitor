@@ -33,11 +33,16 @@ const CONSECUTIVE_WINDOW_MS = 10 * 60_000;
 // 503 等はすぐ復帰するので、そのプロバイダを少しだけ休ませて次に回す(8時間も止めない)。
 const TRANSIENT_PAUSE_MS = 30_000;
 
-/** LLM エラーを分類。'quota'=429/枯渇(長 ladder), 'transient'=5xx/timeout/network(短ポーズ),
+/** LLM エラーを分類。'quota'=429/枯渇(長 ladder), 'oversize'=413/コンテキスト超過(ポーズせず次へ),
+ *  'transient'=5xx/timeout/network(短ポーズ),
  *  null=恒久/設定エラー(401/404 等=フォールバックせず即 throw=誤設定を隠さない)。
- *  quota/transient はどちらも「次プロバイダへフォールバック」する(1つが落ちても他で継続)。 */
-export function classifyLLMError(msg: string): 'quota' | 'transient' | null {
+ *  quota/oversize/transient はいずれも「次プロバイダへフォールバック」する(1つが落ちても他で継続)。 */
+export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient' | null {
   if (/429|rate[_ ]limit|exhausted|quota/i.test(msg)) return 'quota';
+  // 413=単一リクエストがそのモデルの上限(TPM/コンテキスト長)を超過。ペーシングでは直らない=
+  // 「そのモデルでは絶対に通らない」ので、より大きいモデル(openai/gemini)へフォールバックする。
+  // (Groq on_demand tier の "Request too large ... TPM Limit" が本番の主因。)
+  if (/\b413\b|request too large|context length|maximum context|too many tokens|reduce the (?:length|size)/i.test(msg)) return 'oversize';
   if (/\b50[0-4]\b|\b52\d\b|timeout|timed out|aborted|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|network|fetch failed|overloaded|temporarily unavailable/i.test(msg)) return 'transient';
   return null;
 }
@@ -147,7 +152,8 @@ export function firstAvailableVisionProvider(): { name: string; chatModel: strin
 }
 
 // エラーに応じてプロバイダを一時停止し「次へフォールバックすべきか」を返す。
-//   quota(429)     → 連続回数に応じた長い ladder(枠回復まで待つ)+ フォールバック
+//   quota(429)      → 連続回数に応じた長い ladder(枠回復まで待つ)+ フォールバック
+//   oversize(413)   → ポーズ無し + フォールバック(この要求だけが上限超過。小さい要求は通り続ける)
 //   transient(5xx等)→ 短い固定ポーズ(すぐ復帰想定)+ フォールバック
 //   それ以外(401/404)→ false(=フォールバックせず即 throw。誤設定を握り潰さない)
 function tripCircuit(p: ProviderState, err: unknown): boolean {
@@ -155,6 +161,12 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
   const kind = classifyLLMError(msg);
   if (!kind) return false;
   const now = Date.now();
+  if (kind === 'oversize') {
+    // この要求だけがモデル上限(TPM/コンテキスト)を超過。プロバイダ自体は健全なので
+    // ポーズしない(小さい chat/explain は同プロバイダで通り続ける)。より大きいモデルへ流すだけ。
+    console.warn(`[LLM:${p.config.name}] oversize (${msg.slice(0, 60)}) — ポーズせず次(大きいモデル)へフォールバック`);
+    return true;
+  }
   if (kind === 'quota') {
     if (now - p.lastFailAt < CONSECUTIVE_WINDOW_MS) {
       p.consecutiveFails = Math.min(p.consecutiveFails + 1, PAUSE_LADDER_MS.length - 1);

@@ -19,6 +19,17 @@ describe('classifyLLMError (5xx/timeout もフォールバック対象に)', () 
     expect(classifyLLMError('ECONNRESET')).toBe('transient');
     expect(classifyLLMError('fetch failed')).toBe('transient');
   });
+  it('413/リクエスト過大(TPM・コンテキスト超過) → oversize(ポーズせず次の大きいモデルへ)', () => {
+    // Groq 実エラー: 単一リクエストが on_demand tier の TPM を超過(=このモデルでは絶対に通らない)。
+    expect(classifyLLMError('413 Request too large for model `llama-3.3-70b-versatile` in organization org_x service tier on_demand')).toBe('oversize');
+    expect(classifyLLMError('Request too large ... on tokens per minute (TPM): Limit 12000, Requested 13000')).toBe('oversize');
+    // OpenAI 系のコンテキスト超過表現も同カテゴリ。
+    expect(classifyLLMError("This model's maximum context length is 8192 tokens")).toBe('oversize');
+    expect(classifyLLMError('Please reduce the length of the messages')).toBe('oversize');
+  });
+  it('413 のうち rate limit 表現(429相当)は quota を優先(誤分類しない)', () => {
+    expect(classifyLLMError('rate_limit_exceeded: too many requests')).toBe('quota');
+  });
   it('401/404/400 等の恒久・設定エラー → null(フォールバックせず即 throw)', () => {
     expect(classifyLLMError('401 Incorrect API key provided')).toBeNull();
     expect(classifyLLMError('404 status code (no body)')).toBeNull();
