@@ -11,7 +11,7 @@ function escapeHtml(s: string): string {
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
-  tavilySet: boolean; tavilyFromEnv: boolean;
+  webSearchKeySet: boolean; webSearchModel: string;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -43,7 +43,8 @@ interface SavePayload {
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
-  tavilyKey?: string | null;
+  webSearchKey?: string | null;
+  webSearchModel?: string | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -83,7 +84,8 @@ export interface SettingsElements {
   inputGemini: HTMLInputElement;
   inputGroq: HTMLInputElement;
   inputOpenai: HTMLInputElement;
-  inputTavily: HTMLInputElement;
+  inputWebSearch: HTMLInputElement;        // Web検索(Gemini グラウンディング)専用キー
+  inputWebSearchModel: HTMLInputElement;   // Web検索用 Gemini モデル
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -119,9 +121,11 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputOpenai.placeholder = current?.openaiSet
       ? '設定済み (上書きする場合のみ入力)'
       : current?.openaiFromEnv ? '環境変数から読込中' : 'sk-...';
-    el.inputTavily.placeholder = current?.tavilySet
+    el.inputWebSearch.placeholder = current?.webSearchKeySet
       ? '設定済み (上書きする場合のみ入力)'
-      : current?.tavilyFromEnv ? '環境変数から読込中' : 'tvly-...';
+      : '空欄なら Gemini キーを使用 (AIza... / 課金キー可)';
+    el.inputWebSearchModel.value = current?.webSearchModel ?? '';
+    el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
   }
 
   async function loadCurrentVersion() {
@@ -392,7 +396,8 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputGemini.value = '';
     el.inputGroq.value = '';
     el.inputOpenai.value = '';
-    el.inputTavily.value = '';
+    el.inputWebSearch.value = '';
+    el.inputWebSearchModel.value = '';
   }
 
   el.openBtn.addEventListener('click', () => { void open(); });
@@ -411,11 +416,13 @@ export function initSettingsModal(el: SettingsElements): void {
       const gv = el.inputGemini.value.trim();
       const grv = el.inputGroq.value.trim();
       const ov = el.inputOpenai.value.trim();
-      const tv = el.inputTavily.value.trim();
+      const wsk = el.inputWebSearch.value.trim();
       if (gv) body.geminiKey = gv;
       if (grv) body.groqKey = grv;
       if (ov) body.openaiKey = ov;
-      if (tv) body.tavilyKey = tv;
+      if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
+      // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)
+      body.webSearchModel = el.inputWebSearchModel.value.trim();
 
       const result = await saveSettings(body);
       if (!result.ok) {
@@ -425,6 +432,7 @@ export function initSettingsModal(el: SettingsElements): void {
       el.inputGemini.value = '';
       el.inputGroq.value = '';
       el.inputOpenai.value = '';
+      el.inputWebSearch.value = '';
       await refresh();
     } finally {
       el.saveBtn.disabled = false;

@@ -64,10 +64,15 @@
 
       <div class="setting-row">
         <label>
-          Tavily (チャットWeb検索) <a href="https://app.tavily.com" target="_blank" rel="noopener">キー取得 ↗</a>
-          <span class="badge-free">無料 / 月1000回</span>
+          Web検索キー (チャット・Gemini Google検索) <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span class="badge-paid">課金Gemini推奨</span>
         </label>
-        <input type="password" id="key-tavily" autocomplete="off" />
+        <input type="password" id="key-websearch" autocomplete="off" placeholder="空欄なら Gemini キーを使用" />
+      </div>
+
+      <div class="setting-row">
+        <label>Web検索モデル (Gemini・grounding 対応)</label>
+        <input type="text" id="key-websearch-model" autocomplete="off" placeholder="gemini-flash-latest (既定)" />
       </div>
 
       <div class="setting-row">

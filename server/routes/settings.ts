@@ -30,8 +30,8 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     geminiFromEnv: !config.geminiKey && !!process.env.GEMINI_API_KEY?.trim(),
     groqFromEnv: !config.groqKey && !!process.env.GROQ_API_KEY?.trim(),
     openaiFromEnv: !config.openaiKey && !!process.env.OPENAI_API_KEY?.trim(),
-    tavilySet: !!config.tavilyKey,
-    tavilyFromEnv: !config.tavilyKey && !!process.env.TAVILY_API_KEY?.trim(),
+    webSearchKeySet: !!config.webSearchKey,   // Web検索専用キー(空欄なら共通 geminiKey に従う)
+    webSearchModel: config.webSearchModel ?? '',
     // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
     ...resolveAllNumericParams(),
     pricePollMs: resolvePricePollMs(),
@@ -58,7 +58,8 @@ interface SettingsBody {
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
-  tavilyKey?: string | null;
+  webSearchKey?: string | null;      // Web検索(Gemini グラウンディング)専用キー
+  webSearchModel?: string | null;    // Web検索用 Gemini モデル
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -71,6 +72,15 @@ function applyStringField(existing: string | undefined, incoming: unknown): stri
   if (typeof incoming !== 'string') return existing;
   const trimmed = incoming.trim();
   return trimmed === '' ? existing : trimmed;
+}
+
+// 可視(非秘密)フィールド用: 空欄は「既定に戻す」= undefined(applyStringField は空欄で既存保持なので別扱い)。
+function applyVisibleField(existing: string | undefined, incoming: unknown): string | undefined {
+  if (incoming === undefined) return existing;
+  if (incoming === null) return undefined;
+  if (typeof incoming !== 'string') return existing;
+  const trimmed = incoming.trim();
+  return trimmed === '' ? undefined : trimmed;
 }
 
 function applyNumberField(
@@ -108,7 +118,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
     geminiKey: applyStringField(existing.geminiKey, body.geminiKey),
     groqKey: applyStringField(existing.groqKey, body.groqKey),
     openaiKey: applyStringField(existing.openaiKey, body.openaiKey),
-    tavilyKey: applyStringField(existing.tavilyKey, body.tavilyKey),
+    webSearchKey: applyStringField(existing.webSearchKey, body.webSearchKey),   // 秘密: 空欄=変更なし
+    webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
   };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {

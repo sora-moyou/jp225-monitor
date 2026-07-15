@@ -11,7 +11,7 @@ import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
 import { resolveApiKey } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
-import { isWebSearchEnabled, tavilySearch, formatHits } from './webSearch.js';
+import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
 import { rowKind, summarize } from '../alertHistory.js';
 import { crashDrawdown } from '../crash.js';
@@ -750,14 +750,14 @@ export async function chat(input: ChatInput): Promise<string> {
     `■ 関連ニュース:\n${formatNewsForChat(input.news, now, lastUser)}`;
 
   // データツール(explain_move/query_alerts/price_history)は外部キー不要ゆえ常時有効。
-  // web_search は Tavily キーがある時のみ追加する。
+  // web_search は Gemini グラウンディング用キー(webSearchKey か共通 geminiKey)がある時のみ追加する。
   const tools: unknown[] = [EXPLAIN_MOVE_TOOL, QUERY_ALERTS_TOOL, PRICE_HISTORY_TOOL];
   const handlers: ToolHandlers = buildDataToolHandlers();
   if (isWebSearchEnabled()) {
     tools.push(WEB_SEARCH_TOOL);
     handlers.web_search = async (a: { query?: string }) => {
       const q = typeof a.query === 'string' ? a.query : '';
-      return q ? formatHits(await tavilySearch(q)) : '(クエリ空)';
+      return q ? await webSearch(q) : '(クエリ空)';
     };
   }
   return callWithFallback(async (p) => {
@@ -1029,14 +1029,14 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     (monitorCtx ? `${monitorCtx}\n\n` : '') +
     `■ 関連ニュース:\n${formatNewsForChat(news, now, scalpQuestion)}`;
 
-  // chat と同じデータツール(常時有効)+ web_search(Tavily キーがある時のみ)。
+  // chat と同じデータツール(常時有効)+ web_search(Gemini グラウンディング・キーがある時のみ)。
   const tools: unknown[] = [EXPLAIN_MOVE_TOOL, QUERY_ALERTS_TOOL, PRICE_HISTORY_TOOL];
   const handlers: ToolHandlers = buildDataToolHandlers();
   if (isWebSearchEnabled()) {
     tools.push(WEB_SEARCH_TOOL);
     handlers.web_search = async (a: { query?: string }) => {
       const q = typeof a.query === 'string' ? a.query : '';
-      return q ? formatHits(await tavilySearch(q)) : '(クエリ空)';
+      return q ? await webSearch(q) : '(クエリ空)';
     };
   }
 

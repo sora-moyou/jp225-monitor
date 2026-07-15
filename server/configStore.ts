@@ -13,7 +13,8 @@ export interface UserConfig {
   geminiKey?: string;
   groqKey?: string;
   openaiKey?: string;
-  tavilyKey?: string;     // チャットの web_search(Tavily)用
+  webSearchKey?: string;   // チャットの web_search(Gemini グラウンディング)専用キー。未設定なら共通 geminiKey に落ちる。
+  webSearchModel?: string; // web_search 用の Gemini モデル(chatModel と別)。未設定は既定 gemini-flash-latest。
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
   pricePollMs?: number;
   newsPollMs?: number;
@@ -113,11 +114,21 @@ export function resolveApiKey(provider: ProviderName): string | undefined {
   return process.env[envName]?.trim();
 }
 
-// チャットの web_search(Tavily) キー解決: config.json 優先 → 環境変数 TAVILY_API_KEY。
-export function resolveTavilyKey(): string | undefined {
-  const fromConfig = loadConfig().tavilyKey;
-  if (fromConfig && fromConfig.trim()) return fromConfig.trim();
-  return process.env.TAVILY_API_KEY?.trim();
+// チャットの web_search(Gemini グラウンディング)キー解決。
+// 専用 webSearchKey → 共通 geminiKey(config.json 優先) → env GEMINI_API_KEY の順にフォールバック。
+export function resolveWebSearchKey(): string | undefined {
+  const cfg = loadConfig();
+  if (cfg.webSearchKey && cfg.webSearchKey.trim()) return cfg.webSearchKey.trim();
+  if (cfg.geminiKey && cfg.geminiKey.trim()) return cfg.geminiKey.trim();
+  return process.env.GEMINI_API_KEY?.trim();
+}
+
+export const DEFAULT_WEB_SEARCH_MODEL = 'gemini-flash-latest';
+
+// web_search 用 Gemini モデル。未設定は既定(現行 GA Flash=grounding 対応の 3.x に追従するエイリアス)。
+export function resolveWebSearchModel(): string {
+  const m = loadConfig().webSearchModel;
+  return m && m.trim() ? m.trim() : DEFAULT_WEB_SEARCH_MODEL;
 }
 
 // 3 つの数値パラメータ resolver
