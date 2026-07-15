@@ -31,7 +31,7 @@ describe('shock param resolvers', () => {
     const p = resolveShockParams();
     expect(p.shock1).toBe(DEFAULT_SHOCK_PARAMS.shock1);       // 50
     expect(p.accelTh).toBe(DEFAULT_SHOCK_PARAMS.accelTh);     // 10
-    expect(p.scoreNeed).toBe(DEFAULT_SHOCK_PARAMS.scoreNeed); // 4
+    expect(p.scoreNeed).toBe(5); // 厳選(価格変動アラート絞り込み): PARAM_BOUNDS 既定=5(旧4)。resolveShockParams は PARAM_BOUNDS が源で DEFAULT_SHOCK_PARAMS とは別。
     expect(resolveOpenGuardBars()).toBe(3);
     expect(resolveFlashYen()).toBe(80);
   });
