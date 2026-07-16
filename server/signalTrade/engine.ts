@@ -335,6 +335,12 @@ export function getCurrentSignal(): CurrentSignal | null {
   return currentSignal;
 }
 
+/** 現在の phase(flat|armed|filled)。trade2 が「armed の間だけ追従」するための late-join 用 getter。
+ *  signalId が null(未ARM)でも phase は返る(flat 等)。エンジン挙動は不変(露出のみ)。 */
+export function getSignalPhase(): SignalPhase {
+  return state.phase;
+}
+
 /** 保有中の意図(hold・trade2 追従用)。filled の間だけ返す(決済逆指値=毎tick算出)。他は null。 */
 export function getSignalHold(): SignalHold | null {
   return computeHold(state, currentSignal);

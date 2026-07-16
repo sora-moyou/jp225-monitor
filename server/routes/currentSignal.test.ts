@@ -30,20 +30,24 @@ describe('currentSignalPayload', () => {
   });
 });
 
-describe('currentSignalResponse (hold 付き)', () => {
+describe('currentSignalResponse (hold + phase 付き)', () => {
   const sig: CurrentSignal = {
     signalId: 4, at: 111, direction: 'buy', rationale: 'r',
     limitEntry: 37950, stopLossForLimit: 37900,
   };
-  it('保有中は hold(signalId 対応・exitStop 絶対価格)を付ける', () => {
+  it('保有中は hold(signalId 対応・exitStop 絶対価格)と phase を付ける', () => {
     const hold: SignalHold = { signalId: 4, direction: 'buy', entryPrice: 37950, exitStop: 37900, at: 222 };
-    const out = currentSignalResponse(sig, hold) as { signalId: number; hold: SignalHold };
+    const out = currentSignalResponse(sig, hold, 'filled') as { signalId: number; hold: SignalHold; phase: string };
     expect(out.signalId).toBe(4);
     expect(out.hold).toEqual(hold);
     expect(out.hold.signalId).toBe(sig.signalId);   // entry と対応
+    expect(out.phase).toBe('filled');
   });
-  it('保有していなければ hold は null(flat/armed)', () => {
-    expect(currentSignalResponse(sig, null).hold).toBeNull();
-    expect(currentSignalResponse(null, null)).toEqual({ signalId: null, hold: null });
+  it('保有していなければ hold は null(flat/armed)・phase は反映', () => {
+    expect(currentSignalResponse(sig, null, 'armed').hold).toBeNull();
+    expect(currentSignalResponse(sig, null, 'armed').phase).toBe('armed');
+  });
+  it('未ARM(signalId:null)でも phase は返す(late-join 追従判定用)', () => {
+    expect(currentSignalResponse(null, null, 'flat')).toEqual({ signalId: null, hold: null, phase: 'flat' });
   });
 });
