@@ -113,6 +113,18 @@ interface KeyTestResponse {
   error?: string;
 }
 
+// 各キー行の左に付く状態マークを更新する(id は index.html の key-<name>-status)。
+function setKeyStatus(id: string, mark: string, title: string): void {
+  const node = document.getElementById(id);
+  if (node) { node.textContent = mark; node.title = `キー状態: ${title}`; }
+}
+// プロバイダ状態(providers)→ マーク。🟢有効 / 🟡待機中(429) / ⚪未設定。
+function providerMark(p: { enabled: boolean; paused: boolean } | undefined): { mark: string; title: string } {
+  if (!p || !p.enabled) return { mark: '⚪', title: '未設定' };
+  if (p.paused) return { mark: '🟡', title: '待機中(429=枠切れで一時休止・自動フォールバック中)' };
+  return { mark: '🟢', title: '有効(設定済)' };
+}
+
 export function initSettingsModal(el: SettingsElements): void {
   let current: SettingsResponse | null = null;
 
@@ -133,6 +145,16 @@ export function initSettingsModal(el: SettingsElements): void {
       : '空欄なら Gemini キーを使用 (AIza... / 課金キー可)';
     el.inputWebSearchModel.value = current?.webSearchModel ?? '';
     el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
+    // 各キー行の個別マーク(🟢/🟡/⚪)。LLM 3種は providers から、Web検索は解決可否から。
+    const byName = (n: string) => current?.providers.find(p => p.name === n);
+    for (const n of ['gemini', 'groq', 'openai'] as const) {
+      const m = providerMark(byName(n));
+      setKeyStatus(`key-${n}-status`, m.mark, m.title);
+    }
+    const wsResolvable = !!(current?.webSearchKeySet || current?.geminiSet || current?.geminiFromEnv);
+    setKeyStatus('key-websearch-status',
+      wsResolvable ? '🟢' : '⚪',
+      wsResolvable ? (current?.webSearchKeySet ? '専用キー設定済' : '共通 Gemini キーを使用') : '未設定(Web検索は無効)');
     // AIエントリー: 現値を反映(可視フィールド)。
     el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
     el.selectScalpBias.value = current?.scalpBias ?? 'none';
@@ -380,6 +402,10 @@ export function initSettingsModal(el: SettingsElements): void {
         return;
       }
       const lines = (data.results ?? []).map(r => {
+        // 各キー行の個別マークも検証結果(✅/❌/⚪)で更新する。
+        if (r.notset) setKeyStatus(`key-${r.name}-status`, '⚪', '未設定');
+        else if (r.ok) setKeyStatus(`key-${r.name}-status`, '✅', '検証OK(実際に通った)');
+        else setKeyStatus(`key-${r.name}-status`, '❌', `無効: ${(r.error ?? 'エラー').slice(0, 80)}`);
         if (r.notset) return `<div>⚪ ${escapeHtml(r.name)}: 未設定</div>`;
         if (r.ok) return `<div>✅ ${escapeHtml(r.name)}: 有効</div>`;
         return `<div>❌ ${escapeHtml(r.name)}: ${escapeHtml(r.error ?? 'エラー')}</div>`;

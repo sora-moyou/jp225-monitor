@@ -41,7 +41,7 @@
 
       <div class="setting-row">
         <label>
-          Gemini <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span id="key-gemini-status" class="key-status" title="キー状態"></span>Gemini <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
           <span class="badge-free">無料 / 日次1500回</span>
         </label>
         <input type="password" id="key-gemini" autocomplete="off" />
@@ -49,7 +49,7 @@
 
       <div class="setting-row">
         <label>
-          Groq <a href="https://console.groq.com/keys" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span id="key-groq-status" class="key-status" title="キー状態"></span>Groq <a href="https://console.groq.com/keys" target="_blank" rel="noopener">キー取得 ↗</a>
           <span class="badge-free">無料 / 日次14400回</span>
         </label>
         <input type="password" id="key-groq" autocomplete="off" />
@@ -57,7 +57,7 @@
 
       <div class="setting-row">
         <label>
-          OpenAI <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span id="key-openai-status" class="key-status" title="キー状態"></span>OpenAI <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
           <span class="badge-paid">有料 (500 円〜)</span>
         </label>
         <input type="password" id="key-openai" autocomplete="off" />
@@ -65,7 +65,7 @@
 
       <div class="setting-row">
         <label>
-          Web検索キー (チャット・Gemini Google検索) <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
+          <span id="key-websearch-status" class="key-status" title="キー状態"></span>Web検索キー (チャット・Gemini Google検索) <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
           <span class="badge-paid">課金Gemini推奨</span>
         </label>
         <input type="password" id="key-websearch" autocomplete="off" placeholder="空欄なら Gemini キーを使用" />
@@ -100,7 +100,7 @@
       <div class="setting-row">
         <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
         <div id="settings-test-result" class="update-result"></div>
-        <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。</div>
+        <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。<br>各キー左のマーク: 🟢 有効(設定済) / 🟡 待機中(429=枠切れで一時休止) / ⚪ 未設定 ／「キーを検証」後: ✅ 実際に通った / ❌ 無効(401等)。</div>
       </div>
 
       <fieldset class="settings-section">

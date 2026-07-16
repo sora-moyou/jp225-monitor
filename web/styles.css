@@ -587,6 +587,7 @@ body {
   box-sizing: border-box;
 }
 .setting-row input:focus { outline: none; border-color: #58a6ff; }
+.key-status { display: inline-block; min-width: 1.1em; margin-right: 4px; font-size: 13px; vertical-align: baseline; }
 .badge-free { background: rgba(63,185,80,0.15); color: var(--up); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
 .badge-paid { background: rgba(248,81,73,0.15); color: var(--down); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
 

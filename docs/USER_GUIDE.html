@@ -772,7 +772,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.46</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.48</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
@@ -1010,6 +1010,35 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       </p>
     </div>
   </div>
+
+  <h3 style="margin-top:28px">どのキーを設定すべきか (選び方)</h3>
+  <p>3 プロバイダは <strong>Gemini → Groq → OpenAI の順で試し、成功した最初の1つ</strong>を使います (自動フォールバック)。エラー種別で挙動が変わります:</p>
+  <ul>
+    <li><strong>429 (枠切れ/レート制限)・5xx・タイムアウト・413 (リクエスト過大)</strong> → <strong>次のプロバイダへ自動フォールバック</strong>。だから複数入れておくと止まりません。</li>
+    <li><strong>401 (キー無効) / 404 (モデル廃止)</strong> → その場で停止 (誤設定を隠さないため)。→ 該当キーを直す必要があります。</li>
+  </ul>
+  <table>
+    <thead><tr><th>プロバイダ</th><th>料金</th><th>画像(チャート)判断</th><th>役割・おすすめ</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Gemini</strong></td><td>無料 (日次上限あり)</td><td>◯ 対応</td><td>主力。無料で品質十分。ただし無料枠は 429 になりやすい</td></tr>
+      <tr><td><strong>Groq</strong></td><td>無料・高速</td><td><strong>✕ テキストのみ</strong></td><td>フォールバック用。チャット/説明の予備。<strong>チャート画像を使う AI (スキャルのシグナル) では使われません</strong></td></tr>
+      <tr><td><strong>OpenAI</strong> (gpt-4o-mini)</td><td>従量 (安価)</td><td>◯ 対応</td><td><strong>最後の砦かつ画像対応。ここを有効にしておくのが安定の要</strong></td></tr>
+    </tbody>
+  </table>
+  <div class="callout" style="margin-top:16px">
+    <strong>おすすめの入れ方:</strong> <strong>Gemini (無料) + OpenAI (少額課金) の2つ</strong>を設定。普段は無料の Gemini、429 で枠が切れたら OpenAI に自動で切り替わります。<strong>チャート画像を見るスキャルのシグナルは Gemini か OpenAI のみ</strong>が担うので (Groq はテキスト専用)、<strong>OpenAI キーが有効だと画像判断が常に通り安定します</strong>。Groq は「チャットの予備」として無料なので入れておいて損はありません。
+  </div>
+  <h4 style="margin-top:20px">Web検索キー / Web検索モデル (チャットの Web 検索)</h4>
+  <p>チャットの Web 検索は <strong>Gemini の Google 検索グラウンディング</strong>を使います。<strong>「Web検索キー」</strong>に Gemini キーを入れると有効 (空欄なら上の共通 Gemini キーを使用)。<strong>「Web検索モデル」</strong>は既定 <code>gemini-flash-latest</code> のままで OK。未設定/枠切れでも、チャットは検索なしで回答します。</p>
+  <h4 style="margin-top:20px">各キーの状態マーク (設定モーダル)</h4>
+  <p>設定モーダルの各キー行の左に、そのキーの状態が表示されます:</p>
+  <ul>
+    <li>🟢 <strong>有効</strong> (設定済み・使用可能)</li>
+    <li>🟡 <strong>待機中</strong> (429=枠切れで一時休止中・自動で他プロバイダにフォールバック中。時間で復帰)</li>
+    <li>⚪ <strong>未設定</strong></li>
+    <li>「<strong>キーを検証</strong>」ボタンを押すと、各キーへ極小テストを送って実際に通るか確認します: <strong>✅ 有効 / ❌ 無効 (401 等はキーを差し替え)</strong>。</li>
+  </ul>
+  <p style="color:var(--text-muted);font-size:13px">「設定済み(🟢)」と「実際に有効(✅)」は別物です。取引/シグナルが止まったら、まず「キーを検証」で ❌ のキーが無いか確認してください (特に OpenAI の 401=キー失効)。</p>
 
   <div class="callout warn" style="margin-top:24px">
     <strong>未設定でも動きます。</strong> 価格監視 / アラート音 / チャートは API キー無しでも動作。
