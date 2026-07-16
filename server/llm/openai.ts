@@ -9,7 +9,7 @@ import {
 } from '../config.js';
 import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
-import { resolveApiKey } from '../configStore.js';
+import { resolveApiKey, resolveScalpLcCeiling, resolveScalpBias, type ScalpBias } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
@@ -985,8 +985,49 @@ export interface ScalpPlanInput {
   chartImageDataUrl?: string | null;
   /** 初期 LC(損切り)幅の下限[円]。未指定は DEFAULT_LC_FLOOR_YEN(45)。プロンプトにのみ反映(数値強制はしない)。 */
   lcFloorYen?: number;
-  /** 初期 LC(損切り)幅の上限[円]。未指定は DEFAULT_LC_CEILING_YEN(65)。これを超える損切りは出さないよう指示。 */
+  /** 初期 LC(損切り)幅の上限[円]。未指定は monitor 設定(resolveScalpLcCeiling・既定65)。プロンプト指示＋コードで強制。 */
   lcCeilingYen?: number;
+  /** エントリー方向のバイアス。未指定は monitor 設定(resolveScalpBias・既定'none')。'long'=売り新規veto / 'short'=買い新規veto。 */
+  bias?: ScalpBias;
+}
+
+/** AIエントリー制御のハード適用(純関数・最終保証)。monitor 設定の最大初期LC(ceilingYen)とバイアス(bias)を
+ *  コードで強制し、上限超レッグを落とし・バイアス違反を見送りに変える。プロンプト指示の保険ではなく確定的保証。
+ *  1. LC上限: 各レッグの初期LC幅 = |entry − stopLoss|(指値=|limitEntry−stopLossForLimit| / 逆指値=|stopEntry−stopLossForStop|)
+ *     が ceilingYen を「超える」なら そのレッグを落とす(該当 entry と stopLoss を undefined に)。境界(=ちょうど ceilingYen)は許可。
+ *     両レッグとも落ちたら direction:'none'(見送り)。
+ *  2. バイアス: bias='long' かつ direction='sell' → 'none' / bias='short' かつ direction='buy' → 'none' / 'none'は素通し。
+ *  direction==='none' は何もしない。 */
+export function enforcePlanConstraints(
+  plan: AiPlan,
+  opts: { ceilingYen: number; bias: ScalpBias },
+): AiPlan {
+  if (plan.direction === 'none') return plan;
+  const { ceilingYen, bias } = opts;
+  const out: AiPlan = { ...plan };
+
+  // 1. レッグ単位の LC 上限(境界=ちょうどは許可)。上限超レッグは対で落とす。
+  const limitOk =
+    out.limitEntry != null && out.stopLossForLimit != null &&
+    Math.abs(out.limitEntry - out.stopLossForLimit) <= ceilingYen;
+  const stopOk =
+    out.stopEntry != null && out.stopLossForStop != null &&
+    Math.abs(out.stopEntry - out.stopLossForStop) <= ceilingYen;
+  if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; }
+  if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; }
+
+  // 両レッグ落ちたら見送り(価格を持たない none)。
+  if (out.limitEntry == null && out.stopEntry == null) {
+    return { direction: 'none', rationale: out.rationale, refPrice: out.refPrice };
+  }
+
+  // 2. バイアス veto。
+  if ((bias === 'long' && out.direction === 'sell') ||
+      (bias === 'short' && out.direction === 'buy')) {
+    return { direction: 'none', rationale: out.rationale, refPrice: out.refPrice };
+  }
+
+  return out;
 }
 
 // LC 幅の下限/上限の受理可能レンジ(サニタイズ用)。この範囲外・非有限・floor>ceiling は既定に戻す。
@@ -1003,7 +1044,10 @@ export function resolveLcRange(
     typeof v === 'number' && Number.isFinite(v) && v >= LC_YEN_MIN && v <= LC_YEN_MAX;
   const floor = inRange(floorYen) ? floorYen : DEFAULT_LC_FLOOR_YEN;
   const ceiling = inRange(ceilingYen) ? ceilingYen : DEFAULT_LC_CEILING_YEN;
-  if (floor > ceiling) return { floorYen: DEFAULT_LC_FLOOR_YEN, ceilingYen: DEFAULT_LC_CEILING_YEN };
+  // ceiling を既定 floor(45)より小さく締めた場合、floor を ceiling まで下げて **ユーザーの厳しい上限を尊重** する。
+  // ★従来は両方を既定(45/65)へ戻していたため、締めた上限が黙って無視され「緩む方向」へサイレント失敗するフットガンだった
+  //   (呼び出し側は floor 未指定=45 で呼ぶため、ceiling を 20〜44 にすると発火)。ceiling を単一の真実として優先する。
+  if (floor > ceiling) return { floorYen: ceiling, ceilingYen: ceiling };
   return { floorYen: floor, ceilingYen: ceiling };
 }
 
@@ -1017,12 +1061,19 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const prices = input.prices ?? getPrices();
   const news = input.news ?? [];
   const refPrice = prices.find(p => p.symbol === symbol)?.price ?? 0;
-  // 初期 LC 幅の下限/上限(trade2 から要求ごとに指定可)。サニタイズ・クランプ後にプロンプトへ反映する。
-  const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen, input.lcCeilingYen);
+  // 初期 LC 幅の上限とバイアスは、要求で明示されなければ monitor 設定を既定に使う(＝直呼びのシグナルエンジンも
+  // monitor 設定に従う=単一の真実)。上限はサニタイズ・クランプ後にプロンプトへ反映し、最終保証は enforcePlanConstraints。
+  const ceilingInput = input.lcCeilingYen ?? resolveScalpLcCeiling();
+  const bias: ScalpBias = input.bias ?? resolveScalpBias();
+  const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen, ceilingInput);
+  const biasNote =
+    bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
+  : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
+  : '';
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen)}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen)}${biasNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
@@ -1056,8 +1107,10 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。
       return JSON.stringify(await runScalpPlan(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis));
     }, 'scalp-plan');
-    // callWithFallback から返った plan JSON を再パースして返す。
-    return parseScalpPlan(raw, refPrice);
+    // callWithFallback から返った plan JSON を再パースし、monitor 設定の LC 上限・バイアスをコードで最終保証してから返す。
+    const parsed = parseScalpPlan(raw, refPrice);
+    if (!parsed.ok) return parsed;
+    return { ok: true, plan: enforcePlanConstraints(parsed.plan, { ceilingYen, bias }) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

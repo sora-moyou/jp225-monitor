@@ -12,6 +12,7 @@ interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string;
+  scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none';
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -45,6 +46,8 @@ interface SavePayload {
   openaiKey?: string | null;
   webSearchKey?: string | null;
   webSearchModel?: string | null;
+  scalpLcCeilingYen?: number | null;
+  scalpBias?: 'long' | 'short' | 'none' | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -86,6 +89,8 @@ export interface SettingsElements {
   inputOpenai: HTMLInputElement;
   inputWebSearch: HTMLInputElement;        // Web検索(Gemini グラウンディング)専用キー
   inputWebSearchModel: HTMLInputElement;   // Web検索用 Gemini モデル
+  inputScalpLcCeiling: HTMLInputElement;   // AIエントリー: 最大初期LC(円)
+  selectScalpBias: HTMLSelectElement;      // AIエントリー: バイアス
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -126,6 +131,9 @@ export function initSettingsModal(el: SettingsElements): void {
       : '空欄なら Gemini キーを使用 (AIza... / 課金キー可)';
     el.inputWebSearchModel.value = current?.webSearchModel ?? '';
     el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
+    // AIエントリー: 現値を反映(可視フィールド)。
+    el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
+    el.selectScalpBias.value = current?.scalpBias ?? 'none';
   }
 
   async function loadCurrentVersion() {
@@ -423,6 +431,11 @@ export function initSettingsModal(el: SettingsElements): void {
       if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
       // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)
       body.webSearchModel = el.inputWebSearchModel.value.trim();
+      // AIエントリー: 可視フィールド。空欄=既定(65)に戻す(null)。数値なら上書き。
+      const lcRaw = el.inputScalpLcCeiling.value.trim();
+      body.scalpLcCeilingYen = lcRaw === '' ? null : Number(lcRaw);
+      // バイアスは select(常に値あり)。'none' はサーバ側で既定(未設定)扱い。
+      body.scalpBias = (el.selectScalpBias.value as 'long' | 'short' | 'none');
 
       const result = await saveSettings(body);
       if (!result.ok) {

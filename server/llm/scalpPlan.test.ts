@@ -3,6 +3,7 @@ import {
   parseScalpPlan, runScalpPlan, buildScalpPlan, isLLMEnabled,
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
+  enforcePlanConstraints,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan,
 } from './openai.js';
@@ -284,8 +285,10 @@ describe('resolveLcRange(サニタイズ/クランプ)', () => {
     expect(resolveLcRange(10, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
     expect(resolveLcRange(50, 999)).toEqual({ floorYen: 50, ceilingYen: 65 });
   });
-  it('floor>ceiling は両方とも既定へ戻す', () => {
-    expect(resolveLcRange(120, 50)).toEqual({ floorYen: 45, ceilingYen: 65 });
+  it('floor>ceiling は floor を ceiling まで下げる(締めた上限を尊重・既定へ戻さない)', () => {
+    expect(resolveLcRange(120, 50)).toEqual({ floorYen: 50, ceilingYen: 50 });
+    // ★フットガン: 呼び出し側 floor 未指定(=既定45)で ceiling を 20〜44 に締めても、上限が黙って緩まない。
+    expect(resolveLcRange(undefined, 30)).toEqual({ floorYen: 30, ceilingYen: 30 });
   });
 });
 
@@ -304,6 +307,113 @@ describe('scalpJsonInstruction フィールド注記の LC 反映', () => {
     expect(j).toContain('LC幅50〜120円');
     expect(j).toContain('120円超は出さない');
     expect(j).not.toContain('95');
+  });
+});
+
+describe('enforcePlanConstraints(LC上限・バイアスのハード適用)', () => {
+  // buy: 指値LC=|38200-38150|=50 / 逆指値LC=|38350-38300|=50。
+  const base: AiPlan = {
+    direction: 'buy',
+    limitEntry: 38200, stopLossForLimit: 38150,
+    stopEntry: 38350, stopLossForStop: 38300,
+    rationale: '押し目買い', refPrice: REF,
+  };
+
+  it('両レッグとも上限以内(50≤65)→素通し', () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBe(38350);
+  });
+
+  it('境界(ちょうど上限=50)は許可', () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 50, bias: 'none' });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBe(38350);
+  });
+
+  it('上限超のレッグだけ落とす(逆指値LC=50が上限49超→逆指値のみ落ち、指値も同50なので両落ち→none)', () => {
+    // ceiling=49 だと両レッグ(各50)が超える→両落ち→none。
+    const r = enforcePlanConstraints(base, { ceilingYen: 49, bias: 'none' });
+    expect(r.direction).toBe('none');
+    expect(r.limitEntry).toBeUndefined();
+    expect(r.stopEntry).toBeUndefined();
+  });
+
+  it('片レッグだけ上限超→そのレッグを落とし他レッグは残る', () => {
+    // 逆指値LC=|38400-38300|=100(上限65超)→逆指値落ち。指値LC=50は残る。
+    const p: AiPlan = { ...base, stopEntry: 38400, stopLossForStop: 38300 };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopLossForLimit).toBe(38150);
+    expect(r.stopEntry).toBeUndefined();
+    expect(r.stopLossForStop).toBeUndefined();
+  });
+
+  it('両レッグとも上限超→direction:none(価格なし)', () => {
+    const p: AiPlan = {
+      direction: 'sell',
+      limitEntry: 38300, stopLossForLimit: 38400,   // LC=100
+      stopEntry: 38200, stopLossForStop: 38320,     // LC=120
+      rationale: '戻り売り', refPrice: REF,
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('none');
+    expect(r.limitEntry).toBeUndefined();
+    expect(r.stopEntry).toBeUndefined();
+    expect(r.rationale).toBe('戻り売り');
+    expect(r.refPrice).toBe(REF);
+  });
+
+  it("bias='long' かつ sell → none(素通し前に方向veto)", () => {
+    const sell: AiPlan = {
+      direction: 'sell',
+      limitEntry: 38300, stopLossForLimit: 38340,   // LC=40(上限内)
+      rationale: '戻り売り', refPrice: REF,
+    };
+    const r = enforcePlanConstraints(sell, { ceilingYen: 65, bias: 'long' });
+    expect(r.direction).toBe('none');
+    expect(r.limitEntry).toBeUndefined();
+  });
+
+  it("bias='short' かつ buy → none", () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'short' });
+    expect(r.direction).toBe('none');
+  });
+
+  it("bias='long' かつ buy は素通し / bias='short' かつ sell は素通し", () => {
+    const rLong = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'long' });
+    expect(rLong.direction).toBe('buy');
+    const sell: AiPlan = { ...base, direction: 'sell' };
+    const rShort = enforcePlanConstraints(sell, { ceilingYen: 65, bias: 'short' });
+    expect(rShort.direction).toBe('sell');
+  });
+
+  it("bias='none' は方向を素通し(buy/sell とも)", () => {
+    expect(enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none' }).direction).toBe('buy');
+    const sell: AiPlan = { ...base, direction: 'sell' };
+    expect(enforcePlanConstraints(sell, { ceilingYen: 65, bias: 'none' }).direction).toBe('sell');
+  });
+
+  it('direction:none は何もしない(素通し)', () => {
+    const none: AiPlan = { direction: 'none', rationale: '見送り', refPrice: REF };
+    const r = enforcePlanConstraints(none, { ceilingYen: 65, bias: 'long' });
+    expect(r).toEqual(none);
+  });
+
+  it('LC上限で片レッグ残存後にバイアス違反なら none(LC→bias の順で最終none)', () => {
+    // sell・逆指値LC=100(落ち)・指値LC=40(残る)だが bias=long でvetoされ none。
+    const p: AiPlan = {
+      direction: 'sell',
+      limitEntry: 38300, stopLossForLimit: 38340,  // LC=40 残る
+      stopEntry: 38200, stopLossForStop: 38320,    // LC=120 落ち
+      rationale: '戻り売り', refPrice: REF,
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'long' });
+    expect(r.direction).toBe('none');
+    expect(r.limitEntry).toBeUndefined();
   });
 });
 

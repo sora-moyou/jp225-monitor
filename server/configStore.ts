@@ -39,7 +39,12 @@ export interface UserConfig {
   levelTestBonus?: number;
   levelLookbackSessions?: number;    // 直近高安の対象セッション数
   levelLookbackSessions2?: number;   // 直近高安2(少し長い期間)の対象セッション数
+  scalpLcCeilingYen?: number;        // AIエントリー: 最大初期LC(損切り)幅[円]。未設定は 65。buildScalpPlan の上限既定。
+  scalpBias?: ScalpBias;             // AIエントリー: バイアス。'long'=買い中心 / 'short'=売り中心 / 'none'=両方向(既定)。
 }
+
+// AIエントリーのバイアス。'none'(両方向)が既定。
+export type ScalpBias = 'long' | 'short' | 'none';
 
 type ProviderName = 'gemini' | 'groq' | 'openai';
 
@@ -68,6 +73,7 @@ export const PARAM_BOUNDS = {
   levelTestBonus:        { min: 0, max: 1, default: 0.15 },
   levelLookbackSessions:  { min: 2, max: 60,  default: 10 },
   levelLookbackSessions2: { min: 2, max: 120, default: 20 },
+  scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
 } as const;
 
 let cached: UserConfig | null = null;
@@ -194,6 +200,15 @@ export function resolveOpenGuardBars(): number { return resolveNumeric('openGuar
 export function resolveFlashYen(): number { return resolveNumeric('flashYen'); }
 export function resolveGranvilleMaMid(): number { return resolveNumeric('granvilleMaMid'); }
 export function resolveGranvilleMaLong(): number { return resolveNumeric('granvilleMaLong'); }
+
+// AIエントリー: 最大初期LC(円)。未設定は PARAM_BOUNDS 既定(65)。buildScalpPlan の LC 上限既定に使う。
+export function resolveScalpLcCeiling(): number { return resolveNumeric('scalpLcCeilingYen'); }
+
+// AIエントリー: バイアス。未設定/不正値は 'none'(両方向)。
+export function resolveScalpBias(): ScalpBias {
+  const v = loadConfig().scalpBias;
+  return v === 'long' || v === 'short' ? v : 'none';
+}
 
 // v0.6.0: 的中率の「成功」判定しきい値(順行% ≥ これ)。シグナル種別ごとに持てる(既定は全種別同値 0.1%)。
 // config の hitThresholds 例: { "default": 0.1, "double": 0.2, "level_sr": 0.15 }(リビルド不要で変更可)。

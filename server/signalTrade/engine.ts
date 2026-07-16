@@ -13,7 +13,7 @@
 import type { SignalTradeState } from '../types.js';
 import { computeExitStop, loadExitImpl } from './exit/index.js';
 import { broadcast } from '../sse/broker.js';
-import { getPrices, getNews } from '../cache.js';
+import { getPrices } from '../cache.js';
 import { openDb, resolveDbPath, insertSignalTrade } from '../db/store.js';
 import { inPollWindow } from '../../collector/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
@@ -304,8 +304,11 @@ function maybeRequestPlan(price: number, now: number): void {
   const anchorPrice = price;   // 見送りが返った場合のアンカー(要求時点の現在値)。
   void (async () => {
     try {
-      const { buildScalpPlan } = await import('../llm/openai.js');
-      const result = await buildScalpPlan({ prices: getPrices(), news: getNews() });
+      // route(/api/scalp-plan・trade2)と同一の共通関数を使う＝チャート撮影＋ビジョン＋ガードレール＋
+      // LC 上限/バイアス(monitor 設定既定)込みで提案を得る。override は渡さない(＝trade2 と同条件)。
+      // 画像未生成/LLM 失敗は result.ok=false → 下の分岐に入らず FLAT 維持(＝見送り)。
+      const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
+      const result = await runScalpPlanWithChart();
       if (state.phase === 'flat' && result.ok) {
         if (result.plan.direction === 'none') {
           // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。

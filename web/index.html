@@ -76,6 +76,23 @@
         <input type="text" id="key-websearch-model" autocomplete="off" placeholder="gemini-flash-latest (既定)" />
       </div>
 
+      <fieldset class="settings-section">
+        <legend>AIエントリー</legend>
+        <div class="setting-row">
+          <label>最大初期LC(円)</label>
+          <input type="number" id="scalp-lc-ceiling" autocomplete="off" min="20" max="300" step="1" placeholder="65 (既定)" />
+        </div>
+        <div class="setting-row">
+          <label>バイアス</label>
+          <select id="scalp-bias">
+            <option value="none">両方向（既定）</option>
+            <option value="long">買い中心（売り新規を見送り）</option>
+            <option value="short">売り中心（買い新規を見送り）</option>
+          </select>
+        </div>
+        <div class="exit-hint">AIエントリー計画(scalp-plan)の上限とバイアスを一元管理します。各レッグの初期LC幅がこの上限を超える計画は自動で外し、バイアスに反する方向は見送りにします(コードで保証)。monitorのシグナルエンジンと jp225-Trade の両方に反映されます。</div>
+      </fieldset>
+
       <div class="setting-row">
         <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
         <div id="settings-test-result" class="update-result"></div>

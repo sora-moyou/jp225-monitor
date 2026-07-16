@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache } from './configStore.js';
+import {
+  resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache,
+  resolveScalpLcCeiling, resolveScalpBias,
+} from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
 // configStore は os.homedir() (Windowsは USERPROFILE, Unixは HOME) /.jp225-monitor/config.json を読む。
@@ -46,5 +49,52 @@ describe('shock param resolvers', () => {
     expect(p.accelTh).toBe(5);
     expect(resolveOpenGuardBars()).toBe(1);
     expect(resolveFlashYen()).toBe(120);
+  });
+});
+
+describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () => {
+  let dir: string;
+  let origHome: string | undefined;
+  let origUserProfile: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-scalp-'));
+    origHome = process.env.HOME;
+    origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    resetConfigCache();
+  });
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
+    if (origUserProfile !== undefined) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    resetConfigCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeConfig(obj: Record<string, unknown>): void {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'), JSON.stringify(obj), 'utf-8');
+    resetConfigCache();
+  }
+
+  it('未設定は既定(LC=65 / bias=none)', () => {
+    expect(resolveScalpLcCeiling()).toBe(65);
+    expect(resolveScalpBias()).toBe('none');
+  });
+
+  it('config.json の値を反映(LC=90 / bias=long)', () => {
+    writeConfig({ scalpLcCeilingYen: 90, scalpBias: 'long' });
+    expect(resolveScalpLcCeiling()).toBe(90);
+    expect(resolveScalpBias()).toBe('long');
+  });
+
+  it('bias が不正値/欠落なら none にフォールバック', () => {
+    writeConfig({ scalpBias: 'bogus' });
+    expect(resolveScalpBias()).toBe('none');
+  });
+
+  it("bias='short' を反映", () => {
+    writeConfig({ scalpBias: 'short' });
+    expect(resolveScalpBias()).toBe('short');
   });
 });

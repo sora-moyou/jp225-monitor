@@ -150,6 +150,8 @@ initSettingsModal({
   inputOpenai:    document.getElementById('key-openai') as HTMLInputElement,
   inputWebSearch:      document.getElementById('key-websearch') as HTMLInputElement,
   inputWebSearchModel: document.getElementById('key-websearch-model') as HTMLInputElement,
+  inputScalpLcCeiling: document.getElementById('scalp-lc-ceiling') as HTMLInputElement,
+  selectScalpBias:     document.getElementById('scalp-bias') as HTMLSelectElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,

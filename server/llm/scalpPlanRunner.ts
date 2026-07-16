@@ -1,0 +1,82 @@
+import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } from './openai.js';
+import { getPrices, getNews } from '../cache.js';
+import { buildNikkeiTechnical } from '../chatContext.js';
+import { captureChartPng } from '../chart/chartShot.js';
+import { resolvePort } from '../configStore.js';
+
+// トレードシグナルの AI 提案(scalp-plan)を「チャート撮影 → (無ければ見送り) → buildScalpPlan(画像込み)」の
+// 逐次オンデマンドゲート付きで生成する共通関数。route(/api/scalp-plan・trade2 向け)と
+// シグナルエンジン(server/signalTrade/engine.ts)が両方これを呼ぶことで、両経路の入力
+// (チャート画像 + ガードレール + LC 上限 + バイアス)を完全一致させる(＝同一提案)。
+//
+// 逐次ゲート(ユーザー指定の厳密順序 ②画像生成→③生成確認→④戦略作成):
+//   チャートを使う設定(vision 対応プロバイダあり かつ SCALP_CHART_VISION 有効)の時は、
+//   ②新規撮影→③生成確認を行い、③で画像が生成できなければ AI を一切呼ばず
+//   { ok:false, error:'chart-not-generated' } で見送る。画像が出た時だけ④ buildScalpPlan を呼ぶ。
+//   「チャートを使わない設定」(vision プロバイダ無し / SCALP_CHART_VISION 無効)はゲート対象外＝
+//   従来どおり画像なしテキストのみで判断する(既存挙動を壊さない)。
+
+const NIKKEI_SYMBOL = 'NIY=F';
+
+export interface RunScalpPlanOverrides {
+  /** 対象シンボル。未指定は NIY=F。 */
+  symbol?: string;
+  /** 初期 LC(損切り)幅の下限[円]。未指定は buildScalpPlan 側の既定(45)。 */
+  lcFloorYen?: number;
+  /** 初期 LC(損切り)幅の上限[円]。未指定は monitor 設定(resolveScalpLcCeiling・既定65)。 */
+  lcCeilingYen?: number;
+}
+
+/** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
+function chartVisionEnabled(): boolean {
+  const v = process.env.SCALP_CHART_VISION;
+  if (v === undefined) return true;
+  return !/^(0|false|off|no)$/i.test(v.trim());
+}
+
+/** チャート撮影ゲート付きで scalp-plan を生成する。
+ *  戻り値は buildScalpPlan と同じ ScalpPlanResult。画像生成できなければ AI を呼ばず
+ *  { ok:false, error:'chart-not-generated' } を返す(見送り)。
+ *  LC/バイアスの override を渡さなければ monitor 設定を既定に使う(＝route/エンジンが同条件)。 */
+export async function runScalpPlanWithChart(
+  overrides: RunScalpPlanOverrides = {},
+): Promise<ScalpPlanResult> {
+  const symbol =
+    typeof overrides.symbol === 'string' && overrides.symbol ? overrides.symbol : NIKKEI_SYMBOL;
+  const prices = getPrices();
+  const price = prices.find(p => p.symbol === symbol)?.price;
+
+  // ── チャートビジョン + 逐次オンデマンドゲート(②生成→③確認→④戦略)。
+  let chartImageDataUrl: string | null = null;
+  const visionOn = chartVisionEnabled();
+  const vision = visionOn ? firstAvailableVisionProvider() : null;
+  if (visionOn && vision) {
+    // ② 画像生成(オンデマンド新規撮影)。
+    const shot = await captureChartPng(resolvePort());
+    // ③ 画像生成確認。生成できなければ AI を一切呼ばず見送る(戦略を作らせない)。
+    if (!shot.buffer) {
+      console.log('[scalp-plan] vision: 画像生成できず → 見送り(AI呼ばない) reason=' + (shot.reason ?? 'unknown'));
+      return { ok: false, error: 'chart-not-generated' };
+    }
+    // 画像あり → 添付して④戦略作成へ。
+    chartImageDataUrl = `data:image/png;base64,${shot.buffer.toString('base64')}`;
+    console.log(`[scalp-plan] vision: 画像生成OK (${(shot.buffer.length / 1024).toFixed(0)}kB) → 戦略作成 `
+      + `provider=${vision.name}`);
+  } else if (!visionOn) {
+    console.log('[scalp-plan] vision: disabled (SCALP_CHART_VISION=0) → text-only');
+  } else {
+    console.log('[scalp-plan] vision: skip (no vision-capable provider available) → text-only');
+  }
+
+  // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
+  return buildScalpPlan({
+    symbol,
+    prices,
+    news: getNews(),
+    // chat と同じく、バー蓄積中でも節目メドを出せるよう fallbackPrice を渡す。
+    technical: buildNikkeiTechnical(undefined, price),
+    chartImageDataUrl,
+    lcFloorYen: overrides.lcFloorYen,
+    lcCeilingYen: overrides.lcCeilingYen,
+  });
+}

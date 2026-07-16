@@ -2,8 +2,8 @@ import type { Request, Response } from 'express';
 import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
-  resolveAllNumericParams, PARAM_BOUNDS,
-  type UserConfig,
+  resolveAllNumericParams, resolveScalpBias, PARAM_BOUNDS,
+  type UserConfig, type ScalpBias,
 } from '../configStore.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
@@ -19,7 +19,25 @@ const NUMERIC_PARAM_KEYS = [
   'granvilleMaMid', 'granvilleMaLong',
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
   'levelLookbackSessions', 'levelLookbackSessions2',
+  'scalpLcCeilingYen',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
+
+// AIエントリー バイアスの受理値。
+const BIAS_VALUES = ['long', 'short', 'none'] as const;
+
+// bias フィールドの適用: undefined=変更なし / null・''・'none'=既定(両方向=未設定) / 'long'|'short'=採用 / それ以外=エラー。
+function applyBiasField(
+  existing: ScalpBias | undefined,
+  incoming: unknown,
+): { value: ScalpBias | undefined; error: string | null } {
+  if (incoming === undefined) return { value: existing, error: null };
+  if (incoming === null) return { value: undefined, error: null };
+  if (typeof incoming !== 'string') return { value: existing, error: null };
+  const t = incoming.trim();
+  if (t === '' || t === 'none') return { value: undefined, error: null };   // 既定(両方向)= 未設定で保存
+  if (t === 'long' || t === 'short') return { value: t, error: null };
+  return { value: existing, error: `scalpBias must be one of ${BIAS_VALUES.join('|')}` };
+}
 
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
@@ -32,6 +50,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     openaiFromEnv: !config.openaiKey && !!process.env.OPENAI_API_KEY?.trim(),
     webSearchKeySet: !!config.webSearchKey,   // Web検索専用キー(空欄なら共通 geminiKey に従う)
     webSearchModel: config.webSearchModel ?? '',
+    scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
     // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
     ...resolveAllNumericParams(),
     pricePollMs: resolvePricePollMs(),
@@ -60,6 +79,7 @@ interface SettingsBody {
   openaiKey?: string | null;
   webSearchKey?: string | null;      // Web検索(Gemini グラウンディング)専用キー
   webSearchModel?: string | null;    // Web検索用 Gemini モデル
+  scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -108,6 +128,9 @@ export function postSettingsHandler(req: Request, res: Response): void {
     if (r.error) errors.push(r.error);
     results[key] = { value: r.value, changed: r.changed };
   }
+  // AIエントリー バイアス(enum)を検証。
+  const biasResult = applyBiasField(existing.scalpBias, bodyRec.scalpBias);
+  if (biasResult.error) errors.push(biasResult.error);
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -120,6 +143,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     openaiKey: applyStringField(existing.openaiKey, body.openaiKey),
     webSearchKey: applyStringField(existing.webSearchKey, body.webSearchKey),   // 秘密: 空欄=変更なし
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
+    scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
   };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {
