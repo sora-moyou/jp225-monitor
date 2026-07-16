@@ -36,6 +36,19 @@ export interface ArmedBracket {
   at: number;
 }
 
+/** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
+ *  擬似約定(filled)へ進んでも保持し続ける(次の ARM でのみ signalId を更新)。 */
+export interface CurrentSignal {
+  signalId: number;
+  at: number;
+  direction: 'buy' | 'sell';
+  limitEntry?: number;
+  stopEntry?: number;
+  stopLossForLimit?: number;
+  stopLossForStop?: number;
+  rationale: string;
+}
+
 export interface OpenPosition {
   direction: 'buy' | 'sell';
   entryPrice: number;
@@ -152,8 +165,11 @@ export function advance(
   return { next: st };
 }
 
-/** エンジン状態 + 現在値 + now から SSE state を組み立てる純関数。 */
-export function toSignalTradeState(st: EngineState, price: number | null, now: number): SignalTradeState {
+/** エンジン状態 + 現在値 + now から SSE state を組み立てる純関数。
+ *  signal(現在シグナル・trade2 追従用)は在れば付与する。既存フィールドは不変=パネル表示互換。 */
+export function toSignalTradeState(
+  st: EngineState, price: number | null, now: number, signal?: CurrentSignal | null,
+): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
     const a = st.armed;
@@ -176,6 +192,17 @@ export function toSignalTradeState(st: EngineState, price: number | null, now: n
     };
   }
   if (st.lastExit) s.lastExit = st.lastExit;
+  if (signal) {
+    s.signal = {
+      signalId: signal.signalId,
+      direction: signal.direction,
+      limitEntry: signal.limitEntry,
+      stopEntry: signal.stopEntry,
+      stopLossForLimit: signal.stopLossForLimit,
+      stopLossForStop: signal.stopLossForStop,
+      at: signal.at,
+    };
+  }
   return s;
 }
 
@@ -199,6 +226,17 @@ export function planToArmed(
   return a;
 }
 
+/** armed ブラケット + 採番済み signalId から CurrentSignal を組み立てる純関数。
+ *  レッグ欠落フィールドは undefined のまま(付与しない)。 */
+export function armedToCurrentSignal(a: ArmedBracket, signalId: number): CurrentSignal {
+  const s: CurrentSignal = { signalId, at: a.at, direction: a.direction, rationale: a.rationale };
+  if (a.limitEntry != null) s.limitEntry = a.limitEntry;
+  if (a.stopEntry != null) s.stopEntry = a.stopEntry;
+  if (a.stopLossForLimit != null) s.stopLossForLimit = a.stopLossForLimit;
+  if (a.stopLossForStop != null) s.stopLossForStop = a.stopLossForStop;
+  return s;
+}
+
 // ─── オーケストレーション(状態保持・副作用) ──────────────────
 
 const DEFAULT_PLAN_INTERVAL_MS = 3 * 60_000;
@@ -216,6 +254,10 @@ function engineEnabled(): boolean {
 }
 
 let state: EngineState = { phase: 'flat' };
+// 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番して更新し、
+// 擬似約定(filled)後も保持する(見送り none では更新しない)。null = まだ一度も ARM していない。
+let signalIdCounter = 0;
+let currentSignal: CurrentSignal | null = null;
 let running = false;
 let planning = false;
 let lastPlanAt = 0;
@@ -245,12 +287,19 @@ export function stopSignalEngine(): void {
 /** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
 export function getSignalTradeState(now = Date.now()): SignalTradeState {
   const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-  return toSignalTradeState(state, price, now);
+  return toSignalTradeState(state, price, now, currentSignal);
+}
+
+/** 現在シグナル(trade2 追従用)。まだ ARM していなければ null。表示/連携専用(発注はしない)。 */
+export function getCurrentSignal(): CurrentSignal | null {
+  return currentSignal;
 }
 
 /** テスト/リセット用: エンジン内部状態を初期化する。 */
 export function _resetSignalEngine(): void {
   state = { phase: 'flat' };
+  signalIdCounter = 0;
+  currentSignal = null;
   planning = false;
   lastPlanAt = 0;
   lastBroadcastJson = '';
@@ -319,6 +368,10 @@ function maybeRequestPlan(price: number, now: number): void {
           if (armed) {
             state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
             planSuppressedAnchor = null;         // actionable で抑止解除。
+            // ARM ごとに signalId を単調増加で採番し、現在シグナルを更新(filled 後も保持・none では更新しない)。
+            signalIdCounter += 1;
+            currentSignal = armedToCurrentSignal(armed, signalIdCounter);
+            broadcastSignalState(Date.now());    // ARM 時に即 broadcast(trade2 が即追従できるよう)。
           }
         }
       }
@@ -330,6 +383,17 @@ function maybeRequestPlan(price: number, now: number): void {
   })();
 }
 
+// 非公開: 現在の state + currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
+function broadcastSignalState(now: number): void {
+  const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
+  const s = toSignalTradeState(state, price, now, currentSignal);
+  const json = JSON.stringify(s);
+  if (json !== lastBroadcastJson) {
+    lastBroadcastJson = json;
+    broadcast({ type: 'signalTrade', payload: s });
+  }
+}
+
 /** priceLoop から毎 tick 呼ぶ。現在値で遷移を進め、決済を記録し、必要なら次プランを要求し、
  *  state を SSE broadcast する。エンジン未起動時は何もしない(既存 SSE を汚さない)。 */
 export function feedSignalEngine(price: number, now: number): void {
@@ -339,12 +403,7 @@ export function feedSignalEngine(price: number, now: number): void {
     state = next;
     if (recorded) persistTrade(recorded);
     maybeRequestPlan(price, now);
-    const s = toSignalTradeState(state, price, now);
-    const json = JSON.stringify(s);
-    if (json !== lastBroadcastJson) {
-      lastBroadcastJson = json;
-      broadcast({ type: 'signalTrade', payload: s });
-    }
+    broadcastSignalState(now);
   } catch (e) {
     console.warn('[signalTrade] tick error:', e instanceof Error ? e.message : String(e));
   }

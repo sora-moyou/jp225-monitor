@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   detectFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
-  advance, toSignalTradeState, planToArmed, restingStopOf,
+  advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   type ArmedBracket, type OpenPosition, type EngineState,
 } from './engine.js';
 import { _setExitImpl } from './exit/index.js';
@@ -206,5 +206,45 @@ describe('planToArmed', () => {
   });
   it('両レッグ欠落は null', () => {
     expect(planToArmed({ direction: 'buy', rationale: 'r' }, 0)).toBeNull();
+  });
+});
+
+// ─── armedToCurrentSignal ───
+describe('armedToCurrentSignal', () => {
+  it('両レッグの armed から full plan + signalId を組み立てる', () => {
+    const a: ArmedBracket = { direction: 'buy', limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050, rationale: 'r', at: 5 };
+    expect(armedToCurrentSignal(a, 3)).toEqual({
+      signalId: 3, at: 5, direction: 'buy', rationale: 'r',
+      limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050,
+    });
+  });
+  it('片レッグ(指値のみ)は欠落フィールドを付与しない', () => {
+    const a: ArmedBracket = { direction: 'sell', limitEntry: 38100, stopLossForLimit: 38150, rationale: 'r', at: 0 };
+    const s = armedToCurrentSignal(a, 1);
+    expect(s).toEqual({ signalId: 1, at: 0, direction: 'sell', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38150 });
+    expect('stopEntry' in s).toBe(false);
+    expect('stopLossForStop' in s).toBe(false);
+  });
+});
+
+// ─── toSignalTradeState: signal 付与(trade2 追従) ───
+describe('toSignalTradeState signal', () => {
+  const sig = { signalId: 7, at: 5, direction: 'buy' as const, limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050, rationale: 'r' };
+  it('signal を渡すと SSE state に signal(id+full plan)が入る', () => {
+    const st: EngineState = { phase: 'flat' };
+    const s = toSignalTradeState(st, 38000, 9, sig);
+    expect(s.signal).toEqual({ signalId: 7, direction: 'buy', limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050, at: 5 });
+  });
+  it('filled でも signal を保持(擬似約定後も追従情報が残る)', () => {
+    const st: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 37950, qty: 1, initialStop: 37900, peakProfit: 0, rationale: 'r', at: 7 } };
+    const s = toSignalTradeState(st, 38000, 9, sig);
+    expect(s.signal?.signalId).toBe(7);
+    expect(s.position).toBeDefined();   // 既存 position 表示は不変
+  });
+  it('signal 未指定なら signal は付かない(既存パネル互換)', () => {
+    const st: EngineState = { phase: 'armed', armed: { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at: 5 } };
+    const s = toSignalTradeState(st, 38000, 9);
+    expect(s.signal).toBeUndefined();
+    expect(s.entry).toBeDefined();   // 既存 entry 表示は不変
   });
 });

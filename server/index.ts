@@ -27,6 +27,7 @@ import { mergeHandler } from './routes/merge.js';
 import { exportHandler } from './routes/export.js';
 import { replaceHandler } from './routes/replace.js';
 import { signalTradesHandler, signalTradesClearHandler } from './routes/signalTrades.js';
+import { currentSignalHandler } from './routes/currentSignal.js';
 import { startSignalEngine } from './signalTrade/engine.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
@@ -94,6 +95,7 @@ app.post('/api/export', exportHandler);
 app.post('/api/replace', replaceHandler);
 app.get('/api/signal-trades', signalTradesHandler);
 app.post('/api/signal-trades/clear', signalTradesClearHandler);
+app.get('/api/current-signal', currentSignalHandler);
 // スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
 app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));

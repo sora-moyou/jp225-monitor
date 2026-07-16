@@ -73,6 +73,15 @@ export interface SignalTradeState {
   position?: { direction: 'buy' | 'sell'; entryPrice: number; qty: number; unrealized: number; at: number };
   // 直近決済(決済時に一時表示するため)。
   lastExit?: { exitPrice: number; pnl: number; at: number };
+  // 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、擬似約定(filled)後も保持する
+  // (見送り none では更新しない)。既存の表示用フィールドとは独立=パネル表示は不変。
+  signal?: {
+    signalId: number;
+    direction: 'buy' | 'sell';
+    limitEntry?: number; stopEntry?: number;
+    stopLossForLimit?: number; stopLossForStop?: number;
+    at: number;
+  };
   updatedAt: number;
 }
 
