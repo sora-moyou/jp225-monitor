@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { currentSignalPayload } from './currentSignal.js';
-import type { CurrentSignal } from '../signalTrade/engine.js';
+import { currentSignalPayload, currentSignalResponse } from './currentSignal.js';
+import type { CurrentSignal, SignalHold } from '../signalTrade/engine.js';
 
 // GET /api/current-signal のシェイプ整形(純関数)を検証する。発注系は持たない=表示/連携専用。
 
@@ -27,5 +27,23 @@ describe('currentSignalPayload', () => {
     expect(out.plan.stopLossForLimit).toBe(38150);
     expect(out.plan.stopEntry).toBeUndefined();
     expect(out.plan.stopLossForStop).toBeUndefined();
+  });
+});
+
+describe('currentSignalResponse (hold 付き)', () => {
+  const sig: CurrentSignal = {
+    signalId: 4, at: 111, direction: 'buy', rationale: 'r',
+    limitEntry: 37950, stopLossForLimit: 37900,
+  };
+  it('保有中は hold(signalId 対応・exitStop 絶対価格)を付ける', () => {
+    const hold: SignalHold = { signalId: 4, direction: 'buy', entryPrice: 37950, exitStop: 37900, at: 222 };
+    const out = currentSignalResponse(sig, hold) as { signalId: number; hold: SignalHold };
+    expect(out.signalId).toBe(4);
+    expect(out.hold).toEqual(hold);
+    expect(out.hold.signalId).toBe(sig.signalId);   // entry と対応
+  });
+  it('保有していなければ hold は null(flat/armed)', () => {
+    expect(currentSignalResponse(sig, null).hold).toBeNull();
+    expect(currentSignalResponse(null, null)).toEqual({ signalId: null, hold: null });
   });
 });

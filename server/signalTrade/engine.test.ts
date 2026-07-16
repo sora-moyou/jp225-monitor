@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   detectFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
-  type ArmedBracket, type OpenPosition, type EngineState,
+  computeHold, inCooldown,
+  type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal,
 } from './engine.js';
 import { _setExitImpl } from './exit/index.js';
 
@@ -224,6 +225,77 @@ describe('armedToCurrentSignal', () => {
     expect(s).toEqual({ signalId: 1, at: 0, direction: 'sell', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38150 });
     expect('stopEntry' in s).toBe(false);
     expect('stopLossForStop' in s).toBe(false);
+  });
+});
+
+// ─── computeHold(保有中の意図・exitStop 公開) ───
+describe('computeHold', () => {
+  const sig: CurrentSignal = { signalId: 7, at: 5, direction: 'buy', rationale: 'r', limitEntry: 37950, stopLossForLimit: 37900 };
+
+  it('filled: signalId(ARM采番)+direction+entryPrice+exitStop(簡易=初期LC)+at(建値時刻)', () => {
+    const st: EngineState = {
+      phase: 'filled',
+      position: { direction: 'buy', entryPrice: 37950, qty: 1, initialStop: 37900, peakProfit: 400, rationale: 'r', at: 7 },
+    };
+    expect(computeHold(st, sig)).toEqual({
+      signalId: 7, direction: 'buy', entryPrice: 37950, exitStop: 37900, at: 7,
+    });
+  });
+
+  it('ラチェット差し替え時は exitStop が動く(毎tick算出)', () => {
+    _setExitImpl(s => s.peakProfit >= 100 ? s.entryPrice + 30 : s.initialStop);
+    const st: EngineState = {
+      phase: 'filled',
+      position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 150, rationale: 'r', at: 1 },
+    };
+    expect(computeHold(st, sig)?.exitStop).toBe(38030);   // 建値+30 に上がった床
+  });
+
+  it('flat / armed / signal 未指定 では hold なし(null)', () => {
+    expect(computeHold({ phase: 'flat' }, sig)).toBeNull();
+    expect(computeHold({ phase: 'armed', armed: { direction: 'buy', limitEntry: 1, stopLossForLimit: 1, rationale: 'r', at: 0 } }, sig)).toBeNull();
+    const filled: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 1, qty: 1, initialStop: 1, peakProfit: 0, rationale: 'r', at: 0 } };
+    expect(computeHold(filled, null)).toBeNull();   // signal 無ければ hold は付けない
+  });
+
+  it('signalId は entry(currentSignal)と対応する', () => {
+    const st: EngineState = { phase: 'filled', position: { direction: 'sell', entryPrice: 38100, qty: 1, initialStop: 38150, peakProfit: 0, rationale: 'r', at: 2 } };
+    const s: CurrentSignal = { signalId: 42, at: 1, direction: 'sell', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38150 };
+    expect(computeHold(st, s)?.signalId).toBe(42);
+  });
+});
+
+// ─── toSignalTradeState: hold 付与(exitStop 公開) ───
+describe('toSignalTradeState hold', () => {
+  const sig: CurrentSignal = { signalId: 9, at: 3, direction: 'buy', rationale: 'r', limitEntry: 37950, stopLossForLimit: 37900 };
+  it('filled + signal で SSE state に hold(exitStop 絶対価格)が入る', () => {
+    const st: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 37950, qty: 1, initialStop: 37900, peakProfit: 0, rationale: 'r', at: 8 } };
+    const s = toSignalTradeState(st, 38000, 9, sig);
+    expect(s.hold).toEqual({ signalId: 9, direction: 'buy', entryPrice: 37950, exitStop: 37900, at: 8 });
+    expect(s.position).toBeDefined();   // 既存 position 表示は不変
+  });
+  it('flat/armed では hold は付かない', () => {
+    expect(toSignalTradeState({ phase: 'flat' }, 38000, 9, sig).hold).toBeUndefined();
+    const armed: EngineState = { phase: 'armed', armed: { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at: 3 } };
+    expect(toSignalTradeState(armed, 38000, 9, sig).hold).toBeUndefined();
+  });
+});
+
+// ─── inCooldown(決済後の再ARM抑止) ───
+describe('inCooldown', () => {
+  it('決済からの経過が秒数未満なら true(=まだ再ARMしない)', () => {
+    expect(inCooldown(1000, 1000 + 89_000, 90)).toBe(true);
+  });
+  it('秒数を過ぎたら false(=再ARM可)', () => {
+    expect(inCooldown(1000, 1000 + 90_000, 90)).toBe(false);   // 境界(=90秒)は解除
+    expect(inCooldown(1000, 1000 + 120_000, 90)).toBe(false);
+  });
+  it('cooldownSec<=0 は無効(常に false)', () => {
+    expect(inCooldown(1000, 1000, 0)).toBe(false);
+    expect(inCooldown(1000, 1000 + 10, -5)).toBe(false);
+  });
+  it('まだ決済していない(lastExitAt=null)は false', () => {
+    expect(inCooldown(null, 999_999, 90)).toBe(false);
   });
 });
 

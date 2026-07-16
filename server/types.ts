@@ -82,6 +82,16 @@ export interface SignalTradeState {
     stopLossForLimit?: number; stopLossForStop?: number;
     at: number;
   };
+  // 保有中の意図(trade2 追従用)。filled の間だけ付与し、決済逆指値(computeExitStop の絶対価格)を
+  // 毎tick公開する。signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。
+  // exitStop=null は有効な逆指値なし(異常時)。flat/armed では付与しない。既存フィールドは不変=パネル表示互換。
+  hold?: {
+    signalId: number;
+    direction: 'buy' | 'sell';
+    entryPrice: number;
+    exitStop: number | null;
+    at: number;   // エントリー約定時刻(= position.at)。建玉の対応キー(exitStop 自体は毎tick動く)。
+  };
   updatedAt: number;
 }
 

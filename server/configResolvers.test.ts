@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache,
-  resolveScalpLcCeiling, resolveScalpBias,
+  resolveScalpLcCeiling, resolveScalpBias, resolveScalpCooldownSec,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
@@ -77,15 +77,22 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
     resetConfigCache();
   }
 
-  it('未設定は既定(LC=65 / bias=none)', () => {
+  it('未設定は既定(LC=65 / bias=none / cooldown=90)', () => {
     expect(resolveScalpLcCeiling()).toBe(65);
     expect(resolveScalpBias()).toBe('none');
+    expect(resolveScalpCooldownSec()).toBe(90);
   });
 
-  it('config.json の値を反映(LC=90 / bias=long)', () => {
-    writeConfig({ scalpLcCeilingYen: 90, scalpBias: 'long' });
+  it('config.json の値を反映(LC=90 / bias=long / cooldown=120)', () => {
+    writeConfig({ scalpLcCeilingYen: 90, scalpBias: 'long', scalpCooldownSec: 120 });
     expect(resolveScalpLcCeiling()).toBe(90);
     expect(resolveScalpBias()).toBe('long');
+    expect(resolveScalpCooldownSec()).toBe(120);
+  });
+
+  it('cooldown=0(無効)を反映', () => {
+    writeConfig({ scalpCooldownSec: 0 });
+    expect(resolveScalpCooldownSec()).toBe(0);
   });
 
   it('bias が不正値/欠落なら none にフォールバック', () => {

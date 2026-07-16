@@ -18,6 +18,7 @@ import { openDb, resolveDbPath, insertSignalTrade } from '../db/store.js';
 import { inPollWindow } from '../../collector/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
+import { resolveScalpCooldownSec } from '../configStore.js';
 
 const NIKKEI_SYMBOL = 'NIY=F';
 const QTY = 1;   // 紙トラッキングは常に1枚。
@@ -66,6 +67,16 @@ export interface EngineState {
   lastExit?: { exitPrice: number; pnl: number; at: number };
 }
 
+/** 保有中の意図(trade2 追従用)。filled の間だけ算出し、決済逆指値(computeExitStop の絶対価格)を公開する。
+ *  signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。 */
+export interface SignalHold {
+  signalId: number;
+  direction: 'buy' | 'sell';
+  entryPrice: number;
+  exitStop: number | null;
+  at: number;   // エントリー約定時刻(= position.at)。建玉の対応キー。
+}
+
 export interface RecordedTrade {
   entryT: number; entryPrice: number; dir: 'buy' | 'sell';
   exitT: number; exitPrice: number; pnl: number; qty: number; rationale: string;
@@ -100,6 +111,29 @@ export function restingStopOf(pos: OpenPosition): number | null {
     direction: pos.direction, entryPrice: pos.entryPrice,
     initialStop: pos.initialStop, peakProfit: pos.peakProfit,
   });
+}
+
+/** 保有中の意図(hold)を組み立てる純関数。filled かつ position かつ現在シグナルが在るときだけ返す。
+ *  signalId は currentSignal から取る(ARM ごとに采番され filled 中は不変=そのエントリーの采番)。
+ *  exitStop は毎tick算出する resting stop の絶対価格(null=有効な逆指値なし)。flat/armed/未シグナルは null。 */
+export function computeHold(st: EngineState, signal: CurrentSignal | null): SignalHold | null {
+  if (st.phase !== 'filled' || !st.position || !signal) return null;
+  const p = st.position;
+  return {
+    signalId: signal.signalId,
+    direction: p.direction,
+    entryPrice: p.entryPrice,
+    exitStop: restingStopOf(p),
+    at: p.at,
+  };
+}
+
+/** 決済(filled→flat)後クールダウン中か(=再ARMを抑止すべきか)を判定する純関数。
+ *  cooldownSec<=0 は無効(常に false)・lastExitAt が null(まだ決済無し)も false。
+ *  決済からの経過が cooldownSec 秒未満なら true(=まだ再ARMしない)。 */
+export function inCooldown(lastExitAt: number | null, now: number, cooldownSec: number): boolean {
+  if (!(cooldownSec > 0) || lastExitAt == null) return false;
+  return now - lastExitAt < cooldownSec * 1000;
 }
 
 /** 現在値が決済逆指値に達したか。達したら exit 価格(= 逆指値)、未達なら null。 */
@@ -192,6 +226,8 @@ export function toSignalTradeState(
     };
   }
   if (st.lastExit) s.lastExit = st.lastExit;
+  const hold = computeHold(st, signal ?? null);
+  if (hold) s.hold = hold;
   if (signal) {
     s.signal = {
       signalId: signal.signalId,
@@ -262,6 +298,10 @@ let running = false;
 let planning = false;
 let lastPlanAt = 0;
 let lastBroadcastJson = '';
+// 決済(filled→flat)時刻。この後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。null=まだ決済無し。
+let lastSignalExitAt: number | null = null;
+// cooldown ログの多重抑止(毎tick出さない)。決済ごとに false へ戻し、cooldown 中に一度だけ出す。
+let cooldownLogged = false;
 const planIntervalMs = resolvePlanIntervalMs();
 
 // ── 見送り(direction:'none')後の再計画抑止 ──────────────────────
@@ -295,6 +335,11 @@ export function getCurrentSignal(): CurrentSignal | null {
   return currentSignal;
 }
 
+/** 保有中の意図(hold・trade2 追従用)。filled の間だけ返す(決済逆指値=毎tick算出)。他は null。 */
+export function getSignalHold(): SignalHold | null {
+  return computeHold(state, currentSignal);
+}
+
 /** テスト/リセット用: エンジン内部状態を初期化する。 */
 export function _resetSignalEngine(): void {
   state = { phase: 'flat' };
@@ -304,6 +349,8 @@ export function _resetSignalEngine(): void {
   lastPlanAt = 0;
   lastBroadcastJson = '';
   planSuppressedAnchor = null;
+  lastSignalExitAt = null;
+  cooldownLogged = false;
 }
 
 // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。
@@ -328,6 +375,17 @@ function persistTrade(t: RecordedTrade): void {
 function maybeRequestPlan(price: number, now: number): void {
   if (planning || state.phase !== 'flat') return;
   if (!inPollWindow(now)) return;   // 取引時間外は要求しない。
+
+  // クールダウンゲート: 決済(filled→flat)後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。
+  // 既存の見送り抑止/節目リアーム/間隔ゲートに AND(=最も早く弾く)。0で無効。cooldown 中は一度だけ log。
+  if (inCooldown(lastSignalExitAt, now, resolveScalpCooldownSec())) {
+    if (!cooldownLogged) {
+      const remain = Math.max(0, Math.ceil((lastSignalExitAt! + resolveScalpCooldownSec() * 1000 - now) / 1000));
+      console.log(`[signalTrade] cooldown 決済後の再ARM抑止(あと${remain}秒)`);
+      cooldownLogged = true;
+    }
+    return;
+  }
 
   // 見送り抑止ゲート: アンカーが在れば、節目クロス or 安全弁時間まで再計画を抑止する。
   if (planSuppressedAnchor !== null) {
@@ -401,7 +459,12 @@ export function feedSignalEngine(price: number, now: number): void {
   try {
     const { next, recorded } = advance(state, price, now);
     state = next;
-    if (recorded) persistTrade(recorded);
+    if (recorded) {
+      persistTrade(recorded);
+      // 決済(filled→flat)= 全建玉クローズ。クールダウン起点を記録し、ログ抑止を解除(次tickで一度出す)。
+      lastSignalExitAt = now;
+      cooldownLogged = false;
+    }
     maybeRequestPlan(price, now);
     broadcastSignalState(now);
   } catch (e) {

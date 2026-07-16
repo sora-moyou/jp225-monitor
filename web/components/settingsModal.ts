@@ -12,7 +12,7 @@ interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string;
-  scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none';
+  scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -48,6 +48,7 @@ interface SavePayload {
   webSearchModel?: string | null;
   scalpLcCeilingYen?: number | null;
   scalpBias?: 'long' | 'short' | 'none' | null;
+  scalpCooldownSec?: number | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -91,6 +92,7 @@ export interface SettingsElements {
   inputWebSearchModel: HTMLInputElement;   // Web検索用 Gemini モデル
   inputScalpLcCeiling: HTMLInputElement;   // AIエントリー: 最大初期LC(円)
   selectScalpBias: HTMLSelectElement;      // AIエントリー: バイアス
+  inputScalpCooldown: HTMLInputElement;    // AIエントリー: クールダウン(秒)
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -134,6 +136,7 @@ export function initSettingsModal(el: SettingsElements): void {
     // AIエントリー: 現値を反映(可視フィールド)。
     el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
     el.selectScalpBias.value = current?.scalpBias ?? 'none';
+    el.inputScalpCooldown.value = current ? String(current.scalpCooldownSec) : '';
   }
 
   async function loadCurrentVersion() {
@@ -436,6 +439,9 @@ export function initSettingsModal(el: SettingsElements): void {
       body.scalpLcCeilingYen = lcRaw === '' ? null : Number(lcRaw);
       // バイアスは select(常に値あり)。'none' はサーバ側で既定(未設定)扱い。
       body.scalpBias = (el.selectScalpBias.value as 'long' | 'short' | 'none');
+      // クールダウン: 可視フィールド。空欄=既定(90)に戻す(null)。数値なら上書き(0で無効)。
+      const cdRaw = el.inputScalpCooldown.value.trim();
+      body.scalpCooldownSec = cdRaw === '' ? null : Number(cdRaw);
 
       const result = await saveSettings(body);
       if (!result.ok) {

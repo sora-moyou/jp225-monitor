@@ -19,7 +19,7 @@ const NUMERIC_PARAM_KEYS = [
   'granvilleMaMid', 'granvilleMaLong',
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
   'levelLookbackSessions', 'levelLookbackSessions2',
-  'scalpLcCeilingYen',
+  'scalpLcCeilingYen', 'scalpCooldownSec',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
 
 // AIエントリー バイアスの受理値。

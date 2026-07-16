@@ -41,6 +41,7 @@ export interface UserConfig {
   levelLookbackSessions2?: number;   // 直近高安2(少し長い期間)の対象セッション数
   scalpLcCeilingYen?: number;        // AIエントリー: 最大初期LC(損切り)幅[円]。未設定は 65。buildScalpPlan の上限既定。
   scalpBias?: ScalpBias;             // AIエントリー: バイアス。'long'=買い中心 / 'short'=売り中心 / 'none'=両方向(既定)。
+  scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
 }
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
@@ -74,6 +75,7 @@ export const PARAM_BOUNDS = {
   levelLookbackSessions:  { min: 2, max: 60,  default: 10 },
   levelLookbackSessions2: { min: 2, max: 120, default: 20 },
   scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
+  scalpCooldownSec:       { min: 0, max: 3600, default: 90 },   // AIエントリー: 決済後の再ARM抑止秒数。0で無効。
 } as const;
 
 let cached: UserConfig | null = null;
@@ -203,6 +205,9 @@ export function resolveGranvilleMaLong(): number { return resolveNumeric('granvi
 
 // AIエントリー: 最大初期LC(円)。未設定は PARAM_BOUNDS 既定(65)。buildScalpPlan の LC 上限既定に使う。
 export function resolveScalpLcCeiling(): number { return resolveNumeric('scalpLcCeilingYen'); }
+
+// AIエントリー: 決済後の再ARM抑止秒数。未設定は PARAM_BOUNDS 既定(90)。0で無効。
+export function resolveScalpCooldownSec(): number { return resolveNumeric('scalpCooldownSec'); }
 
 // AIエントリー: バイアス。未設定/不正値は 'none'(両方向)。
 export function resolveScalpBias(): ScalpBias {
