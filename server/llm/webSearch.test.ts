@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { parseGrounding, formatGrounded, geminiGroundedSearch } from './webSearch.js';
+import {
+  parseGrounding, formatGrounded, geminiGroundedSearch,
+  chooseWebSearchRoute, parseOpenAiSearch, openaiWebSearch,
+} from './webSearch.js';
 
 describe('parseGrounding', () => {
   it('answer(parts結合) と sources(groundingChunks) を抽出', () => {
@@ -85,5 +88,81 @@ describe('geminiGroundedSearch', () => {
   it('fetch 例外は空結果(チャットを止めない)', async () => {
     const fetchMock = vi.fn(async () => { throw new Error('boom'); }) as unknown as typeof fetch;
     expect(await geminiGroundedSearch('q', 'K', 'm', fetchMock)).toEqual({ answer: '', sources: [] });
+  });
+});
+
+describe('chooseWebSearchRoute', () => {
+  it('Gemini キーがあれば gemini(OpenAI キー有無に関わらず優先)', () => {
+    expect(chooseWebSearchRoute('AIza', undefined)).toBe('gemini');
+    expect(chooseWebSearchRoute('AIza', 'sk-x')).toBe('gemini');
+  });
+  it('Gemini 無く OpenAI キーがあれば openai', () => {
+    expect(chooseWebSearchRoute(undefined, 'sk-x')).toBe('openai');
+    expect(chooseWebSearchRoute('', 'sk-x')).toBe('openai');
+  });
+  it('両方無し(空白含む)は none', () => {
+    expect(chooseWebSearchRoute(undefined, undefined)).toBe('none');
+    expect(chooseWebSearchRoute('  ', '  ')).toBe('none');
+  });
+});
+
+describe('parseOpenAiSearch', () => {
+  it('content を answer に / annotations.url_citation を sources に', () => {
+    const json = {
+      choices: [{
+        message: {
+          content: '日経は上昇。',
+          annotations: [
+            { type: 'url_citation', url_citation: { url: 'https://a.example', title: 'A社' } },
+            { type: 'url_citation', url_citation: { url: 'https://b.example', title: 'B社' } },
+          ],
+        },
+      }],
+    };
+    const r = parseOpenAiSearch(json);
+    expect(r.answer).toBe('日経は上昇。');
+    expect(r.sources).toEqual([
+      { title: 'A社', url: 'https://a.example', content: '' },
+      { title: 'B社', url: 'https://b.example', content: '' },
+    ]);
+  });
+  it('annotations 無しでも content は取れる / title 欠けは url 代用・url 欠けはスキップ', () => {
+    const r = parseOpenAiSearch({ choices: [{ message: { content: 'x', annotations: [
+      { url_citation: { title: 'notitle-nourl' } },
+      { url_citation: { url: 'https://c.example' } },
+    ] } }] });
+    expect(r.answer).toBe('x');
+    expect(r.sources).toEqual([{ title: 'https://c.example', url: 'https://c.example', content: '' }]);
+  });
+  it('null / 非オブジェクト / choices 無し → 空', () => {
+    expect(parseOpenAiSearch(null)).toEqual({ answer: '', sources: [] });
+    expect(parseOpenAiSearch('x')).toEqual({ answer: '', sources: [] });
+    expect(parseOpenAiSearch({})).toEqual({ answer: '', sources: [] });
+  });
+});
+
+describe('openaiWebSearch', () => {
+  it('正常応答を GroundedResult に(最小パラメータで create を呼ぶ)', async () => {
+    const createMock = vi.fn(async (_params: Record<string, unknown>) => ({
+      choices: [{ message: { content: 'ok', annotations: [{ url_citation: { url: 'https://s', title: 'S' } }] } }],
+    }));
+    const r = await openaiWebSearch('日経 急落', 'sk-KEY', 'gpt-4o-mini-search-preview', createMock);
+    expect(r.answer).toBe('ok');
+    expect(r.sources).toHaveLength(1);
+    const params = createMock.mock.calls[0]![0];
+    expect(params.model).toBe('gpt-4o-mini-search-preview');
+    expect(params.messages).toEqual([{ role: 'user', content: '日経 急落' }]);
+    // search-preview 非対応の temperature 等は付けない。
+    expect(params.temperature).toBeUndefined();
+    expect(params.top_p).toBeUndefined();
+  });
+  it('キー無し(空文字)は create を呼ばず空結果', async () => {
+    const createMock = vi.fn();
+    expect(await openaiWebSearch('q', '', 'm', createMock)).toEqual({ answer: '', sources: [] });
+    expect(createMock).not.toHaveBeenCalled();
+  });
+  it('create 例外は空結果(チャットを止めない)', async () => {
+    const createMock = vi.fn(async () => { throw new Error('boom'); });
+    expect(await openaiWebSearch('q', 'sk-K', 'm', createMock)).toEqual({ answer: '', sources: [] });
   });
 });

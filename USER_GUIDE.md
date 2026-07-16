@@ -28,7 +28,9 @@ https://github.com/sora-moyou/jp225-monitor/releases/latest
 起動時に設定モーダルが自動で開きます。
 
 - [Gemini 取得 (無料、推奨)](https://aistudio.google.com/apikey) → `AIza...` をコピー → モーダル「Gemini」欄に貼り付け → 保存
-- **選び方**: 順序 = **Gemini → Groq → OpenAI**(成功した最初の1つを使用)。**429/5xx/413 は次へ自動フォールバック**、**401/404 は停止(要修正)**。**おすすめ = Gemini(無料)＋OpenAI(少額課金)**。**チャート画像を使うスキャルのシグナルは Gemini か OpenAI のみ**(Groq はテキスト専用)なので、**OpenAI 有効が安定の要**。Web検索キーは Gemini グラウンディング用(空欄なら共通 Gemini を使用)。
+- **選び方**: 順序 = **Gemini → Groq → OpenAI**(成功した最初の1つを使用)。**429/5xx/413 は次へ自動フォールバック**、**401/404 は停止(要修正)**。**おすすめ = Gemini(無料)＋OpenAI(少額課金)**。**チャート画像を使うスキャルのシグナルは Gemini か OpenAI のみ**(Groq はテキスト専用)なので、**OpenAI 有効が安定の要**。
+- **キーは無料/有料でグループ表示**: 【無料】Gemini・Groq /【有料】OpenAI・Web検索キー。
+- **チャットの Web 検索**: Gemini キーがあれば Gemini グラウンディングで検索。**Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます**(自動フォールバック)。Web検索キー欄は任意の専用キー(空欄なら共通 Gemini を使用)。検索に使うモデルは設定モーダルの「**Web検索モデル**」セクションで個別指定(Gemini 用=既定 gemini-flash-latest / OpenAI 用=既定 gpt-4o-mini-search-preview・各欄に説明あり)。
 - **各キーの状態マーク**(設定モーダルの各キー行の左): 🟢 有効 / 🟡 待機中(429=枠切れ・自動フォールバック中) / ⚪ 未設定。「**キーを検証**」で ✅ 有効 / ❌ 無効(401等はキー差し替え)。「設定済み(🟢)」と「実際に有効(✅)」は別。
 - 詳細: Web 版マニュアル §「API キー」(選び方の表つき)
 

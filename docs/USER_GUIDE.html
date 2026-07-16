@@ -772,7 +772,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.48</span>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.49</span>
       <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
       <p class="lead">
         日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
@@ -1028,8 +1028,16 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="callout" style="margin-top:16px">
     <strong>おすすめの入れ方:</strong> <strong>Gemini (無料) + OpenAI (少額課金) の2つ</strong>を設定。普段は無料の Gemini、429 で枠が切れたら OpenAI に自動で切り替わります。<strong>チャート画像を見るスキャルのシグナルは Gemini か OpenAI のみ</strong>が担うので (Groq はテキスト専用)、<strong>OpenAI キーが有効だと画像判断が常に通り安定します</strong>。Groq は「チャットの予備」として無料なので入れておいて損はありません。
   </div>
-  <h4 style="margin-top:20px">Web検索キー / Web検索モデル (チャットの Web 検索)</h4>
-  <p>チャットの Web 検索は <strong>Gemini の Google 検索グラウンディング</strong>を使います。<strong>「Web検索キー」</strong>に Gemini キーを入れると有効 (空欄なら上の共通 Gemini キーを使用)。<strong>「Web検索モデル」</strong>は既定 <code>gemini-flash-latest</code> のままで OK。未設定/枠切れでも、チャットは検索なしで回答します。</p>
+  <h4 style="margin-top:20px">キーの並び (無料 / 有料)</h4>
+  <p>設定モーダルの API キー欄は <strong>【無料】Gemini・Groq</strong> と <strong>【有料】OpenAI・Web検索キー</strong> の 2 グループに分かれています。まずは無料キーだけで動きます。</p>
+  <h4 style="margin-top:20px">Web検索キー (チャットの Web 検索)</h4>
+  <p>チャットの Web 検索は <strong>Gemini キーがあれば Gemini の Google 検索グラウンディング</strong>を使います。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます</strong> (自動フォールバック)。<strong>「Web検索キー」</strong>欄は任意の専用キー (空欄なら上の共通 Gemini キーを使用)。未設定でも、チャットは検索なしで回答します。</p>
+  <h4 style="margin-top:20px">Web検索モデル (独立セクション・各欄に説明)</h4>
+  <p>キー欄とは別の <strong>「Web検索モデル」</strong> セクションで、検索に使うモデルを個別に指定できます。どちらも空欄で既定に戻ります。</p>
+  <ul>
+    <li><strong>Web検索モデル (Gemini・grounding 対応)</strong> — Gemini キーで Web 検索するときのモデル。grounding 対応が必要 (Gemini 3.x 系)。既定 <code>gemini-flash-latest</code>。</li>
+    <li><strong>OpenAI Web検索モデル</strong> — Gemini キーが無い/枠切れのとき OpenAI で Web 検索するモデル。Web 検索対応 (search-preview 系)。既定 <code>gpt-4o-mini-search-preview</code>。</li>
+  </ul>
   <h4 style="margin-top:20px">各キーの状態マーク (設定モーダル)</h4>
   <p>設定モーダルの各キー行の左に、そのキーの状態が表示されます:</p>
   <ul>

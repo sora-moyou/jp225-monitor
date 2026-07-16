@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import {
   resolvePricePollMs, resolveNewsPollMs, resolvePort,
   validateParam, resetConfigCache,
+  resolveWebSearchOpenaiModel, DEFAULT_WEB_SEARCH_OPENAI_MODEL,
 } from './configStore.js';
 
 // configStore は homedir() を内部で呼ぶ。HOME / USERPROFILE を一時 dir に差し替えてテストする
@@ -74,5 +75,17 @@ describe('configStore resolvers', () => {
     expect(validateParam('pricePollMs', 999999)).toMatch(/pricePollMs/);
     expect(validateParam('port', 100)).toMatch(/port/);
     expect(validateParam('port', 99999)).toMatch(/port/);
+  });
+
+  it('resolveWebSearchOpenaiModel returns default when unset', () => {
+    expect(resolveWebSearchOpenaiModel()).toBe(DEFAULT_WEB_SEARCH_OPENAI_MODEL);
+    expect(DEFAULT_WEB_SEARCH_OPENAI_MODEL).toBe('gpt-4o-mini-search-preview');
+  });
+
+  it('resolveWebSearchOpenaiModel reads config.json when set (trims); blank falls back to default', () => {
+    writeFileConfig({ webSearchOpenaiModel: '  gpt-4o-search-preview  ' });
+    expect(resolveWebSearchOpenaiModel()).toBe('gpt-4o-search-preview');
+    writeFileConfig({ webSearchOpenaiModel: '   ' });
+    expect(resolveWebSearchOpenaiModel()).toBe(DEFAULT_WEB_SEARCH_OPENAI_MODEL);
   });
 });

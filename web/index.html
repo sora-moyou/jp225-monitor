@@ -39,42 +39,59 @@
 
       <div id="settings-status-area"></div>
 
-      <div class="setting-row">
-        <label>
-          <span id="key-gemini-status" class="key-status" title="キー状態"></span>Gemini <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
-          <span class="badge-free">無料 / 日次1500回</span>
-        </label>
-        <input type="password" id="key-gemini" autocomplete="off" />
-      </div>
+      <fieldset class="settings-section">
+        <legend>APIキー（無料）</legend>
+        <div class="setting-row">
+          <label>
+            <span id="key-gemini-status" class="key-status" title="キー状態"></span>Gemini <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
+            <span class="badge-free">無料 / 日次1500回</span>
+          </label>
+          <input type="password" id="key-gemini" autocomplete="off" />
+        </div>
 
-      <div class="setting-row">
-        <label>
-          <span id="key-groq-status" class="key-status" title="キー状態"></span>Groq <a href="https://console.groq.com/keys" target="_blank" rel="noopener">キー取得 ↗</a>
-          <span class="badge-free">無料 / 日次14400回</span>
-        </label>
-        <input type="password" id="key-groq" autocomplete="off" />
-      </div>
+        <div class="setting-row">
+          <label>
+            <span id="key-groq-status" class="key-status" title="キー状態"></span>Groq <a href="https://console.groq.com/keys" target="_blank" rel="noopener">キー取得 ↗</a>
+            <span class="badge-free">無料 / 日次14400回</span>
+          </label>
+          <input type="password" id="key-groq" autocomplete="off" />
+        </div>
+        <div class="exit-hint">まずは無料キーだけで動きます。おすすめは Gemini（画像対応・無料枠が広い）。Groq はテキスト専用で高速な予備。</div>
+      </fieldset>
 
-      <div class="setting-row">
-        <label>
-          <span id="key-openai-status" class="key-status" title="キー状態"></span>OpenAI <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
-          <span class="badge-paid">有料 (500 円〜)</span>
-        </label>
-        <input type="password" id="key-openai" autocomplete="off" />
-      </div>
+      <fieldset class="settings-section">
+        <legend>APIキー（有料）</legend>
+        <div class="setting-row">
+          <label>
+            <span id="key-openai-status" class="key-status" title="キー状態"></span>OpenAI <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
+            <span class="badge-paid">有料 (500 円〜)</span>
+          </label>
+          <input type="password" id="key-openai" autocomplete="off" />
+        </div>
 
-      <div class="setting-row">
-        <label>
-          <span id="key-websearch-status" class="key-status" title="キー状態"></span>Web検索キー (チャット・Gemini Google検索) <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
-          <span class="badge-paid">課金Gemini推奨</span>
-        </label>
-        <input type="password" id="key-websearch" autocomplete="off" placeholder="空欄なら Gemini キーを使用" />
-      </div>
+        <div class="setting-row">
+          <label>
+            <span id="key-websearch-status" class="key-status" title="キー状態"></span>Web検索キー (チャットの Web 検索用) <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
+            <span class="badge-paid">有料</span>
+          </label>
+          <input type="password" id="key-websearch" autocomplete="off" placeholder="空欄なら Gemini キーを使用" />
+        </div>
+        <div class="exit-hint">OpenAI は画像対応で安定運用の要（少額課金）。Web検索キーは<strong>任意</strong>: チャットの Web 検索で使う専用キーで、空欄なら上の Gemini キーを流用します（課金 Gemini グラウンディング用）。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます。</strong></div>
+      </fieldset>
 
-      <div class="setting-row">
-        <label>Web検索モデル (Gemini・grounding 対応)</label>
-        <input type="text" id="key-websearch-model" autocomplete="off" placeholder="gemini-flash-latest (既定)" />
-      </div>
+      <fieldset class="settings-section">
+        <legend>Web検索モデル</legend>
+        <div class="setting-row">
+          <label>Web検索モデル (Gemini・grounding 対応)</label>
+          <input type="text" id="key-websearch-model" autocomplete="off" placeholder="gemini-flash-latest (既定)" />
+          <div class="exit-hint">Gemini キーで Web 検索するときのモデル。grounding（Google 検索連携）対応が必要（Gemini 3.x 系）。空欄で既定 gemini-flash-latest。</div>
+        </div>
+        <div class="setting-row">
+          <label>OpenAI Web検索モデル</label>
+          <input type="text" id="key-websearch-openai-model" autocomplete="off" placeholder="gpt-4o-mini-search-preview (既定)" />
+          <div class="exit-hint">Gemini キーが無い/枠切れのとき OpenAI で Web 検索するモデル。Web 検索対応モデル（search-preview 系）を指定。空欄で既定 gpt-4o-mini-search-preview。</div>
+        </div>
+      </fieldset>
 
       <fieldset class="settings-section">
         <legend>AIエントリー</legend>

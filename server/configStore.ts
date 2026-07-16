@@ -15,6 +15,7 @@ export interface UserConfig {
   openaiKey?: string;
   webSearchKey?: string;   // チャットの web_search(Gemini グラウンディング)専用キー。未設定なら共通 geminiKey に落ちる。
   webSearchModel?: string; // web_search 用の Gemini モデル(chatModel と別)。未設定は既定 gemini-flash-latest。
+  webSearchOpenaiModel?: string; // Gemini キーが無い/枠切れ時に OpenAI で Web 検索するモデル。未設定は既定 gpt-4o-mini-search-preview。
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
   pricePollMs?: number;
   newsPollMs?: number;
@@ -137,6 +138,15 @@ export const DEFAULT_WEB_SEARCH_MODEL = 'gemini-flash-latest';
 export function resolveWebSearchModel(): string {
   const m = loadConfig().webSearchModel;
   return m && m.trim() ? m.trim() : DEFAULT_WEB_SEARCH_MODEL;
+}
+
+// OpenAI Web 検索モデル。Gemini キーが無い/枠切れのとき OpenAI で Web 検索する。
+// 既定は web 検索対応の chat.completions モデル(search-preview 系)。
+export const DEFAULT_WEB_SEARCH_OPENAI_MODEL = 'gpt-4o-mini-search-preview';
+
+export function resolveWebSearchOpenaiModel(): string {
+  const m = loadConfig().webSearchOpenaiModel;
+  return m && m.trim() ? m.trim() : DEFAULT_WEB_SEARCH_OPENAI_MODEL;
 }
 
 // 3 つの数値パラメータ resolver

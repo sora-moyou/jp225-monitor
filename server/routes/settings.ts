@@ -50,6 +50,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     openaiFromEnv: !config.openaiKey && !!process.env.OPENAI_API_KEY?.trim(),
     webSearchKeySet: !!config.webSearchKey,   // Web検索専用キー(空欄なら共通 geminiKey に従う)
     webSearchModel: config.webSearchModel ?? '',
+    webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
     // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
     ...resolveAllNumericParams(),
@@ -79,6 +80,7 @@ interface SettingsBody {
   openaiKey?: string | null;
   webSearchKey?: string | null;      // Web検索(Gemini グラウンディング)専用キー
   webSearchModel?: string | null;    // Web検索用 Gemini モデル
+  webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
@@ -143,6 +145,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     openaiKey: applyStringField(existing.openaiKey, body.openaiKey),
     webSearchKey: applyStringField(existing.webSearchKey, body.webSearchKey),   // 秘密: 空欄=変更なし
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
+    webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
   };
   const nextRec = next as Record<string, unknown>;

@@ -11,7 +11,7 @@ function escapeHtml(s: string): string {
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
-  webSearchKeySet: boolean; webSearchModel: string;
+  webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
@@ -46,6 +46,7 @@ interface SavePayload {
   openaiKey?: string | null;
   webSearchKey?: string | null;
   webSearchModel?: string | null;
+  webSearchOpenaiModel?: string | null;
   scalpLcCeilingYen?: number | null;
   scalpBias?: 'long' | 'short' | 'none' | null;
   scalpCooldownSec?: number | null;
@@ -90,6 +91,7 @@ export interface SettingsElements {
   inputOpenai: HTMLInputElement;
   inputWebSearch: HTMLInputElement;        // Web検索(Gemini グラウンディング)専用キー
   inputWebSearchModel: HTMLInputElement;   // Web検索用 Gemini モデル
+  inputWebSearchOpenaiModel: HTMLInputElement;  // OpenAI Web検索モデル
   inputScalpLcCeiling: HTMLInputElement;   // AIエントリー: 最大初期LC(円)
   selectScalpBias: HTMLSelectElement;      // AIエントリー: バイアス
   inputScalpCooldown: HTMLInputElement;    // AIエントリー: クールダウン(秒)
@@ -145,16 +147,23 @@ export function initSettingsModal(el: SettingsElements): void {
       : '空欄なら Gemini キーを使用 (AIza... / 課金キー可)';
     el.inputWebSearchModel.value = current?.webSearchModel ?? '';
     el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
+    el.inputWebSearchOpenaiModel.value = current?.webSearchOpenaiModel ?? '';
+    el.inputWebSearchOpenaiModel.placeholder = 'gpt-4o-mini-search-preview (既定)';
     // 各キー行の個別マーク(🟢/🟡/⚪)。LLM 3種は providers から、Web検索は解決可否から。
     const byName = (n: string) => current?.providers.find(p => p.name === n);
     for (const n of ['gemini', 'groq', 'openai'] as const) {
       const m = providerMark(byName(n));
       setKeyStatus(`key-${n}-status`, m.mark, m.title);
     }
-    const wsResolvable = !!(current?.webSearchKeySet || current?.geminiSet || current?.geminiFromEnv);
+    // Web検索は Gemini(専用/共通キー) が使えれば grounding、無くても OpenAI キーがあれば OpenAI 検索で可能。
+    const wsGemini = !!(current?.webSearchKeySet || current?.geminiSet || current?.geminiFromEnv);
+    const wsOpenai = !!(current?.openaiSet || current?.openaiFromEnv);
+    const wsResolvable = wsGemini || wsOpenai;
     setKeyStatus('key-websearch-status',
       wsResolvable ? '🟢' : '⚪',
-      wsResolvable ? (current?.webSearchKeySet ? '専用キー設定済' : '共通 Gemini キーを使用') : '未設定(Web検索は無効)');
+      wsResolvable
+        ? (current?.webSearchKeySet ? '専用キー設定済' : wsGemini ? '共通 Gemini キーを使用' : 'OpenAI で検索')
+        : '未設定(Web検索は無効)');
     // AIエントリー: 現値を反映(可視フィールド)。
     el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
     el.selectScalpBias.value = current?.scalpBias ?? 'none';
@@ -435,6 +444,7 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputOpenai.value = '';
     el.inputWebSearch.value = '';
     el.inputWebSearchModel.value = '';
+    el.inputWebSearchOpenaiModel.value = '';
   }
 
   el.openBtn.addEventListener('click', () => { void open(); });
@@ -460,6 +470,8 @@ export function initSettingsModal(el: SettingsElements): void {
       if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
       // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)
       body.webSearchModel = el.inputWebSearchModel.value.trim();
+      // OpenAI Web検索モデルも可視フィールド(空欄='' → サーバで既定 gpt-4o-mini-search-preview に戻る)
+      body.webSearchOpenaiModel = el.inputWebSearchOpenaiModel.value.trim();
       // AIエントリー: 可視フィールド。空欄=既定(65)に戻す(null)。数値なら上書き。
       const lcRaw = el.inputScalpLcCeiling.value.trim();
       body.scalpLcCeilingYen = lcRaw === '' ? null : Number(lcRaw);

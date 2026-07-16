@@ -150,6 +150,7 @@ initSettingsModal({
   inputOpenai:    document.getElementById('key-openai') as HTMLInputElement,
   inputWebSearch:      document.getElementById('key-websearch') as HTMLInputElement,
   inputWebSearchModel: document.getElementById('key-websearch-model') as HTMLInputElement,
+  inputWebSearchOpenaiModel: document.getElementById('key-websearch-openai-model') as HTMLInputElement,
   inputScalpLcCeiling: document.getElementById('scalp-lc-ceiling') as HTMLInputElement,
   selectScalpBias:     document.getElementById('scalp-bias') as HTMLSelectElement,
   inputScalpCooldown:  document.getElementById('scalp-cooldown') as HTMLInputElement,
