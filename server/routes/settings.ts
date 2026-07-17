@@ -60,7 +60,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     webSearchModel: config.webSearchModel ?? '',
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
-    scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(未設定は true=ON)。
+    scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(★実験終了=未設定は false=OFF)。
     // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
     ...resolveAllNumericParams(),
     pricePollMs: resolvePricePollMs(),

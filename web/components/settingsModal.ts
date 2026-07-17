@@ -174,7 +174,7 @@ export function initSettingsModal(el: SettingsElements): void {
     el.selectScalpBias.value = current?.scalpBias ?? 'none';
     el.inputScalpCooldown.value = current ? String(current.scalpCooldownSec) : '';
     el.inputScalpTrendVeto.value = current ? String(current.scalpTrendVetoYen) : '';
-    el.checkScalpRangeEnabled.checked = current ? current.scalpRangeEnabled : true;   // 既定ON
+    el.checkScalpRangeEnabled.checked = current ? current.scalpRangeEnabled : false;   // ★実験終了=既定OFF
   }
 
   async function loadCurrentVersion() {

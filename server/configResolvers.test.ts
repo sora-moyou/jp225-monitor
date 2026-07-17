@@ -106,8 +106,8 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
     expect(resolveScalpBias()).toBe('short');
   });
 
-  it('scalpRangeEnabled 未設定は既定 true(ON)', () => {
-    expect(resolveScalpRangeEnabled()).toBe(true);
+  it('scalpRangeEnabled 未設定は既定 false(OFF・実験終了 v0.7.53)', () => {
+    expect(resolveScalpRangeEnabled()).toBe(false);
   });
 
   it('scalpRangeEnabled=false を反映', () => {
@@ -120,9 +120,9 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
     expect(resolveScalpRangeEnabled()).toBe(true);
   });
 
-  it('scalpRangeEnabled が非boolean(不正)は既定 true にフォールバック', () => {
+  it('scalpRangeEnabled が非boolean(不正)は既定 false にフォールバック', () => {
     writeConfig({ scalpRangeEnabled: 'yes' });
-    expect(resolveScalpRangeEnabled()).toBe(true);
+    expect(resolveScalpRangeEnabled()).toBe(false);
   });
 
   it('scalpTrendVetoYen 未設定は既定 100', () => {
