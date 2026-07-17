@@ -5,7 +5,7 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk,
-  lcLegExceeds, buildDelegationNote,
+  lcLegExceeds, buildDelegationNote, buildStrategySpec,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan, type KnobModes,
 } from './openai.js';
@@ -1214,6 +1214,39 @@ describe('buildDelegationNote(委任ノート)', () => {
     expect(n).toContain('トレンド');
     expect(n).toContain('方向');
     expect(n).toContain('レンジ両面');
+  });
+});
+
+describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決済ロジック)', () => {
+  const base = {
+    floor: { mode: 'manual' as const, value: 45 },
+    ceiling: { mode: 'manual' as const, value: 65 },
+    trendVeto: { mode: 'manual' as const, value: 100 },
+    cooldown: { mode: 'manual' as const, value: 90 },
+    bias: { mode: 'manual' as const, value: 'none' as const },
+    range: { mode: 'manual' as const, value: false },
+    hardMax: { enabled: true, value: 150 },
+    exitDesc: '【決済ロジック(phase-exit)】…利益ロックのラチェット床…',
+  };
+  it('エントリー全定数と決済説明を1ブロックに含む', () => {
+    const s = buildStrategySpec(base);
+    expect(s).toContain('下限45円');
+    expect(s).toContain('上限65円');
+    expect(s).toContain('±100円');            // トレンド閾値(定数)
+    expect(s).toContain('90秒');               // クールダウン(定数)
+    expect(s).toContain('+5円');               // ストップ緩衝
+    expect(s).toContain('50円');               // 最低距離
+    expect(s).toContain('安全上限 150円');
+    expect(s).toContain('ラチェット');          // 決済ロジックが注入される
+  });
+  it('委任状態を各項目に明示(AI=あなたが決める / 手動=固定・厳守)', () => {
+    const s = buildStrategySpec({ ...base, trendVeto: { mode: 'ai', value: 100 } });
+    expect(s).toContain('【AI委任=あなたが決めてよい】');   // trendVeto=ai
+    expect(s).toContain('【手動=固定・厳守】');             // 他は手動
+  });
+  it('LC安全上限 無効なら「安全上限 無効」', () => {
+    const s = buildStrategySpec({ ...base, hardMax: { enabled: false, value: 150 } });
+    expect(s).toContain('安全上限 無効');
   });
 });
 

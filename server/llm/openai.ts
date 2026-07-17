@@ -16,6 +16,7 @@ import {
   type ScalpBias, type KnobSource,
 } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
+import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
 import { rowKind, summarize } from '../alertHistory.js';
@@ -1214,6 +1215,42 @@ export interface TrendHint { dir: 'up' | 'down' | 'flat'; strong: boolean; }
 /** ★v0.7.56: LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。 */
 export interface LcHardMax { enabled: boolean; value: number; }
 
+/** ★v0.7.58: 戦略ロジックを「定数込みで完全に」AI へ渡す仕様ブロック。エントリー全定数(LC/±5円/50円距離/
+ *  トレンド閾値/クールダウン/バイアス/レンジ)＋各項目の委任状態(手動=固定 / AI=あなたが決める)＋決済ロジック
+ *  (phase-exit の実数値・describeExitLogic は private が在れば実数値・無ければ定性)を1ブロックに集約する。
+ *  「何を委任するか」は設定に従い【】で明示する(委任=制約を外すだけでなくロジックを渡す)。純関数。 */
+export interface StrategySpecInput {
+  floor: { mode: KnobSource; value: number };
+  ceiling: { mode: KnobSource; value: number };
+  trendVeto: { mode: KnobSource; value: number };
+  cooldown: { mode: KnobSource; value: number };
+  bias: { mode: KnobSource; value: ScalpBias };
+  range: { mode: KnobSource; value: boolean };
+  hardMax: LcHardMax;
+  exitDesc: string;   // describeExitLogic()(private 在れば実数値つき)
+}
+function knobTag(mode: KnobSource): string {
+  return mode === 'ai' ? '【AI委任=あなたが決めてよい】' : '【手動=固定・厳守】';
+}
+export function buildStrategySpec(i: StrategySpecInput): string {
+  const cap = i.hardMax.enabled ? `安全上限 ${i.hardMax.value}円(有効=手動でもAIでも絶対に超えない)` : '安全上限 無効';
+  const biasLabel = i.bias.value === 'long' ? '買い中心(売り新規は見送り)' : i.bias.value === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
+  return [
+    '',
+    '【戦略ロジック仕様(完全版・定数込み)】以下のロジックと数値をすべて理解した上で計画すること。各項目末尾の【】は現在の委任設定(手動=固定・厳守 / AI=あなたが決めてよい)。AI委任の項目はその値を自分で決め、手動の項目は記載の値・ルールを厳守する。',
+    '■ エントリー',
+    `- 初期LC(損切り)幅: 下限${i.floor.value}円${knobTag(i.floor.mode)} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`,
+    '- 損切りは本来のストップ幅に +5円 加える(往復ビンタ緩衝)',
+    '- 指値/逆指値は現在値からそれぞれ最低 50円 離す',
+    `- トレンド判定: 直近10分で ±${i.trendVeto.value}円 以上動けばトレンド=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止${knobTag(i.trendVeto.mode)}`,
+    `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
+    `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,
+    `- レンジ両面(現在値の上下に指値/逆指値を1本ずつ): ${i.range.value ? '有効' : '無効'}${knobTag(i.range.mode)}`,
+    '■ 決済(この建玉の決済逆指値はこう動く=エントリー計画時に前提とすること)',
+    i.exitDesc,
+  ].join('\n');
+}
+
 /** enforce の opts。ceilingMode/lcHardMax は v0.7.56 の追加(いずれも省略時は現状=manual/上限なし)。
  *  - ceilingMode: 'manual'(既定)→従来の超過レッグ落とし / 'ai'→LC上限では落とさない。
  *  - lcHardMax: 有効時は ceilingMode に関係なく |entry−SL| が value 超のレッグを落とす(最後の安全網)。 */
@@ -1358,6 +1395,9 @@ export function resolveLcRange(
  *  refPrice は monitor の現在 NIY=F 価格。 */
 export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpPlanResult> {
   if (!isLLMEnabled()) return { ok: false, error: 'LLM未設定' };
+  // ★v0.7.58: 決済ロジック(phase-exit)の実数値説明を AI に渡すため private 実装をロード(冪等・キャッシュ)。
+  //   private 不在(公開配布)は定性フォールバックのまま。プランの成否・enforce には影響しない。
+  await loadExitImpl();
   const now = Date.now();
   const symbol = typeof input.symbol === 'string' && input.symbol ? input.symbol : NIKKEI_SYMBOL;
   const prices = input.prices ?? getPrices();
@@ -1394,10 +1434,22 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
   : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
   : '';
+  // ★v0.7.58: 戦略ロジックを定数込みで完全に AI へ渡す(エントリー全定数＋各項目の委任状態＋決済ロジックの実数値)。
+  //   「何を委任するか」は設定(各 directive の mode)に従い【】で明示。決済数値は describeExitLogic()=private 実行時注入。
+  const strategySpec = buildStrategySpec({
+    floor: { mode: floorD.mode, value: floorYen },
+    ceiling: { mode: ceilingD.mode, value: ceilingYen },
+    trendVeto: { mode: trendD.mode, value: trendD.value },
+    cooldown: { mode: cooldownD.mode, value: cooldownD.value },
+    bias: { mode: biasD.mode, value: biasD.value },
+    range: { mode: rangeD.mode, value: rangeEnabled },
+    hardMax,
+    exitDesc: describeExitLogic(),
+  });
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${delegationNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${strategySpec}${delegationNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
