@@ -255,6 +255,64 @@ describe('planToArmed', () => {
   it('両レッグ欠落は null', () => {
     expect(planToArmed({ direction: 'buy', rationale: 'r' }, 0)).toBeNull();
   });
+
+  // ★向きの belt-and-suspenders: 万一 parse/enforce をすり抜けた不正な向きの損切りを紙エンジンが arm しない。
+  it('buy で指値SLが entry の上(逆側)→ 指値レッグを arm しない(逆指値が正なら残す)', () => {
+    const a = planToArmed(
+      { direction: 'buy', limitEntry: 38200, stopLossForLimit: 38260, stopEntry: 38350, stopLossForStop: 38300, rationale: 'r' },
+      0,
+    );
+    expect(a).not.toBeNull();
+    expect(a?.limitEntry).toBeUndefined();       // 逆側の損切り→ arm しない
+    expect(a?.stopEntry).toBe(38350);            // 正しい向きは残る
+  });
+
+  it('buy で両レッグとも逆側の損切り → null(arm する脚なし)', () => {
+    const a = planToArmed(
+      { direction: 'buy', limitEntry: 38200, stopLossForLimit: 38260, stopEntry: 38350, stopLossForStop: 38400, rationale: 'r' },
+      0,
+    );
+    expect(a).toBeNull();
+  });
+
+  it('sell で SLが entry の下(逆側)の脚は arm しない', () => {
+    const a = planToArmed(
+      { direction: 'sell', limitEntry: 38300, stopLossForLimit: 38250, stopEntry: 38150, stopLossForStop: 38200, rationale: 'r' },
+      0,
+    );
+    expect(a?.limitEntry).toBeUndefined();       // 下=逆側で落ちる
+    expect(a?.stopEntry).toBe(38150);            // 上=正で残る
+  });
+
+  it('境界(SL==entry=幅0)の脚は arm しない', () => {
+    const a = planToArmed(
+      { direction: 'buy', limitEntry: 38200, stopLossForLimit: 38200, stopEntry: 38350, stopLossForStop: 38300, rationale: 'r' },
+      0,
+    );
+    expect(a?.limitEntry).toBeUndefined();
+    expect(a?.stopEntry).toBe(38350);
+  });
+});
+
+// ─── planToArmed range 向きガード ───
+describe('planToArmed range 向きガード', () => {
+  it('range で向き違反レッグ(buy SLが上)は arm しない', () => {
+    const a = planToArmed({ direction: 'range', rationale: 'r', range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },   // 正
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38150 },     // 上=逆側
+    } }, 0);
+    expect(a?.mode).toBe('range');
+    expect(a?.range?.lower).toBeUndefined();
+    expect(a?.range?.upper?.side).toBe('sell');
+  });
+
+  it('range で両レッグ向き違反 → null', () => {
+    const a = planToArmed({ direction: 'range', rationale: 'r', range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38350 },   // 下=逆側
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38150 },     // 上=逆側
+    } }, 0);
+    expect(a).toBeNull();
+  });
 });
 
 // ─── armedToCurrentSignal ───

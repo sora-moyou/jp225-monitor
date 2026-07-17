@@ -105,6 +105,14 @@ export interface RecordedTrade {
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
 
+/** 損切りがエントリーの正しい外側(買い=下 / 売り=上)にあるか。境界(等値=幅0)は不正。純関数。
+ *  ★実害バグ対策の最終ガード: 買いなのに損切りが上(逆側)のような不正プランを紙エンジンが arm/約定しないようにする
+ *    (発生源は llm/openai の parse/enforce で落とすが、engine 単独でも同じ向き規約を保証する=trade2 サニティと一致)。
+ *  openai.stopSideOk と同一規約。engine の静的 import を軽く保つため、依存を作らずここに小さく持つ。 */
+function stopOnCorrectSide(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
+  return side === 'buy' ? stopLoss < entry : stopLoss > entry;
+}
+
 /** ブラケットのどちらのレッグが約定したか。両レッグが同 tick で満たす場合は指値を優先。無ければ null。 */
 export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'stop'; entryPrice: number; initialStop: number } | null {
   const buy = a.direction === 'buy';
@@ -339,8 +347,12 @@ export function planToArmed(
   const planMeta = buildPlanMeta(plan.regime, plan.confidence, extra?.vetoFired);
   // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
   if (plan.direction === 'range') {
-    const upper = plan.range?.upper;
-    const lower = plan.range?.lower;
+    let upper = plan.range?.upper;
+    let lower = plan.range?.lower;
+    // ★向きの belt-and-suspenders: 損切りがエントリーの内側/反対側(境界=幅0 含む)のレッグは arm しない。
+    //   発生源(parse/enforce)で落ちている想定だが、万一到達しても紙エンジンが不正約定しないよう最終ガード。
+    if (upper && !stopOnCorrectSide(upper.side, upper.entry, upper.stopLoss)) upper = undefined;
+    if (lower && !stopOnCorrectSide(lower.side, lower.entry, lower.stopLoss)) lower = undefined;
     if (!upper && !lower) return null;
     // direction はプレースホルダ(range 分岐は mode/range で gating)。range に採用レッグを載せる。
     const a: ArmedBracket = { direction: 'buy', rationale: plan.rationale, at: now, mode: 'range', range: {} };
@@ -350,8 +362,12 @@ export function planToArmed(
     return a;
   }
   if (plan.direction !== 'buy' && plan.direction !== 'sell') return null;
-  const hasLimit = Number.isFinite(plan.limitEntry) && Number.isFinite(plan.stopLossForLimit);
-  const hasStop = Number.isFinite(plan.stopEntry) && Number.isFinite(plan.stopLossForStop);
+  // ★向きの belt-and-suspenders(directional): buy は損切りが entry の下・sell は上。境界(==)は不正。
+  //   有限性に加えて向きも満たすレッグだけを arm する(不正な向きの損切りは紙エンジンでも約定させない)。
+  const hasLimit = Number.isFinite(plan.limitEntry) && Number.isFinite(plan.stopLossForLimit)
+    && stopOnCorrectSide(plan.direction, plan.limitEntry as number, plan.stopLossForLimit as number);
+  const hasStop = Number.isFinite(plan.stopEntry) && Number.isFinite(plan.stopLossForStop)
+    && stopOnCorrectSide(plan.direction, plan.stopEntry as number, plan.stopLossForStop as number);
   if (!hasLimit && !hasStop) return null;
   const a: ArmedBracket = { direction: plan.direction, rationale: plan.rationale, at: now };
   if (hasLimit) { a.limitEntry = plan.limitEntry; a.stopLossForLimit = plan.stopLossForLimit; }

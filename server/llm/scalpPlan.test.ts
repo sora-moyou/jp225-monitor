@@ -4,7 +4,7 @@ import {
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
-  parseAiRegime, parseAiConfidence,
+  parseAiRegime, parseAiConfidence, stopSideOk,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan,
 } from './openai.js';
@@ -155,6 +155,248 @@ describe('parseScalpPlan', () => {
     const r = parseScalpPlan(JSON.stringify({ direction: 'buy', rationale: '理由' }), REF);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('at least one leg');
+  });
+});
+
+// ─── 損切りの向き検証(orientation): 不正プラン発生源を断つ ───
+describe('stopSideOk(損切りの向き・純関数)', () => {
+  it('買い(long)は損切りが entry の下だけ true(上/等値は false)', () => {
+    expect(stopSideOk('buy', 100, 90)).toBe(true);
+    expect(stopSideOk('buy', 100, 110)).toBe(false);   // 上=逆側
+    expect(stopSideOk('buy', 100, 100)).toBe(false);   // 境界(幅0)=不正
+  });
+  it('売り(short)は損切りが entry の上だけ true(下/等値は false)', () => {
+    expect(stopSideOk('sell', 100, 110)).toBe(true);
+    expect(stopSideOk('sell', 100, 90)).toBe(false);   // 下=逆側
+    expect(stopSideOk('sell', 100, 100)).toBe(false);  // 境界(幅0)=不正
+  });
+});
+
+describe('parseScalpPlan 損切りの向き検証(directional)', () => {
+  it('buy で指値レッグの SL がエントリーより上(逆側)→ 指値レッグを落とす(逆指値が正しければ残す)', () => {
+    // 指値: entry 38200 / SL 38260(上=逆側・不正)→ 落とす。逆指値: entry 38350 / SL 38300(下=正)→ 残す。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '押し目', refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38260,
+      stopEntry: 38350, stopLossForStop: 38300,
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBeUndefined();       // 向き違反で落ちる
+      expect(r.plan.stopLossForLimit).toBeUndefined();
+      expect(r.plan.stopEntry).toBe(38350);            // 正しい向きは残る
+      expect(r.plan.stopLossForStop).toBe(38300);
+    }
+  });
+
+  it('sell で SL がエントリーより下(逆側)→ そのレッグを落とす', () => {
+    // sell 指値: entry 38300 / SL 38250(下=逆側・不正)→ 落とす。逆指値: entry 38150 / SL 38200(上=正)→ 残す。
+    const raw = JSON.stringify({
+      direction: 'sell', rationale: '戻り', refPrice: 1,
+      limitEntry: 38300, stopLossForLimit: 38250,
+      stopEntry: 38150, stopLossForStop: 38200,
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('sell');
+      expect(r.plan.limitEntry).toBeUndefined();
+      expect(r.plan.stopEntry).toBe(38150);
+      expect(r.plan.stopLossForStop).toBe(38200);
+    }
+  });
+
+  it('両レッグとも向き違反 → 見送り(none)を ok:true で返す', () => {
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '押し目のつもり', refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38260,   // 上=逆側
+      stopEntry: 38350, stopLossForStop: 38400,     // 上=逆側
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.plan.limitEntry).toBeUndefined();
+      expect(r.plan.stopEntry).toBeUndefined();
+      expect(r.plan.rationale).toContain('押し目');   // rationale は維持
+      expect(r.plan.refPrice).toBe(REF);
+    }
+  });
+
+  it('境界(SL==entry=幅0)は向き不正として落とす', () => {
+    // 指値: entry 38200 / SL 38200(幅0=不正)→ 落とす。逆指値は正しい→残る。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '押し目', refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38200,
+      stopEntry: 38350, stopLossForStop: 38300,
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.limitEntry).toBeUndefined();
+      expect(r.plan.stopEntry).toBe(38350);
+    }
+  });
+
+  it('正しい向きのプランは不変(向き検証で壊れない)', () => {
+    // goodPlan: buy・指値SL38150<38200・逆指値SL38300<38350(いずれも下=正)。
+    const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopEntry).toBe(38350);
+      expect(r.plan.stopLossForLimit).toBe(38150);
+      expect(r.plan.stopLossForStop).toBe(38300);
+    }
+  });
+
+  it('★スモーキングガン: {buy, limitEntry:64565, stopLossForLimit:64610, stopEntry:64665, stopLossForStop:64610} → 指値レッグ落ち・逆指値のみ buy', () => {
+    // 実データ由来。買いなのに指値の損切り64610が entry 64565 の上(逆側)=不正 → 指値レッグを落とす。
+    // 逆指値レッグは stopLossForStop 64610 < stopEntry 64665(下=正)なので残る → stop-only の buy になる。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '実データ再現', refPrice: 1,
+      limitEntry: 64565, stopLossForLimit: 64610,
+      stopEntry: 64665, stopLossForStop: 64610,
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBeUndefined();        // 逆側の損切り→落とす
+      expect(r.plan.stopLossForLimit).toBeUndefined();
+      expect(r.plan.stopEntry).toBe(64665);             // 正しい向きの逆指値のみ残る
+      expect(r.plan.stopLossForStop).toBe(64610);
+    }
+  });
+
+  it('★スモーキングガン変種: 逆指値の損切りも逆側 → 両レッグ落ちて none', () => {
+    // stopLossForStop 64700 > stopEntry 64665(上=逆側・buy には不正)→ 逆指値も落ち、両レッグ落ちで none。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '実データ再現・両逆側', refPrice: 1,
+      limitEntry: 64565, stopLossForLimit: 64610,
+      stopEntry: 64665, stopLossForStop: 64700,
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.plan.direction).toBe('none');
+  });
+});
+
+describe('parseScalpPlan 損切りの向き検証(range)', () => {
+  it('range buy レッグの SL が entry より上 → そのレッグを落とす', () => {
+    // lower は buy(entry 38100)。SL 38150 は上=逆側(buy は下でなければ不正)→ 落とす。upper(sell)は正しい→残る。
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジ', refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },   // sell 上=正
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38150 },     // buy だが上=逆側
+      },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('range');
+      expect(r.plan.range?.lower).toBeUndefined();     // 向き違反で落ちる
+      expect(r.plan.range?.upper?.side).toBe('sell');
+    }
+  });
+
+  it('range sell レッグの SL が entry より下 → そのレッグを落とす', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジ', refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38350 },   // sell だが下=逆側
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },     // buy 下=正
+      },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.range?.upper).toBeUndefined();
+      expect(r.plan.range?.lower?.side).toBe('buy');
+    }
+  });
+
+  it('range 両レッグとも向き違反 → 見送り(none)', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジのつもり', refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38350 },   // 下=逆側
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38150 },     // 上=逆側
+      },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.plan.direction).toBe('none');
+  });
+
+  it('正しい向きの range は不変', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジ', refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.range?.upper).toEqual({ side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 });
+      expect(r.plan.range?.lower).toEqual({ side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 });
+    }
+  });
+});
+
+describe('enforcePlanConstraints 向きの二重防御(冪等・正常プラン不変)', () => {
+  it('directional: 向き違反レッグを enforce でも落とす(万一 parse をすり抜けても)', () => {
+    // 手組みで向き違反を作る(buy・指値SL上=逆側)。enforce が指値レッグを落とし逆指値のみ残す。
+    const p: AiPlan = {
+      direction: 'buy', rationale: '押し目', refPrice: REF,
+      limitEntry: 38200, stopLossForLimit: 38260,   // 上=逆側
+      stopEntry: 38350, stopLossForStop: 38300,     // 下=正
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBeUndefined();
+    expect(r.stopEntry).toBe(38350);
+  });
+
+  it('directional: 両レッグ向き違反 → none', () => {
+    const p: AiPlan = {
+      direction: 'buy', rationale: '押し目', refPrice: REF,
+      limitEntry: 38200, stopLossForLimit: 38260,
+      stopEntry: 38350, stopLossForStop: 38400,
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('none');
+  });
+
+  it('range: 向き違反レッグを enforce でも落とす', () => {
+    const p: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38350 },   // 下=逆側
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },     // 正
+      },
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();
+    expect(r.range?.lower?.side).toBe('buy');
+  });
+
+  it('向き違反由来の drop は vetoFired を立てない(veto の効き目だけ計測)', () => {
+    const p: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38350 },   // 向き違反で落ちる
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      },
+    };
+    const r = enforcePlanConstraintsReport(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.vetoFired).toBe(false);
   });
 });
 
@@ -384,18 +626,25 @@ describe('enforcePlanConstraints(LC上限・バイアスのハード適用)', ()
     expect(r.direction).toBe('none');
   });
 
+  // ★向きの正しい sell(損切りは各エントリーの上)。base を単に direction 反転すると buy 向きの損切りになり
+  //   向き検証で落ちるため、sell の pass-through 検証には向きの正しい fixture を使う。
+  const validSell: AiPlan = {
+    direction: 'sell',
+    limitEntry: 38200, stopLossForLimit: 38250,   // 上=正(LC=50)
+    stopEntry: 38050, stopLossForStop: 38100,     // 上=正(LC=50)
+    rationale: '戻り売り', refPrice: REF,
+  };
+
   it("bias='long' かつ buy は素通し / bias='short' かつ sell は素通し", () => {
     const rLong = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'long' });
     expect(rLong.direction).toBe('buy');
-    const sell: AiPlan = { ...base, direction: 'sell' };
-    const rShort = enforcePlanConstraints(sell, { ceilingYen: 65, bias: 'short' });
+    const rShort = enforcePlanConstraints(validSell, { ceilingYen: 65, bias: 'short' });
     expect(rShort.direction).toBe('sell');
   });
 
   it("bias='none' は方向を素通し(buy/sell とも)", () => {
     expect(enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none' }).direction).toBe('buy');
-    const sell: AiPlan = { ...base, direction: 'sell' };
-    expect(enforcePlanConstraints(sell, { ceilingYen: 65, bias: 'none' }).direction).toBe('sell');
+    expect(enforcePlanConstraints(validSell, { ceilingYen: 65, bias: 'none' }).direction).toBe('sell');
   });
 
   it('direction:none は何もしない(素通し)', () => {

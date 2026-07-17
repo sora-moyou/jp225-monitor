@@ -839,6 +839,7 @@ export function buildScalpQuestion(
     '②指値と逆指値の両方の新規注文を作り、先に約定した方で取引します ' +
     '(指値と逆指値は、現在値からそれぞれ少なくとも50円以上離すこと) ' +
     '③それぞれのストップ(逆指値の損切り)を定めてください。ただしストップ幅に5円加えること。' +
+    '損切りは必ずエントリーの外側に置く(買いは各エントリーより下・売りは各エントリーより上)。指値レッグの損切りは limitEntry の外側・逆指値レッグの損切りは stopEntry の外側。内側/反対側には置かないこと。' +
     '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。' +
     `ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)。` +
     '損切りは直近の節目/スイングの外側に置き、狭すぎ(往復ビンタ)・広すぎ(ドカン)を避ける。' +
@@ -894,6 +895,7 @@ export function buildScalpSystemPrompt(
 - direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
 - buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/逆指値のみ)でもよい。
 - それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、逆指値レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
+- ★【損切りの向き(必須)】損切り(stopLossForLimit / stopLossForStop)は必ずエントリーの外側に置くこと: 買い(long)は各エントリーより下、売り(short)は各エントリーより上。指値レッグの損切りは limitEntry の外側、逆指値レッグの損切りは stopEntry の外側に置く。損切りをエントリーの内側や反対側(買いなのに上・売りなのに下)に置いてはならない(その建玉を保護しない不正なストップになる)。range の各レッグも同様に、buy レッグの stopLoss は entry の下・sell レッグの stopLoss は entry の上に置く。
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復ビンタ)・広すぎ(ドカン)を避ける。${ceilingYen}円を超える損切りは出さない。
 - ★この LC 上限(≤${ceilingYen}円)は 指値レッグ・逆指値レッグ それぞれ独立に 満たすこと。逆指値(ブレイク追随)は現在値/節目から離れるほど LC が広がりやすい。逆指値レッグの LC が${ceilingYen}円を超えるなら、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、(b)逆指値レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上${ceilingYen}円超になるなら指値レッグを省いて逆指値のみにしてもよい。どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
@@ -913,7 +915,7 @@ export function scalpJsonInstruction(
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
   rangeEnabled = true,
 ): string {
-  const lcNote = `ストップ幅+5円・LC幅${floorYen}〜${ceilingYen}円・レッグ独立で${ceilingYen}円超は出さない`;
+  const lcNote = `ストップ幅+5円・LC幅${floorYen}〜${ceilingYen}円・レッグ独立で${ceilingYen}円超は出さない・損切りはエントリーの外側(買いは下/売りは上)`;
   const dirEnum = rangeEnabled ? `"buy" | "sell" | "none" | "range"` : `"buy" | "sell" | "none"`;
   // レンジ両面ストラドルの JSON 形(direction:"range" の時のみ)。数値は円単位の実数。
   const rangeShape = rangeEnabled
@@ -964,6 +966,15 @@ export function parseAiConfidence(v: unknown): number | undefined {
   return Math.max(0, Math.min(100, v));
 }
 
+/** 損切り(stopLoss)がエントリーの正しい外側にあるか(幾何・向き検証)。純関数。
+ *  買い(long)は損切りがエントリーの「下」、売り(short)は「上」に置く(建玉を保護する向き)。
+ *  境界(stopLoss===entry=幅0)は実質ストップにならないので不正(false)。
+ *  ★実害バグ対策: 買いなのに損切りが上(逆側)のプランは trade2 のサニティが拒否し実弾ゼロになる。
+ *    発生源(parse/enforce)でこの向きを検証し、違反レッグを落とすことで紙エンジンと実弾を一致させる。 */
+export function stopSideOk(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
+  return side === 'buy' ? stopLoss < entry : stopLoss > entry;
+}
+
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
  *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
 export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
@@ -1009,6 +1020,10 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     // 現在値の上下の幾何を満たさないレッグは落とす(upper は現在値超・lower は現在値未満)。
     if (upper && !(upper.entry > refPrice)) upper = null;
     if (lower && !(lower.entry < refPrice)) lower = null;
+    // ★損切りの向き検証: 各レッグは自分の side を持つ → buy レッグは stopLoss<entry・sell レッグは stopLoss>entry。
+    //   内側/反対側(境界=幅0 も)の損切りを持つレッグは落とす(不正プランを出さない)。幾何(向き)のみ=LC 幅は enforce の責務。
+    if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) upper = null;
+    if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) lower = null;
     if (!upper && !lower) {
       return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
     }
@@ -1039,16 +1054,24 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   if (!hasLimitLeg && !hasStopLeg) {
     return { ok: false, error: 'invalid price field(s): at least one leg required' };
   }
-  // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
-  // 存在するレッグの価格のみ plan に入れる(欠落レッグは省略=undefined)。
-  const plan: AiPlan = { direction: o.direction, rationale, refPrice };
-  if (hasLimitLeg) {
-    plan.limitEntry = limitEntry;
-    plan.stopLossForLimit = stopLossForLimit;
+  // ★損切りの向き検証(orientation): buy は損切りが各エントリーの下・sell は上。境界(SL==entry=幅0)も不正。
+  //   違反レッグは落とす(既存の「片レッグ落とし」と同じ機構=entry+SL を省く)。ここは幾何(向き)のみで、
+  //   LC 幅≤上限の強制は enforce の責務(不変)。両レッグとも向き違反で落ちたら「見送り(none)」を ok:true で返す。
+  const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!);
+  const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!);
+  if (!limitLegOk && !stopLegOk) {
+    return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
   }
-  if (hasStopLeg) {
-    plan.stopEntry = stopEntry;
-    plan.stopLossForStop = stopLossForStop;
+  // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
+  // 存在し、かつ向きが正しいレッグの価格のみ plan に入れる(欠落/向き違反レッグは省略=undefined)。
+  const plan: AiPlan = { direction: o.direction, rationale, refPrice };
+  if (limitLegOk) {
+    plan.limitEntry = limitEntry!;
+    plan.stopLossForLimit = stopLossForLimit!;
+  }
+  if (stopLegOk) {
+    plan.stopEntry = stopEntry!;
+    plan.stopLossForStop = stopLossForStop!;
   }
   return { ok: true, plan: withMeta(plan) };
 }
@@ -1168,6 +1191,10 @@ export function enforcePlanConstraintsReport(
       if (upper?.side === dropSide) { upper = undefined; vetoFired = true; }
       if (lower?.side === dropSide) { lower = undefined; vetoFired = true; }
     }
+    // (a') 向きの二重防御: 損切りがエントリーの内側/反対側(境界=幅0 含む)のレッグを落とす(parse で落ちている想定=冪等)。
+    //      これはトレンド veto ではないので vetoFired には計上しない(veto の効き目だけを計測する)。
+    if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) upper = undefined;
+    if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) lower = undefined;
     // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
     if (upper && Math.abs(upper.entry - upper.stopLoss) > ceilingYen) upper = undefined;
     if (lower && Math.abs(lower.entry - lower.stopLoss) > ceilingYen) lower = undefined;
@@ -1196,13 +1223,17 @@ export function enforcePlanConstraintsReport(
 
   const out: AiPlan = { ...plan };
 
-  // 1. レッグ単位の LC 上限(境界=ちょうどは許可)。上限超レッグは対で落とす。
+  // 1. レッグ単位の LC 上限(境界=ちょうどは許可)+ 向きの二重防御。上限超 or 向き違反のレッグは対で落とす。
+  //    向き(stopSideOk): directional は leg side === direction。損切りが内側/反対側(境界=幅0 含む)なら落とす
+  //    (parse で落ちている想定=冪等)。既に向きが正しい正常プランには影響しない。
   const limitOk =
     out.limitEntry != null && out.stopLossForLimit != null &&
-    Math.abs(out.limitEntry - out.stopLossForLimit) <= ceilingYen;
+    Math.abs(out.limitEntry - out.stopLossForLimit) <= ceilingYen &&
+    stopSideOk(plan.direction, out.limitEntry, out.stopLossForLimit);
   const stopOk =
     out.stopEntry != null && out.stopLossForStop != null &&
-    Math.abs(out.stopEntry - out.stopLossForStop) <= ceilingYen;
+    Math.abs(out.stopEntry - out.stopLossForStop) <= ceilingYen &&
+    stopSideOk(plan.direction, out.stopEntry, out.stopLossForStop);
   if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; }
   if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; }
 
