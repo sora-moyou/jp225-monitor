@@ -95,12 +95,45 @@
 
       <fieldset class="settings-section">
         <legend>AIエントリー</legend>
+        <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。</div>
+        <div class="setting-row">
+          <label>初期LC下限(円)</label>
+          <select id="scalp-lc-floor-mode" class="knob-mode">
+            <option value="manual">手動</option>
+            <option value="ai">AI委任</option>
+          </select>
+          <input type="number" id="scalp-lc-floor" autocomplete="off" min="20" max="300" step="1" placeholder="45 (既定)" />
+        </div>
         <div class="setting-row">
           <label>最大初期LC(円)</label>
+          <select id="scalp-lc-ceiling-mode" class="knob-mode">
+            <option value="manual">手動</option>
+            <option value="ai">AI委任</option>
+          </select>
           <input type="number" id="scalp-lc-ceiling" autocomplete="off" min="20" max="300" step="1" placeholder="65 (既定)" />
         </div>
         <div class="setting-row">
+          <label>トレンドveto(円)</label>
+          <select id="scalp-trend-veto-mode" class="knob-mode">
+            <option value="manual">手動</option>
+            <option value="ai">AI委任</option>
+          </select>
+          <input type="number" id="scalp-trend-veto" autocomplete="off" min="0" max="1000" step="1" placeholder="100 (既定・0で無効)" />
+        </div>
+        <div class="setting-row">
+          <label>クールダウン(秒)</label>
+          <select id="scalp-cooldown-mode" class="knob-mode">
+            <option value="manual">手動</option>
+            <option value="ai">AI委任</option>
+          </select>
+          <input type="number" id="scalp-cooldown" autocomplete="off" min="0" max="3600" step="1" placeholder="90 (既定・0で無効)" />
+        </div>
+        <div class="setting-row">
           <label>バイアス</label>
+          <select id="scalp-bias-mode" class="knob-mode">
+            <option value="manual">手動</option>
+            <option value="ai">AI委任</option>
+          </select>
           <select id="scalp-bias">
             <option value="none">両方向（既定）</option>
             <option value="long">買い中心（売り新規を見送り）</option>
@@ -108,18 +141,19 @@
           </select>
         </div>
         <div class="setting-row">
-          <label>クールダウン(秒)</label>
-          <input type="number" id="scalp-cooldown" autocomplete="off" min="0" max="3600" step="1" placeholder="90 (既定・0で無効)" />
-        </div>
-        <div class="setting-row">
-          <label>トレンドveto(円)</label>
-          <input type="number" id="scalp-trend-veto" autocomplete="off" min="0" max="1000" step="1" placeholder="100 (既定・0で無効)" />
-        </div>
-        <div class="setting-row">
           <label>レンジ両面(実験)</label>
+          <select id="scalp-range-mode" class="knob-mode">
+            <option value="manual">手動</option>
+            <option value="ai">AI委任</option>
+          </select>
           <input type="checkbox" id="scalp-range-enabled" />
         </div>
-        <div class="exit-hint">トレンドveto: 直近10分でこの円以上動いていたらトレンドと見なし、トレンドに逆行するフェード新規(順トレンドの高値売り/安値買い)を出しません。0で無効。既定100。強トレンド中は逆行レッグを自動で外し、directionalが逆行なら見送りにします(コードで保証)。<br>AIエントリー計画(scalp-plan)の上限とバイアスを一元管理します。各レッグの初期LC幅がこの上限を超える計画は自動で外し、バイアスに反する方向は見送りにします(コードで保証)。クールダウンは決済後に次の新規エントリーを一定秒数見送ります(0で無効)。monitorのシグナルエンジンと jp225-Trade の両方に反映されます。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(既定OFF)。チェックを入れると再度有効化できます(コードは温存)。</div>
+        <div class="setting-row">
+          <label>LC安全上限(円)</label>
+          <input type="checkbox" id="scalp-lc-hardmax-enabled" />
+          <input type="number" id="scalp-lc-hardmax" autocomplete="off" min="20" max="500" step="1" placeholder="150 (既定)" />
+        </div>
+        <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。monitorのシグナルエンジンと jp225-Trade の両方に反映されます。<br>★LC安全上限: 実弾の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・150円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。</div>
       </fieldset>
 
       <div class="setting-row">

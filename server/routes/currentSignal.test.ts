@@ -49,6 +49,21 @@ describe('currentSignalPayload', () => {
     expect('mode' in out).toBe(false);
     expect('range' in out).toBe(false);
   });
+
+  // ★v0.7.56: 実効設定スナップショットを露出(trade2 が entry_meta に記録)。
+  it('settings があれば payload に露出・無ければ付けない(既存互換)', () => {
+    const settings = {
+      lcFloor: { mode: 'manual' as const, value: 45 }, lcCeiling: { mode: 'ai' as const, value: 120 },
+      lcHardMax: { enabled: true, value: 150 },
+      trendVeto: { mode: 'manual' as const, value: 100 }, cooldown: { mode: 'manual' as const, value: 90 },
+      bias: { mode: 'manual' as const, value: 'none' }, range: { mode: 'manual' as const, value: false },
+    };
+    const sig: CurrentSignal = { signalId: 7, at: 1, direction: 'buy', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38050, settings };
+    const out = currentSignalPayload(sig) as { settings?: unknown };
+    expect(out.settings).toEqual(settings);
+    const noSettings: CurrentSignal = { signalId: 8, at: 1, direction: 'buy', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38050 };
+    expect('settings' in currentSignalPayload(noSettings)).toBe(false);
+  });
 });
 
 describe('currentSignalResponse (hold + phase 付き)', () => {

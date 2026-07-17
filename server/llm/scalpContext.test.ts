@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildScalpMarketData, buildScalpTradeHistory, type ScalpMarketDataInput } from './scalpContext.js';
+import { buildScalpMarketData, buildScalpTradeHistory, parseTradeSettings, type ScalpMarketDataInput } from './scalpContext.js';
+import type { SignalSettingsSnapshot } from '../types.js';
 import type { Bar1m, AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.js';
 import type { LevelsResult, Level } from '../levels.js';
 
@@ -152,5 +153,56 @@ describe('buildScalpTradeHistory', () => {
     const s = buildScalpTradeHistory(trades, NOW);
     expect(s).toContain('directional 3件');
     expect(s).toContain('range 0件');
+  });
+
+  // ─── v0.7.56: 設定つき成績(委任別集計 + 設定つき直近) ───
+  it('meta.settings が無い(旧世代)は従来フォーマットのみ(委任別は出さない)', () => {
+    const trades: SignalTradeRow[] = [
+      trade({ id: 1, pnl: 10 }), trade({ id: 2, pnl: 10 }), trade({ id: 3, pnl: -5 }),
+    ];
+    const s = buildScalpTradeHistory(trades, NOW);
+    expect(s).toContain('全体:');
+    expect(s).not.toContain('LC委任別');
+    expect(s).not.toContain('設定つき直近');
+  });
+
+  it('meta.settings があると委任別成績(LC=AI/手動)と設定つき直近を併記', () => {
+    const mk = (over: Partial<SignalSettingsSnapshot>): string => JSON.stringify({
+      ctxV: 'rich',
+      settings: {
+        lcFloor: { mode: 'manual', value: 45 }, lcCeiling: { mode: 'manual', value: 65 },
+        lcHardMax: { enabled: true, value: 150 },
+        trendVeto: { mode: 'manual', value: 100 }, cooldown: { mode: 'manual', value: 90 },
+        bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+        ...over,
+      },
+    });
+    const trades: SignalTradeRow[] = [
+      trade({ id: 1, dir: 'buy', pnl: 65, meta: mk({ lcCeiling: { mode: 'ai', value: 120 } }) }),
+      trade({ id: 2, dir: 'sell', pnl: -30, meta: mk({ lcCeiling: { mode: 'ai', value: 110 } }) }),
+      trade({ id: 3, dir: 'buy', pnl: 40, meta: mk({ lcCeiling: { mode: 'manual', value: 65 } }) }),
+    ];
+    const s = buildScalpTradeHistory(trades, NOW);
+    // LC委任別: AI n=2(勝1=50%,+35) / 手動 n=1(勝1=100%,+40)
+    expect(s).toContain('LC委任別');
+    expect(s).toContain('AI n=2');
+    expect(s).toContain('手動 n=1');
+    // 設定つき直近: 「buy LC=120(AI) veto=手動 bias=手動 → +65」形
+    expect(s).toContain('設定つき直近');
+    expect(s).toContain('LC=120(AI)');
+    expect(s).toContain('→ +65');
+  });
+});
+
+describe('parseTradeSettings', () => {
+  it('meta 無し/壊れ/settings 欠落は null', () => {
+    expect(parseTradeSettings(null)).toBeNull();
+    expect(parseTradeSettings('not json')).toBeNull();
+    expect(parseTradeSettings(JSON.stringify({ ctxV: 'rich' }))).toBeNull();
+  });
+  it('meta.settings を取り出す', () => {
+    const meta = JSON.stringify({ ctxV: 'rich', settings: { lcCeiling: { mode: 'ai', value: 120 } } });
+    const s = parseTradeSettings(meta);
+    expect(s?.lcCeiling).toEqual({ mode: 'ai', value: 120 });
   });
 });

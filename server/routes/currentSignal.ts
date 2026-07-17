@@ -24,6 +24,8 @@ export function currentSignalPayload(sig: CurrentSignal | null): Record<string, 
     out.mode = 'range';
     out.range = sig.range;
   }
+  // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
+  if (sig.settings) out.settings = sig.settings;
   return out;
 }
 

@@ -8,6 +8,23 @@ export interface SignalRangeLeg {
   stopLoss: number;
 }
 
+// ★v0.7.56: 設定スナップショット。各シグナル発生時の実効設定(委任モード+値)を1オブジェクトにまとめ、
+// 紙 meta / 実弾 entry_meta に記録し、trade2 が「どの設定でエントリーしたか」を残せるようにする。
+// value は AI委任項目で実測可能なもの(LC幅=|entry−SL|)のみ数値、それ以外の ai は省略(mode のみ)。
+export interface KnobSettingSnapshot {
+  mode: 'manual' | 'ai';
+  value?: number | string | boolean;   // manual は設定値 / ai は実測 LC 幅のみ(なければ省略)。
+}
+export interface SignalSettingsSnapshot {
+  lcFloor: KnobSettingSnapshot;
+  lcCeiling: KnobSettingSnapshot;
+  lcHardMax: { enabled: boolean; value: number };   // 安全上限(policy とは独立)。
+  trendVeto: KnobSettingSnapshot;
+  cooldown: KnobSettingSnapshot;
+  bias: KnobSettingSnapshot;
+  range: KnobSettingSnapshot;
+}
+
 export type Symbol =
   | 'NIY=F' | 'NQ=F' | 'YM=F' | 'JPY=X'
   | '6861.T' | '9983.T' | '6146.T' | '6273.T'
@@ -95,6 +112,9 @@ export interface SignalTradeState {
     // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
+    // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。trade2 が entry_meta に記録する。
+    //   既存フィールドは不変=在るときだけ付与(パネル表示互換)。
+    settings?: SignalSettingsSnapshot;
   };
   // 保有中の意図(trade2 追従用)。filled の間だけ付与し、決済逆指値(computeExitStop の絶対価格)を
   // 毎tick公開する。signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。

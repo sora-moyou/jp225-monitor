@@ -9,6 +9,7 @@
 
 import type { Bar1m, AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.js';
 import type { LevelsResult } from '../levels.js';
+import type { SignalSettingsSnapshot } from '../types.js';
 import { rowKind } from '../alertHistory.js';
 import { classifySession, minutesFromOpen } from '../../collector/session.js';
 import { extractSwingPivots } from '../swingPivots.js';
@@ -173,7 +174,34 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
 
 interface HistGroup { n: number; wr: number; pnl: number; }
 
+/** ★v0.7.56: signal_trades.meta(JSON文字列)から実効設定スナップショットを取り出す純関数。
+ *  meta 無し/壊れ/settings 欠落は null(=旧世代の記録=従来フォーマットにフォールバック)。 */
+export function parseTradeSettings(meta: string | null): SignalSettingsSnapshot | null {
+  if (!meta) return null;
+  try {
+    const o = JSON.parse(meta) as { settings?: unknown };
+    const s = o?.settings;
+    if (!s || typeof s !== 'object') return null;
+    return s as SignalSettingsSnapshot;
+  } catch { return null; }
+}
+
+/** knob モードの短ラベル。ai→'AI' / manual→'手動'。 */
+function modeJa(m: 'manual' | 'ai' | undefined): string {
+  return m === 'ai' ? 'AI' : '手動';
+}
+
+/** 1トレードの設定つき短要約。例「buy LC=120(AI) veto=AI bias=手動long → +65」。 */
+function fmtTradeWithSettings(t: SignalTradeRow, s: SignalSettingsSnapshot, sgn: (v: number) => string): string {
+  const lc = s.lcCeiling;
+  const lcv = lc.value !== undefined ? String(lc.value) : '—';
+  const biasV = s.bias.mode === 'manual' && typeof s.bias.value === 'string' ? s.bias.value : '';
+  const biasLab = `bias=${modeJa(s.bias.mode)}${biasV && biasV !== 'none' ? biasV : ''}`;
+  return `${t.dir} LC=${lcv}(${modeJa(lc.mode)}) veto=${modeJa(s.trendVeto.mode)} ${biasLab} → ${sgn(t.pnl)}`;
+}
+
 /** このシグナルエンジン自身の直近成績(勝率/pnl・方向別/mode別・直近の負け例)を組み立てる純関数。
+ *  ★v0.7.56: meta.settings がある世代は「設定つき要約」と「委任別成績」も併記し、AI に「どの設定が効いたか」を学ばせる。
  *  結果から学ばせるフィードバック。件数が少ない(<3)/空は '' を返す(省略)。now は将来の経過表示用に受ける。 */
 export function buildScalpTradeHistory(trades: SignalTradeRow[], now: number): string {
   void now;   // 予約(将来: 直近何時間の成績かを明示)。現状は件数ベースで集計。
@@ -200,6 +228,33 @@ export function buildScalpTradeHistory(trades: SignalTradeRow[], now: number): s
   lines.push(`方向別: buy ${buy.n}件 勝率${buy.wr}% ${sgn(buy.pnl)} / sell ${sell.n}件 勝率${sell.wr}% ${sgn(sell.pnl)}`);
   lines.push(`mode別: directional ${dir.n}件 勝率${dir.wr}% ${sgn(dir.pnl)} / range ${rng.n}件 勝率${rng.wr}% ${sgn(rng.pnl)}`);
   if (losers.length > 0) lines.push(`直近の負け: ${losers.join(' / ')}`);
+
+  // ★v0.7.56: 設定つき成績。meta.settings を持つトレードだけ集計/要約する(旧世代は従来行のみ)。
+  const withSettings = trades
+    .map(t => ({ t, s: parseTradeSettings(t.meta) }))
+    .filter((x): x is { t: SignalTradeRow; s: SignalSettingsSnapshot } => x.s !== null);
+  if (withSettings.length > 0) {
+    // 委任別成績: knob の mode(ai/manual)で分けて勝率/pnl を出す(どの委任が効いたかを学ばせる)。
+    const delegAgg = (pick: (s: SignalSettingsSnapshot) => 'manual' | 'ai'): { ai: HistGroup; manual: HistGroup } => {
+      const g = (mode: 'manual' | 'ai'): HistGroup => {
+        const rows = withSettings.filter(x => pick(x.s) === mode);
+        return { n: rows.length, wr: wr(rows.filter(x => x.t.pnl > 0).length, rows.length), pnl: rows.reduce((a, x) => a + x.t.pnl, 0) };
+      };
+      return { ai: g('ai'), manual: g('manual') };
+    };
+    const fmtDeleg = (label: string, a: { ai: HistGroup; manual: HistGroup }): string => {
+      const parts: string[] = [];
+      if (a.ai.n > 0) parts.push(`AI n=${a.ai.n} 勝率${a.ai.wr}% ${sgn(a.ai.pnl)}`);
+      if (a.manual.n > 0) parts.push(`手動 n=${a.manual.n} 勝率${a.manual.wr}% ${sgn(a.manual.pnl)}`);
+      return `${label}: ${parts.join(' / ')}`;
+    };
+    lines.push(fmtDeleg('LC委任別', delegAgg(s => s.lcCeiling.mode)));
+    lines.push(fmtDeleg('トレンドveto委任別', delegAgg(s => s.trendVeto.mode)));
+    lines.push(fmtDeleg('バイアス委任別', delegAgg(s => s.bias.mode)));
+    // 設定つき直近(最大5件)。「どの設定でエントリーしたか」を具体で示す。
+    const recent = withSettings.slice(0, 5).map(x => fmtTradeWithSettings(x.t, x.s, sgn));
+    if (recent.length > 0) lines.push(`設定つき直近: ${recent.join(' / ')}`);
+  }
 
   return '■ 直近のあなた(本シグナルエンジン)の紙トレード成績。同じ失敗を繰り返さないよう改善に使え。\n'
     + lines.join('\n');

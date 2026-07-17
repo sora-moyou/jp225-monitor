@@ -45,10 +45,26 @@ export interface UserConfig {
   scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
   scalpRangeEnabled?: boolean;       // AIエントリー: レンジ判断時の両面ストラドル(実験)。★v0.7.53で実験終了=未設定は false(OFF)。true で再有効化可。
   scalpTrendVetoYen?: number;        // AIエントリー: 直近10分でこの円以上動いたらトレンドと見なし逆行フェード新規を禁止。未設定は 100。0で無効。
+  scalpLcFloorYen?: number;          // ★v0.7.56: AIエントリー 初期LC幅の下限[円](プロンプトにのみ反映)。未設定は 45。
+  // ★v0.7.56: 委任可能な各 knob の source。'ai'=AIに委任(該当制約を課さない) / それ以外/未設定='manual'(現状の強制)。
+  //   既定は全て 'manual'=現状の挙動を一切変えない。ユーザーが1つずつ AI へ倒す枠組み。
+  scalpLcFloorSource?: KnobSource;     // 初期LC下限: manual→プロンプトに下限 / ai→下限を課さない
+  scalpLcCeilingSource?: KnobSource;   // 最大初期LC: manual→超過レッグ落とし / ai→上限で落とさない(hardMax は別)
+  scalpTrendVetoSource?: KnobSource;   // トレンドveto: manual→数値veto / ai→数値veto無効(AI自己判断)
+  scalpCooldownSource?: KnobSource;    // クールダウン: manual→ゲート / ai→ゲート無効
+  scalpBiasSource?: KnobSource;        // バイアス: manual→方向veto / ai→veto無効(自由方向)
+  scalpRangeSource?: KnobSource;       // レンジ両面: manual→on/off設定どおり / ai→AIが採用可否(range許可)
+  // ★v0.7.56: LC安全上限(実弾暴走防止・policy の scalpLcCeiling とは独立の安全系)。
+  //   有効時は手動でもAIでも |entry−SL| がこの円超のレッグを必ず落とす(最後の安全網)。無効時はハード上限なし。
+  scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 150。
+  scalpLcHardMaxEnabled?: boolean;     // LC安全上限を有効にするか。未設定は true(既定で安全網ON)。
 }
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
 export type ScalpBias = 'long' | 'short' | 'none';
+
+// ★v0.7.56: 委任可能な knob の source。'manual'=数値/enum を強制 / 'ai'=AI に委任(該当制約を課さない)。
+export type KnobSource = 'manual' | 'ai';
 
 type ProviderName = 'gemini' | 'groq' | 'openai';
 
@@ -80,6 +96,8 @@ export const PARAM_BOUNDS = {
   scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
   scalpCooldownSec:       { min: 0, max: 3600, default: 90 },   // AIエントリー: 決済後の再ARM抑止秒数。0で無効。
   scalpTrendVetoYen:      { min: 0, max: 1000, default: 100 },  // AIエントリー: トレンド veto 閾値(円)。直近10分でこの円以上動いたら逆行フェードを禁止。0で無効。
+  scalpLcFloorYen:        { min: 20, max: 300, default: 45 },   // ★v0.7.56: AIエントリー 初期LC幅の下限(円)。プロンプトにのみ反映。
+  scalpLcHardMaxYen:      { min: 20, max: 500, default: 150 },  // ★v0.7.56: LC安全上限(円)。有効時は手動/AIとも超過レッグを落とす。
 } as const;
 
 let cached: UserConfig | null = null;
@@ -237,6 +255,57 @@ export function resolveScalpBias(): ScalpBias {
 export function resolveScalpRangeEnabled(): boolean {
   const v = loadConfig().scalpRangeEnabled;
   return typeof v === 'boolean' ? v : false;
+}
+
+// ★v0.7.56: AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(45)。プロンプトにのみ反映。
+export function resolveScalpLcFloorYen(): number { return resolveNumeric('scalpLcFloorYen'); }
+
+// ─── v0.7.56: 委任 directive リゾルバ({mode,value}) ───────────────────────
+// 各 knob を「手動(数値/enum を強制)」か「AI委任(該当制約を課さない)」で返す。
+// source が 'ai' のときだけ ai。それ以外(未設定/'manual'/不正値)は寛容に manual(=既定で現状の挙動)。
+
+export interface KnobDirective<T> { mode: KnobSource; value: T; }
+
+/** source 文字列を寛容にパース。'ai'(大小文字無視)だけ 'ai'、それ以外は 'manual'。 */
+export function parseKnobSource(v: unknown): KnobSource {
+  return typeof v === 'string' && v.trim().toLowerCase() === 'ai' ? 'ai' : 'manual';
+}
+
+/** 初期LC下限 directive。value=下限(円)。ai=下限を課さない。 */
+export function resolveScalpLcFloorDirective(): KnobDirective<number> {
+  return { mode: parseKnobSource(loadConfig().scalpLcFloorSource), value: resolveScalpLcFloorYen() };
+}
+
+/** 最大初期LC directive。value=上限(円)。ai=上限で落とさない(hardMax は別に効く)。 */
+export function resolveScalpLcCeilingDirective(): KnobDirective<number> {
+  return { mode: parseKnobSource(loadConfig().scalpLcCeilingSource), value: resolveScalpLcCeiling() };
+}
+
+/** トレンドveto directive。value=閾値(円)。ai=数値veto無効(AI自己判断)。 */
+export function resolveScalpTrendVetoDirective(): KnobDirective<number> {
+  return { mode: parseKnobSource(loadConfig().scalpTrendVetoSource), value: resolveScalpTrendVetoYen() };
+}
+
+/** クールダウン directive。value=秒。ai=ゲート無効。 */
+export function resolveScalpCooldownDirective(): KnobDirective<number> {
+  return { mode: parseKnobSource(loadConfig().scalpCooldownSource), value: resolveScalpCooldownSec() };
+}
+
+/** バイアス directive。value='long'|'short'|'none'。ai=方向veto無効(自由方向)。 */
+export function resolveScalpBiasDirective(): KnobDirective<ScalpBias> {
+  return { mode: parseKnobSource(loadConfig().scalpBiasSource), value: resolveScalpBias() };
+}
+
+/** レンジ両面 directive。value=on/off(bool)。ai=range 採用可否を AI が決める(range許可)。 */
+export function resolveScalpRangeDirective(): KnobDirective<boolean> {
+  return { mode: parseKnobSource(loadConfig().scalpRangeSource), value: resolveScalpRangeEnabled() };
+}
+
+/** ★LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。
+ *  enabled 未設定は true(既定で安全網ON)。value 未設定は PARAM_BOUNDS 既定(150)。 */
+export function resolveScalpLcHardMax(): { enabled: boolean; value: number } {
+  const v = loadConfig().scalpLcHardMaxEnabled;
+  return { enabled: typeof v === 'boolean' ? v : true, value: resolveNumeric('scalpLcHardMaxYen') };
 }
 
 // v0.6.0: 的中率の「成功」判定しきい値(順行% ≥ これ)。シグナル種別ごとに持てる(既定は全種別同値 0.1%)。

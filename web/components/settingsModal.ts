@@ -8,12 +8,19 @@ function escapeHtml(s: string): string {
   }[c] as string));
 }
 
+type KnobSource = 'manual' | 'ai';
+
 interface SettingsResponse {
   geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
+  // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
+  scalpLcFloorYen: number;
+  scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
+  scalpCooldownSource: KnobSource; scalpBiasSource: KnobSource; scalpRangeSource: KnobSource;
+  scalpLcHardMaxEnabled: boolean; scalpLcHardMaxYen: number;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -53,6 +60,16 @@ interface SavePayload {
   scalpCooldownSec?: number | null;
   scalpRangeEnabled?: boolean | null;
   scalpTrendVetoYen?: number | null;
+  // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
+  scalpLcFloorYen?: number | null;
+  scalpLcFloorSource?: KnobSource;
+  scalpLcCeilingSource?: KnobSource;
+  scalpTrendVetoSource?: KnobSource;
+  scalpCooldownSource?: KnobSource;
+  scalpBiasSource?: KnobSource;
+  scalpRangeSource?: KnobSource;
+  scalpLcHardMaxEnabled?: boolean | null;
+  scalpLcHardMaxYen?: number | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -100,6 +117,16 @@ export interface SettingsElements {
   inputScalpCooldown: HTMLInputElement;    // AIエントリー: クールダウン(秒)
   inputScalpTrendVeto: HTMLInputElement;   // AIエントリー: トレンド veto 閾値(円・0で無効)
   checkScalpRangeEnabled: HTMLInputElement; // AIエントリー: レンジ両面ストラドル(実験・紙で別枠計測)
+  // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
+  inputScalpLcFloor: HTMLInputElement;
+  selectLcFloorMode: HTMLSelectElement;
+  selectLcCeilingMode: HTMLSelectElement;
+  selectTrendVetoMode: HTMLSelectElement;
+  selectCooldownMode: HTMLSelectElement;
+  selectBiasMode: HTMLSelectElement;
+  selectRangeMode: HTMLSelectElement;
+  checkScalpLcHardMaxEnabled: HTMLInputElement;
+  inputScalpLcHardMax: HTMLInputElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -175,6 +202,39 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputScalpCooldown.value = current ? String(current.scalpCooldownSec) : '';
     el.inputScalpTrendVeto.value = current ? String(current.scalpTrendVetoYen) : '';
     el.checkScalpRangeEnabled.checked = current ? current.scalpRangeEnabled : false;   // ★実験終了=既定OFF
+    // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限を反映し、AI委任の項目は数値/enum入力を無効化(灰色)。
+    el.inputScalpLcFloor.value = current ? String(current.scalpLcFloorYen) : '';
+    el.selectLcFloorMode.value = current?.scalpLcFloorSource ?? 'manual';
+    el.selectLcCeilingMode.value = current?.scalpLcCeilingSource ?? 'manual';
+    el.selectTrendVetoMode.value = current?.scalpTrendVetoSource ?? 'manual';
+    el.selectCooldownMode.value = current?.scalpCooldownSource ?? 'manual';
+    el.selectBiasMode.value = current?.scalpBiasSource ?? 'manual';
+    el.selectRangeMode.value = current?.scalpRangeSource ?? 'manual';
+    el.checkScalpLcHardMaxEnabled.checked = current ? current.scalpLcHardMaxEnabled : true;   // 既定=有効(安全網ON)
+    el.inputScalpLcHardMax.value = current ? String(current.scalpLcHardMaxYen) : '';
+    syncKnobDisabled();
+  }
+
+  // AI委任(mode==='ai')の項目は数値/enum入力を無効化して「AI が決める」ことを視覚化する。
+  // LC安全上限は最大初期LCのモードと独立の安全系なので、有効チェックが外れた時だけ値入力を無効化する。
+  function syncKnobDisabled() {
+    const pairs: Array<[HTMLSelectElement, HTMLInputElement | HTMLSelectElement]> = [
+      [el.selectLcFloorMode, el.inputScalpLcFloor],
+      [el.selectLcCeilingMode, el.inputScalpLcCeiling],
+      [el.selectTrendVetoMode, el.inputScalpTrendVeto],
+      [el.selectCooldownMode, el.inputScalpCooldown],
+      [el.selectBiasMode, el.selectScalpBias],
+      [el.selectRangeMode, el.checkScalpRangeEnabled],
+    ];
+    for (const [mode, input] of pairs) {
+      const ai = mode.value === 'ai';
+      input.disabled = ai;
+      input.style.opacity = ai ? '0.4' : '';
+    }
+    // LC安全上限の値入力は「有効」チェック時のみ編集可。
+    const hardOn = el.checkScalpLcHardMaxEnabled.checked;
+    el.inputScalpLcHardMax.disabled = !hardOn;
+    el.inputScalpLcHardMax.style.opacity = hardOn ? '' : '0.4';
   }
 
   async function loadCurrentVersion() {
@@ -437,6 +497,13 @@ export function initSettingsModal(el: SettingsElements): void {
     }
   });
 
+  // ★v0.7.56: 委任モード select / LC安全上限チェックを変えたら即座に入力の有効/無効を同期。
+  for (const s of [el.selectLcFloorMode, el.selectLcCeilingMode, el.selectTrendVetoMode,
+                   el.selectCooldownMode, el.selectBiasMode, el.selectRangeMode]) {
+    s.addEventListener('change', syncKnobDisabled);
+  }
+  el.checkScalpLcHardMaxEnabled.addEventListener('change', syncKnobDisabled);
+
   async function open() {
     el.modal.classList.remove('hidden');
     await refresh();
@@ -492,6 +559,20 @@ export function initSettingsModal(el: SettingsElements): void {
       body.scalpTrendVetoYen = tvRaw === '' ? null : Number(tvRaw);
       // レンジ両面(実験・紙で別枠計測): チェックボックス(常に値あり)。true/false を送る。
       body.scalpRangeEnabled = el.checkScalpRangeEnabled.checked;
+      // ★v0.7.56: 委任 source(手動/AI)。select は常に値あり('manual'|'ai')。
+      body.scalpLcFloorSource = el.selectLcFloorMode.value as KnobSource;
+      body.scalpLcCeilingSource = el.selectLcCeilingMode.value as KnobSource;
+      body.scalpTrendVetoSource = el.selectTrendVetoMode.value as KnobSource;
+      body.scalpCooldownSource = el.selectCooldownMode.value as KnobSource;
+      body.scalpBiasSource = el.selectBiasMode.value as KnobSource;
+      body.scalpRangeSource = el.selectRangeMode.value as KnobSource;
+      // 初期LC下限: 可視フィールド。空欄=既定(45)に戻す(null)。数値なら上書き。
+      const lcFloorRaw = el.inputScalpLcFloor.value.trim();
+      body.scalpLcFloorYen = lcFloorRaw === '' ? null : Number(lcFloorRaw);
+      // LC安全上限: 有効/無効(チェック)＋値。空欄=既定(150)に戻す(null)。
+      body.scalpLcHardMaxEnabled = el.checkScalpLcHardMaxEnabled.checked;
+      const hardMaxRaw = el.inputScalpLcHardMax.value.trim();
+      body.scalpLcHardMaxYen = hardMaxRaw === '' ? null : Number(hardMaxRaw);
 
       const result = await saveSettings(body);
       if (!result.ok) {

@@ -1,10 +1,16 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   computeHold, inCooldown, buildPlanMeta, buildTradeMetaJson,
+  buildSettingsSnapshot, knobSnapshot, realizedLcFromArmed,
   type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal,
 } from './engine.js';
+import { resetConfigCache, type KnobDirective } from '../configStore.js';
+import type { SignalSettingsSnapshot } from '../types.js';
 import { _setExitImpl } from './exit/index.js';
 
 afterEach(() => _setExitImpl(null));   // 簡易版(初期LC固定)へ戻す
@@ -588,5 +594,144 @@ describe('toSignalTradeState signal', () => {
     const s = toSignalTradeState(st, 38000, 9);
     expect(s.signal).toBeUndefined();
     expect(s.entry).toBeDefined();   // 既存 entry 表示は不変
+  });
+});
+
+// ─── v0.7.56: 設定スナップショット(委任モード+値)の生成/持ち回り/露出/記録 ───
+describe('knobSnapshot(1 knob 分の整形)', () => {
+  it('manual は value を載せる', () => {
+    const d: KnobDirective<number> = { mode: 'manual', value: 65 };
+    expect(knobSnapshot(d)).toEqual({ mode: 'manual', value: 65 });
+  });
+  it('ai は原則 value 省略(mode のみ)', () => {
+    const d: KnobDirective<number> = { mode: 'ai', value: 65 };
+    expect(knobSnapshot(d)).toEqual({ mode: 'ai' });
+  });
+  it('ai + realizedLc を渡すと実測 LC を value に入れる', () => {
+    const d: KnobDirective<number> = { mode: 'ai', value: 65 };
+    expect(knobSnapshot(d, 120)).toEqual({ mode: 'ai', value: 120 });
+  });
+  it('manual は realizedLc を渡しても設定値のまま', () => {
+    const d: KnobDirective<string> = { mode: 'manual', value: 'long' };
+    expect(knobSnapshot(d, 120)).toEqual({ mode: 'manual', value: 'long' });
+  });
+});
+
+describe('realizedLcFromArmed(採用レッグの実測 LC)', () => {
+  it('directional: 指値レッグ優先 |entry−SL|', () => {
+    const a: ArmedBracket = { direction: 'buy', limitEntry: 38200, stopLossForLimit: 38130, stopEntry: 38350, stopLossForStop: 38300, rationale: 'x', at: 0 };
+    expect(realizedLcFromArmed(a)).toBe(70);
+  });
+  it('directional: 指値なしは逆指値レッグ', () => {
+    const a: ArmedBracket = { direction: 'buy', stopEntry: 38350, stopLossForStop: 38300, rationale: 'x', at: 0 };
+    expect(realizedLcFromArmed(a)).toBe(50);
+  });
+  it('range: upper 優先', () => {
+    const a: ArmedBracket = { direction: 'buy', rationale: 'x', at: 0, mode: 'range', range: { upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38460 }, lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } } };
+    expect(realizedLcFromArmed(a)).toBe(60);
+  });
+});
+
+describe('buildTradeMetaJson に settings をマージ', () => {
+  const settings: SignalSettingsSnapshot = {
+    lcFloor: { mode: 'manual', value: 45 }, lcCeiling: { mode: 'ai', value: 120 },
+    lcHardMax: { enabled: true, value: 150 },
+    trendVeto: { mode: 'manual', value: 100 }, cooldown: { mode: 'manual', value: 90 },
+    bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+  };
+  it('settings 省略は従来どおり(ctxV のみ)', () => {
+    expect(JSON.parse(buildTradeMetaJson())).toEqual({ ctxV: 'rich' });
+  });
+  it('settings を渡すと meta.settings に入る', () => {
+    const m = JSON.parse(buildTradeMetaJson({ regime: 'trend_up', confidence: 70 }, settings));
+    expect(m.ctxV).toBe('rich');
+    expect(m.regime).toBe('trend_up');
+    expect(m.settings.lcCeiling).toEqual({ mode: 'ai', value: 120 });
+    expect(m.settings.lcHardMax).toEqual({ enabled: true, value: 150 });
+  });
+});
+
+describe('advance が settings を armed→position→recorded へ持ち回る', () => {
+  const settings: SignalSettingsSnapshot = {
+    lcFloor: { mode: 'manual', value: 45 }, lcCeiling: { mode: 'ai', value: 50 },
+    lcHardMax: { enabled: true, value: 150 },
+    trendVeto: { mode: 'ai' }, cooldown: { mode: 'manual', value: 90 },
+    bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+  };
+  it('約定で position.settings、決済で recorded.settings に載る', () => {
+    const armed: ArmedBracket = { direction: 'buy', limitEntry: 38000, stopLossForLimit: 37950, rationale: 'x', at: 0, settings };
+    const st: EngineState = { phase: 'armed', armed };
+    const filled = advance(st, 38000, 10);
+    expect(filled.next.phase).toBe('filled');
+    expect(filled.next.position?.settings).toEqual(settings);
+    // 決済(逆指値=37950 に到達)。
+    const exited = advance(filled.next, 37950, 20);
+    expect(exited.next.phase).toBe('flat');
+    expect(exited.recorded?.settings).toEqual(settings);
+  });
+});
+
+describe('armedToCurrentSignal / toSignalTradeState が settings を露出', () => {
+  const settings: SignalSettingsSnapshot = {
+    lcFloor: { mode: 'manual', value: 45 }, lcCeiling: { mode: 'manual', value: 65 },
+    lcHardMax: { enabled: true, value: 150 },
+    trendVeto: { mode: 'manual', value: 100 }, cooldown: { mode: 'manual', value: 90 },
+    bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+  };
+  it('armedToCurrentSignal は settings を引き継ぐ', () => {
+    const armed: ArmedBracket = { direction: 'buy', limitEntry: 38000, stopLossForLimit: 37950, rationale: 'x', at: 1, settings };
+    const sig = armedToCurrentSignal(armed, 3);
+    expect(sig.settings).toEqual(settings);
+  });
+  it('toSignalTradeState は s.signal.settings に露出', () => {
+    const sig: CurrentSignal = { signalId: 3, at: 1, direction: 'buy', rationale: 'x', limitEntry: 38000, stopLossForLimit: 37950, settings };
+    const s = toSignalTradeState({ phase: 'flat' }, 38000, 5, sig);
+    expect(s.signal?.settings).toEqual(settings);
+  });
+  it('settings 無しの signal は s.signal.settings 未付与(既存互換)', () => {
+    const sig: CurrentSignal = { signalId: 3, at: 1, direction: 'buy', rationale: 'x', limitEntry: 38000, stopLossForLimit: 37950 };
+    const s = toSignalTradeState({ phase: 'flat' }, 38000, 5, sig);
+    expect(s.signal?.settings).toBeUndefined();
+  });
+});
+
+describe('buildSettingsSnapshot(config から実効設定)', () => {
+  let dir: string;
+  let origHome: string | undefined;
+  let origUserProfile: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-snap-'));
+    origHome = process.env.HOME; origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = dir; process.env.USERPROFILE = dir;
+    resetConfigCache();
+  });
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
+    if (origUserProfile !== undefined) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    resetConfigCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  function writeConfig(obj: Record<string, unknown>): void {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'), JSON.stringify(obj), 'utf-8');
+    resetConfigCache();
+  }
+
+  it('既定は全 knob manual + 既定値 + hardMax(enabled150)', () => {
+    const s = buildSettingsSnapshot();
+    expect(s.lcFloor).toEqual({ mode: 'manual', value: 45 });
+    expect(s.lcCeiling).toEqual({ mode: 'manual', value: 65 });
+    expect(s.trendVeto).toEqual({ mode: 'manual', value: 100 });
+    expect(s.cooldown).toEqual({ mode: 'manual', value: 90 });
+    expect(s.bias).toEqual({ mode: 'manual', value: 'none' });
+    expect(s.range).toEqual({ mode: 'manual', value: false });
+    expect(s.lcHardMax).toEqual({ enabled: true, value: 150 });
+  });
+  it('lcCeiling=ai + realizedLc は実測 LC を value に、他は mode のみ', () => {
+    writeConfig({ scalpLcCeilingSource: 'ai', scalpTrendVetoSource: 'ai' });
+    const s = buildSettingsSnapshot(118);
+    expect(s.lcCeiling).toEqual({ mode: 'ai', value: 118 });
+    expect(s.lcFloor).toEqual({ mode: 'manual', value: 45 });   // floor は manual → 設定値
+    expect(s.trendVeto).toEqual({ mode: 'ai' });                // trendVeto は LC 系でない → value 省略
   });
 });

@@ -6,6 +6,10 @@ import {
   resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache,
   resolveScalpLcCeiling, resolveScalpBias, resolveScalpCooldownSec, resolveScalpRangeEnabled,
   resolveScalpTrendVetoYen,
+  parseKnobSource,
+  resolveScalpLcFloorYen, resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective,
+  resolveScalpTrendVetoDirective, resolveScalpCooldownDirective, resolveScalpBiasDirective,
+  resolveScalpRangeDirective, resolveScalpLcHardMax,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
@@ -137,5 +141,58 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
   it('scalpTrendVetoYen=0(veto 無効)を反映', () => {
     writeConfig({ scalpTrendVetoYen: 0 });
     expect(resolveScalpTrendVetoYen()).toBe(0);
+  });
+
+  // ─── v0.7.56: 委任 directive リゾルバ({mode,value}) ───────────────────────
+  it('parseKnobSource: "ai"(大小文字/前後空白無視)だけ ai・他は manual', () => {
+    expect(parseKnobSource('ai')).toBe('ai');
+    expect(parseKnobSource(' AI ')).toBe('ai');
+    expect(parseKnobSource('manual')).toBe('manual');
+    expect(parseKnobSource('bogus')).toBe('manual');
+    expect(parseKnobSource(undefined)).toBe('manual');
+    expect(parseKnobSource(null)).toBe('manual');
+    expect(parseKnobSource(1)).toBe('manual');
+  });
+
+  it('★既定は全 knob directive が manual + 既定値(現状の挙動)', () => {
+    expect(resolveScalpLcFloorYen()).toBe(45);
+    expect(resolveScalpLcFloorDirective()).toEqual({ mode: 'manual', value: 45 });
+    expect(resolveScalpLcCeilingDirective()).toEqual({ mode: 'manual', value: 65 });
+    expect(resolveScalpTrendVetoDirective()).toEqual({ mode: 'manual', value: 100 });
+    expect(resolveScalpCooldownDirective()).toEqual({ mode: 'manual', value: 90 });
+    expect(resolveScalpBiasDirective()).toEqual({ mode: 'manual', value: 'none' });
+    expect(resolveScalpRangeDirective()).toEqual({ mode: 'manual', value: false });
+    // LC安全上限: 既定 enabled=true / value=150。
+    expect(resolveScalpLcHardMax()).toEqual({ enabled: true, value: 150 });
+  });
+
+  it('source=ai を反映(value は現行値のまま返す=記録/実測用)', () => {
+    writeConfig({
+      scalpLcFloorSource: 'ai', scalpLcCeilingSource: 'ai', scalpTrendVetoSource: 'ai',
+      scalpCooldownSource: 'ai', scalpBiasSource: 'ai', scalpRangeSource: 'ai',
+      scalpLcCeilingYen: 80, scalpBias: 'long',
+    });
+    expect(resolveScalpLcCeilingDirective()).toEqual({ mode: 'ai', value: 80 });
+    expect(resolveScalpTrendVetoDirective().mode).toBe('ai');
+    expect(resolveScalpCooldownDirective().mode).toBe('ai');
+    expect(resolveScalpBiasDirective()).toEqual({ mode: 'ai', value: 'long' });
+    expect(resolveScalpRangeDirective().mode).toBe('ai');
+    expect(resolveScalpLcFloorDirective().mode).toBe('ai');
+  });
+
+  it('source が不正/未設定は manual(寛容)', () => {
+    writeConfig({ scalpLcCeilingSource: 'bogus' as unknown as 'manual' });
+    expect(resolveScalpLcCeilingDirective().mode).toBe('manual');
+  });
+
+  it('LC安全上限: enabled=false / value=200 を反映', () => {
+    writeConfig({ scalpLcHardMaxEnabled: false, scalpLcHardMaxYen: 200 });
+    expect(resolveScalpLcHardMax()).toEqual({ enabled: false, value: 200 });
+  });
+
+  it('LC安全上限: 初期LC下限 scalpLcFloorYen=60 を反映', () => {
+    writeConfig({ scalpLcFloorYen: 60 });
+    expect(resolveScalpLcFloorYen()).toBe(60);
+    expect(resolveScalpLcFloorDirective()).toEqual({ mode: 'manual', value: 60 });
   });
 });

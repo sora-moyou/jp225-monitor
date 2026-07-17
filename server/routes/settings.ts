@@ -3,7 +3,10 @@ import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
   resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, PARAM_BOUNDS,
-  type UserConfig, type ScalpBias,
+  resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
+  resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
+  resolveScalpLcHardMax, parseKnobSource,
+  type UserConfig, type ScalpBias, type KnobSource,
 } from '../configStore.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
@@ -20,7 +23,14 @@ const NUMERIC_PARAM_KEYS = [
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
   'levelLookbackSessions', 'levelLookbackSessions2',
   'scalpLcCeilingYen', 'scalpCooldownSec', 'scalpTrendVetoYen',
+  'scalpLcFloorYen', 'scalpLcHardMaxYen',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
+
+// source フィールド適用: undefined=変更なし / 'ai'→'ai' 保存 / それ以外(null/'manual'/不正)=既定 manual(=未設定で保存)。
+function applySourceField(existing: KnobSource | undefined, incoming: unknown): KnobSource | undefined {
+  if (incoming === undefined) return existing;
+  return parseKnobSource(incoming) === 'ai' ? 'ai' : undefined;
+}
 
 // AIエントリー バイアスの受理値。
 const BIAS_VALUES = ['long', 'short', 'none'] as const;
@@ -61,7 +71,16 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
     scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(★実験終了=未設定は false=OFF)。
-    // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
+    // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
+    scalpLcFloorSource: resolveScalpLcFloorDirective().mode,
+    scalpLcCeilingSource: resolveScalpLcCeilingDirective().mode,
+    scalpTrendVetoSource: resolveScalpTrendVetoDirective().mode,
+    scalpCooldownSource: resolveScalpCooldownDirective().mode,
+    scalpBiasSource: resolveScalpBiasDirective().mode,
+    scalpRangeSource: resolveScalpRangeDirective().mode,
+    // ★v0.7.56: LC安全上限(policy とは独立の安全系)。既定 enabled=true / value=150。
+    scalpLcHardMaxEnabled: resolveScalpLcHardMax().enabled,
+    // 数値パラメータ (port のみ env fallback があるため明示で上書き)。scalpLcHardMaxYen/scalpLcFloorYen も含まれる。
     ...resolveAllNumericParams(),
     pricePollMs: resolvePricePollMs(),
     newsPollMs: resolveNewsPollMs(),
@@ -93,6 +112,17 @@ interface SettingsBody {
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
+  // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
+  scalpLcFloorSource?: string | null;
+  scalpLcCeilingSource?: string | null;
+  scalpTrendVetoSource?: string | null;
+  scalpCooldownSource?: string | null;
+  scalpBiasSource?: string | null;
+  scalpRangeSource?: string | null;
+  // ★v0.7.56: LC安全上限。
+  scalpLcHardMaxEnabled?: boolean | null;   // true=有効(既定) / false=無効 / null=既定(true)に戻す
+  scalpLcHardMaxYen?: number | null;        // LC安全上限(円)。null=既定(150)に戻す
+  scalpLcFloorYen?: number | null;          // 初期LC下限(円)。null=既定(45)に戻す
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -146,6 +176,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   if (biasResult.error) errors.push(biasResult.error);
   // AIエントリー レンジ両面(boolean)を適用(検証エラーなし=非boolean は変更なし)。
   const rangeEnabledValue = applyBoolField(existing.scalpRangeEnabled, bodyRec.scalpRangeEnabled);
+  // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
+  const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -161,6 +193,15 @@ export function postSettingsHandler(req: Request, res: Response): void {
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
+    // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。
+    scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
+    scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),
+    scalpTrendVetoSource: applySourceField(existing.scalpTrendVetoSource, bodyRec.scalpTrendVetoSource),
+    scalpCooldownSource: applySourceField(existing.scalpCooldownSource, bodyRec.scalpCooldownSource),
+    scalpBiasSource: applySourceField(existing.scalpBiasSource, bodyRec.scalpBiasSource),
+    scalpRangeSource: applySourceField(existing.scalpRangeSource, bodyRec.scalpRangeSource),
+    // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。
+    scalpLcHardMaxEnabled: hardMaxEnabledValue,
   };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {

@@ -10,7 +10,7 @@
 // 約定判定・phase 遷移・equity 集計は純関数(下記 export)にして単体テストする。
 // LLM(buildScalpPlan)は dynamic import で遅延ロードし、engine の静的 import を軽く保つ。
 
-import type { SignalTradeState } from '../types.js';
+import type { SignalTradeState, SignalSettingsSnapshot, KnobSettingSnapshot } from '../types.js';
 import type { RangeLeg } from '../llm/openai.js';
 import { computeExitStop, loadExitImpl } from './exit/index.js';
 import { broadcast } from '../sse/broker.js';
@@ -19,7 +19,12 @@ import { openDb, resolveDbPath, insertSignalTrade } from '../db/store.js';
 import { inPollWindow } from '../../collector/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
-import { resolveScalpCooldownSec } from '../configStore.js';
+import {
+  resolveScalpCooldownDirective,
+  resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
+  resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
+  type KnobDirective,
+} from '../configStore.js';
 
 const NIKKEI_SYMBOL = 'NIY=F';
 const QTY = 1;   // 紙トラッキングは常に1枚。
@@ -49,6 +54,8 @@ export interface ArmedBracket {
   range?: { upper?: RangeLeg; lower?: RangeLeg };
   // v0.7.54: AI 自己レジーム/確信度 + トレンド veto 発火(記録のみ・約定→決済へ持ち回り)。
   planMeta?: PlanMeta;
+  // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。約定→決済→meta/SSE へ持ち回る。
+  settings?: SignalSettingsSnapshot;
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -65,6 +72,8 @@ export interface CurrentSignal {
   // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
   mode?: 'range';
   range?: { upper?: RangeLeg; lower?: RangeLeg };
+  // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。trade2 が SSE/GET で受け取り記録する。
+  settings?: SignalSettingsSnapshot;
 }
 
 export interface OpenPosition {
@@ -77,6 +86,7 @@ export interface OpenPosition {
   at: number;     // 約定時刻(= 記録の entry_t)
   mode?: 'range';  // レンジ由来の建玉(タグ計測用)。約定後は通常の単方向ポジションとして扱う(決済は既存 exitStop)。
   planMeta?: PlanMeta;   // v0.7.54: AI 自己レジーム/確信度 + veto 発火(決済 meta へ引き継ぐ)。
+  settings?: SignalSettingsSnapshot;   // ★v0.7.56: 実効設定スナップショット(決済 meta へ引き継ぐ)。
 }
 
 export interface EngineState {
@@ -101,6 +111,7 @@ export interface RecordedTrade {
   exitT: number; exitPrice: number; pnl: number; qty: number; rationale: string;
   mode?: 'range';   // レンジ由来の紙トレード(別枠集計タグ)。directional は付与しない=既存記録と互換。
   planMeta?: PlanMeta;   // v0.7.54: 決済時に signal_trades.meta へ JSON 保存する自己レジーム/確信度/veto。
+  settings?: SignalSettingsSnapshot;   // ★v0.7.56: 決済時に signal_trades.meta へ保存する実効設定スナップショット。
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -227,6 +238,7 @@ export function advance(
         mode: 'range',   // タグ計測用: この建玉は range 由来。
       };
       if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
+      if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
       return { next: { phase: 'filled', position, lastExit: st.lastExit } };
     }
     const fill = detectFill(st.armed, price);
@@ -242,6 +254,7 @@ export function advance(
       at: now,
     };
     if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
+    if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
     return { next: { phase: 'filled', position, lastExit: st.lastExit } };
   }
 
@@ -262,6 +275,7 @@ export function advance(
     // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
     if (pos.mode === 'range') recorded.mode = 'range';
     if (pos.planMeta) recorded.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
+    if (pos.settings) recorded.settings = pos.settings;   // ★v0.7.56: 実効設定を決済記録へ。
     return { next: { phase: 'flat', lastExit: { exitPrice: exit, pnl, at: now } }, recorded };
   }
 
@@ -324,6 +338,8 @@ export function toSignalTradeState(
       s.signal.mode = 'range';
       s.signal.range = signal.range;
     }
+    // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
+    if (signal.settings) s.signal.settings = signal.settings;
   }
   return s;
 }
@@ -400,6 +416,8 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
     s.mode = 'range';
     s.range = a.range;
   }
+  // ★v0.7.56: 実効設定スナップショットを引き継ぐ(在るときだけ)。
+  if (a.settings) s.settings = a.settings;
   return s;
 }
 
@@ -491,12 +509,54 @@ export function _resetSignalEngine(): void {
 
 /** 決済記録の meta(JSON文字列)を組み立てる純関数。v0.7.54: AI 自己レジーム/確信度/veto発火 + ctxV。
  *  planMeta が空/欠落でも ctxV:'rich' は常に記録する(rich文脈で生成された世代の印)。 */
-export function buildTradeMetaJson(planMeta?: PlanMeta): string {
+export function buildTradeMetaJson(planMeta?: PlanMeta, settings?: SignalSettingsSnapshot): string {
   const meta: Record<string, unknown> = { ctxV: 'rich' };
   if (planMeta?.regime !== undefined) meta.regime = planMeta.regime;
   if (planMeta?.confidence !== undefined) meta.confidence = planMeta.confidence;
   if (planMeta?.vetoFired !== undefined) meta.vetoFired = planMeta.vetoFired;
+  // ★v0.7.56: 実効設定スナップショットを meta にマージ(在るときだけ・後方互換)。history/分析で「どの設定か」を残す。
+  if (settings) meta.settings = settings;
   return JSON.stringify(meta);
+}
+
+/** ★v0.7.56: KnobDirective を1 knob 分のスナップショットへ整形する純関数。
+ *  manual は設定値を value に載せる / ai は原則 value 省略(mode のみ)。ただし realizedLc を渡した LC 系
+ *  (lcFloor/lcCeiling)は ai でも実測 LC 幅を value に入れる(AI委任項目の実現値を計測できるように)。 */
+export function knobSnapshot<T>(d: KnobDirective<T>, realizedLcYen?: number): KnobSettingSnapshot {
+  if (d.mode === 'manual') return { mode: 'manual', value: d.value as unknown as (number | string | boolean) };
+  return typeof realizedLcYen === 'number' && Number.isFinite(realizedLcYen)
+    ? { mode: 'ai', value: realizedLcYen }
+    : { mode: 'ai' };
+}
+
+/** ★v0.7.56: 現在の設定(config)から実効設定スナップショットを組み立てる純関数(config 読みのみ)。
+ *  realizedLcYen(採用/約定レッグの |entry−SL|)を渡すと、AI委任の LC(lcFloor/lcCeiling)の value に実測を入れる。 */
+export function buildSettingsSnapshot(realizedLcYen?: number): SignalSettingsSnapshot {
+  const hardMax = resolveScalpLcHardMax();
+  return {
+    lcFloor: knobSnapshot(resolveScalpLcFloorDirective(), realizedLcYen),
+    lcCeiling: knobSnapshot(resolveScalpLcCeilingDirective(), realizedLcYen),
+    lcHardMax: { enabled: hardMax.enabled, value: hardMax.value },
+    trendVeto: knobSnapshot(resolveScalpTrendVetoDirective()),
+    cooldown: knobSnapshot(resolveScalpCooldownDirective()),
+    bias: knobSnapshot(resolveScalpBiasDirective()),
+    range: knobSnapshot(resolveScalpRangeDirective()),
+  };
+}
+
+/** ★v0.7.56: armed ブラケットの代表レッグの初期LC幅 |entry−SL| を返す純関数(実測値=AI委任 LC の value 用)。
+ *  directional は指値レッグ優先(無ければ逆指値)/ range は upper 優先(無ければ lower)。測れなければ undefined。 */
+export function realizedLcFromArmed(a: ArmedBracket): number | undefined {
+  const abs = (x: number, y: number): number => Math.abs(x - y);
+  if (a.mode === 'range' || a.range != null) {
+    const u = a.range?.upper, l = a.range?.lower;
+    if (u) return abs(u.entry, u.stopLoss);
+    if (l) return abs(l.entry, l.stopLoss);
+    return undefined;
+  }
+  if (a.limitEntry != null && a.stopLossForLimit != null) return abs(a.limitEntry, a.stopLossForLimit);
+  if (a.stopEntry != null && a.stopLossForStop != null) return abs(a.stopEntry, a.stopLossForStop);
+  return undefined;
 }
 
 // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。
@@ -510,8 +570,8 @@ function persistTrade(t: RecordedTrade): void {
         rationale: t.rationale,
         // range 由来のみ 'range' タグ、それ以外は 'directional'(別枠集計・後方互換)。
         mode: t.mode === 'range' ? 'range' : 'directional',
-        // v0.7.54: AI 自己レジーム/確信度/veto発火 を JSON で記録(後の A/B 実測用)。
-        meta: buildTradeMetaJson(t.planMeta),
+        // v0.7.54: AI 自己レジーム/確信度/veto発火 + v0.7.56: 実効設定スナップショット を JSON で記録(後の A/B 実測用)。
+        meta: buildTradeMetaJson(t.planMeta, t.settings),
       });
     } finally { db.close(); }
   } catch (e) {
@@ -528,9 +588,11 @@ function maybeRequestPlan(price: number, now: number): void {
 
   // クールダウンゲート: 決済(filled→flat)後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。
   // 既存の見送り抑止/節目リアーム/間隔ゲートに AND(=最も早く弾く)。0で無効。cooldown 中は一度だけ log。
-  if (inCooldown(lastSignalExitAt, now, resolveScalpCooldownSec())) {
+  // ★v0.7.56: クールダウンが AI委任(mode==='ai')のときはゲートを無効化(AI の選択性に委ねる)。manual のみゲート。
+  const cd = resolveScalpCooldownDirective();
+  if (cd.mode === 'manual' && inCooldown(lastSignalExitAt, now, cd.value)) {
     if (!cooldownLogged) {
-      const remain = Math.max(0, Math.ceil((lastSignalExitAt! + resolveScalpCooldownSec() * 1000 - now) / 1000));
+      const remain = Math.max(0, Math.ceil((lastSignalExitAt! + cd.value * 1000 - now) / 1000));
       console.log(`[signalTrade] cooldown 決済後の再ARM抑止(あと${remain}秒)`);
       cooldownLogged = true;
     }
@@ -575,6 +637,9 @@ function maybeRequestPlan(price: number, now: number): void {
           // v0.7.54: AI 自己レジーム/確信度(result.plan)＋トレンド veto 発火(result.vetoFired)を armed へ持ち回る。
           const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
           if (armed) {
+            // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る。
+            //   AI委任の LC は採用レッグの実測 LC 幅を value に入れる(measurable なもののみ)。
+            armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed));
             state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
             planSuppressedAnchor = null;         // actionable で抑止解除。
             // ARM ごとに signalId を単調増加で採番し、現在シグナルを更新(filled 後も保持・none では更新しない)。

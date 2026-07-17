@@ -9,7 +9,12 @@ import {
 } from '../config.js';
 import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
-import { resolveApiKey, resolveScalpLcCeiling, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpTrendVetoYen, type ScalpBias } from '../configStore.js';
+import {
+  resolveApiKey,
+  resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
+  resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
+  type ScalpBias, type KnobSource,
+} from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
@@ -907,6 +912,45 @@ export function buildScalpSystemPrompt(
 // 固定のスキャル system prompt(既定 LC 幅 45〜65)。プロンプト文言テストや後方互換のための既定インスタンス。
 export const SCALP_SYSTEM_PROMPT = buildScalpSystemPrompt();
 
+/** 各 knob の委任モード。全 knob 'manual'(既定)なら委任ノートは空=プロンプト不変(回帰なし)。 */
+export interface KnobModes {
+  lcFloor: KnobSource; lcCeiling: KnobSource; trendVeto: KnobSource;
+  cooldown: KnobSource; bias: KnobSource; range: KnobSource;
+}
+
+/** ★v0.7.56: AI に委任した knob だけ「この値はあなたが決める(自由・根拠を述べよ)」を動的に注入する。
+ *  全 knob 手動(既定)なら '' を返す=system prompt は従来と byte 単位で不変。追記(additive)方式で、
+ *  ai の knob については上の手動制約文を上書きする旨を明示する(コードの enforce も同時に制約を外す)。 */
+export function buildDelegationNote(
+  modes: KnobModes,
+  ctx: { floorYen: number; ceilingYen: number; hardMax: LcHardMax },
+): string {
+  const lines: string[] = [];
+  if (modes.lcCeiling === 'ai') {
+    const cap = ctx.hardMax.enabled
+      ? `ただし安全上限 ${ctx.hardMax.value}円 だけは絶対に超えないこと(実弾の暴走防止)。`
+      : '';
+    lines.push(`最大初期LC: この値はあなたが決めてよい(自由)。上の「LC上限」の数値指示は無視し、相場に応じた妥当なLC幅を自分で決め、根拠を述べること。${cap}`);
+  }
+  if (modes.lcFloor === 'ai') {
+    lines.push('初期LC下限: 下限も課しません。狭すぎ(往復ビンタ)・広すぎ(ドカン)は自分の判断で避けること。');
+  }
+  if (modes.trendVeto === 'ai') {
+    lines.push('トレンド判断: トレンド逆行の数値vetoは課しません。あなたの自己レジーム(regime)判断でトレンド/レンジを見極め、根拠を述べること。');
+  }
+  if (modes.bias === 'ai') {
+    lines.push('方向: 売買方向(buy/sell)はあなたが自由に決めてよい(バイアスの強制なし)。');
+  }
+  if (modes.range === 'ai') {
+    lines.push('レンジ両面: 明確な方向性が無く上下に反応帯があると判断すれば range(両面)を提案してよい。');
+  }
+  if (modes.cooldown === 'ai') {
+    lines.push('クールダウン: 決済直後でも良い場面があれば提案してよい。');
+  }
+  if (lines.length === 0) return '';
+  return '\n\n【AI委任(この項目はあなたの裁量。根拠を必ず述べること)】\n- ' + lines.join('\n- ');
+}
+
 // LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
 // LC 幅注記に floor/ceiling を反映する(テスト可能なよう export)。
 export function scalpJsonInstruction(
@@ -1154,12 +1198,33 @@ export interface TrendHint { dir: 'up' | 'down' | 'flat'; strong: boolean; }
  *     両レッグとも落ちたら direction:'none'(見送り)。
  *  2. バイアス: bias='long' かつ direction='sell' → 'none' / bias='short' かつ direction='buy' → 'none' / 'none'は素通し。
  *  direction==='none' は何もしない。 */
-export function enforcePlanConstraints(
-  plan: AiPlan,
-  opts: { ceilingYen: number; bias: ScalpBias; trend?: TrendHint },
-): AiPlan {
+/** ★v0.7.56: LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。 */
+export interface LcHardMax { enabled: boolean; value: number; }
+
+/** enforce の opts。ceilingMode/lcHardMax は v0.7.56 の追加(いずれも省略時は現状=manual/上限なし)。
+ *  - ceilingMode: 'manual'(既定)→従来の超過レッグ落とし / 'ai'→LC上限では落とさない。
+ *  - lcHardMax: 有効時は ceilingMode に関係なく |entry−SL| が value 超のレッグを落とす(最後の安全網)。 */
+export interface EnforceOpts {
+  ceilingYen: number;
+  bias: ScalpBias;
+  trend?: TrendHint;
+  ceilingMode?: KnobSource;
+  lcHardMax?: LcHardMax;
+}
+
+export function enforcePlanConstraints(plan: AiPlan, opts: EnforceOpts): AiPlan {
   // 後方互換の薄いラッパ。挙動(返る plan)は enforcePlanConstraintsReport と完全一致=既存の全呼び出し/テスト不変。
   return enforcePlanConstraintsReport(plan, opts).plan;
+}
+
+/** ★v0.7.56: レッグの初期LC幅 w がドロップ対象か。
+ *  - ceilingMode!=='ai'(=manual) かつ w>ceilingYen なら落とす(従来の LC 上限)。
+ *  - lcHardMax.enabled かつ w>lcHardMax.value なら落とす(mode 無関係の安全網)。
+ *  既定(ceilingMode 省略=manual・lcHardMax 省略)では w>ceilingYen のみ=従来と完全一致。 */
+export function lcLegExceeds(w: number, opts: { ceilingYen: number; ceilingMode?: KnobSource; lcHardMax?: LcHardMax }): boolean {
+  const overCeiling = opts.ceilingMode !== 'ai' && w > opts.ceilingYen;
+  const overHard = !!opts.lcHardMax?.enabled && w > opts.lcHardMax.value;
+  return overCeiling || overHard;
 }
 
 /** enforcePlanConstraints と同一の enforce を行い、さらに **トレンド veto が発火したか(vetoFired)** を surface する
@@ -1168,10 +1233,12 @@ export function enforcePlanConstraints(
  *  LC上限/バイアス由来の drop/none は vetoFired に含めない(veto の効き目だけを計測するため)。 */
 export function enforcePlanConstraintsReport(
   plan: AiPlan,
-  opts: { ceilingYen: number; bias: ScalpBias; trend?: TrendHint },
+  opts: EnforceOpts,
 ): { plan: AiPlan; vetoFired: boolean } {
   if (plan.direction === 'none') return { plan, vetoFired: false };
-  const { ceilingYen, bias, trend } = opts;
+  const { ceilingYen, bias, trend, ceilingMode, lcHardMax } = opts;
+  // ★v0.7.56: レッグの LC 幅ドロップ判定(mode 分岐 + 安全網)。既定(引数省略)は従来と完全一致。
+  const lcExceeds = (w: number): boolean => lcLegExceeds(w, { ceilingYen, ceilingMode, lcHardMax });
 
   // ★トレンド veto(最優先ステージ): 生きた強トレンドに逆行する side を落とす。
   //   up→sell を落とす / down→buy を落とす。trend 未指定 or !strong なら null=無効(現行挙動と完全一致)。
@@ -1196,8 +1263,9 @@ export function enforcePlanConstraintsReport(
     if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) upper = undefined;
     if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) lower = undefined;
     // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
-    if (upper && Math.abs(upper.entry - upper.stopLoss) > ceilingYen) upper = undefined;
-    if (lower && Math.abs(lower.entry - lower.stopLoss) > ceilingYen) lower = undefined;
+    //     ★v0.7.56: manual→ceilingYen 超 / ai→ceiling では落とさない。ただし lcHardMax 有効時は mode 無関係に安全網。
+    if (upper && lcExceeds(Math.abs(upper.entry - upper.stopLoss))) upper = undefined;
+    if (lower && lcExceeds(Math.abs(lower.entry - lower.stopLoss))) lower = undefined;
     // (b) バイアス veto: long→sell レッグ落とし / short→buy レッグ落とし。
     if (bias === 'long') {
       if (upper?.side === 'sell') upper = undefined;
@@ -1228,11 +1296,11 @@ export function enforcePlanConstraintsReport(
   //    (parse で落ちている想定=冪等)。既に向きが正しい正常プランには影響しない。
   const limitOk =
     out.limitEntry != null && out.stopLossForLimit != null &&
-    Math.abs(out.limitEntry - out.stopLossForLimit) <= ceilingYen &&
+    !lcExceeds(Math.abs(out.limitEntry - out.stopLossForLimit)) &&
     stopSideOk(plan.direction, out.limitEntry, out.stopLossForLimit);
   const stopOk =
     out.stopEntry != null && out.stopLossForStop != null &&
-    Math.abs(out.stopEntry - out.stopLossForStop) <= ceilingYen &&
+    !lcExceeds(Math.abs(out.stopEntry - out.stopLossForStop)) &&
     stopSideOk(plan.direction, out.stopEntry, out.stopLossForStop);
   if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; }
   if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; }
@@ -1282,14 +1350,32 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const prices = input.prices ?? getPrices();
   const news = input.news ?? [];
   const refPrice = prices.find(p => p.symbol === symbol)?.price ?? 0;
+  // ★v0.7.56: 各 knob の directive(manual/ai)を解決。既定は全て manual=現状の挙動を一切変えない。
+  //   manual は数値/enum を強制(従来どおり)/ ai は該当制約を課さず AI に委任する。LC安全上限は独立の安全系。
+  const floorD = resolveScalpLcFloorDirective();
+  const ceilingD = resolveScalpLcCeilingDirective();
+  const biasD = resolveScalpBiasDirective();
+  const rangeD = resolveScalpRangeDirective();
+  const trendD = resolveScalpTrendVetoDirective();
+  const hardMax = resolveScalpLcHardMax();
   // 初期 LC 幅の上限とバイアスは、要求で明示されなければ monitor 設定を既定に使う(＝直呼びのシグナルエンジンも
   // monitor 設定に従う=単一の真実)。上限はサニタイズ・クランプ後にプロンプトへ反映し、最終保証は enforcePlanConstraints。
-  const ceilingInput = input.lcCeilingYen ?? resolveScalpLcCeiling();
-  const bias: ScalpBias = input.bias ?? resolveScalpBias();
-  const rangeEnabled = input.rangeEnabled ?? resolveScalpRangeEnabled();
-  const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen, ceilingInput);
-  // レジーム/トレンド veto の閾値[円](0=無効)。プロンプト文言に反映し、トレンド veto 自体は input.trend で駆動する。
-  const trendVetoYen = resolveScalpTrendVetoYen();
+  const ceilingMode = ceilingD.mode;
+  const ceilingInput = input.lcCeilingYen ?? ceilingD.value;
+  // バイアス/レンジ: manual は設定(override 優先)を適用 / ai は制約なし(bias='none'・range 許可)。
+  const bias: ScalpBias = biasD.mode === 'manual' ? (input.bias ?? biasD.value) : 'none';
+  const rangeEnabled = rangeD.mode === 'manual' ? (input.rangeEnabled ?? rangeD.value) : true;
+  const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen ?? floorD.value, ceilingInput);
+  // レジーム/トレンド veto の閾値[円](0=無効)。manual は閾値・ai は数値veto無効(=0)。プロンプト文言に反映し、
+  // トレンド veto 自体は input.trend で駆動する(0 のとき trend を渡さない=veto なし)。
+  const trendVetoYen = trendD.mode === 'manual' ? trendD.value : 0;
+  // ★委任ノート: AI に委任した knob だけ「この値はあなたが決める(自由・根拠を述べよ)」を追記する。
+  //   全 knob 手動(既定)では '' = プロンプトは従来と byte 単位で不変(回帰なし)。
+  const delegationNote = buildDelegationNote(
+    { lcFloor: floorD.mode, lcCeiling: ceilingD.mode, trendVeto: trendD.mode,
+      cooldown: 'manual', bias: biasD.mode, range: rangeD.mode },
+    { floorYen, ceilingYen, hardMax },
+  );
   const biasNote =
     bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
   : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
@@ -1297,7 +1383,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${delegationNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
@@ -1334,9 +1420,13 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // callWithFallback から返った plan JSON を再パースし、monitor 設定の LC 上限・バイアスをコードで最終保証してから返す。
     const parsed = parseScalpPlan(raw, refPrice);
     if (!parsed.ok) return parsed;
-    // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0 は現行挙動=veto なし)。
+    // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0=ai は現行挙動=veto なし)。
     const trend = trendVetoYen > 0 ? input.trend : undefined;
-    const enforced = enforcePlanConstraintsReport(parsed.plan, { ceilingYen, bias, trend });
+    // ★v0.7.56: LC上限は ceilingMode(manual→落とす / ai→落とさない)で分岐し、LC安全上限(hardMax)は
+    //   mode 無関係に常時適用(有効時)。バイアスは ai なら 'none'(上で解決済)=veto なし。
+    const enforced = enforcePlanConstraintsReport(parsed.plan, {
+      ceilingYen, bias, trend, ceilingMode, lcHardMax: hardMax,
+    });
     let finalPlan = enforced.plan;
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
     if (!rangeEnabled && finalPlan.direction === 'range') {

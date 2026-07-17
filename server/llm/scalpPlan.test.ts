@@ -5,8 +5,9 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk,
+  lcLegExceeds, buildDelegationNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
-  type ToolHandlers, type AiPlan,
+  type ToolHandlers, type AiPlan, type KnobModes,
 } from './openai.js';
 
 // LLM 応答テキスト→AiPlan の検証(refPrice は必ず monitor 側の値で上書きされる)。
@@ -1109,6 +1110,103 @@ describe('scalp プロンプト range トグル(rangeEnabled)', () => {
     // direction enum 語順と range 両面オブジェクトの不在で判定する。v0.7.54 で regime 値に "range" が入るため)。
     expect(scalpJsonInstruction(38250, 45, 65, false)).not.toContain('"none" | "range"');
     expect(scalpJsonInstruction(38250, 45, 65, false)).not.toContain('"range": {');
+  });
+});
+
+// ─── v0.7.56: 項目別 手動/AI 委任 + LC安全上限 ───
+describe('lcLegExceeds(LC上限 mode 分岐 + 安全網)', () => {
+  it('既定(mode/hardMax 省略)は w>ceiling のみ=従来と一致', () => {
+    expect(lcLegExceeds(50, { ceilingYen: 65 })).toBe(false);
+    expect(lcLegExceeds(66, { ceilingYen: 65 })).toBe(true);
+    expect(lcLegExceeds(65, { ceilingYen: 65 })).toBe(false);   // 境界=許可
+  });
+  it('ceilingMode=ai は ceiling では落とさない', () => {
+    expect(lcLegExceeds(200, { ceilingYen: 65, ceilingMode: 'ai' })).toBe(false);
+  });
+  it('lcHardMax 有効時は mode 無関係に value 超を落とす(ai でも)', () => {
+    expect(lcLegExceeds(200, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } })).toBe(true);
+    expect(lcLegExceeds(120, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } })).toBe(false);
+  });
+  it('lcHardMax 無効時はハード上限なし(ai 完全自由)', () => {
+    expect(lcLegExceeds(500, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(false);
+  });
+  it('★既定 hardMax(enabled150)+manual65 は 65 超のみ=ceiling が支配(回帰なし)', () => {
+    // 150 有効でも 65<150 なので、ceiling で既に落ちる=hardMax は追加ドロップしない=従来挙動と一致。
+    expect(lcLegExceeds(66, { ceilingYen: 65, ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } })).toBe(true);
+    expect(lcLegExceeds(50, { ceilingYen: 65, ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } })).toBe(false);
+  });
+});
+
+describe('enforcePlanConstraints ceilingMode/lcHardMax 分岐', () => {
+  // buy: 指値LC=|38200-38150|=50 / 逆指値LC=|38500-38300|=200(=上限65超・150超)。
+  const wide: AiPlan = {
+    direction: 'buy',
+    limitEntry: 38200, stopLossForLimit: 38150,   // LC=50
+    stopEntry: 38500, stopLossForStop: 38300,     // LC=200
+    rationale: '押し目買い', refPrice: 38250,
+  };
+
+  it('manual(既定): LC200 の逆指値は落ち・指値のみ残る(従来)', () => {
+    const r = enforcePlanConstraints(wide, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBeUndefined();
+  });
+  it('ai-ceiling + hardMax 無効: LC200 でも両レッグ残る(上限で落とさない)', () => {
+    const r = enforcePlanConstraints(wide, { ceilingYen: 65, bias: 'none', ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBe(38500);   // ai=ceilingで落とさない
+  });
+  it('ai-ceiling + hardMax 有効(150): LC200 は安全網で落ちる・LC50 は残る', () => {
+    const r = enforcePlanConstraints(wide, { ceilingYen: 65, bias: 'none', ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBeUndefined();   // 200>150 安全網で落ちる
+  });
+  it('ai-ceiling range: hardMax 有効で上限超レッグだけ落とす', () => {
+    const rng: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: 38250,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38650 },   // LC=250>150
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },      // LC=50
+      },
+    };
+    const r = enforcePlanConstraints(rng, { ceilingYen: 65, bias: 'none', ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();   // 安全網
+    expect(r.range?.lower?.side).toBe('buy');
+  });
+  it('★回帰: manual + 既定 hardMax(150) は ceilingMode/hardMax 省略と同一結果', () => {
+    const withDefaults = enforcePlanConstraints(wide, { ceilingYen: 65, bias: 'none', ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } });
+    const legacy = enforcePlanConstraints(wide, { ceilingYen: 65, bias: 'none' });
+    expect(withDefaults).toEqual(legacy);
+  });
+});
+
+describe('buildDelegationNote(委任ノート)', () => {
+  const allManual: KnobModes = { lcFloor: 'manual', lcCeiling: 'manual', trendVeto: 'manual', cooldown: 'manual', bias: 'manual', range: 'manual' };
+  const ctx = { floorYen: 45, ceilingYen: 65, hardMax: { enabled: true, value: 150 } };
+
+  it('全 knob 手動 → 空文字(プロンプト不変=回帰なし)', () => {
+    expect(buildDelegationNote(allManual, ctx)).toBe('');
+  });
+  it('lcCeiling=ai → LC をAIに委任する旨 + 安全上限を明記', () => {
+    const n = buildDelegationNote({ ...allManual, lcCeiling: 'ai' }, ctx);
+    expect(n).toContain('最大初期LC');
+    expect(n).toContain('あなたが決めてよい');
+    expect(n).toContain('安全上限 150円');
+  });
+  it('lcCeiling=ai + hardMax 無効 → 安全上限の文言なし', () => {
+    const n = buildDelegationNote({ ...allManual, lcCeiling: 'ai' }, { ...ctx, hardMax: { enabled: false, value: 150 } });
+    expect(n).toContain('最大初期LC');
+    expect(n).not.toContain('安全上限');
+  });
+  it('trendVeto/bias/range=ai → 各委任行が入る', () => {
+    const n = buildDelegationNote({ ...allManual, trendVeto: 'ai', bias: 'ai', range: 'ai' }, ctx);
+    expect(n).toContain('トレンド');
+    expect(n).toContain('方向');
+    expect(n).toContain('レンジ両面');
   });
 });
 
