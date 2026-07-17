@@ -20,7 +20,7 @@
     "tauri": "tauri",
     "tauri:dev": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && npm run build:collector && npm run collector:copy && tauri dev",
     "tauri:build": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && npm run build:collector && npm run collector:copy && tauri build",
-    "tauri:build:lite": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && npm run build:collector && npm run collector:copy && tauri build --config tauri.lite.conf.json",
+    "tauri:build:lite": "node scripts/kill-sidecar.mjs && npm run package && npm run sidecar:copy && npm run build:collector && npm run collector:copy && tauri build --config src-tauri/tauri.lite.conf.json",
     "tauri:signer": "tauri signer generate -w ~/.tauri/jp225-monitor.key",
     "release:build": "node scripts/release-build.mjs",
     "release:latest-json": "node scripts/make-latest-json.mjs",
