@@ -778,6 +778,15 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
         その後 AI が、急変の原因をニュースや他銘柄から考えて、説明します。価格は 24/7 デーモンで蓄積し、起動時に即ウォームアップ。
       </p>
+      <div class="panel" style="margin-top:14px">
+        <b>📦 2つの版があります(v0.8.1〜)</b>
+        <ul style="margin:6px 0 0">
+          <li><b>JP225 Monitor(この版=表示縮小版)</b>: ふだん使い向け。価格監視・AI急変説明・トレードシグナル表示・APIキー設定が使えます。<b>細かな戦略設定は表示しません</b>(アラート履歴・サーバログ・詳細パラメータ・AIエントリー設定は非表示)。</li>
+          <li><b>JP225 Monitor2(フル版)</b>: 開発・全機能版。上記に加えて<b>アラート履歴/サーバログ/詳細パラメータ/AIエントリーの細部設定</b>を表示・変更できます。トレードbot(trade2)と連携するのもこちら。<a href="https://github.com/sora-moyou/jp225-monitor2-releases/releases/latest" target="_blank" rel="noopener">monitor2 を入手 ↗</a></li>
+          <li><b>版・動作は完全に同一</b>で、違いは<b>画面に出す設定の範囲だけ</b>です。設定・データは両者で共有します。</li>
+          <li>⚠️ <b>monitor と monitor2 は同時に起動できません</b>(monitor2 が優先。monitor2 を起動すると表示縮小版の monitor は自動終了します)。細かな設定を変えたいときは monitor2 を使ってください。</li>
+        </ul>
+      </div>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
   </div>
