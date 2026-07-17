@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JP225 Monitor",
+  "version": "0.8.1",
+  "identifier": "app.jp225monitor",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "JP225 Monitor",
+        "width": 1500,
+        "height": 950,
+        "minWidth": 1100,
+        "minHeight": 650,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/sora-moyou/jp225-monitor/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzRDI4RjlCQ0NFN0Q0NDIKUldSQzFPZk1tNC9TbzR5SHRuaHhWcWI4UWNmaHFES2VzOXBhY2paemIveFNHL3ZqbjNkVmZXTUwK"
+    }
+  }
+}

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JP225 Monitor",
-  "version": "0.7.59",
-  "identifier": "app.jp225monitor",
+  "productName": "JP225 Monitor2",
+  "version": "0.8.1",
+  "identifier": "app.jp225monitor2",
   "build": {
     "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "JP225 Monitor",
+        "title": "JP225 Monitor2",
         "width": 1500,
         "height": 950,
         "minWidth": 1100,
@@ -50,9 +50,9 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/sora-moyou/jp225-monitor/releases/latest/download/latest.json"
+        "https://github.com/sora-moyou/jp225-monitor2-releases/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzRDI4RjlCQ0NFN0Q0NDIKUldSQzFPZk1tNC9TbzR5SHRuaHhWcWI4UWNmaHFES2VzOXBhY2paemIveFNHL3ZqbjNkVmZXTUwK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFBMEZCQjgzQkRGMDQ3MDIKUldRQ1IvQzlnN3NQcW9nZmoxb2tuY3pyZ0MvR09PY0xCdWZjVEFlYUdDSXVsV1EzcG9OWUJPOWQK",
       "dialog": false
     }
   }

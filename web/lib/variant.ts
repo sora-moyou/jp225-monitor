@@ -1,0 +1,37 @@
+// 製品バリアントに応じた UI 表示制御(lite=一部 UI を隠す・full=全表示)。
+// /api/version の variant を読み、lite なら詳細設定系 UI を DOM から隠す。
+// server 挙動・設定値は不変(monitor2 が設定した値で同一動作)=見せない/触らせないだけ。
+
+export type Variant = 'full' | 'lite';
+
+// /api/version の variant を正規化。'lite' のみ lite・欠落/不明は full(安全側=全表示)。
+export function normalizeVariant(v: unknown): Variant {
+  return v === 'lite' ? 'lite' : 'full';
+}
+
+// hidden プロパティと style を持つ最小要素インターフェース(null 許容)。
+// jsdom を導入せずに純関数としてテストできるよう HTMLElement ではなくこの形にする。
+export interface ToggleableEl {
+  hidden: boolean;
+  style: { display: string };
+}
+
+export interface VariantElements {
+  alertsHistoryBtn?: ToggleableEl | null; // ④ アラート履歴(📊)
+  openLogsBtn?: ToggleableEl | null;       // ④ サーバログ(📋)
+  paramsBtn?: ToggleableEl | null;         // ④ 詳細パラメータ(🎛️)
+  scalpFieldset?: ToggleableEl | null;     // ⑤ 設定モーダル「AIエントリー」fieldset
+}
+
+// variant に応じて表示/非表示を切り替える純関数。
+// full は何も隠さない(要素は触らない=現行と完全同一)。lite は 4 要素を隠す。
+// null 要素はスキップ(部分 DOM/テストでも安全)。
+export function applyVariantVisibility(variant: Variant, els: VariantElements): void {
+  if (variant !== 'lite') return; // full=全表示。安全側。
+  const targets = [els.alertsHistoryBtn, els.openLogsBtn, els.paramsBtn, els.scalpFieldset];
+  for (const el of targets) {
+    if (!el) continue;
+    el.hidden = true;
+    el.style.display = 'none';
+  }
+}

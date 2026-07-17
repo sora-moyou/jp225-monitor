@@ -20,6 +20,7 @@ import { initSignalTradesModal, initSignalClearButton } from './components/signa
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
+import { applyVariantVisibility, normalizeVariant } from './lib/variant.js';
 
 // v0.3.17: アラート検知はサーバ側 (alertLoop + tickDetector) に移管。クライアントは SSE で受信のみ。
 
@@ -336,14 +337,22 @@ setInterval(() => {
   clockEl.textContent = `JST ${d.toLocaleTimeString('ja-JP', { hour12: false })}`;
 }, 1000);
 
-// バージョン表示 (起動時に1回取得) + Tauri内なら更新チェック
+// バージョン表示 (起動時に1回取得) + Tauri内なら更新チェック + variant(lite)UI縮小
+// lite なら詳細設定系 UI を隠す(履歴/ログ/詳細パラメータ + 設定「AIエントリー」fieldset)。
+// 取得失敗/variant欠落は full 扱い=全表示(安全側)。
 const versionEl = document.getElementById('app-version');
-if (versionEl) {
-  fetch(apiUrl('/api/version'))
-    .then(r => r.json())
-    .then((d: { version: string }) => { versionEl.textContent = `v${d.version}`; })
-    .catch(() => { versionEl.textContent = 'v?'; });
-}
+fetch(apiUrl('/api/version'))
+  .then(r => r.json())
+  .then((d: { version: string; variant?: string }) => {
+    if (versionEl) versionEl.textContent = `v${d.version}`;
+    applyVariantVisibility(normalizeVariant(d.variant), {
+      alertsHistoryBtn: document.getElementById('alerts-history-btn'),
+      openLogsBtn: document.getElementById('open-logs'),
+      paramsBtn: document.getElementById('params-btn'),
+      scalpFieldset: document.getElementById('ai-entry-fieldset'),
+    });
+  })
+  .catch(() => { if (versionEl) versionEl.textContent = 'v?'; });
 
 enableSoundBtn.onclick = () => {
   enableSound();

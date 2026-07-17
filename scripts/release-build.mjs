@@ -1,29 +1,50 @@
 #!/usr/bin/env node
-// 署名付き Tauri ビルド。
-// ~/.tauri/jp225-monitor.key を読み、Tauri が期待する env var に設定して
-// npm run tauri:build を呼ぶ。シェル依存の export 失敗を避ける。
+// 署名付き Tauri ビルド(2製品対応)。
+// PRODUCT=monitor2(既定) / lite で切替:
+//   - monitor2(フル): 鍵 ~/.tauri/jp225-monitor2.key・config=base・exe "JP225 Monitor2_..."
+//   - lite(表示縮小): 鍵 ~/.tauri/jp225-monitor.key・config=tauri.lite.conf.json・exe "JP225 Monitor_..."
+// 両鍵ともパスフレーズ無し(空)。共有 env TAURI_SIGNING_PRIVATE_KEY_PASSWORD は
+// 他プロジェクト(jp225-Trade=パスフレーズ"trade")の値が入りうるため参照せず空に固定する。
 
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const keyPath = join(homedir(), '.tauri', 'jp225-monitor.key');
+const PRODUCTS = {
+  monitor2: {
+    keyFile: 'jp225-monitor2.key',
+    buildScript: 'tauri:build',        // base tauri.conf.json
+    exeBase: 'JP225 Monitor2',
+  },
+  lite: {
+    keyFile: 'jp225-monitor.key',
+    buildScript: 'tauri:build:lite',   // tauri build --config tauri.lite.conf.json
+    exeBase: 'JP225 Monitor',
+  },
+};
+
+const PRODUCT = process.env.PRODUCT ?? 'monitor2';
+const cfg = PRODUCTS[PRODUCT];
+if (!cfg) {
+  console.error(`❌ Unknown PRODUCT="${PRODUCT}". Use one of: ${Object.keys(PRODUCTS).join(', ')}`);
+  process.exit(1);
+}
+
+const keyPath = join(homedir(), '.tauri', cfg.keyFile);
 if (!existsSync(keyPath)) {
   console.error(`❌ Private key not found: ${keyPath}`);
-  console.error('   Run `npm run tauri:signer` first.');
+  console.error('   Generate it with `tauri signer generate -w <path>` first.');
   process.exit(1);
 }
 const key = readFileSync(keyPath, 'utf-8').trim();
-// jp225-monitor 鍵はパスフレーズ無し(空)。共有 env 変数 TAURI_SIGNING_PRIVATE_KEY_PASSWORD は
-// 他プロジェクト(jp225-Trade=パスフレーズ"trade")の値が入りうるため参照せず空に固定する
-// (誤った非空パスワードで署名が "Wrong password" になるのを防ぐ)。
-const password = '';
+const password = ''; // 両鍵ともパスフレーズ無し(空)。
 
+console.log(`📦 PRODUCT: ${PRODUCT}`);
 console.log(`🔐 Using private key: ${keyPath} (${key.length} chars)`);
 console.log(`🔐 Password length:   ${password.length} (0 = no password)`);
 
-const result = spawnSync('npm', ['run', 'tauri:build'], {
+const result = spawnSync('npm', ['run', cfg.buildScript], {
   stdio: 'inherit',
   shell: true,
   env: {
@@ -41,7 +62,7 @@ if (result.status !== 0) {
 // 成果物の場所を表示
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'));
 const version = pkg.version;
-const exe = `src-tauri/target/release/bundle/nsis/JP225 Monitor_${version}_x64-setup.exe`;
+const exe = `src-tauri/target/release/bundle/nsis/${cfg.exeBase}_${version}_x64-setup.exe`;
 const sig = exe + '.sig';
 
 console.log('');

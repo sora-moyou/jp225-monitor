@@ -40,6 +40,7 @@ import { warmFromDb } from './warmup.js';
 import { isLLMEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults, resolveCooldownMin } from './configStore.js';
 import { setCooldownMs } from './alertCooldown.js';
+import { resolveVariant } from './variant.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
@@ -99,7 +100,7 @@ app.get('/api/current-signal', currentSignalHandler);
 // スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
 app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
-app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor' }));
+app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor', variant: resolveVariant() }));
 
 const isPkg = (process as unknown as { pkg?: unknown }).pkg !== undefined;
 const distWeb = isPkg
