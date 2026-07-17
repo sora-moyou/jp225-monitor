@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  detectFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
+  detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   computeHold, inCooldown,
   type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal,
@@ -296,6 +296,171 @@ describe('inCooldown', () => {
   });
   it('まだ決済していない(lastExitAt=null)は false', () => {
     expect(inCooldown(null, 999_999, 90)).toBe(false);
+  });
+});
+
+// ─── レンジ両面ストラドル(range) ───
+describe('detectRangeFill', () => {
+  // 上=売り指値38400 / 下=買い指値38100(現在値の上下)。
+  const armed: ArmedBracket = {
+    direction: 'buy', rationale: 'range', at: 0, mode: 'range',
+    range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+    },
+  };
+  it('現在値が upper.entry 以上→上レッグ約定(side/建値/初期LC)', () => {
+    expect(detectRangeFill(armed, 38400)).toEqual({ side: 'sell', entryPrice: 38400, initialStop: 38450 });
+    expect(detectRangeFill(armed, 38500)).toEqual({ side: 'sell', entryPrice: 38400, initialStop: 38450 });
+  });
+  it('現在値が lower.entry 以下→下レッグ約定', () => {
+    expect(detectRangeFill(armed, 38100)).toEqual({ side: 'buy', entryPrice: 38100, initialStop: 38050 });
+    expect(detectRangeFill(armed, 38000)).toEqual({ side: 'buy', entryPrice: 38100, initialStop: 38050 });
+  });
+  it('上下の間(未到達)は null', () => {
+    expect(detectRangeFill(armed, 38250)).toBeNull();
+  });
+  it('片面 range(下レッグのみ)は上抜けでは約定しない', () => {
+    const only: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range',
+      range: { lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } } };
+    expect(detectRangeFill(only, 39000)).toBeNull();
+    expect(detectRangeFill(only, 38100)?.side).toBe('buy');
+  });
+});
+
+describe('advance range→filled→exit', () => {
+  it('range armed → 下レッグ約定で filled(約定 side=buy・建値・初期LC・mode=range)', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      } },
+    };
+    const { next } = advance(st, 38100, 1000);
+    expect(next.phase).toBe('filled');
+    expect(next.position).toMatchObject({ direction: 'buy', entryPrice: 38100, initialStop: 38050, qty: 1, at: 1000, mode: 'range' });
+  });
+
+  it('range armed → 上レッグ約定で filled(約定 side=sell)', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      } },
+    };
+    const { next } = advance(st, 38400, 1);
+    expect(next.position).toMatchObject({ direction: 'sell', entryPrice: 38400, initialStop: 38450, mode: 'range' });
+  });
+
+  it('range 未到達では armed 据え置き', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      } },
+    };
+    expect(advance(st, 38250, 1).next.phase).toBe('armed');
+  });
+
+  it('一巡: range armed→下レッグ約定(buy)→初期LCヒットで flat + recorded に mode=range タグ', () => {
+    let st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      } },
+    };
+    st = advance(st, 38100, 1).next;   // buy 約定 @38100
+    expect(st.phase).toBe('filled');
+    const r = advance(st, 38050, 2);   // 初期LC(38050)ヒット
+    expect(r.next.phase).toBe('flat');
+    expect(r.recorded?.pnl).toBe(-50);
+    expect(r.recorded?.dir).toBe('buy');
+    expect(r.recorded?.mode).toBe('range');   // 別枠集計タグ
+  });
+
+  it('directional の recorded に mode は付かない(既存互換)', () => {
+    const st: EngineState = {
+      phase: 'filled',
+      position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r', at: 500 },
+    };
+    const { recorded } = advance(st, 37950, 2000);
+    expect(recorded?.mode).toBeUndefined();
+  });
+});
+
+describe('planToArmed range', () => {
+  it('range(両レッグ)→ mode:range の armed', () => {
+    const a = planToArmed({ direction: 'range', rationale: 'r', range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+    } }, 5);
+    expect(a?.mode).toBe('range');
+    expect(a?.range?.upper?.side).toBe('sell');
+    expect(a?.range?.lower?.side).toBe('buy');
+    expect(a?.at).toBe(5);
+  });
+  it('range(片レッグのみ)も許可', () => {
+    const a = planToArmed({ direction: 'range', rationale: 'r', range: {
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+    } }, 0);
+    expect(a?.mode).toBe('range');
+    expect(a?.range?.upper).toBeUndefined();
+    expect(a?.range?.lower).toBeDefined();
+  });
+  it('range で 0 レッグ(range 欠落)→ null', () => {
+    expect(planToArmed({ direction: 'range', rationale: 'r' }, 0)).toBeNull();
+    expect(planToArmed({ direction: 'range', rationale: 'r', range: {} }, 0)).toBeNull();
+  });
+});
+
+describe('armedToCurrentSignal range', () => {
+  it('range armed から mode/range を引き継ぐ', () => {
+    const a: ArmedBracket = { direction: 'buy', rationale: 'r', at: 5, mode: 'range', range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+    } };
+    const s = armedToCurrentSignal(a, 3);
+    expect(s.mode).toBe('range');
+    expect(s.range?.upper?.entry).toBe(38400);
+    expect(s.range?.lower?.entry).toBe(38100);
+    expect(s.signalId).toBe(3);
+  });
+});
+
+describe('toSignalTradeState range(entry + signal に mode/range)', () => {
+  it('range armed は entry に mode/range(両面)を出す', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', rationale: 'r', at: 5, mode: 'range', range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      } },
+    };
+    const s = toSignalTradeState(st, 38250, 9);
+    expect(s.entry?.mode).toBe('range');
+    expect(s.entry?.range?.upper?.side).toBe('sell');
+    expect(s.entry?.range?.lower?.side).toBe('buy');
+  });
+  it('range signal は s.signal に mode/range を出す(trade2 追従)', () => {
+    const sig: CurrentSignal = {
+      signalId: 7, at: 5, direction: 'buy', rationale: 'r', mode: 'range',
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      },
+    };
+    const s = toSignalTradeState({ phase: 'armed', armed: { direction: 'buy', rationale: 'r', at: 5, mode: 'range', range: sig.range } }, 38250, 9, sig);
+    expect(s.signal?.mode).toBe('range');
+    expect(s.signal?.range?.upper?.entry).toBe(38400);
+  });
+  it('directional は mode/range を付けない(既存互換)', () => {
+    const sig: CurrentSignal = { signalId: 1, at: 0, direction: 'buy', rationale: 'r', limitEntry: 37950, stopLossForLimit: 37900 };
+    const s = toSignalTradeState({ phase: 'armed', armed: { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at: 0 } }, 38000, 9, sig);
+    expect(s.entry?.mode).toBeUndefined();
+    expect(s.signal?.mode).toBeUndefined();
   });
 });
 

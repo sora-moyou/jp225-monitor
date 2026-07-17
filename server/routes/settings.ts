@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
-  resolveAllNumericParams, resolveScalpBias, PARAM_BOUNDS,
+  resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, PARAM_BOUNDS,
   type UserConfig, type ScalpBias,
 } from '../configStore.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
@@ -39,6 +39,14 @@ function applyBiasField(
   return { value: existing, error: `scalpBias must be one of ${BIAS_VALUES.join('|')}` };
 }
 
+// scalpRangeEnabled(boolean)の適用: undefined=変更なし / null=既定(true)に戻す=未設定 / boolean=採用 / それ以外=変更なし。
+function applyBoolField(existing: boolean | undefined, incoming: unknown): boolean | undefined {
+  if (incoming === undefined) return existing;
+  if (incoming === null) return undefined;
+  if (typeof incoming === 'boolean') return incoming;
+  return existing;
+}
+
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
   res.json({
@@ -52,6 +60,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     webSearchModel: config.webSearchModel ?? '',
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
+    scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(未設定は true=ON)。
     // 数値パラメータ全14個 (port のみ env fallback があるため明示で上書き)
     ...resolveAllNumericParams(),
     pricePollMs: resolvePricePollMs(),
@@ -82,6 +91,7 @@ interface SettingsBody {
   webSearchModel?: string | null;    // Web検索用 Gemini モデル
   webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
+  scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -133,6 +143,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   // AIエントリー バイアス(enum)を検証。
   const biasResult = applyBiasField(existing.scalpBias, bodyRec.scalpBias);
   if (biasResult.error) errors.push(biasResult.error);
+  // AIエントリー レンジ両面(boolean)を適用(検証エラーなし=非boolean は変更なし)。
+  const rangeEnabledValue = applyBoolField(existing.scalpRangeEnabled, bodyRec.scalpRangeEnabled);
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -147,6 +159,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
+    scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
   };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {

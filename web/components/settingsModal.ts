@@ -13,6 +13,7 @@ interface SettingsResponse {
   geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
+  scalpRangeEnabled: boolean;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -50,6 +51,7 @@ interface SavePayload {
   scalpLcCeilingYen?: number | null;
   scalpBias?: 'long' | 'short' | 'none' | null;
   scalpCooldownSec?: number | null;
+  scalpRangeEnabled?: boolean | null;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -95,6 +97,7 @@ export interface SettingsElements {
   inputScalpLcCeiling: HTMLInputElement;   // AIエントリー: 最大初期LC(円)
   selectScalpBias: HTMLSelectElement;      // AIエントリー: バイアス
   inputScalpCooldown: HTMLInputElement;    // AIエントリー: クールダウン(秒)
+  checkScalpRangeEnabled: HTMLInputElement; // AIエントリー: レンジ両面ストラドル(実験・紙で別枠計測)
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -168,6 +171,7 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
     el.selectScalpBias.value = current?.scalpBias ?? 'none';
     el.inputScalpCooldown.value = current ? String(current.scalpCooldownSec) : '';
+    el.checkScalpRangeEnabled.checked = current ? current.scalpRangeEnabled : true;   // 既定ON
   }
 
   async function loadCurrentVersion() {
@@ -480,6 +484,8 @@ export function initSettingsModal(el: SettingsElements): void {
       // クールダウン: 可視フィールド。空欄=既定(90)に戻す(null)。数値なら上書き(0で無効)。
       const cdRaw = el.inputScalpCooldown.value.trim();
       body.scalpCooldownSec = cdRaw === '' ? null : Number(cdRaw);
+      // レンジ両面(実験・紙で別枠計測): チェックボックス(常に値あり)。true/false を送る。
+      body.scalpRangeEnabled = el.checkScalpRangeEnabled.checked;
 
       const result = await saveSettings(body);
       if (!result.ok) {

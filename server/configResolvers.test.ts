@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache,
-  resolveScalpLcCeiling, resolveScalpBias, resolveScalpCooldownSec,
+  resolveScalpLcCeiling, resolveScalpBias, resolveScalpCooldownSec, resolveScalpRangeEnabled,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
@@ -103,5 +103,24 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
   it("bias='short' を反映", () => {
     writeConfig({ scalpBias: 'short' });
     expect(resolveScalpBias()).toBe('short');
+  });
+
+  it('scalpRangeEnabled 未設定は既定 true(ON)', () => {
+    expect(resolveScalpRangeEnabled()).toBe(true);
+  });
+
+  it('scalpRangeEnabled=false を反映', () => {
+    writeConfig({ scalpRangeEnabled: false });
+    expect(resolveScalpRangeEnabled()).toBe(false);
+  });
+
+  it('scalpRangeEnabled=true を反映', () => {
+    writeConfig({ scalpRangeEnabled: true });
+    expect(resolveScalpRangeEnabled()).toBe(true);
+  });
+
+  it('scalpRangeEnabled が非boolean(不正)は既定 true にフォールバック', () => {
+    writeConfig({ scalpRangeEnabled: 'yes' });
+    expect(resolveScalpRangeEnabled()).toBe(true);
   });
 });

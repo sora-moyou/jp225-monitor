@@ -7,7 +7,7 @@ import { getCurrentSignal, getSignalHold, getSignalPhase, type CurrentSignal, ty
 /** CurrentSignal を API シェイプへ整形する純関数。null なら { signalId: null }。 */
 export function currentSignalPayload(sig: CurrentSignal | null): Record<string, unknown> {
   if (!sig) return { signalId: null };
-  return {
+  const out: Record<string, unknown> = {
     signalId: sig.signalId,
     at: sig.at,
     direction: sig.direction,
@@ -19,6 +19,12 @@ export function currentSignalPayload(sig: CurrentSignal | null): Record<string, 
     },
     rationale: sig.rationale,
   };
+  // レンジ両面ストラドルは mode/range を露出(trade2 追従用・directional では付与しない=SSE と同形)。
+  if (sig.mode === 'range' || sig.range != null) {
+    out.mode = 'range';
+    out.range = sig.range;
+  }
+  return out;
 }
 
 /** GET のフルペイロードを組み立てる純関数。現在シグナル整形に hold(保有中の意図・決済逆指値)と

@@ -11,6 +11,7 @@
 // LLM(buildScalpPlan)は dynamic import で遅延ロードし、engine の静的 import を軽く保つ。
 
 import type { SignalTradeState } from '../types.js';
+import type { RangeLeg } from '../llm/openai.js';
 import { computeExitStop, loadExitImpl } from './exit/index.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
@@ -35,6 +36,10 @@ export interface ArmedBracket {
   stopLossForStop?: number;
   rationale: string;
   at: number;
+  // レンジ両面ストラドル(実験・紙で別枠計測)。mode==='range' の時は range で判定し、
+  // direction はプレースホルダ(range 分岐は必ず mode/range で gating し direction では判定しない)。
+  mode?: 'range';
+  range?: { upper?: RangeLeg; lower?: RangeLeg };
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -48,6 +53,9 @@ export interface CurrentSignal {
   stopLossForLimit?: number;
   stopLossForStop?: number;
   rationale: string;
+  // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
+  mode?: 'range';
+  range?: { upper?: RangeLeg; lower?: RangeLeg };
 }
 
 export interface OpenPosition {
@@ -58,6 +66,7 @@ export interface OpenPosition {
   peakProfit: number;
   rationale: string;
   at: number;     // 約定時刻(= 記録の entry_t)
+  mode?: 'range';  // レンジ由来の建玉(タグ計測用)。約定後は通常の単方向ポジションとして扱う(決済は既存 exitStop)。
 }
 
 export interface EngineState {
@@ -80,6 +89,7 @@ export interface SignalHold {
 export interface RecordedTrade {
   entryT: number; entryPrice: number; dir: 'buy' | 'sell';
   exitT: number; exitPrice: number; pnl: number; qty: number; rationale: string;
+  mode?: 'range';   // レンジ由来の紙トレード(別枠集計タグ)。directional は付与しない=既存記録と互換。
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -96,6 +106,24 @@ export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'st
     // 逆指値: buy は現値が逆指値以上へ上昇 / sell は逆指値以下へ下落で約定。
     const hit = buy ? price >= a.stopEntry : price <= a.stopEntry;
     if (hit) return { leg: 'stop', entryPrice: a.stopEntry, initialStop: a.stopLossForStop };
+  }
+  return null;
+}
+
+/** レンジ両面ストラドルの約定判定(純関数)。現在値が upper.entry に到達(≥)なら上レッグ、
+ *  そうでなく lower.entry に到達(≤)なら下レッグを約定。約定 side/建値/初期LC を返す。未到達は null。
+ *  ★どちらか約定した時点で もう片方は暗黙にキャンセル(OCO)= 呼び出し側は position へ遷移するだけ。
+ *  upper/lower はどちらか欠落しうる(enforce/parse で片レッグに落ちた range = 実質片面)。 */
+export function detectRangeFill(
+  a: ArmedBracket, price: number,
+): { side: 'buy' | 'sell'; entryPrice: number; initialStop: number } | null {
+  const upper = a.range?.upper;
+  const lower = a.range?.lower;
+  if (upper && price >= upper.entry) {
+    return { side: upper.side, entryPrice: upper.entry, initialStop: upper.stopLoss };
+  }
+  if (lower && price <= lower.entry) {
+    return { side: lower.side, entryPrice: lower.entry, initialStop: lower.stopLoss };
   }
   return null;
 }
@@ -164,6 +192,23 @@ export function advance(
   st: EngineState, price: number, now: number,
 ): { next: EngineState; recorded?: RecordedTrade } {
   if (st.phase === 'armed' && st.armed) {
+    // ★レンジ両面ストラドル: mode/range で gating(direction では判定しない)。上下どちらか跨いだ side を約定。
+    if (st.armed.mode === 'range' || st.armed.range != null) {
+      const rf = detectRangeFill(st.armed, price);
+      if (!rf) return { next: st };
+      // 片側約定 → もう片方は暗黙キャンセル(OCO)。約定後は約定 side の通常ポジション(以降は既存 exitStop 追従)。
+      const position: OpenPosition = {
+        direction: rf.side,
+        entryPrice: rf.entryPrice,
+        qty: QTY,
+        initialStop: rf.initialStop,
+        peakProfit: Math.max(0, unrealizedPt(rf.side, rf.entryPrice, price)),
+        rationale: st.armed.rationale,
+        at: now,
+        mode: 'range',   // タグ計測用: この建玉は range 由来。
+      };
+      return { next: { phase: 'filled', position, lastExit: st.lastExit } };
+    }
     const fill = detectFill(st.armed, price);
     if (!fill) return { next: st };
     // 片レッグ約定 → 他レッグは自動キャンセル(FILLED へ)。建値は約定レッグの価格。
@@ -193,6 +238,8 @@ export function advance(
       entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
       exitT: now, exitPrice: exit, pnl, qty: pos.qty, rationale: pos.rationale,
     };
+    // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
+    if (pos.mode === 'range') recorded.mode = 'range';
     return { next: { phase: 'flat', lastExit: { exitPrice: exit, pnl, at: now } }, recorded };
   }
 
@@ -207,15 +254,27 @@ export function toSignalTradeState(
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
     const a = st.armed;
-    s.entry = {
-      direction: a.direction,
-      limitEntry: a.limitEntry,
-      stopEntry: a.stopEntry,
-      // 初期LC は1つに正規化(指値レッグ優先・無ければ逆指値レッグ)。途中の LC 移動は出さない。
-      initialStop: a.stopLossForLimit ?? a.stopLossForStop,
-      rationale: a.rationale,
-      at: a.at,
-    };
+    if (a.mode === 'range' || a.range != null) {
+      // レンジ両面: パネルが上下2レッグを描けるよう entry に mode/range を載せる(direction は
+      // プレースホルダ=いずれかのレッグ side。パネルは mode==='range' で分岐し direction は見ない)。
+      s.entry = {
+        direction: a.range?.upper?.side ?? a.range?.lower?.side ?? 'buy',
+        mode: 'range',
+        range: a.range,
+        rationale: a.rationale,
+        at: a.at,
+      };
+    } else {
+      s.entry = {
+        direction: a.direction,
+        limitEntry: a.limitEntry,
+        stopEntry: a.stopEntry,
+        // 初期LC は1つに正規化(指値レッグ優先・無ければ逆指値レッグ)。途中の LC 移動は出さない。
+        initialStop: a.stopLossForLimit ?? a.stopLossForStop,
+        rationale: a.rationale,
+        at: a.at,
+      };
+    }
   }
   if (st.phase === 'filled' && st.position) {
     const p = st.position;
@@ -238,20 +297,38 @@ export function toSignalTradeState(
       stopLossForStop: signal.stopLossForStop,
       at: signal.at,
     };
+    // レンジ両面は mode/range を露出(trade2 追従用・directional では付与しない)。
+    if (signal.mode === 'range' || signal.range != null) {
+      s.signal.mode = 'range';
+      s.signal.range = signal.range;
+    }
   }
   return s;
 }
 
-/** scalp-plan の AiPlan を armed ブラケットへ変換(純関数)。direction==='none' や両レッグ欠落は null。 */
+/** scalp-plan の AiPlan を armed ブラケットへ変換(純関数)。direction==='none' や両レッグ欠落は null。
+ *  direction==='range' は range に≥1レッグあれば range ArmedBracket(mode:'range')へ。0レッグは null。 */
 export function planToArmed(
   plan: {
-    direction: 'buy' | 'sell' | 'none';
+    direction: 'buy' | 'sell' | 'none' | 'range';
     limitEntry?: number; stopEntry?: number;
     stopLossForLimit?: number; stopLossForStop?: number;
     rationale: string;
+    range?: { upper?: RangeLeg; lower?: RangeLeg };
   },
   now: number,
 ): ArmedBracket | null {
+  // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
+  if (plan.direction === 'range') {
+    const upper = plan.range?.upper;
+    const lower = plan.range?.lower;
+    if (!upper && !lower) return null;
+    // direction はプレースホルダ(range 分岐は mode/range で gating)。range に採用レッグを載せる。
+    const a: ArmedBracket = { direction: 'buy', rationale: plan.rationale, at: now, mode: 'range', range: {} };
+    if (upper) a.range!.upper = upper;
+    if (lower) a.range!.lower = lower;
+    return a;
+  }
   if (plan.direction !== 'buy' && plan.direction !== 'sell') return null;
   const hasLimit = Number.isFinite(plan.limitEntry) && Number.isFinite(plan.stopLossForLimit);
   const hasStop = Number.isFinite(plan.stopEntry) && Number.isFinite(plan.stopLossForStop);
@@ -270,6 +347,11 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
   if (a.stopEntry != null) s.stopEntry = a.stopEntry;
   if (a.stopLossForLimit != null) s.stopLossForLimit = a.stopLossForLimit;
   if (a.stopLossForStop != null) s.stopLossForStop = a.stopLossForStop;
+  // レンジ両面は mode/range を引き継ぐ(trade2 追従用)。
+  if (a.mode === 'range' || a.range != null) {
+    s.mode = 'range';
+    s.range = a.range;
+  }
   return s;
 }
 
@@ -368,6 +450,8 @@ function persistTrade(t: RecordedTrade): void {
         entryT: t.entryT, entryPrice: t.entryPrice, dir: t.dir,
         exitT: t.exitT, exitPrice: t.exitPrice, pnl: t.pnl, qty: t.qty,
         rationale: t.rationale,
+        // range 由来のみ 'range' タグ、それ以外は 'directional'(別枠集計・後方互換)。
+        mode: t.mode === 'range' ? 'range' : 'directional',
       });
     } finally { db.close(); }
   } catch (e) {

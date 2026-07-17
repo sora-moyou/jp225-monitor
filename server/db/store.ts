@@ -47,9 +47,13 @@ export function initSchema(db: DatabaseSync): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       entry_t INTEGER NOT NULL, entry_price REAL NOT NULL, dir TEXT NOT NULL,
       exit_t INTEGER NOT NULL, exit_price REAL NOT NULL, pnl REAL NOT NULL,
-      qty INTEGER NOT NULL, rationale TEXT, meta TEXT
+      qty INTEGER NOT NULL, rationale TEXT, meta TEXT, mode TEXT
     );
   `);
+  // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
+  //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
+  const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
+  if (!stCols.includes('mode')) db.exec('ALTER TABLE signal_trades ADD COLUMN mode TEXT');
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
@@ -280,20 +284,22 @@ export interface SignalTradeRow {
   entry_t: number; entry_price: number; dir: string;
   exit_t: number; exit_price: number; pnl: number; qty: number;
   rationale: string | null; meta: string | null;
+  mode: string | null;   // 'range' / 'directional'(NULL は directional 扱い=後方互換)
 }
 
 export interface SignalTradeInsert {
   entryT: number; entryPrice: number; dir: 'buy' | 'sell';
   exitT: number; exitPrice: number; pnl: number; qty: number;
   rationale?: string | null; meta?: string | null;
+  mode?: string | null;   // レンジ由来='range' / 単方向='directional'。未指定は NULL(=directional)。
 }
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
-    t.rationale ?? null, t.meta ?? null);
+    t.rationale ?? null, t.meta ?? null, t.mode ?? null);
 }
 
 /** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。 */

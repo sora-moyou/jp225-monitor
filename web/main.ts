@@ -154,6 +154,7 @@ initSettingsModal({
   inputScalpLcCeiling: document.getElementById('scalp-lc-ceiling') as HTMLInputElement,
   selectScalpBias:     document.getElementById('scalp-bias') as HTMLSelectElement,
   inputScalpCooldown:  document.getElementById('scalp-cooldown') as HTMLInputElement,
+  checkScalpRangeEnabled: document.getElementById('scalp-range-enabled') as HTMLInputElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,

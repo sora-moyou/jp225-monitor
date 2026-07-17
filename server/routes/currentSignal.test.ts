@@ -28,6 +28,27 @@ describe('currentSignalPayload', () => {
     expect(out.plan.stopEntry).toBeUndefined();
     expect(out.plan.stopLossForStop).toBeUndefined();
   });
+
+  it('レンジ両面(range)は mode/range を露出(trade2 追従用)', () => {
+    const sig: CurrentSignal = {
+      signalId: 5, at: 0, direction: 'buy', rationale: 'レンジ', mode: 'range',
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      },
+    };
+    const out = currentSignalPayload(sig) as { mode?: string; range?: { upper?: unknown; lower?: unknown } };
+    expect(out.mode).toBe('range');
+    expect(out.range?.upper).toEqual({ side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 });
+    expect(out.range?.lower).toEqual({ side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 });
+  });
+
+  it('directional シグナルは mode/range を付けない(既存互換)', () => {
+    const sig: CurrentSignal = { signalId: 1, at: 0, direction: 'buy', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38050 };
+    const out = currentSignalPayload(sig);
+    expect('mode' in out).toBe(false);
+    expect('range' in out).toBe(false);
+  });
 });
 
 describe('currentSignalResponse (hold + phase 付き)', () => {

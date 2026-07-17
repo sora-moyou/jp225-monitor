@@ -9,7 +9,7 @@ import {
 } from '../config.js';
 import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
-import { resolveApiKey, resolveScalpLcCeiling, resolveScalpBias, type ScalpBias } from '../configStore.js';
+import { resolveApiKey, resolveScalpLcCeiling, resolveScalpBias, resolveScalpRangeEnabled, type ScalpBias } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
@@ -777,16 +777,29 @@ export async function chat(input: ChatInput): Promise<string> {
 // buildMonitorContext + データツール(explain_move/query_alerts/price_history/web_search)を使って
 // ライブデータに基づく構造化プランを返す。既存の chat と同じプロバイダ選択・キー解決・tool ループを再利用する。
 
+/** レンジ両面ストラドルの1レッグ(実験・紙で別枠計測)。現在値の上/下に1つずつ置く。
+ *  side=buy/sell × type=limit(レンジ内逆張り指値)/stop(抜け追随逆指値)。entry=新規価格・stopLoss=初期LC。 */
+export interface RangeLeg {
+  side: 'buy' | 'sell';
+  type: 'limit' | 'stop';
+  entry: number;
+  stopLoss: number;
+}
+
 /** trade2 が受け取る構造化スキャルプラン。
- *  direction==='none' は「見送り(良い場面が無い)」で、価格フィールドは不要(rationale + refPrice のみ)。 */
+ *  direction==='none' は「見送り(良い場面が無い)」で、価格フィールドは不要(rationale + refPrice のみ)。
+ *  direction==='range' は「レンジ両面ストラドル」で、range に上下2レッグ(片レッグ落ちも可)を持つ。 */
 export interface AiPlan {
-  direction: 'buy' | 'sell' | 'none';
-  limitEntry?: number;        // 指値(押し目/戻り側の新規)。none の時は不要。
-  stopEntry?: number;         // 逆指値(ブレイク側の新規)。none の時は不要。
-  stopLossForLimit?: number;  // 指値約定時の損切り逆指値。none の時は不要。
-  stopLossForStop?: number;   // 逆指値約定時の損切り逆指値。none の時は不要。
+  direction: 'buy' | 'sell' | 'none' | 'range';
+  limitEntry?: number;        // 指値(押し目/戻り側の新規)。none/range の時は不要。
+  stopEntry?: number;         // 逆指値(ブレイク側の新規)。none/range の時は不要。
+  stopLossForLimit?: number;  // 指値約定時の損切り逆指値。none/range の時は不要。
+  stopLossForStop?: number;   // 逆指値約定時の損切り逆指値。none/range の時は不要。
   rationale: string;         // 判断理由(日本語)。none の時は見送り理由。
   refPrice: number;          // 計画時に見た現在値(NIY=F)
+  // direction==='range' の時のみ。upper.entry>refPrice>lower.entry。enforce/parse で片レッグに
+  // 落ちることがある(その場合 upper か lower が undefined=実質片面)。
+  range?: { upper?: RangeLeg; lower?: RangeLeg };
 }
 
 export type ScalpPlanResult = { ok: true; plan: AiPlan } | { ok: false; error: string };
@@ -803,7 +816,15 @@ export const DEFAULT_LC_CEILING_YEN = 65;
 export function buildScalpQuestion(
   floorYen: number = DEFAULT_LC_FLOOR_YEN,
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
+  rangeEnabled = true,
 ): string {
+  // レンジ両面ストラドルの追記(実験・紙で別枠計測)。rangeEnabled=false のときは range を禁止する。
+  const rangeNote = rangeEnabled
+    ? '⑤明確な方向性が無く、上下に反応帯があるレンジと判断したら direction:"range" で、' +
+      '現在値の上と下に1レッグずつ置いてよい(両面ストラドル)。各レッグは side/type/entry/stopLoss。' +
+      'レンジ内で逆張りするなら指値(上=売り指値/下=買い指値)、抜けに追随するなら逆指値(上=買い逆指値/下=売り逆指値)。' +
+      '上レッグ(upper)の entry は現在値超・下レッグ(lower)の entry は現在値未満。各レッグの初期LCも上限内に収めること。'
+    : 'direction は buy/sell/none のみ、range(両面)は出さないこと。';
   return (
     'あなたが考える現在のスキャル戦略を教えてください。' +
     '①最初に買い/売りのどちらかを判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい) ' +
@@ -815,6 +836,7 @@ export function buildScalpQuestion(
     '損切りは直近の節目/スイングの外側に置き、狭すぎ(往復ビンタ)・広すぎ(ドカン)を避ける。' +
     `${ceilingYen}円を超える損切りは出さない。` +
     `この LC 上限(≤${ceilingYen}円)は、指値レッグ・逆指値レッグ それぞれ独立に満たすこと。` +
+    rangeNote +
     '逆指値(ブレイク追随)の新規は現在値/節目から離れるほど LC が広がりやすい。' +
     `逆指値レッグの LC が${ceilingYen}円を超える場合は、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、` +
     '(b)逆指値レッグを出さず「指値のみ」で取引する(stopEntry と stopLossForStop を出さない)。' +
@@ -831,14 +853,19 @@ export const SCALP_QUESTION = buildScalpQuestion();
 export function buildScalpSystemPrompt(
   floorYen: number = DEFAULT_LC_FLOOR_YEN,
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
+  rangeEnabled = true,
 ): string {
+  // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
+  const rangeLine = rangeEnabled
+    ? `\n- direction は buy / sell / none / range のいずれか。明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随逆指値)・entry・stopLoss を出す。upper.entry は現在値超・lower.entry は現在値未満。レンジ内逆張りは 上=売り指値 / 下=買い指値、抜け追随は 上=買い逆指値 / 下=売り逆指値。各レッグの初期LCも上限(≤${ceilingYen}円)内に収める。方向性が明確なら従来どおり buy/sell を優先。`
+    : `\n- direction は buy / sell / none のみ。range(両面ストラドル)は出さないこと。`;
   return `あなたは日経225先物(NIY=F)のスキャルピングを専門とするトレーダーです。
 手元の【市場の現状】(現在価格・テクニカル節目・直近アラート・本日OHLC・ニュース)と、
 利用可能なデータツール(explain_move / query_alerts / price_history / web_search)を必要に応じて使い、
 現在の相場に対する具体的なスキャルのエントリー計画を1つ立ててください。
 
 制約:
-- direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。
+- direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
 - buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/逆指値のみ)でもよい。
 - それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、逆指値レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復ビンタ)・広すぎ(ドカン)を避ける。${ceilingYen}円を超える損切りは出さない。
@@ -857,19 +884,42 @@ export function scalpJsonInstruction(
   refPrice: number,
   floorYen: number = DEFAULT_LC_FLOOR_YEN,
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
+  rangeEnabled = true,
 ): string {
   const lcNote = `ストップ幅+5円・LC幅${floorYen}〜${ceilingYen}円・レッグ独立で${ceilingYen}円超は出さない`;
+  const dirEnum = rangeEnabled ? `"buy" | "sell" | "none" | "range"` : `"buy" | "sell" | "none"`;
+  // レンジ両面ストラドルの JSON 形(direction:"range" の時のみ)。数値は円単位の実数。
+  const rangeShape = rangeEnabled
+    ? `  "range": {                  // direction:"range"(レンジ両面ストラドル)の時のみ。現在値の上下に1レッグずつ\n` +
+      `    "upper": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "stopLoss": number },  // entry は現在値超\n` +
+      `    "lower": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "stopLoss": number }   // entry は現在値未満\n` +
+      `  },\n`
+    : '';
   return `最終的な回答は、次のスキーマに厳密に一致する JSON オブジェクトのみを出力してください(前後の説明文・コードフェンス・マークダウンは一切付けない)。\n` +
     `{\n` +
-    `  "direction": "buy" | "sell" | "none",  // none=見送り(良い場面が無い)。none の時は下の価格4つは不要(rationale と refPrice のみ)\n` +
-    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none または指値レッグ不採用(逆指値のみ)の時は省略(stopLossForLimit と対で省く)\n` +
-    `  "stopEntry": number,         // 逆指値(ブレイク側の新規)。none または逆指値レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
+    `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の価格4つは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の価格4つは不要)' : ''}\n` +
+    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(逆指値のみ)の時は省略(stopLossForLimit と対で省く)\n` +
+    `  "stopEntry": number,         // 逆指値(ブレイク側の新規)。none/range または逆指値レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
     `  "stopLossForLimit": number,  // 指値約定時の損切り逆指値(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
     `  "stopLossForStop": number,   // 逆指値約定時の損切り逆指値(${lcNote})。逆指値レッグを出さない/none の時は stopEntry と対で省略\n` +
+    rangeShape +
     `  "rationale": string,         // 判断理由(日本語)。none の時は見送り理由\n` +
     `  "refPrice": number           // 計画時に見た現在値(${refPrice})\n` +
     `}\n` +
     `refPrice は ${refPrice} を使うこと。数値はすべて円単位の実数(引用符なし)。`;
+}
+
+/** レンジ両面ストラドルの1レッグを検証する純関数。side/type の enum・entry/stopLoss の有限性を確認。
+ *  不正(型違い・非有限・欠落)なら null。幾何(現在値の上下)の判定は呼び出し側の責務。 */
+export function parseRangeLeg(v: unknown): RangeLeg | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const o = v as Record<string, unknown>;
+  if (o.side !== 'buy' && o.side !== 'sell') return null;
+  if (o.type !== 'limit' && o.type !== 'stop') return null;
+  const entry = typeof o.entry === 'number' && Number.isFinite(o.entry) ? o.entry : null;
+  const stopLoss = typeof o.stopLoss === 'number' && Number.isFinite(o.stopLoss) ? o.stopLoss : null;
+  if (entry === null || stopLoss === null) return null;
+  return { side: o.side, type: o.type, entry, stopLoss };
 }
 
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
@@ -890,13 +940,31 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   }
   if (typeof obj !== 'object' || obj === null) return { ok: false, error: 'not an object' };
   const o = obj as Record<string, unknown>;
-  if (o.direction !== 'buy' && o.direction !== 'sell' && o.direction !== 'none') return { ok: false, error: 'invalid direction' };
+  if (o.direction !== 'buy' && o.direction !== 'sell' && o.direction !== 'none' && o.direction !== 'range') return { ok: false, error: 'invalid direction' };
   const rationale = typeof o.rationale === 'string' ? o.rationale.trim() : '';
   if (!rationale) return { ok: false, error: 'missing rationale' };
   // ★見送り(direction:"none"): 価格は不要。rationale + refPrice のみで ok:true の正当な「見送り」応答。
   //   これはエラー(ok:false)ではない=plan-failed とは区別される。
   if (o.direction === 'none') {
     return { ok: true, plan: { direction: 'none', rationale, refPrice } };
+  }
+  // ★レンジ両面ストラドル(direction:"range"): range.upper / range.lower を各レッグ検証。
+  //   幾何(upper.entry>refPrice>lower.entry)を満たさない/壊れているレッグは落とす。片レッグでも残れば range として通す。
+  //   両レッグとも無効なら「見送り(none)」として ok:true を返す(エラーにはしない)。
+  if (o.direction === 'range') {
+    const rangeObj = typeof o.range === 'object' && o.range !== null ? o.range as Record<string, unknown> : {};
+    let upper = parseRangeLeg(rangeObj.upper);
+    let lower = parseRangeLeg(rangeObj.lower);
+    // 現在値の上下の幾何を満たさないレッグは落とす(upper は現在値超・lower は現在値未満)。
+    if (upper && !(upper.entry > refPrice)) upper = null;
+    if (lower && !(lower.entry < refPrice)) lower = null;
+    if (!upper && !lower) {
+      return { ok: true, plan: { direction: 'none', rationale, refPrice } };
+    }
+    const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
+    if (upper) range.upper = upper;
+    if (lower) range.lower = lower;
+    return { ok: true, plan: { direction: 'range', rationale, refPrice, range } };
   }
   const num = (v: unknown): number | null =>
     (typeof v === 'number' && Number.isFinite(v)) ? v : null;
@@ -989,6 +1057,8 @@ export interface ScalpPlanInput {
   lcCeilingYen?: number;
   /** エントリー方向のバイアス。未指定は monitor 設定(resolveScalpBias・既定'none')。'long'=売り新規veto / 'short'=買い新規veto。 */
   bias?: ScalpBias;
+  /** レンジ両面ストラドルを許可するか。未指定は monitor 設定(resolveScalpRangeEnabled・既定true)。false=range を出させない/万一出ても none 化。 */
+  rangeEnabled?: boolean;
 }
 
 /** AIエントリー制御のハード適用(純関数・最終保証)。monitor 設定の最大初期LC(ceilingYen)とバイアス(bias)を
@@ -1004,6 +1074,32 @@ export function enforcePlanConstraints(
 ): AiPlan {
   if (plan.direction === 'none') return plan;
   const { ceilingYen, bias } = opts;
+
+  // ★レンジ両面ストラドル: 各レッグに (a)LC上限・(b)バイアス veto を独立適用。両レッグ落ちたら none、
+  //   片レッグ残れば その単レッグの range(=実質片面)として通す。既存の buy/sell 強制とは別経路。
+  if (plan.direction === 'range') {
+    let upper = plan.range?.upper;
+    let lower = plan.range?.lower;
+    // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
+    if (upper && Math.abs(upper.entry - upper.stopLoss) > ceilingYen) upper = undefined;
+    if (lower && Math.abs(lower.entry - lower.stopLoss) > ceilingYen) lower = undefined;
+    // (b) バイアス veto: long→sell レッグ落とし / short→buy レッグ落とし。
+    if (bias === 'long') {
+      if (upper?.side === 'sell') upper = undefined;
+      if (lower?.side === 'sell') lower = undefined;
+    } else if (bias === 'short') {
+      if (upper?.side === 'buy') upper = undefined;
+      if (lower?.side === 'buy') lower = undefined;
+    }
+    if (!upper && !lower) {
+      return { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice };
+    }
+    const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
+    if (upper) range.upper = upper;
+    if (lower) range.lower = lower;
+    return { direction: 'range', rationale: plan.rationale, refPrice: plan.refPrice, range };
+  }
+
   const out: AiPlan = { ...plan };
 
   // 1. レッグ単位の LC 上限(境界=ちょうどは許可)。上限超レッグは対で落とす。
@@ -1065,15 +1161,16 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // monitor 設定に従う=単一の真実)。上限はサニタイズ・クランプ後にプロンプトへ反映し、最終保証は enforcePlanConstraints。
   const ceilingInput = input.lcCeilingYen ?? resolveScalpLcCeiling();
   const bias: ScalpBias = input.bias ?? resolveScalpBias();
+  const rangeEnabled = input.rangeEnabled ?? resolveScalpRangeEnabled();
   const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen, ceilingInput);
   const biasNote =
     bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
   : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
   : '';
   const monitorCtx = buildMonitorContext(now);
-  const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen);
+  const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen)}${biasNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled)}${biasNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
@@ -1095,7 +1192,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const img = input.chartImageDataUrl && input.chartImageDataUrl.startsWith('data:image/')
     ? input.chartImageDataUrl : null;
   const visionNote = img ? '添付のチャート画像(当日の日経225先物のローソク足・主要水準・直近アラート)も判断材料にすること。\n\n' : '';
-  const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, ceilingYen)}`;
+  const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, ceilingYen, rangeEnabled)}`;
 
   try {
     const raw = await callWithFallback(async (p) => {
@@ -1110,7 +1207,12 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // callWithFallback から返った plan JSON を再パースし、monitor 設定の LC 上限・バイアスをコードで最終保証してから返す。
     const parsed = parseScalpPlan(raw, refPrice);
     if (!parsed.ok) return parsed;
-    return { ok: true, plan: enforcePlanConstraints(parsed.plan, { ceilingYen, bias }) };
+    let finalPlan = enforcePlanConstraints(parsed.plan, { ceilingYen, bias });
+    // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
+    if (!rangeEnabled && finalPlan.direction === 'range') {
+      finalPlan = { direction: 'none', rationale: finalPlan.rationale, refPrice: finalPlan.refPrice };
+    }
+    return { ok: true, plan: finalPlan };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

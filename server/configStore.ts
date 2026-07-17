@@ -43,6 +43,7 @@ export interface UserConfig {
   scalpLcCeilingYen?: number;        // AIエントリー: 最大初期LC(損切り)幅[円]。未設定は 65。buildScalpPlan の上限既定。
   scalpBias?: ScalpBias;             // AIエントリー: バイアス。'long'=買い中心 / 'short'=売り中心 / 'none'=両方向(既定)。
   scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
+  scalpRangeEnabled?: boolean;       // AIエントリー: レンジ判断時の両面ストラドル(実験・紙で別枠計測)。未設定は true(ON)。
 }
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
@@ -223,6 +224,12 @@ export function resolveScalpCooldownSec(): number { return resolveNumeric('scalp
 export function resolveScalpBias(): ScalpBias {
   const v = loadConfig().scalpBias;
   return v === 'long' || v === 'short' ? v : 'none';
+}
+
+// AIエントリー: レンジ両面ストラドルの許可。未設定/非boolean は true(既定ON・実験/紙計測)。false で無効。
+export function resolveScalpRangeEnabled(): boolean {
+  const v = loadConfig().scalpRangeEnabled;
+  return typeof v === 'boolean' ? v : true;
 }
 
 // v0.6.0: 的中率の「成功」判定しきい値(順行% ≥ これ)。シグナル種別ごとに持てる(既定は全種別同値 0.1%)。

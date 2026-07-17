@@ -111,7 +111,11 @@
           <label>クールダウン(秒)</label>
           <input type="number" id="scalp-cooldown" autocomplete="off" min="0" max="3600" step="1" placeholder="90 (既定・0で無効)" />
         </div>
-        <div class="exit-hint">AIエントリー計画(scalp-plan)の上限とバイアスを一元管理します。各レッグの初期LC幅がこの上限を超える計画は自動で外し、バイアスに反する方向は見送りにします(コードで保証)。クールダウンは決済後に次の新規エントリーを一定秒数見送ります(0で無効)。monitorのシグナルエンジンと jp225-Trade の両方に反映されます。</div>
+        <div class="setting-row">
+          <label>レンジ両面(実験)</label>
+          <input type="checkbox" id="scalp-range-enabled" />
+        </div>
+        <div class="exit-hint">AIエントリー計画(scalp-plan)の上限とバイアスを一元管理します。各レッグの初期LC幅がこの上限を超える計画は自動で外し、バイアスに反する方向は見送りにします(コードで保証)。クールダウンは決済後に次の新規エントリーを一定秒数見送ります(0で無効)。monitorのシグナルエンジンと jp225-Trade の両方に反映されます。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証で不利だったため、実弾ではなく紙で成績をタグ集計して期待値を確認する実験モードです(既定ON)。</div>
       </fieldset>
 
       <div class="setting-row">

@@ -1,5 +1,13 @@
 import type { LevelsResult } from './levels.js';
 
+// レンジ両面ストラドルの1レッグ(表示/連携用・engine/openai と同形)。
+export interface SignalRangeLeg {
+  side: 'buy' | 'sell';
+  type: 'limit' | 'stop';
+  entry: number;
+  stopLoss: number;
+}
+
 export type Symbol =
   | 'NIY=F' | 'NQ=F' | 'YM=F' | 'JPY=X'
   | '6861.T' | '9983.T' | '6146.T' | '6273.T'
@@ -63,11 +71,14 @@ export interface AlertEventPayload {
 export interface SignalTradeState {
   phase: 'flat' | 'armed' | 'filled';
   // armed(エントリー注文中)。指値/逆指値の新規と初期LC(1つに正規化・途中のLC移動は出さない)。
+  // mode==='range' の時は range(上下2レッグ・片レッグ落ちも可)を持ち、パネルは両面を描く。
   entry?: {
     direction: 'buy' | 'sell';
     limitEntry?: number; stopEntry?: number;
     initialStop?: number;
     rationale?: string; at: number;
+    mode?: 'range';
+    range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   };
   // filled(保有中)。決済逆指値は非表示。建値と含み(pt)のみ。
   position?: { direction: 'buy' | 'sell'; entryPrice: number; qty: number; unrealized: number; at: number };
@@ -81,6 +92,9 @@ export interface SignalTradeState {
     limitEntry?: number; stopEntry?: number;
     stopLossForLimit?: number; stopLossForStop?: number;
     at: number;
+    // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
+    mode?: 'range';
+    range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   };
   // 保有中の意図(trade2 追従用)。filled の間だけ付与し、決済逆指値(computeExitStop の絶対価格)を
   // 毎tick公開する。signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。

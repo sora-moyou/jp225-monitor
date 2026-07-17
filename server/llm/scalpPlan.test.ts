@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  parseScalpPlan, runScalpPlan, buildScalpPlan, isLLMEnabled,
+  parseScalpPlan, parseRangeLeg, runScalpPlan, buildScalpPlan, isLLMEnabled,
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints,
@@ -414,6 +414,176 @@ describe('enforcePlanConstraints(LC上限・バイアスのハード適用)', ()
     const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'long' });
     expect(r.direction).toBe('none');
     expect(r.limitEntry).toBeUndefined();
+  });
+});
+
+// ─── レンジ両面ストラドル(range): parse ───
+describe('parseScalpPlan range(レンジ両面ストラドル)', () => {
+  // REF=38250。upper.entry は現在値超・lower.entry は現在値未満。
+  const upper = { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 };  // 上=売り指値 LC=50
+  const lower = { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 };    // 下=買い指値 LC=50
+  const rangePlan = { direction: 'range', rationale: 'レンジ・上下に反応帯', range: { upper, lower }, refPrice: 1 };
+
+  it('有効な両レッグ range→ok:true・range.upper/lower が入る(refPrice は上書き)', () => {
+    const r = parseScalpPlan(JSON.stringify(rangePlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('range');
+      expect(r.plan.refPrice).toBe(REF);
+      expect(r.plan.range?.upper).toEqual({ side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 });
+      expect(r.plan.range?.lower).toEqual({ side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 });
+    }
+  });
+
+  it('抜け追随(逆指値)形も通る: 上=買い逆指値 / 下=売り逆指値', () => {
+    const p = { direction: 'range', rationale: 'ブレイク追随', refPrice: 1, range: {
+      upper: { side: 'buy', type: 'stop', entry: 38400, stopLoss: 38350 },
+      lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 },
+    } };
+    const r = parseScalpPlan(JSON.stringify(p), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.range?.upper?.type).toBe('stop');
+      expect(r.plan.range?.lower?.side).toBe('sell');
+    }
+  });
+
+  it('片レッグが幾何違反(upper.entry が現在値未満)→そのレッグを落とし片面 range で通す', () => {
+    const bad = { ...rangePlan, range: { upper: { ...upper, entry: 38200 }, lower } };  // upper.entry<REF
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('range');
+      expect(r.plan.range?.upper).toBeUndefined();   // 幾何違反で落ちる
+      expect(r.plan.range?.lower).toBeDefined();
+    }
+  });
+
+  it('片レッグが壊れている(side 不正)→そのレッグを落とし片面 range', () => {
+    const bad = { ...rangePlan, range: { upper: { ...upper, side: 'hold' }, lower } };
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.range?.upper).toBeUndefined();
+      expect(r.plan.range?.lower?.side).toBe('buy');
+    }
+  });
+
+  it('両レッグとも無効(幾何違反)→ok:true の見送り(none)', () => {
+    const bad = { ...rangePlan, range: {
+      upper: { ...upper, entry: 38000 },   // 現在値未満=違反
+      lower: { ...lower, entry: 38500 },   // 現在値超=違反
+    } };
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.plan.range).toBeUndefined();
+      expect(r.plan.rationale).toContain('レンジ');
+    }
+  });
+
+  it('range フィールド欠落→none(見送り)', () => {
+    const r = parseScalpPlan(JSON.stringify({ direction: 'range', rationale: '理由' }), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.plan.direction).toBe('none');
+  });
+
+  it('既存の buy/sell/none パースは不変(range 追加で壊れない)', () => {
+    expect(parseScalpPlan(JSON.stringify(goodPlan), REF).ok).toBe(true);
+    expect(parseScalpPlan(JSON.stringify({ direction: 'none', rationale: '様子見' }), REF).ok).toBe(true);
+  });
+});
+
+describe('parseRangeLeg', () => {
+  it('正常レッグを返す', () => {
+    expect(parseRangeLeg({ side: 'buy', type: 'stop', entry: 100, stopLoss: 90 }))
+      .toEqual({ side: 'buy', type: 'stop', entry: 100, stopLoss: 90 });
+  });
+  it('side/type enum 違反・非有限・非オブジェクトは null', () => {
+    expect(parseRangeLeg({ side: 'x', type: 'limit', entry: 1, stopLoss: 2 })).toBeNull();
+    expect(parseRangeLeg({ side: 'buy', type: 'y', entry: 1, stopLoss: 2 })).toBeNull();
+    expect(parseRangeLeg({ side: 'buy', type: 'limit', entry: 'a', stopLoss: 2 })).toBeNull();
+    expect(parseRangeLeg({ side: 'buy', type: 'limit', entry: 1 })).toBeNull();   // stopLoss 欠落
+    expect(parseRangeLeg(null)).toBeNull();
+    expect(parseRangeLeg('nope')).toBeNull();
+  });
+});
+
+// ─── レンジ両面ストラドル(range): enforce ───
+describe('enforcePlanConstraints range(LC上限/バイアス per レッグ)', () => {
+  const base: AiPlan = {
+    direction: 'range', rationale: 'レンジ', refPrice: REF,
+    range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },  // LC=50
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },    // LC=50
+    },
+  };
+
+  it('両レッグ上限以内(50≤65)→素通し(両レッグ残る)', () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeDefined();
+    expect(r.range?.lower).toBeDefined();
+  });
+
+  it('片レッグだけ LC 上限超→そのレッグを落とし片面 range', () => {
+    const p: AiPlan = { ...base, range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38520 },   // LC=120 超
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },     // LC=50 残る
+    } };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();
+    expect(r.range?.lower).toBeDefined();
+  });
+
+  it('両レッグとも LC 上限超→none', () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 49, bias: 'none' });  // 各50>49
+    expect(r.direction).toBe('none');
+    expect(r.range).toBeUndefined();
+    expect(r.rationale).toBe('レンジ');
+  });
+
+  it("bias='long' は sell レッグを落とす(upper=sell を drop・lower=buy 残る)", () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'long' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();   // sell 落ち
+    expect(r.range?.lower?.side).toBe('buy');
+  });
+
+  it("bias='short' は buy レッグを落とす(lower=buy を drop・upper=sell 残る)", () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'short' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.lower).toBeUndefined();
+    expect(r.range?.upper?.side).toBe('sell');
+  });
+
+  it("bias が両レッグを落とすと none(long で両レッグ sell)", () => {
+    const p: AiPlan = { ...base, range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 },
+    } };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'long' });
+    expect(r.direction).toBe('none');
+  });
+});
+
+describe('scalp プロンプト range トグル(rangeEnabled)', () => {
+  it('rangeEnabled=true(既定)でプロンプト/JSON に range 指示が入る', () => {
+    expect(buildScalpQuestion()).toContain('range');
+    expect(buildScalpSystemPrompt()).toContain('range');
+    expect(scalpJsonInstruction(38250)).toContain('range');
+    // 既定は range ON=SCALP_QUESTION/SCALP_SYSTEM_PROMPT にも range 文言。
+    expect(SCALP_QUESTION).toContain('range');
+    expect(SCALP_SYSTEM_PROMPT).toContain('range');
+  });
+  it('rangeEnabled=false で range を明示禁止(「range は出さない」)', () => {
+    expect(buildScalpQuestion(45, 65, false)).toContain('range');   // 「range は出さない」を含む
+    expect(buildScalpQuestion(45, 65, false)).toContain('出さない');
+    expect(buildScalpSystemPrompt(45, 65, false)).toContain('出さない');
+    // JSON スキーマの direction enum に range が入らない。
+    expect(scalpJsonInstruction(38250, 45, 65, false)).not.toContain('"range"');
   });
 });
 

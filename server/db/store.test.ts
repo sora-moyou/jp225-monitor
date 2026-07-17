@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getBarCloseNear, getAlertsNeedingFollowup, updateAlertReturns } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getBarCloseNear, getAlertsNeedingFollowup, updateAlertReturns, insertSignalTrade, getSignalTrades } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -230,6 +230,42 @@ describe('alerts store', () => {
     const r = getRecentAlerts(db, 1)[0]!;
     expect([r.ret5, r.ret15, r.ret30]).toEqual([0.1, 0.2, 0.3]);
     expect(getAlertsNeedingFollowup(db, now).length).toBe(0);   // ret30 が埋まったので対象外
+    db.close();
+  });
+});
+
+// ─── signal_trades の mode タグ(レンジ両面を別枠集計) ───
+describe('signal_trades mode タグ', () => {
+  function stBase() {
+    return { entryT: 1000, entryPrice: 38000, dir: 'buy' as const, exitT: 2000, exitPrice: 38050, pnl: 50, qty: 1 };
+  }
+  it("mode='range' を保存し getSignalTrades で取り出せる", () => {
+    const db = memDb();
+    insertSignalTrade(db, { ...stBase(), rationale: 'range', mode: 'range' });
+    const rows = getSignalTrades(db);
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.mode).toBe('range');
+    db.close();
+  });
+  it("mode='directional' を保存できる", () => {
+    const db = memDb();
+    insertSignalTrade(db, { ...stBase(), rationale: 'dir', mode: 'directional' });
+    expect(getSignalTrades(db)[0]!.mode).toBe('directional');
+    db.close();
+  });
+  it('mode 未指定は NULL(後方互換=directional 扱い)', () => {
+    const db = memDb();
+    insertSignalTrade(db, { ...stBase(), rationale: 'x' });
+    expect(getSignalTrades(db)[0]!.mode).toBeNull();
+    db.close();
+  });
+  it("mode='range' だけを絞り込み集計できる(別枠計測)", () => {
+    const db = memDb();
+    insertSignalTrade(db, { ...stBase(), rationale: 'r1', mode: 'range' });
+    insertSignalTrade(db, { ...stBase(), entryT: 3000, exitT: 4000, rationale: 'd1', mode: 'directional' });
+    const rangeOnly = getSignalTrades(db).filter(r => r.mode === 'range');
+    expect(rangeOnly.length).toBe(1);
+    expect(rangeOnly[0]!.rationale).toBe('r1');
     db.close();
   });
 });

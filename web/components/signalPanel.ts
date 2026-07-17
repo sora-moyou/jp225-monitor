@@ -3,9 +3,18 @@ import { beep } from './soundPlayer.js';
 // ─── SSE state 契約 (backend→frontend の唯一のIF) ───────────────────────
 // server 側 broadcast({ type: 'signalTrade', payload: SignalTradeState }) を購読する。
 // 既存フィールドは不変。backend 実装完了前でも、この契約に対して frontend を実装する。
+// レンジ両面ストラドルの1レッグ(表示用)。side/type/entry/stopLoss。
+export interface SignalRangeLeg {
+  side: 'buy' | 'sell';
+  type: 'limit' | 'stop';
+  entry: number;
+  stopLoss: number;
+}
+
 export interface SignalTradeState {
   phase: 'flat' | 'armed' | 'filled';
   // armed (エントリー注文中)。limitEntry=direction 側の指値 / stopEntry=反対側の逆指値 (OCO)。
+  // mode==='range' の時は range(上下2レッグ・片レッグ落ちも可)を両面表示する。
   entry?: {
     direction: 'buy' | 'sell';
     limitEntry?: number;
@@ -13,6 +22,8 @@ export interface SignalTradeState {
     initialStop?: number;   // 初期LC (1つに正規化・途中のLC移動は出さない)
     rationale?: string;
     at: number;
+    mode?: 'range';
+    range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   };
   // filled (保有中)。決済逆指値は非表示。建値と含みのみ。
   position?: {
@@ -89,6 +100,15 @@ export function buildSignalView(s: SignalTradeState | null, now: number = Date.n
   }
   if (s.phase === 'armed' && s.entry) {
     const e = s.entry;
+    // ★レンジ両面ストラドル: 上下の各レッグを side/type/entry で明示表示(実験・紙で別枠計測)。
+    if (e.mode === 'range' && e.range) {
+      const legStr = (leg: SignalRangeLeg, pos: '上' | '下'): string =>
+        `${dirJa(leg.side)}${fmtPrice(leg.entry)}${leg.type === 'limit' ? '指値' : '逆指値'}(${pos})`;
+      const parts: string[] = [];
+      if (e.range.upper) parts.push(legStr(e.range.upper, '上'));
+      if (e.range.lower) parts.push(legStr(e.range.lower, '下'));
+      return { cls: 'armed', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: e.rationale ?? '' };
+    }
     const legs: string[] = [];
     // 両レッグとも実トレード方向(entry.direction)。stopEntry は同方向のブレイク追随エントリー
     // (backend AiPlan 意味論)なので、指値/逆指値で区別し方向は反転させない。
