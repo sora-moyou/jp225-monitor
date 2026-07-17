@@ -167,15 +167,29 @@ describe('restingStopOf', () => {
 
 // ─── toSignalTradeState ───
 describe('toSignalTradeState', () => {
-  it('armed は entry(初期LCを1つに正規化)を出す', () => {
+  it('armed は entry を出す(初期LCはレッグ別=指値/逆指値それぞれ露出+単一正規化も後方互換)', () => {
     const st: EngineState = {
       phase: 'armed',
       armed: { direction: 'buy', limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050, rationale: 'r', at: 5 },
     };
     const s = toSignalTradeState(st, 38000, 9);
     expect(s.phase).toBe('armed');
-    expect(s.entry).toMatchObject({ direction: 'buy', limitEntry: 37950, stopEntry: 38100, initialStop: 37900, at: 5 });
+    // ★逆指値レッグの LC(stopLossForStop) もパネルへ露出する(旧: initialStop 1本だけで逆指値LCが出なかった)
+    expect(s.entry).toMatchObject({
+      direction: 'buy', limitEntry: 37950, stopEntry: 38100,
+      initialStop: 37900, stopLossForLimit: 37900, stopLossForStop: 38050, at: 5,
+    });
     expect(s.position).toBeUndefined();
+  });
+
+  it('逆指値のみ計画: 逆指値レッグの LC が出る', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', stopEntry: 38100, stopLossForStop: 38050, rationale: 'r', at: 5 },
+    };
+    const s = toSignalTradeState(st, 38000, 9);
+    expect(s.entry?.stopLossForStop).toBe(38050);
+    expect(s.entry?.limitEntry).toBeUndefined();
   });
 
   it('filled は position(含み)を出し決済逆指値は出さない', () => {

@@ -305,8 +305,11 @@ export function toSignalTradeState(
         direction: a.direction,
         limitEntry: a.limitEntry,
         stopEntry: a.stopEntry,
-        // 初期LC は1つに正規化(指値レッグ優先・無ければ逆指値レッグ)。途中の LC 移動は出さない。
+        // 初期LC はレッグ別に露出(指値レッグ=stopLossForLimit / 逆指値レッグ=stopLossForStop)。
+        //   initialStop は後方互換の単一正規化値(指値優先)。途中の LC 移動は出さない。
         initialStop: a.stopLossForLimit ?? a.stopLossForStop,
+        stopLossForLimit: a.stopLossForLimit,
+        stopLossForStop: a.stopLossForStop,
         rationale: a.rationale,
         at: a.at,
       };

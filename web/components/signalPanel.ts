@@ -19,7 +19,8 @@ export interface SignalTradeState {
     direction: 'buy' | 'sell';
     limitEntry?: number;
     stopEntry?: number;
-    initialStop?: number;   // 初期LC (1つに正規化・途中のLC移動は出さない)
+    initialStop?: number;   // 後方互換: 単一正規化値(指値優先)
+    stopLossForLimit?: number; stopLossForStop?: number; // レッグ別 LC(指値/逆指値それぞれ)
     rationale?: string;
     at: number;
     mode?: 'range';
@@ -103,7 +104,7 @@ export function buildSignalView(s: SignalTradeState | null, now: number = Date.n
     // ★レンジ両面ストラドル: 上下の各レッグを side/type/entry で明示表示(実験・紙で別枠計測)。
     if (e.mode === 'range' && e.range) {
       const legStr = (leg: SignalRangeLeg, pos: '上' | '下'): string =>
-        `${dirJa(leg.side)}${fmtPrice(leg.entry)}${leg.type === 'limit' ? '指値' : '逆指値'}(${pos})`;
+        `${dirJa(leg.side)}${fmtPrice(leg.entry)}${leg.type === 'limit' ? '指値' : '逆指値'}(${pos})${leg.stopLoss != null ? ` (LC ${fmtPrice(leg.stopLoss)})` : ''}`;
       const parts: string[] = [];
       if (e.range.upper) parts.push(legStr(e.range.upper, '上'));
       if (e.range.lower) parts.push(legStr(e.range.lower, '下'));
@@ -112,10 +113,13 @@ export function buildSignalView(s: SignalTradeState | null, now: number = Date.n
     const legs: string[] = [];
     // 両レッグとも実トレード方向(entry.direction)。stopEntry は同方向のブレイク追随エントリー
     // (backend AiPlan 意味論)なので、指値/逆指値で区別し方向は反転させない。
-    if (e.limitEntry != null) legs.push(`${dirJa(e.direction)} ${fmtPrice(e.limitEntry)} 指値`);
-    if (e.stopEntry != null) legs.push(`${dirJa(e.direction)} ${fmtPrice(e.stopEntry)} 逆指値`);
+    // ★LC はレッグ別に表示(指値=stopLossForLimit / 逆指値=stopLossForStop)。逆指値レッグの LC も出す。
+    const lcTag = (lc?: number): string => (lc != null ? ` (LC ${fmtPrice(lc)})` : '');
+    if (e.limitEntry != null) legs.push(`${dirJa(e.direction)} ${fmtPrice(e.limitEntry)} 指値${lcTag(e.stopLossForLimit)}`);
+    if (e.stopEntry != null) legs.push(`${dirJa(e.direction)} ${fmtPrice(e.stopEntry)} 逆指値${lcTag(e.stopLossForStop)}`);
     let main = `🎯 シグナル：${legs.join(' / ')}`;
-    if (e.initialStop != null) main += ` ・ 初期LC ${fmtPrice(e.initialStop)}`;
+    // 後方互換: レッグ別 LC が無い(旧server)ときだけ従来の単一 LC を末尾に出す。
+    if (e.stopLossForLimit == null && e.stopLossForStop == null && e.initialStop != null) main += ` ・ LC ${fmtPrice(e.initialStop)}`;
     return { cls: 'armed', main, rationale: e.rationale ?? '' };
   }
   return { cls: 'flat', main: 'シグナル待機', rationale: '' };

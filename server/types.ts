@@ -92,7 +92,8 @@ export interface SignalTradeState {
   entry?: {
     direction: 'buy' | 'sell';
     limitEntry?: number; stopEntry?: number;
-    initialStop?: number;
+    initialStop?: number;                              // 後方互換: 単一正規化値(指値優先)
+    stopLossForLimit?: number; stopLossForStop?: number; // レッグ別 初期LC(指値/逆指値それぞれ)
     rationale?: string; at: number;
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
