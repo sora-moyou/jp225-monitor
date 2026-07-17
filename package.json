@@ -1,6 +1,6 @@
 {
   "name": "finance-monitor",
-  "version": "0.7.56",
+  "version": "0.7.57",
   "private": true,
   "type": "module",
   "scripts": {

@@ -12,7 +12,7 @@ import type { Mover } from '../marketSnapshot.js';
 import {
   resolveApiKey,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
-  resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
+  resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective,
   type ScalpBias, type KnobSource,
 } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
@@ -925,30 +925,43 @@ export function buildDelegationNote(
   modes: KnobModes,
   ctx: { floorYen: number; ceilingYen: number; hardMax: LcHardMax },
 ): string {
+  // ★AI委任は「制約を外すだけ」でなく、その項目が本来担っていた判断ロジック(狙い・基準・なぜ・使うデータ)を
+  //   AI に正確に転写する。そうしないと AI は"意味を知らないまま自由になる"だけになる(=判断が盲目化する)。
+  //   ※非公開の phase-exit の具体数値は書かない(公開リポ)。転写は定性的に留める。
   const lines: string[] = [];
   if (modes.lcCeiling === 'ai') {
     const cap = ctx.hardMax.enabled
-      ? `ただし安全上限 ${ctx.hardMax.value}円 だけは絶対に超えないこと(実弾の暴走防止)。`
+      ? `ただし実弾の暴走防止として安全上限 ${ctx.hardMax.value}円 だけは絶対に超えないこと。`
       : '';
-    lines.push(`最大初期LC: この値はあなたが決めてよい(自由)。上の「LC上限」の数値指示は無視し、相場に応じた妥当なLC幅を自分で決め、根拠を述べること。${cap}`);
+    lines.push(
+      `最大初期LC(損切り幅): あなたが決める。狙い=この建玉は利が乗ると段階的に利確し損切りを引き上げる決済方式のため、` +
+      `初期LCは「1回の損切りが積み上げた利益を飛ばさない」幅に収める(コツコツドカン回避)。損切りは直近の節目/スイングの外側に置き、` +
+      `広すぎ(ドカン)・狭すぎ(往復ビンタ)を避けて、相場構造から妥当な幅を自分で決め根拠を述べること。上の固定的なLC上限の数値指示は無視してよい。${cap}`,
+    );
   }
   if (modes.lcFloor === 'ai') {
-    lines.push('初期LC下限: 下限も課しません。狭すぎ(往復ビンタ)・広すぎ(ドカン)は自分の判断で避けること。');
+    lines.push('初期LC下限: 下限は課さない。ただし狭すぎるLCは往復ビンタで負けやすいので、その点も踏まえて幅を決めること。');
   }
   if (modes.trendVeto === 'ai') {
-    lines.push('トレンド判断: トレンド逆行の数値vetoは課しません。あなたの自己レジーム(regime)判断でトレンド/レンジを見極め、根拠を述べること。');
+    lines.push(
+      `トレンド/レンジの見極め: 固定の数値閾値は課さない=あなたが判定する。判断ロジック: 直近10〜30分がほぼ横ばいのときだけ「レンジ」とみなし逆張り(フェード指値)してよい。` +
+      `直近が一方向に明確に動いていれば「トレンド」であり、それに逆行する新規(順トレンドの高値を売る/安値を買う戻り売買)は出さないこと。` +
+      `★根拠: 生きたトレンドをフェードすると負ける(monitorの実データで勝率約2割・9年バックテストでも不利)ことが確認済み。` +
+      `上で渡す「直近の勢い(10分/30分の値動き・MA20傾き・直近高安内の位置)」の数値を必ず根拠に使い、regime と confidence を自分で下すこと。` +
+      `トレンドなら順張り(押し目/戻りの順張り or ブレイク追随)か direction:"none" で見送りにする。`,
+    );
   }
   if (modes.bias === 'ai') {
-    lines.push('方向: 売買方向(buy/sell)はあなたが自由に決めてよい(バイアスの強制なし)。');
+    lines.push('売買方向(buy/sell): あなたが自由に決めてよい(バイアスの強制なし)。ただし明確な逆行トレンドには逆らわないこと(上のトレンド判断を優先)。');
   }
   if (modes.range === 'ai') {
-    lines.push('レンジ両面: 明確な方向性が無く上下に反応帯があると判断すれば range(両面)を提案してよい。');
+    lines.push('レンジ両面: 明確な方向性が無く上下に反応帯があると判断すれば range(両面=現在値の上下に指値/逆指値を1本ずつ)を提案してよい。ただしフェード両面は過去に不利だった実績があるため、真に横ばいのときだけに限ること。');
   }
   if (modes.cooldown === 'ai') {
-    lines.push('クールダウン: 決済直後でも良い場面があれば提案してよい。');
+    lines.push('再エントリー: 決済直後でも明確な好機があれば提案してよい(クールダウンの強制なし)。ただし直近で損切りした直後に同じ理由で突入し直すことは避けること。');
   }
   if (lines.length === 0) return '';
-  return '\n\n【AI委任(この項目はあなたの裁量。根拠を必ず述べること)】\n- ' + lines.join('\n- ');
+  return '\n\n【AI委任(以下の項目はあなたの裁量。上のロジックを踏まえ、必ず根拠を述べること)】\n- ' + lines.join('\n- ');
 }
 
 // LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
@@ -1371,9 +1384,10 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const trendVetoYen = trendD.mode === 'manual' ? trendD.value : 0;
   // ★委任ノート: AI に委任した knob だけ「この値はあなたが決める(自由・根拠を述べよ)」を追記する。
   //   全 knob 手動(既定)では '' = プロンプトは従来と byte 単位で不変(回帰なし)。
+  const cooldownD = resolveScalpCooldownDirective();
   const delegationNote = buildDelegationNote(
     { lcFloor: floorD.mode, lcCeiling: ceilingD.mode, trendVeto: trendD.mode,
-      cooldown: 'manual', bias: biasD.mode, range: rangeD.mode },
+      cooldown: cooldownD.mode, bias: biasD.mode, range: rangeD.mode },
     { floorYen, ceilingYen, hardMax },
   );
   const biasNote =

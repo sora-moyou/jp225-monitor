@@ -1191,11 +1191,18 @@ describe('buildDelegationNote(委任ノート)', () => {
   it('全 knob 手動 → 空文字(プロンプト不変=回帰なし)', () => {
     expect(buildDelegationNote(allManual, ctx)).toBe('');
   });
-  it('lcCeiling=ai → LC をAIに委任する旨 + 安全上限を明記', () => {
+  it('lcCeiling=ai → LC をAIに委任する旨 + ロジック(コツコツドカン回避) + 安全上限を明記', () => {
     const n = buildDelegationNote({ ...allManual, lcCeiling: 'ai' }, ctx);
     expect(n).toContain('最大初期LC');
-    expect(n).toContain('あなたが決めてよい');
+    expect(n).toContain('あなたが決める');
+    expect(n).toContain('コツコツドカン');   // ★ロジックが転写されている
     expect(n).toContain('安全上限 150円');
+  });
+  it('trendVeto=ai → 判断ロジックと根拠(勢いデータ・フェードは負ける)を転写', () => {
+    const n = buildDelegationNote({ ...allManual, trendVeto: 'ai' }, ctx);
+    expect(n).toContain('直近の勢い');          // 使うべきデータを明示
+    expect(n).toContain('フェード');            // 逆張りの基準
+    expect(n).toContain('regime');             // 自己レジームを下す
   });
   it('lcCeiling=ai + hardMax 無効 → 安全上限の文言なし', () => {
     const n = buildDelegationNote({ ...allManual, lcCeiling: 'ai' }, { ...ctx, hardMax: { enabled: false, value: 150 } });
