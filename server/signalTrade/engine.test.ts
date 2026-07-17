@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
-  computeHold, inCooldown,
+  computeHold, inCooldown, buildPlanMeta, buildTradeMetaJson,
   type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal,
 } from './engine.js';
 import { _setExitImpl } from './exit/index.js';
@@ -188,6 +188,53 @@ describe('toSignalTradeState', () => {
     const s = toSignalTradeState(st, 38200, 9);
     expect(s.phase).toBe('flat');
     expect(s.lastExit).toEqual({ exitPrice: 38200, pnl: 200, at: 3 });
+  });
+});
+
+// ─── v0.7.54: AI 自己レジーム/確信度/veto の meta 持ち回り ───
+describe('planMeta 持ち回り(regime/confidence/vetoFired → meta)', () => {
+  it('buildPlanMeta: 全欠落は undefined・一部でも在れば object', () => {
+    expect(buildPlanMeta(undefined, undefined, undefined)).toBeUndefined();
+    expect(buildPlanMeta('trend_up', 70, true)).toEqual({ regime: 'trend_up', confidence: 70, vetoFired: true });
+    expect(buildPlanMeta(undefined, undefined, false)).toEqual({ vetoFired: false });
+    // 非有限 confidence は落とす。
+    expect(buildPlanMeta('range', NaN, undefined)).toEqual({ regime: 'range' });
+  });
+
+  it('buildTradeMetaJson: ctxV:"rich" は常時・planMeta の各値をマージ', () => {
+    expect(JSON.parse(buildTradeMetaJson(undefined))).toEqual({ ctxV: 'rich' });
+    expect(JSON.parse(buildTradeMetaJson({ regime: 'trend_down', confidence: 55, vetoFired: true })))
+      .toEqual({ ctxV: 'rich', regime: 'trend_down', confidence: 55, vetoFired: true });
+  });
+
+  it('planToArmed が plan.regime/confidence と vetoFired を armed.planMeta に載せる', () => {
+    const a = planToArmed(
+      { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', regime: 'trend_up', confidence: 80 },
+      5, { vetoFired: false },
+    );
+    expect(a?.planMeta).toEqual({ regime: 'trend_up', confidence: 80, vetoFired: false });
+  });
+
+  it('planMeta が約定→決済で position/RecordedTrade まで運ばれ meta JSON になる', () => {
+    const armed: ArmedBracket = {
+      direction: 'buy', limitEntry: 38000, stopLossForLimit: 37960, rationale: 'r', at: 0,
+      planMeta: { regime: 'trend_up', confidence: 66, vetoFired: true },
+    };
+    // 約定(現値が指値到達)。
+    const filled = advance({ phase: 'armed', armed }, 38000, 100);
+    expect(filled.next.phase).toBe('filled');
+    expect(filled.next.position?.planMeta).toEqual({ regime: 'trend_up', confidence: 66, vetoFired: true });
+    // 決済(初期LC 37960 に到達)。
+    const exited = advance(filled.next, 37960, 200);
+    expect(exited.recorded).toBeDefined();
+    expect(exited.recorded?.planMeta).toEqual({ regime: 'trend_up', confidence: 66, vetoFired: true });
+    expect(JSON.parse(buildTradeMetaJson(exited.recorded?.planMeta)))
+      .toEqual({ ctxV: 'rich', regime: 'trend_up', confidence: 66, vetoFired: true });
+  });
+
+  it('planMeta 無し(旧世代)でも meta は ctxV:"rich" のみで壊れない', () => {
+    const a = planToArmed({ direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r' }, 5);
+    expect(a?.planMeta).toBeUndefined();
   });
 });
 

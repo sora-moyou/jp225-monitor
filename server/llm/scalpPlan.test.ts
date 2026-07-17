@@ -3,7 +3,8 @@ import {
   parseScalpPlan, parseRangeLeg, runScalpPlan, buildScalpPlan, isLLMEnabled,
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
-  enforcePlanConstraints,
+  enforcePlanConstraints, enforcePlanConstraintsReport,
+  parseAiRegime, parseAiConfidence,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan,
 } from './openai.js';
@@ -682,6 +683,144 @@ describe('enforcePlanConstraints トレンド veto(range 片面化)', () => {
   });
 });
 
+// ─── AI 自己レジーム/確信度(v0.7.54・記録のみ・寛容パース) ───
+describe('parseAiRegime / parseAiConfidence(寛容)', () => {
+  it('regime は enum のみ受理・それ以外は undefined', () => {
+    expect(parseAiRegime('trend_up')).toBe('trend_up');
+    expect(parseAiRegime('range')).toBe('range');
+    expect(parseAiRegime('unclear')).toBe('unclear');
+    expect(parseAiRegime('bogus')).toBeUndefined();
+    expect(parseAiRegime(123)).toBeUndefined();
+    expect(parseAiRegime(undefined)).toBeUndefined();
+  });
+  it('confidence は有限数を 0-100 にクランプ・非数値は undefined', () => {
+    expect(parseAiConfidence(70)).toBe(70);
+    expect(parseAiConfidence(0)).toBe(0);
+    expect(parseAiConfidence(120)).toBe(100);
+    expect(parseAiConfidence(-5)).toBe(0);
+    expect(parseAiConfidence(NaN)).toBeUndefined();
+    expect(parseAiConfidence('80')).toBeUndefined();
+    expect(parseAiConfidence(undefined)).toBeUndefined();
+  });
+});
+
+describe('parseScalpPlan regime/confidence 寛容パース(後方互換)', () => {
+  it('directional plan に regime/confidence を載せる', () => {
+    const raw = JSON.stringify({ ...goodPlan, regime: 'trend_up', confidence: 72 });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.regime).toBe('trend_up');
+      expect(r.plan.confidence).toBe(72);
+    }
+  });
+  it('none plan にも regime/confidence を載せる', () => {
+    const raw = JSON.stringify({ direction: 'none', rationale: '見送り', regime: 'range', confidence: 40 });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.plan.regime).toBe('range');
+      expect(r.plan.confidence).toBe(40);
+    }
+  });
+  it('欠落/不正な regime・confidence は undefined(既存挙動は不変)', () => {
+    const raw = JSON.stringify({ ...goodPlan, regime: 'bogus', confidence: 'high' });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.regime).toBeUndefined();
+      expect(r.plan.confidence).toBeUndefined();
+      // 他フィールドは従来どおり。
+      expect(r.plan.limitEntry).toBe(38200);
+    }
+  });
+  it('regime/confidence が無い応答も従来どおり成立(後方互換)', () => {
+    const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.regime).toBeUndefined();
+      expect(r.plan.confidence).toBeUndefined();
+    }
+  });
+});
+
+// ─── enforcePlanConstraintsReport vetoFired surface(挙動は不変・発火だけ計測) ───
+describe('enforcePlanConstraintsReport vetoFired(挙動不変で発火を surface)', () => {
+  const buyPlan: AiPlan = {
+    direction: 'buy',
+    limitEntry: 38200, stopLossForLimit: 38150,
+    stopEntry: 38350, stopLossForStop: 38300,
+    rationale: '押し目買い', refPrice: REF,
+  };
+  const sellPlan: AiPlan = {
+    direction: 'sell',
+    limitEntry: 38300, stopLossForLimit: 38340,
+    stopEntry: 38150, stopLossForStop: 38190,
+    rationale: '戻り売り', refPrice: REF,
+  };
+
+  it('返る plan は enforcePlanConstraints と完全一致(byte 不変)', () => {
+    const opts = { ceilingYen: 65, bias: 'none' as const, trend: { dir: 'up' as const, strong: true } };
+    expect(enforcePlanConstraintsReport(sellPlan, opts).plan).toEqual(enforcePlanConstraints(sellPlan, opts));
+    const opts2 = { ceilingYen: 49, bias: 'none' as const };
+    expect(enforcePlanConstraintsReport(buyPlan, opts2).plan).toEqual(enforcePlanConstraints(buyPlan, opts2));
+  });
+
+  it('directional 逆行(強上昇 sell)→ none 化 & vetoFired=true', () => {
+    const r = enforcePlanConstraintsReport(sellPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.plan.direction).toBe('none');
+    expect(r.vetoFired).toBe(true);
+  });
+
+  it('directional 順行(強上昇 buy)→ 維持 & vetoFired=false', () => {
+    const r = enforcePlanConstraintsReport(buyPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.plan.direction).toBe('buy');
+    expect(r.vetoFired).toBe(false);
+  });
+
+  it('trend 未指定/flat は vetoFired=false(veto 無効)', () => {
+    expect(enforcePlanConstraintsReport(sellPlan, { ceilingYen: 65, bias: 'none' }).vetoFired).toBe(false);
+    expect(enforcePlanConstraintsReport(sellPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'flat', strong: false } }).vetoFired).toBe(false);
+  });
+
+  it('LC 上限や bias 由来の none 化は vetoFired=false(veto の効き目だけ計測)', () => {
+    // bias veto で none 化するが、これはトレンド veto ではない。
+    const r = enforcePlanConstraintsReport(sellPlan, { ceilingYen: 65, bias: 'long' });
+    expect(r.plan.direction).toBe('none');
+    expect(r.vetoFired).toBe(false);
+  });
+
+  it('range 片面化(強上昇で上=売り脚を落とす)→ vetoFired=true・下は残る', () => {
+    const base: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      },
+    };
+    const r = enforcePlanConstraintsReport(base, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.plan.direction).toBe('range');
+    expect(r.plan.range?.upper).toBeUndefined();
+    expect(r.plan.range?.lower?.side).toBe('buy');
+    expect(r.vetoFired).toBe(true);
+  });
+});
+
+describe('scalpJsonInstruction / SYSTEM に regime/confidence 指示', () => {
+  it('JSON スキーマに regime と confidence フィールドが入る', () => {
+    const j = scalpJsonInstruction(38250);
+    expect(j).toContain('"regime"');
+    expect(j).toContain('"confidence"');
+    expect(j).toContain('trend_up');
+  });
+  it('system prompt が「まず regime/confidence を出す」旨を含む', () => {
+    expect(SCALP_SYSTEM_PROMPT).toContain('regime');
+    expect(SCALP_SYSTEM_PROMPT).toContain('confidence');
+  });
+});
+
 describe('scalp プロンプト trendVeto 文言', () => {
   it('既定(veto=100)で SCALP_QUESTION/SYSTEM に勢い/レンジの指針が入る', () => {
     expect(SCALP_QUESTION).toContain('直近の勢い');
@@ -717,8 +856,10 @@ describe('scalp プロンプト range トグル(rangeEnabled)', () => {
     expect(buildScalpQuestion(45, 65, false)).toContain('range');   // 「range は出さない」を含む
     expect(buildScalpQuestion(45, 65, false)).toContain('出さない');
     expect(buildScalpSystemPrompt(45, 65, false)).toContain('出さない');
-    // JSON スキーマの direction enum に range が入らない。
-    expect(scalpJsonInstruction(38250, 45, 65, false)).not.toContain('"range"');
+    // JSON スキーマの direction enum に range が入らない(regime 値の "range" とは別物なので、
+    // direction enum 語順と range 両面オブジェクトの不在で判定する。v0.7.54 で regime 値に "range" が入るため)。
+    expect(scalpJsonInstruction(38250, 45, 65, false)).not.toContain('"none" | "range"');
+    expect(scalpJsonInstruction(38250, 45, 65, false)).not.toContain('"range": {');
   });
 });
 

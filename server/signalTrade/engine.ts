@@ -28,6 +28,13 @@ const QTY = 1;   // 紙トラッキングは常に1枚。
 
 export type SignalPhase = 'flat' | 'armed' | 'filled';
 
+/** AI 自己レジーム/確信度 + トレンド veto 発火フラグ(v0.7.54・計測用に持ち回り、決済時 meta へ保存)。 */
+export interface PlanMeta {
+  regime?: 'trend_up' | 'trend_down' | 'range' | 'unclear';
+  confidence?: number;
+  vetoFired?: boolean;
+}
+
 export interface ArmedBracket {
   direction: 'buy' | 'sell';
   limitEntry?: number;
@@ -40,6 +47,8 @@ export interface ArmedBracket {
   // direction はプレースホルダ(range 分岐は必ず mode/range で gating し direction では判定しない)。
   mode?: 'range';
   range?: { upper?: RangeLeg; lower?: RangeLeg };
+  // v0.7.54: AI 自己レジーム/確信度 + トレンド veto 発火(記録のみ・約定→決済へ持ち回り)。
+  planMeta?: PlanMeta;
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -67,6 +76,7 @@ export interface OpenPosition {
   rationale: string;
   at: number;     // 約定時刻(= 記録の entry_t)
   mode?: 'range';  // レンジ由来の建玉(タグ計測用)。約定後は通常の単方向ポジションとして扱う(決済は既存 exitStop)。
+  planMeta?: PlanMeta;   // v0.7.54: AI 自己レジーム/確信度 + veto 発火(決済 meta へ引き継ぐ)。
 }
 
 export interface EngineState {
@@ -90,6 +100,7 @@ export interface RecordedTrade {
   entryT: number; entryPrice: number; dir: 'buy' | 'sell';
   exitT: number; exitPrice: number; pnl: number; qty: number; rationale: string;
   mode?: 'range';   // レンジ由来の紙トレード(別枠集計タグ)。directional は付与しない=既存記録と互換。
+  planMeta?: PlanMeta;   // v0.7.54: 決済時に signal_trades.meta へ JSON 保存する自己レジーム/確信度/veto。
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -207,6 +218,7 @@ export function advance(
         at: now,
         mode: 'range',   // タグ計測用: この建玉は range 由来。
       };
+      if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
       return { next: { phase: 'filled', position, lastExit: st.lastExit } };
     }
     const fill = detectFill(st.armed, price);
@@ -221,6 +233,7 @@ export function advance(
       rationale: st.armed.rationale,
       at: now,
     };
+    if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
     return { next: { phase: 'filled', position, lastExit: st.lastExit } };
   }
 
@@ -240,6 +253,7 @@ export function advance(
     };
     // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
     if (pos.mode === 'range') recorded.mode = 'range';
+    if (pos.planMeta) recorded.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
     return { next: { phase: 'flat', lastExit: { exitPrice: exit, pnl, at: now } }, recorded };
   }
 
@@ -315,9 +329,14 @@ export function planToArmed(
     stopLossForLimit?: number; stopLossForStop?: number;
     rationale: string;
     range?: { upper?: RangeLeg; lower?: RangeLeg };
+    // v0.7.54: AI 自己レジーム/確信度(記録のみ)。plan に載っていれば armed へ引き継ぐ。
+    regime?: PlanMeta['regime']; confidence?: number;
   },
   now: number,
+  extra?: { vetoFired?: boolean },
 ): ArmedBracket | null {
+  // AI 自己レジーム/確信度 + トレンド veto 発火を1つの planMeta にまとめる(いずれも欠落可=記録のみ)。
+  const planMeta = buildPlanMeta(plan.regime, plan.confidence, extra?.vetoFired);
   // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
   if (plan.direction === 'range') {
     const upper = plan.range?.upper;
@@ -327,6 +346,7 @@ export function planToArmed(
     const a: ArmedBracket = { direction: 'buy', rationale: plan.rationale, at: now, mode: 'range', range: {} };
     if (upper) a.range!.upper = upper;
     if (lower) a.range!.lower = lower;
+    if (planMeta) a.planMeta = planMeta;
     return a;
   }
   if (plan.direction !== 'buy' && plan.direction !== 'sell') return null;
@@ -336,7 +356,19 @@ export function planToArmed(
   const a: ArmedBracket = { direction: plan.direction, rationale: plan.rationale, at: now };
   if (hasLimit) { a.limitEntry = plan.limitEntry; a.stopLossForLimit = plan.stopLossForLimit; }
   if (hasStop) { a.stopEntry = plan.stopEntry; a.stopLossForStop = plan.stopLossForStop; }
+  if (planMeta) a.planMeta = planMeta;
   return a;
+}
+
+/** regime/confidence/vetoFired から PlanMeta を組み立てる(全欠落は undefined=記録しない)。純関数。 */
+export function buildPlanMeta(
+  regime?: PlanMeta['regime'], confidence?: number, vetoFired?: boolean,
+): PlanMeta | undefined {
+  const m: PlanMeta = {};
+  if (regime !== undefined) m.regime = regime;
+  if (typeof confidence === 'number' && Number.isFinite(confidence)) m.confidence = confidence;
+  if (vetoFired !== undefined) m.vetoFired = vetoFired;
+  return Object.keys(m).length > 0 ? m : undefined;
 }
 
 /** armed ブラケット + 採番済み signalId から CurrentSignal を組み立てる純関数。
@@ -441,6 +473,16 @@ export function _resetSignalEngine(): void {
   cooldownLogged = false;
 }
 
+/** 決済記録の meta(JSON文字列)を組み立てる純関数。v0.7.54: AI 自己レジーム/確信度/veto発火 + ctxV。
+ *  planMeta が空/欠落でも ctxV:'rich' は常に記録する(rich文脈で生成された世代の印)。 */
+export function buildTradeMetaJson(planMeta?: PlanMeta): string {
+  const meta: Record<string, unknown> = { ctxV: 'rich' };
+  if (planMeta?.regime !== undefined) meta.regime = planMeta.regime;
+  if (planMeta?.confidence !== undefined) meta.confidence = planMeta.confidence;
+  if (planMeta?.vetoFired !== undefined) meta.vetoFired = planMeta.vetoFired;
+  return JSON.stringify(meta);
+}
+
 // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。
 function persistTrade(t: RecordedTrade): void {
   try {
@@ -452,6 +494,8 @@ function persistTrade(t: RecordedTrade): void {
         rationale: t.rationale,
         // range 由来のみ 'range' タグ、それ以外は 'directional'(別枠集計・後方互換)。
         mode: t.mode === 'range' ? 'range' : 'directional',
+        // v0.7.54: AI 自己レジーム/確信度/veto発火 を JSON で記録(後の A/B 実測用)。
+        meta: buildTradeMetaJson(t.planMeta),
       });
     } finally { db.close(); }
   } catch (e) {
@@ -512,7 +556,8 @@ function maybeRequestPlan(price: number, now: number): void {
           planSuppressedAnchor = anchorPrice;
           console.log(`[signalTrade] plan-suppress 見送り→節目まで抑止 anchor=${Math.round(anchorPrice)}`);
         } else {
-          const armed = planToArmed(result.plan, Date.now());
+          // v0.7.54: AI 自己レジーム/確信度(result.plan)＋トレンド veto 発火(result.vetoFired)を armed へ持ち回る。
+          const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
           if (armed) {
             state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
             planSuppressedAnchor = null;         // actionable で抑止解除。

@@ -42,6 +42,24 @@ vi.mock('../chart/chartShot.js', () => ({
   captureChartPng: (port: number) => captureMock(port),
 }));
 
+// v0.7.54: 構造化データ(rich context)の DB 読みは本テストの対象外。DB/levels/scalpContext をモックして
+// 実 DB を触らせず、technical への追記が既存の勢い1行を壊さないことだけ担保する(rich は '' でオフ)。
+vi.mock('../db/store.js', () => ({
+  openDb: () => ({ close: () => {} }),
+  resolveDbPath: () => ':memory:',
+  getRecentBars: () => [],
+  getRecentAlerts: () => [],
+  getSessionOHLC: () => [],
+  getSignalTrades: () => [],
+}));
+vi.mock('../loops/levelsLoop.js', () => ({
+  getLevelsSnapshot: () => ({ current: 0, up: [], down: [], swing: null, reversalSatisfied: false, asOf: 0 }),
+}));
+vi.mock('./scalpContext.js', () => ({
+  buildScalpMarketData: () => '',
+  buildScalpTradeHistory: () => '',
+}));
+
 import { runScalpPlanWithChart } from './scalpPlanRunner.js';
 
 const GOOD_PLAN = { ok: true, plan: { direction: 'buy' } };

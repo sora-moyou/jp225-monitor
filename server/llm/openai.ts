@@ -797,12 +797,19 @@ export interface AiPlan {
   stopLossForStop?: number;   // 逆指値約定時の損切り逆指値。none/range の時は不要。
   rationale: string;         // 判断理由(日本語)。none の時は見送り理由。
   refPrice: number;          // 計画時に見た現在値(NIY=F)
+  // ★AI自己レジーム/確信度(v0.7.54・記録のみ=ゲートには使わない)。AI が「まず自分で相場観を述べてから
+  //   計画を出す」ための構造化出力。欠落/不正は undefined(後方互換)。決済時に signal_trades.meta へ保存し、
+  //   後で「確信度は勝率と相関するか」「自己regimeは実際と合うか」を実測する。
+  regime?: 'trend_up' | 'trend_down' | 'range' | 'unclear';
+  confidence?: number;       // 0-100(この計画/レジーム判断への確信度)。
   // direction==='range' の時のみ。upper.entry>refPrice>lower.entry。enforce/parse で片レッグに
   // 落ちることがある(その場合 upper か lower が undefined=実質片面)。
   range?: { upper?: RangeLeg; lower?: RangeLeg };
 }
 
-export type ScalpPlanResult = { ok: true; plan: AiPlan } | { ok: false; error: string };
+// vetoFired(v0.7.54): buildScalpPlan が enforcePlanConstraints のトレンド veto が発火したかを surface する
+//   (挙動は不変=記録のみ)。regime/confidence は plan 側に載る。engine が meta へ保存し A/B 計測に使う。
+export type ScalpPlanResult = { ok: true; plan: AiPlan; vetoFired?: boolean } | { ok: false; error: string };
 
 // 初期 LC(損切り)幅の既定レンジ。呼び出し側(trade2)が /api/scalp-plan で lcFloorYen/lcCeilingYen を
 // 指定しない時のフォールバック。★v0.7.39: 旧「原則45〜75/上限95」の二段を撤去し、
@@ -883,6 +890,7 @@ export function buildScalpSystemPrompt(
 現在の相場に対する具体的なスキャルのエントリー計画を1つ立ててください。
 
 制約:
+- ★まず自分で現在のレジーム(regime: trend_up=上昇トレンド / trend_down=下降トレンド / range=レンジ / unclear=不明)と、その判断・計画への確信度(confidence: 0〜100)を下し、JSON の regime と confidence に入れてから direction 以下の計画を出すこと(自分の相場観を明示してから計画する)。渡された構造化データ(数値の足/節目/ボラ/スイング/アラート結果/自分の成績)を最優先の根拠にする。
 - direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
 - buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/逆指値のみ)でもよい。
 - それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、逆指値レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
@@ -916,6 +924,8 @@ export function scalpJsonInstruction(
     : '';
   return `最終的な回答は、次のスキーマに厳密に一致する JSON オブジェクトのみを出力してください(前後の説明文・コードフェンス・マークダウンは一切付けない)。\n` +
     `{\n` +
+    `  "regime": "trend_up" | "trend_down" | "range" | "unclear",  // まず自分で現在の相場レジームを判定して入れる\n` +
+    `  "confidence": number,        // このレジーム判断と計画への確信度(0〜100の整数)\n` +
     `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の価格4つは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の価格4つは不要)' : ''}\n` +
     `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(逆指値のみ)の時は省略(stopLossForLimit と対で省く)\n` +
     `  "stopEntry": number,         // 逆指値(ブレイク側の新規)。none/range または逆指値レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
@@ -941,6 +951,19 @@ export function parseRangeLeg(v: unknown): RangeLeg | null {
   return { side: o.side, type: o.type, entry, stopLoss };
 }
 
+const SCALP_REGIMES = new Set(['trend_up', 'trend_down', 'range', 'unclear']);
+
+/** AI 自己レジームを寛容にパース(enum 外/非文字列は undefined)。記録のみ=後方互換。 */
+export function parseAiRegime(v: unknown): AiPlan['regime'] {
+  return typeof v === 'string' && SCALP_REGIMES.has(v) ? v as AiPlan['regime'] : undefined;
+}
+
+/** AI 確信度を寛容にパース(有限数を 0-100 にクランプ・非有限/非数値は undefined)。記録のみ=後方互換。 */
+export function parseAiConfidence(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  return Math.max(0, Math.min(100, v));
+}
+
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
  *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
 export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
@@ -962,10 +985,19 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   if (o.direction !== 'buy' && o.direction !== 'sell' && o.direction !== 'none' && o.direction !== 'range') return { ok: false, error: 'invalid direction' };
   const rationale = typeof o.rationale === 'string' ? o.rationale.trim() : '';
   if (!rationale) return { ok: false, error: 'missing rationale' };
+  // ★AI自己レジーム/確信度(記録のみ)。寛容にパースし、成立した全 plan(none/range/directional)に載せる。
+  //   ゲートには使わない=既存の direction/価格の検証挙動は完全に不変。
+  const regime = parseAiRegime(o.regime);
+  const confidence = parseAiConfidence(o.confidence);
+  const withMeta = (p: AiPlan): AiPlan => {
+    if (regime !== undefined) p.regime = regime;
+    if (confidence !== undefined) p.confidence = confidence;
+    return p;
+  };
   // ★見送り(direction:"none"): 価格は不要。rationale + refPrice のみで ok:true の正当な「見送り」応答。
   //   これはエラー(ok:false)ではない=plan-failed とは区別される。
   if (o.direction === 'none') {
-    return { ok: true, plan: { direction: 'none', rationale, refPrice } };
+    return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
   }
   // ★レンジ両面ストラドル(direction:"range"): range.upper / range.lower を各レッグ検証。
   //   幾何(upper.entry>refPrice>lower.entry)を満たさない/壊れているレッグは落とす。片レッグでも残れば range として通す。
@@ -978,12 +1010,12 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     if (upper && !(upper.entry > refPrice)) upper = null;
     if (lower && !(lower.entry < refPrice)) lower = null;
     if (!upper && !lower) {
-      return { ok: true, plan: { direction: 'none', rationale, refPrice } };
+      return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
     }
     const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
-    return { ok: true, plan: { direction: 'range', rationale, refPrice, range } };
+    return { ok: true, plan: withMeta({ direction: 'range', rationale, refPrice, range }) };
   }
   const num = (v: unknown): number | null =>
     (typeof v === 'number' && Number.isFinite(v)) ? v : null;
@@ -1018,7 +1050,7 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     plan.stopEntry = stopEntry;
     plan.stopLossForStop = stopLossForStop;
   }
-  return { ok: true, plan };
+  return { ok: true, plan: withMeta(plan) };
 }
 
 /** マルチモーダルなユーザメッセージ content を組み立てる。画像があればテキスト+image_url の配列、
@@ -1103,7 +1135,19 @@ export function enforcePlanConstraints(
   plan: AiPlan,
   opts: { ceilingYen: number; bias: ScalpBias; trend?: TrendHint },
 ): AiPlan {
-  if (plan.direction === 'none') return plan;
+  // 後方互換の薄いラッパ。挙動(返る plan)は enforcePlanConstraintsReport と完全一致=既存の全呼び出し/テスト不変。
+  return enforcePlanConstraintsReport(plan, opts).plan;
+}
+
+/** enforcePlanConstraints と同一の enforce を行い、さらに **トレンド veto が発火したか(vetoFired)** を surface する
+ *  (v0.7.54・計測フック)。返る plan は enforcePlanConstraints と byte 単位で同一(挙動不変)。
+ *  vetoFired=true は「トレンド veto ステージが 脚を落とした or plan 全体を none に強制した」場合のみ。
+ *  LC上限/バイアス由来の drop/none は vetoFired に含めない(veto の効き目だけを計測するため)。 */
+export function enforcePlanConstraintsReport(
+  plan: AiPlan,
+  opts: { ceilingYen: number; bias: ScalpBias; trend?: TrendHint },
+): { plan: AiPlan; vetoFired: boolean } {
+  if (plan.direction === 'none') return { plan, vetoFired: false };
   const { ceilingYen, bias, trend } = opts;
 
   // ★トレンド veto(最優先ステージ): 生きた強トレンドに逆行する side を落とす。
@@ -1118,10 +1162,11 @@ export function enforcePlanConstraints(
   if (plan.direction === 'range') {
     let upper = plan.range?.upper;
     let lower = plan.range?.lower;
-    // (0) トレンド veto: トレンドに逆行する side の脚を落とす(bias/LC より先)。
+    // (0) トレンド veto: トレンドに逆行する side の脚を落とす(bias/LC より先)。存在した脚を落としたら vetoFired。
+    let vetoFired = false;
     if (dropSide) {
-      if (upper?.side === dropSide) upper = undefined;
-      if (lower?.side === dropSide) lower = undefined;
+      if (upper?.side === dropSide) { upper = undefined; vetoFired = true; }
+      if (lower?.side === dropSide) { lower = undefined; vetoFired = true; }
     }
     // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
     if (upper && Math.abs(upper.entry - upper.stopLoss) > ceilingYen) upper = undefined;
@@ -1135,18 +1180,18 @@ export function enforcePlanConstraints(
       if (lower?.side === 'buy') lower = undefined;
     }
     if (!upper && !lower) {
-      return { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice };
+      return { plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired };
     }
     const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
-    return { direction: 'range', rationale: plan.rationale, refPrice: plan.refPrice, range };
+    return { plan: { direction: 'range', rationale: plan.rationale, refPrice: plan.refPrice, range }, vetoFired };
   }
 
   // ★directional(buy/sell): leg side === direction。逆行(dropSide===direction: 強上昇の sell / 強下降の buy)なら
   //   plan 全体を見送り(none)に。順行はそのまま以降の LC・バイアス処理へ進む。
   if (dropSide && dropSide === plan.direction) {
-    return { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice };
+    return { plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired: true };
   }
 
   const out: AiPlan = { ...plan };
@@ -1163,16 +1208,16 @@ export function enforcePlanConstraints(
 
   // 両レッグ落ちたら見送り(価格を持たない none)。
   if (out.limitEntry == null && out.stopEntry == null) {
-    return { direction: 'none', rationale: out.rationale, refPrice: out.refPrice };
+    return { plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false };
   }
 
   // 2. バイアス veto。
   if ((bias === 'long' && out.direction === 'sell') ||
       (bias === 'short' && out.direction === 'buy')) {
-    return { direction: 'none', rationale: out.rationale, refPrice: out.refPrice };
+    return { plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false };
   }
 
-  return out;
+  return { plan: out, vetoFired: false };
 }
 
 // LC 幅の下限/上限の受理可能レンジ(サニタイズ用)。この範囲外・非有限・floor>ceiling は既定に戻す。
@@ -1260,12 +1305,17 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     if (!parsed.ok) return parsed;
     // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0 は現行挙動=veto なし)。
     const trend = trendVetoYen > 0 ? input.trend : undefined;
-    let finalPlan = enforcePlanConstraints(parsed.plan, { ceilingYen, bias, trend });
+    const enforced = enforcePlanConstraintsReport(parsed.plan, { ceilingYen, bias, trend });
+    let finalPlan = enforced.plan;
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
     if (!rangeEnabled && finalPlan.direction === 'range') {
       finalPlan = { direction: 'none', rationale: finalPlan.rationale, refPrice: finalPlan.refPrice };
     }
-    return { ok: true, plan: finalPlan };
+    // AI 自己レジーム/確信度(記録のみ)を最終 plan に保持する。enforce/none 化で新規オブジェクトになり
+    // 落ちることがあるため parsed.plan から再付与する(ゲートには使わない=挙動不変)。
+    if (parsed.plan.regime !== undefined) finalPlan.regime = parsed.plan.regime;
+    if (parsed.plan.confidence !== undefined) finalPlan.confidence = parsed.plan.confidence;
+    return { ok: true, plan: finalPlan, vetoFired: enforced.vetoFired };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

@@ -5,6 +5,36 @@ import { captureChartPng } from '../chart/chartShot.js';
 import { resolvePort, resolveScalpTrendVetoYen } from '../configStore.js';
 import { barsFor } from '../loops/alertLoop.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
+import { openDb, resolveDbPath, getRecentBars, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
+import { getLevelsSnapshot } from '../loops/levelsLoop.js';
+import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
+
+// 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
+const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
+
+/** 構造化データ(数値主軸)＋自分の紙トレード成績を組み立てる(DB 読み・欠損は各ブロック省略)。
+ *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。 */
+function buildRichScalpContext(symbol: string, currentPrice: number, now: number): string {
+  if (!(typeof currentPrice === 'number' && currentPrice > 0)) return '';
+  try {
+    const db = openDb(resolveDbPath());
+    try {
+      const bars = getRecentBars(db, symbol, now - RICH_BARS_WINDOW_MS);
+      const levels = getLevelsSnapshot();
+      const alerts = getRecentAlerts(db, 8);
+      const session = getSessionOHLC(db, symbol, 1)[0] ?? null;
+      const trades = getSignalTrades(db, 30);
+      const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session });
+      const history = buildScalpTradeHistory(trades, now);
+      return [marketData, history].filter(Boolean).join('\n\n');
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    console.warn('[scalp-plan] rich context 構築失敗(省略):', e instanceof Error ? e.message : String(e));
+    return '';
+  }
+}
 
 // トレードシグナルの AI 提案(scalp-plan)を「チャート撮影 → (無ければ見送り) → buildScalpPlan(画像込み)」の
 // 逐次オンデマンドゲート付きで生成する共通関数。route(/api/scalp-plan・trade2 向け)と
@@ -77,7 +107,10 @@ export async function runScalpPlanWithChart(
   const regime = computeRegime(ohlc, Date.now(), vetoYen > 0 ? vetoYen : 100);
   // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
   const baseTech = buildNikkeiTechnical(undefined, price);
-  const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime)}`;
+  // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
+  //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。
+  const rich = buildRichScalpContext(symbol, price ?? 0, Date.now());
+  const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime)}${rich ? `\n\n${rich}` : ''}`;
   // veto 無効(0)は trend を渡さない=現行挙動(veto なし)。>0 のときだけ {dir,strong} を渡してコード veto を効かせる。
   const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
 
