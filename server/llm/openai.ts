@@ -9,7 +9,7 @@ import {
 } from '../config.js';
 import type { LLMProvider } from '../config.js';
 import type { Mover } from '../marketSnapshot.js';
-import { resolveApiKey, resolveScalpLcCeiling, resolveScalpBias, resolveScalpRangeEnabled, type ScalpBias } from '../configStore.js';
+import { resolveApiKey, resolveScalpLcCeiling, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpTrendVetoYen, type ScalpBias } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
@@ -817,6 +817,7 @@ export function buildScalpQuestion(
   floorYen: number = DEFAULT_LC_FLOOR_YEN,
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
   rangeEnabled = true,
+  trendVetoYen: number = DEFAULT_TREND_VETO_YEN,
 ): string {
   // レンジ両面ストラドルの追記(実験・紙で別枠計測)。rangeEnabled=false のときは range を禁止する。
   const rangeNote = rangeEnabled
@@ -841,7 +842,23 @@ export function buildScalpQuestion(
     `逆指値レッグの LC が${ceilingYen}円を超える場合は、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、` +
     '(b)逆指値レッグを出さず「指値のみ」で取引する(stopEntry と stopLossForStop を出さない)。' +
     `対称に、指値レッグが構造上どうしても${ceilingYen}円超になるなら、指値レッグを省いて逆指値のみにしてもよい。` +
-    `どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも${ceilingYen}円以内に収まらなければ direction:"none" で見送ること。`
+    `どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも${ceilingYen}円以内に収まらなければ direction:"none" で見送ること。` +
+    trendGuidance(trendVetoYen)
+  );
+}
+
+// トレンド veto の初期閾値[円]。config resolveScalpTrendVetoYen と揃える(0=veto 無効)。
+export const DEFAULT_TREND_VETO_YEN = 100;
+
+/** レジーム/トレンド逆行フェードを禁じる補助プロンプト(遵守はコードの enforcePlanConstraints で担保)。
+ *  trendVetoYen<=0(=veto 無効)のときは空文字(=注入なし)。 */
+function trendGuidance(trendVetoYen: number): string {
+  if (!(trendVetoYen > 0)) return '';
+  return (
+    `『レンジ』は直近10〜30分がほぼ横ばい(±${trendVetoYen}円未満)のときだけと判断すること。` +
+    '直近が一方向に強く動いていればレンジではない=トレンド方向の順張り(ブレイク逆指値/押し目・戻りの順張り)か、' +
+    'direction:"none" で見送りにする。トレンドに逆行する新規(順トレンドの高値売り/安値買いの戻り売買)は出さない。' +
+    '上で渡す『直近の勢い』の数値を必ず判断に使うこと。'
   );
 }
 
@@ -854,6 +871,7 @@ export function buildScalpSystemPrompt(
   floorYen: number = DEFAULT_LC_FLOOR_YEN,
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
   rangeEnabled = true,
+  trendVetoYen: number = DEFAULT_TREND_VETO_YEN,
 ): string {
   // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
   const rangeLine = rangeEnabled
@@ -872,7 +890,8 @@ export function buildScalpSystemPrompt(
 - ★この LC 上限(≤${ceilingYen}円)は 指値レッグ・逆指値レッグ それぞれ独立に 満たすこと。逆指値(ブレイク追随)は現在値/節目から離れるほど LC が広がりやすい。逆指値レッグの LC が${ceilingYen}円を超えるなら、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、(b)逆指値レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上${ceilingYen}円超になるなら指値レッグを省いて逆指値のみにしてもよい。どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
 - すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
-- rationale は日本語で判断根拠を簡潔に述べる。`;
+- rationale は日本語で判断根拠を簡潔に述べる。${trendVetoYen > 0 ? `
+- ★【レジーム/勢い】${trendGuidance(trendVetoYen)}` : ''}`;
 }
 
 // 固定のスキャル system prompt(既定 LC 幅 45〜65)。プロンプト文言テストや後方互換のための既定インスタンス。
@@ -1059,27 +1078,51 @@ export interface ScalpPlanInput {
   bias?: ScalpBias;
   /** レンジ両面ストラドルを許可するか。未指定は monitor 設定(resolveScalpRangeEnabled・既定true)。false=range を出させない/万一出ても none 化。 */
   rangeEnabled?: boolean;
+  /** 生きたトレンド(勢い)のヒント。runner が barsFor から computeRegime で算出して渡す。
+   *  strong のときトレンドに逆行するフェード新規を enforcePlanConstraints が落とす。未指定は veto なし(現行挙動)。 */
+  trend?: TrendHint;
 }
 
-/** AIエントリー制御のハード適用(純関数・最終保証)。monitor 設定の最大初期LC(ceilingYen)とバイアス(bias)を
- *  コードで強制し、上限超レッグを落とし・バイアス違反を見送りに変える。プロンプト指示の保険ではなく確定的保証。
- *  1. LC上限: 各レッグの初期LC幅 = |entry − stopLoss|(指値=|limitEntry−stopLossForLimit| / 逆指値=|stopEntry−stopLossForStop|)
- *     が ceilingYen を「超える」なら そのレッグを落とす(該当 entry と stopLoss を undefined に)。境界(=ちょうど ceilingYen)は許可。
+/** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
+ *  {dir,strong} のみ受ける(構造的タイピング)。strong=false または未指定なら veto は完全に無効(現行挙動一致)。 */
+export interface TrendHint { dir: 'up' | 'down' | 'flat'; strong: boolean; }
+
+/** AIエントリー制御のハード適用(純関数・最終保証)。monitor 設定の最大初期LC(ceilingYen)・バイアス(bias)・
+ *  生きたトレンド(trend)をコードで強制する。プロンプト指示の保険ではなく確定的保証。
+ *  合成順は **トレンド veto → バイアス veto → LC上限 → 空なら none**(トレンド veto を先行ステージとして追加)。
+ *  0. トレンド veto: trend.strong のとき、トレンドに逆行する side の脚を落とす。
+ *     dir='up' → side='sell' を落とす(上昇の高値を売らない)/ dir='down' → side='buy' を落とす。
+ *     directional(buy/sell)は side=direction なので、逆行なら plan 全体を direction:'none' にする(順行は維持)。
+ *     range は各脚の side で個別に落とす(強上昇なら上=売り指値を落とし、下=買い側を残す=実質片面)。
+ *     trend 未指定 or !strong は null=無効で、以降は従来と完全一致(後方互換)。
+ *  1. LC上限: 各レッグの初期LC幅 = |entry − stopLoss| が ceilingYen を「超える」ならそのレッグを落とす(境界=ちょうどは許可)。
  *     両レッグとも落ちたら direction:'none'(見送り)。
  *  2. バイアス: bias='long' かつ direction='sell' → 'none' / bias='short' かつ direction='buy' → 'none' / 'none'は素通し。
  *  direction==='none' は何もしない。 */
 export function enforcePlanConstraints(
   plan: AiPlan,
-  opts: { ceilingYen: number; bias: ScalpBias },
+  opts: { ceilingYen: number; bias: ScalpBias; trend?: TrendHint },
 ): AiPlan {
   if (plan.direction === 'none') return plan;
-  const { ceilingYen, bias } = opts;
+  const { ceilingYen, bias, trend } = opts;
 
-  // ★レンジ両面ストラドル: 各レッグに (a)LC上限・(b)バイアス veto を独立適用。両レッグ落ちたら none、
+  // ★トレンド veto(最優先ステージ): 生きた強トレンドに逆行する side を落とす。
+  //   up→sell を落とす / down→buy を落とす。trend 未指定 or !strong なら null=無効(現行挙動と完全一致)。
+  const dropSide: 'buy' | 'sell' | null =
+    trend && trend.strong
+      ? (trend.dir === 'up' ? 'sell' : trend.dir === 'down' ? 'buy' : null)
+      : null;
+
+  // ★レンジ両面ストラドル: 各レッグに (0)トレンド veto・(a)LC上限・(b)バイアス veto を独立適用。両レッグ落ちたら none、
   //   片レッグ残れば その単レッグの range(=実質片面)として通す。既存の buy/sell 強制とは別経路。
   if (plan.direction === 'range') {
     let upper = plan.range?.upper;
     let lower = plan.range?.lower;
+    // (0) トレンド veto: トレンドに逆行する side の脚を落とす(bias/LC より先)。
+    if (dropSide) {
+      if (upper?.side === dropSide) upper = undefined;
+      if (lower?.side === dropSide) lower = undefined;
+    }
     // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
     if (upper && Math.abs(upper.entry - upper.stopLoss) > ceilingYen) upper = undefined;
     if (lower && Math.abs(lower.entry - lower.stopLoss) > ceilingYen) lower = undefined;
@@ -1098,6 +1141,12 @@ export function enforcePlanConstraints(
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
     return { direction: 'range', rationale: plan.rationale, refPrice: plan.refPrice, range };
+  }
+
+  // ★directional(buy/sell): leg side === direction。逆行(dropSide===direction: 強上昇の sell / 強下降の buy)なら
+  //   plan 全体を見送り(none)に。順行はそのまま以降の LC・バイアス処理へ進む。
+  if (dropSide && dropSide === plan.direction) {
+    return { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice };
   }
 
   const out: AiPlan = { ...plan };
@@ -1163,14 +1212,16 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const bias: ScalpBias = input.bias ?? resolveScalpBias();
   const rangeEnabled = input.rangeEnabled ?? resolveScalpRangeEnabled();
   const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen, ceilingInput);
+  // レジーム/トレンド veto の閾値[円](0=無効)。プロンプト文言に反映し、トレンド veto 自体は input.trend で駆動する。
+  const trendVetoYen = resolveScalpTrendVetoYen();
   const biasNote =
     bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
   : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
   : '';
   const monitorCtx = buildMonitorContext(now);
-  const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled);
+  const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled)}${biasNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
@@ -1207,7 +1258,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // callWithFallback から返った plan JSON を再パースし、monitor 設定の LC 上限・バイアスをコードで最終保証してから返す。
     const parsed = parseScalpPlan(raw, refPrice);
     if (!parsed.ok) return parsed;
-    let finalPlan = enforcePlanConstraints(parsed.plan, { ceilingYen, bias });
+    // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0 は現行挙動=veto なし)。
+    const trend = trendVetoYen > 0 ? input.trend : undefined;
+    let finalPlan = enforcePlanConstraints(parsed.plan, { ceilingYen, bias, trend });
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
     if (!rangeEnabled && finalPlan.direction === 'range') {
       finalPlan = { direction: 'none', rationale: finalPlan.rationale, refPrice: finalPlan.refPrice };

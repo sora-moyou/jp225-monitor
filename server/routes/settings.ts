@@ -19,7 +19,7 @@ const NUMERIC_PARAM_KEYS = [
   'granvilleMaMid', 'granvilleMaLong',
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
   'levelLookbackSessions', 'levelLookbackSessions2',
-  'scalpLcCeilingYen', 'scalpCooldownSec',
+  'scalpLcCeilingYen', 'scalpCooldownSec', 'scalpTrendVetoYen',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
 
 // AIエントリー バイアスの受理値。
@@ -92,6 +92,7 @@ interface SettingsBody {
   webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
+  scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;

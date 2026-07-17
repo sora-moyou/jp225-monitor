@@ -2,7 +2,9 @@ import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } fr
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPng } from '../chart/chartShot.js';
-import { resolvePort } from '../configStore.js';
+import { resolvePort, resolveScalpTrendVetoYen } from '../configStore.js';
+import { barsFor } from '../loops/alertLoop.js';
+import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
 
 // トレードシグナルの AI 提案(scalp-plan)を「チャート撮影 → (無ければ見送り) → buildScalpPlan(画像込み)」の
 // 逐次オンデマンドゲート付きで生成する共通関数。route(/api/scalp-plan・trade2 向け)と
@@ -68,15 +70,27 @@ export async function runScalpPlanWithChart(
     console.log('[scalp-plan] vision: skip (no vision-capable provider available) → text-only');
   }
 
+  // ── レジーム/勢いを1回だけ算出し、(a)技術文脈への注入 と (b)コードの trend veto の両方へ同じ値を渡す(一貫)。
+  //   リアルタイム足は close のみ(o/h/l/c 無し)なので close を OHLC 全てに写像する(swing=close の高安)。
+  const vetoYen = resolveScalpTrendVetoYen();
+  const ohlc = barsFor(symbol).map(b => ({ t: b.t, o: b.close, h: b.close, l: b.close, c: b.close }));
+  const regime = computeRegime(ohlc, Date.now(), vetoYen > 0 ? vetoYen : 100);
+  // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
+  const baseTech = buildNikkeiTechnical(undefined, price);
+  const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime)}`;
+  // veto 無効(0)は trend を渡さない=現行挙動(veto なし)。>0 のときだけ {dir,strong} を渡してコード veto を効かせる。
+  const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
+
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
   return buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
-    // chat と同じく、バー蓄積中でも節目メドを出せるよう fallbackPrice を渡す。
-    technical: buildNikkeiTechnical(undefined, price),
+    // chat と同じく、バー蓄積中でも節目メドを出せるよう fallbackPrice を渡す。勢い1行を末尾に注入済み。
+    technical,
     chartImageDataUrl,
     lcFloorYen: overrides.lcFloorYen,
     lcCeilingYen: overrides.lcCeilingYen,
+    trend,
   });
 }

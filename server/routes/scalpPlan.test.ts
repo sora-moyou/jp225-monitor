@@ -26,6 +26,12 @@ vi.mock('../chatContext.js', () => ({
 
 vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
+  resolveScalpTrendVetoYen: () => 100,
+}));
+
+// runScalpPlanWithChart が勢い算出に使う barsFor をモック(空=regime flat=veto なし)。
+vi.mock('../loops/alertLoop.js', () => ({
+  barsFor: () => [],
 }));
 
 const captureMock = vi.fn<[number], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();

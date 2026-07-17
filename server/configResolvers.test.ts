@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   resolveShockParams, resolveOpenGuardBars, resolveFlashYen, resetConfigCache,
   resolveScalpLcCeiling, resolveScalpBias, resolveScalpCooldownSec, resolveScalpRangeEnabled,
+  resolveScalpTrendVetoYen,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
@@ -122,5 +123,19 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
   it('scalpRangeEnabled が非boolean(不正)は既定 true にフォールバック', () => {
     writeConfig({ scalpRangeEnabled: 'yes' });
     expect(resolveScalpRangeEnabled()).toBe(true);
+  });
+
+  it('scalpTrendVetoYen 未設定は既定 100', () => {
+    expect(resolveScalpTrendVetoYen()).toBe(100);
+  });
+
+  it('scalpTrendVetoYen の値を反映(150)', () => {
+    writeConfig({ scalpTrendVetoYen: 150 });
+    expect(resolveScalpTrendVetoYen()).toBe(150);
+  });
+
+  it('scalpTrendVetoYen=0(veto 無効)を反映', () => {
+    writeConfig({ scalpTrendVetoYen: 0 });
+    expect(resolveScalpTrendVetoYen()).toBe(0);
   });
 });

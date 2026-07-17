@@ -44,6 +44,7 @@ export interface UserConfig {
   scalpBias?: ScalpBias;             // AIエントリー: バイアス。'long'=買い中心 / 'short'=売り中心 / 'none'=両方向(既定)。
   scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
   scalpRangeEnabled?: boolean;       // AIエントリー: レンジ判断時の両面ストラドル(実験・紙で別枠計測)。未設定は true(ON)。
+  scalpTrendVetoYen?: number;        // AIエントリー: 直近10分でこの円以上動いたらトレンドと見なし逆行フェード新規を禁止。未設定は 100。0で無効。
 }
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
@@ -78,6 +79,7 @@ export const PARAM_BOUNDS = {
   levelLookbackSessions2: { min: 2, max: 120, default: 20 },
   scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
   scalpCooldownSec:       { min: 0, max: 3600, default: 90 },   // AIエントリー: 決済後の再ARM抑止秒数。0で無効。
+  scalpTrendVetoYen:      { min: 0, max: 1000, default: 100 },  // AIエントリー: トレンド veto 閾値(円)。直近10分でこの円以上動いたら逆行フェードを禁止。0で無効。
 } as const;
 
 let cached: UserConfig | null = null;
@@ -219,6 +221,10 @@ export function resolveScalpLcCeiling(): number { return resolveNumeric('scalpLc
 
 // AIエントリー: 決済後の再ARM抑止秒数。未設定は PARAM_BOUNDS 既定(90)。0で無効。
 export function resolveScalpCooldownSec(): number { return resolveNumeric('scalpCooldownSec'); }
+
+// AIエントリー: トレンド veto 閾値(円)。未設定は PARAM_BOUNDS 既定(100)。0で無効(veto しない=現行挙動)。
+// 直近10分でこの円以上動いていたらトレンドと見なし、逆行するフェード新規(scalp-plan)を落とす。
+export function resolveScalpTrendVetoYen(): number { return resolveNumeric('scalpTrendVetoYen'); }
 
 // AIエントリー: バイアス。未設定/不正値は 'none'(両方向)。
 export function resolveScalpBias(): ScalpBias {

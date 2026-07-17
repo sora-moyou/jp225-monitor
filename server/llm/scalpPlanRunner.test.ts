@@ -22,11 +22,19 @@ vi.mock('../cache.js', () => ({
 }));
 
 vi.mock('../chatContext.js', () => ({
-  buildNikkeiTechnical: () => ({ summary: 'tech' }),
+  buildNikkeiTechnical: () => '■ テクニカル',
 }));
 
+const trendVetoYenMock = vi.fn<[], number>(() => 100);
 vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
+  resolveScalpTrendVetoYen: () => trendVetoYenMock(),
+}));
+
+// barsFor(リアルタイム足 {t,close})をテストで差し替え。既定は空(=regime flat)。
+const barsForMock = vi.fn<[], { t: number; close: number }[]>(() => []);
+vi.mock('../loops/alertLoop.js', () => ({
+  barsFor: () => barsForMock(),
 }));
 
 const captureMock = vi.fn<[number], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();
@@ -43,6 +51,8 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     buildScalpPlanMock.mockReset().mockResolvedValue(GOOD_PLAN);
     firstVisionMock.mockReset();
     captureMock.mockReset();
+    barsForMock.mockReset().mockReturnValue([]);
+    trendVetoYenMock.mockReset().mockReturnValue(100);
     delete process.env.SCALP_CHART_VISION;
   });
   afterEach(() => {
@@ -118,5 +128,43 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     const arg = buildScalpPlanMock.mock.calls[0][0] as { lcFloorYen?: number; lcCeilingYen?: number };
     expect(arg.lcFloorYen).toBe(50);
     expect(arg.lcCeilingYen).toBe(90);
+  });
+
+  it('勢い注入 + trend スレッド: 強上昇の足で buildScalpPlan に trend{dir:up,strong} と勢い文が渡る', async () => {
+    firstVisionMock.mockReturnValue(null);   // ゲート対象外
+    const now = Date.now();
+    // now−10分 で 38000、now で 38200(+200円 ≥ 閾値100) → 強上昇。
+    barsForMock.mockReturnValue([
+      { t: now - 10 * 60_000, close: 38000 },
+      { t: now - 5 * 60_000, close: 38100 },
+      { t: now, close: 38200 },
+    ]);
+
+    await runScalpPlanWithChart();
+
+    const arg = buildScalpPlanMock.mock.calls[0][0] as {
+      trend?: { dir: string; strong: boolean }; technical?: string;
+    };
+    expect(arg.trend).toEqual({ dir: 'up', strong: true });
+    expect(arg.technical).toContain('直近の勢い');
+    expect(arg.technical).toContain('上昇トレンド(強)');
+  });
+
+  it('trendVeto=0(無効) → trend を渡さない(veto なし=現行挙動)が勢い文は注入する', async () => {
+    firstVisionMock.mockReturnValue(null);
+    trendVetoYenMock.mockReturnValue(0);
+    const now = Date.now();
+    barsForMock.mockReturnValue([
+      { t: now - 10 * 60_000, close: 38000 },
+      { t: now, close: 38200 },
+    ]);
+
+    await runScalpPlanWithChart();
+
+    const arg = buildScalpPlanMock.mock.calls[0][0] as {
+      trend?: unknown; technical?: string;
+    };
+    expect(arg.trend).toBeUndefined();
+    expect(arg.technical).toContain('直近の勢い');
   });
 });

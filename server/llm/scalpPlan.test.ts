@@ -569,6 +569,141 @@ describe('enforcePlanConstraints range(LC上限/バイアス per レッグ)', ()
   });
 });
 
+// ─── トレンド veto(生きた強トレンドに逆行するフェード新規を落とす) ───
+describe('enforcePlanConstraints トレンド veto(directional)', () => {
+  const buyPlan: AiPlan = {
+    direction: 'buy',
+    limitEntry: 38200, stopLossForLimit: 38150,   // LC=50
+    stopEntry: 38350, stopLossForStop: 38300,     // LC=50
+    rationale: '押し目買い', refPrice: REF,
+  };
+  const sellPlan: AiPlan = {
+    direction: 'sell',
+    limitEntry: 38300, stopLossForLimit: 38340,   // LC=40
+    stopEntry: 38150, stopLossForStop: 38190,     // LC=40
+    rationale: '戻り売り', refPrice: REF,
+  };
+
+  it('強上昇 + directional sell → none(逆行=見送り)', () => {
+    const r = enforcePlanConstraints(sellPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.direction).toBe('none');
+    expect(r.rationale).toBe('戻り売り');
+    expect(r.refPrice).toBe(REF);
+  });
+
+  it('強上昇 + directional buy は維持(順行)', () => {
+    const r = enforcePlanConstraints(buyPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBe(38350);
+  });
+
+  it('強下降 + directional buy → none(逆行)', () => {
+    const r = enforcePlanConstraints(buyPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'down', strong: true } });
+    expect(r.direction).toBe('none');
+  });
+
+  it('強下降 + directional sell は維持(順行)', () => {
+    const r = enforcePlanConstraints(sellPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'down', strong: true } });
+    expect(r.direction).toBe('sell');
+  });
+
+  it('trend.strong=false(flat)は現行と完全一致(素通し)', () => {
+    const withFlat = enforcePlanConstraints(sellPlan, { ceilingYen: 65, bias: 'none', trend: { dir: 'flat', strong: false } });
+    const noTrend = enforcePlanConstraints(sellPlan, { ceilingYen: 65, bias: 'none' });
+    expect(withFlat).toEqual(noTrend);
+    expect(withFlat.direction).toBe('sell');
+  });
+
+  it('trend 未指定は現行と完全一致(素通し)', () => {
+    const r = enforcePlanConstraints(sellPlan, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('sell');
+    expect(r.limitEntry).toBe(38300);
+  });
+
+  it('合成順: 順行 buy は トレンド veto を通過し、その後 LC 上限で片レッグ落ちる', () => {
+    // 強上昇 + buy(順行)。逆指値LC=|38450-38300|=150 は上限65超で落ち、指値LC=50 は残る。
+    const p: AiPlan = { ...buyPlan, stopEntry: 38450, stopLossForStop: 38300 };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);
+    expect(r.stopEntry).toBeUndefined();
+  });
+});
+
+describe('enforcePlanConstraints トレンド veto(range 片面化)', () => {
+  const base: AiPlan = {
+    direction: 'range', rationale: 'レンジ', refPrice: REF,
+    range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },  // LC=50
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },    // LC=50
+    },
+  };
+
+  it('強上昇 → 上=売り指値を落とし 下=買いが残る(片面 range)', () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();
+    expect(r.range?.lower?.side).toBe('buy');
+  });
+
+  it('強下降 → 下=買いを落とし 上=売りが残る(片面 range)', () => {
+    const r = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none', trend: { dir: 'down', strong: true } });
+    expect(r.direction).toBe('range');
+    expect(r.range?.lower).toBeUndefined();
+    expect(r.range?.upper?.side).toBe('sell');
+  });
+
+  it('両レッグとも逆行 side → none(強上昇で両レッグ sell)', () => {
+    const p: AiPlan = { ...base, range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 },
+    } };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.direction).toBe('none');
+  });
+
+  it('flat(strong=false)は range を現行どおり素通し(両レッグ残る)', () => {
+    const withFlat = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none', trend: { dir: 'flat', strong: false } });
+    const noTrend = enforcePlanConstraints(base, { ceilingYen: 65, bias: 'none' });
+    expect(withFlat).toEqual(noTrend);
+    expect(withFlat.range?.upper).toBeDefined();
+    expect(withFlat.range?.lower).toBeDefined();
+  });
+
+  it('合成: 強上昇 + トレンドで上落ち → 残る下(buy)を LC 上限で更に落とすと none', () => {
+    // 上=sell(トレンドで落ち)・下=buy だが LC=|38100-37980|=120 上限65超 → 下も落ち → none。
+    const p: AiPlan = { ...base, range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 37980 },
+    } };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.direction).toBe('none');
+  });
+});
+
+describe('scalp プロンプト trendVeto 文言', () => {
+  it('既定(veto=100)で SCALP_QUESTION/SYSTEM に勢い/レンジの指針が入る', () => {
+    expect(SCALP_QUESTION).toContain('直近の勢い');
+    expect(SCALP_QUESTION).toContain('横ばい');
+    expect(SCALP_SYSTEM_PROMPT).toContain('直近の勢い');
+    // 既定は 100(旧LC上限の 95/75 とは無関係=回帰保護)。
+    expect(SCALP_QUESTION).toContain('100');
+  });
+
+  it('trendVetoYen を渡すと閾値がプロンプトに反映される', () => {
+    expect(buildScalpQuestion(45, 65, true, 150)).toContain('±150円未満');
+    expect(buildScalpSystemPrompt(45, 65, true, 150)).toContain('±150円未満');
+  });
+
+  it('trendVetoYen=0(無効)は勢い/レンジ指針を注入しない', () => {
+    const q = buildScalpQuestion(45, 65, true, 0);
+    const s = buildScalpSystemPrompt(45, 65, true, 0);
+    expect(q).not.toContain('直近の勢い');
+    expect(s).not.toContain('直近の勢い');
+  });
+});
+
 describe('scalp プロンプト range トグル(rangeEnabled)', () => {
   it('rangeEnabled=true(既定)でプロンプト/JSON に range 指示が入る', () => {
     expect(buildScalpQuestion()).toContain('range');
