@@ -21,9 +21,29 @@ interface SettingsResponse {
   scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
   scalpCooldownSource: KnobSource; scalpBiasSource: KnobSource; scalpRangeSource: KnobSource;
   scalpLcHardMaxEnabled: boolean; scalpLcHardMaxYen: number;
+  // ★v0.8.2: System B(紙専用)の設定。raw=保存済み生値(未設定=A追従) / effective=A フォールバック済みの実効値(表示補助)。
+  signalB?: SignalBRaw;
+  signalBEffective?: SignalBEffective;
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
+}
+
+// ★v0.8.2: System B の生設定(未設定フィールド=A追従)。
+interface SignalBRaw {
+  scalpLcCeilingYen?: number; scalpBias?: 'none' | 'long' | 'short'; scalpCooldownSec?: number;
+  scalpRangeEnabled?: boolean; scalpTrendVetoYen?: number; scalpLcFloorYen?: number;
+  scalpLcHardMaxYen?: number; scalpLcHardMaxEnabled?: boolean;
+  scalpLcFloorSource?: KnobSource; scalpLcCeilingSource?: KnobSource; scalpTrendVetoSource?: KnobSource;
+  scalpCooldownSource?: KnobSource; scalpBiasSource?: KnobSource; scalpRangeSource?: KnobSource;
+}
+// ★v0.8.2: B の実効値(A フォールバック済み)。プレースホルダ/初期表示に使う。
+interface SignalBEffective {
+  scalpLcFloorYen: number; scalpLcCeilingYen: number; scalpTrendVetoYen: number; scalpCooldownSec: number;
+  scalpBias: 'none' | 'long' | 'short'; scalpRangeEnabled: boolean;
+  scalpLcHardMaxYen: number; scalpLcHardMaxEnabled: boolean;
+  scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
+  scalpCooldownSource: KnobSource; scalpBiasSource: KnobSource; scalpRangeSource: KnobSource;
 }
 
 interface SaveResponse {
@@ -70,6 +90,8 @@ interface SavePayload {
   scalpRangeSource?: KnobSource;
   scalpLcHardMaxEnabled?: boolean | null;
   scalpLcHardMaxYen?: number | null;
+  // ★v0.8.2: System B(紙専用)。ネストしたオブジェクトで送る(各フィールドは A と同名・''/null=A追従)。
+  signalB?: Record<string, unknown>;
 }
 
 async function saveSettings(body: SavePayload): Promise<{ ok: boolean; error?: string; portRequiresRestart?: boolean }> {
@@ -127,6 +149,21 @@ export interface SettingsElements {
   selectRangeMode: HTMLSelectElement;
   checkScalpLcHardMaxEnabled: HTMLInputElement;
   inputScalpLcHardMax: HTMLInputElement;
+  // ★v0.8.2: System B(紙専用)の設定入力。B の value 系は空欄=A追従 / mode/tri-state は ''=A追従。
+  inputScalpLcCeilingB: HTMLInputElement;
+  selectScalpBiasB: HTMLSelectElement;
+  inputScalpCooldownB: HTMLInputElement;
+  inputScalpTrendVetoB: HTMLInputElement;
+  selectRangeEnabledB: HTMLSelectElement;      // tri-state('' A追従/'true'/'false')
+  inputScalpLcFloorB: HTMLInputElement;
+  selectLcFloorModeB: HTMLSelectElement;
+  selectLcCeilingModeB: HTMLSelectElement;
+  selectTrendVetoModeB: HTMLSelectElement;
+  selectCooldownModeB: HTMLSelectElement;
+  selectBiasModeB: HTMLSelectElement;
+  selectRangeModeB: HTMLSelectElement;
+  selectHardMaxEnabledB: HTMLSelectElement;    // tri-state('' A追従/'true'/'false')
+  inputScalpLcHardMaxB: HTMLInputElement;
   statusArea: HTMLElement;
   backdrop: HTMLElement;
   checkUpdateBtn: HTMLButtonElement;
@@ -212,7 +249,55 @@ export function initSettingsModal(el: SettingsElements): void {
     el.selectRangeMode.value = current?.scalpRangeSource ?? 'manual';
     el.checkScalpLcHardMaxEnabled.checked = current ? current.scalpLcHardMaxEnabled : true;   // 既定=有効(安全網ON)
     el.inputScalpLcHardMax.value = current ? String(current.scalpLcHardMaxYen) : '';
+    // ★v0.8.2: System B(紙専用)を反映。value 系は raw(未設定=空欄=A追従)/ mode/tri-state は raw ?? ''(A追従)。
+    //   プレースホルダ/選択初期値は effective(A フォールバック済み)を補助表示に使う。
+    const b = current?.signalB ?? {};
+    const be = current?.signalBEffective;
+    const rawNum = (v?: number) => (v === undefined ? '' : String(v));
+    const rawBoolSel = (v?: boolean) => (v === undefined ? '' : String(v));
+    const ph = (n: number | undefined) => (n === undefined ? 'A追従' : `A追従 (${n})`);
+    el.inputScalpLcFloorB.value = rawNum(b.scalpLcFloorYen);
+    el.inputScalpLcFloorB.placeholder = ph(be?.scalpLcFloorYen);
+    el.inputScalpLcCeilingB.value = rawNum(b.scalpLcCeilingYen);
+    el.inputScalpLcCeilingB.placeholder = ph(be?.scalpLcCeilingYen);
+    el.inputScalpTrendVetoB.value = rawNum(b.scalpTrendVetoYen);
+    el.inputScalpTrendVetoB.placeholder = ph(be?.scalpTrendVetoYen);
+    el.inputScalpCooldownB.value = rawNum(b.scalpCooldownSec);
+    el.inputScalpCooldownB.placeholder = ph(be?.scalpCooldownSec);
+    el.inputScalpLcHardMaxB.value = rawNum(b.scalpLcHardMaxYen);
+    el.inputScalpLcHardMaxB.placeholder = ph(be?.scalpLcHardMaxYen);
+    el.selectScalpBiasB.value = b.scalpBias ?? '';
+    el.selectRangeEnabledB.value = rawBoolSel(b.scalpRangeEnabled);
+    el.selectHardMaxEnabledB.value = rawBoolSel(b.scalpLcHardMaxEnabled);
+    el.selectLcFloorModeB.value = b.scalpLcFloorSource ?? '';
+    el.selectLcCeilingModeB.value = b.scalpLcCeilingSource ?? '';
+    el.selectTrendVetoModeB.value = b.scalpTrendVetoSource ?? '';
+    el.selectCooldownModeB.value = b.scalpCooldownSource ?? '';
+    el.selectBiasModeB.value = b.scalpBiasSource ?? '';
+    el.selectRangeModeB.value = b.scalpRangeSource ?? '';
     syncKnobDisabled();
+    syncKnobDisabledB();
+  }
+
+  // ★v0.8.2: B の value 入力を、B mode が 'ai'(AI委任)または ''(A追従)のとき無効化(灰色)。manual のみ編集可。
+  //   B の LC安全上限 value は enabled tri-state が 'true' のときだけ編集可。bias/range の値は mode で連動。
+  function syncKnobDisabledB() {
+    const pairs: Array<[HTMLSelectElement, HTMLInputElement | HTMLSelectElement]> = [
+      [el.selectLcFloorModeB, el.inputScalpLcFloorB],
+      [el.selectLcCeilingModeB, el.inputScalpLcCeilingB],
+      [el.selectTrendVetoModeB, el.inputScalpTrendVetoB],
+      [el.selectCooldownModeB, el.inputScalpCooldownB],
+      [el.selectBiasModeB, el.selectScalpBiasB],
+      [el.selectRangeModeB, el.selectRangeEnabledB],
+    ];
+    for (const [mode, input] of pairs) {
+      const off = mode.value === 'ai' || mode.value === '';   // AI委任 or A追従 は値入力不要
+      input.disabled = off;
+      input.style.opacity = off ? '0.4' : '';
+    }
+    const hardOn = el.selectHardMaxEnabledB.value === 'true';   // B の安全上限を明示的に「有効」にした時だけ値編集可
+    el.inputScalpLcHardMaxB.disabled = !hardOn;
+    el.inputScalpLcHardMaxB.style.opacity = hardOn ? '' : '0.4';
   }
 
   // AI委任(mode==='ai')の項目は数値/enum入力を無効化して「AI が決める」ことを視覚化する。
@@ -503,6 +588,11 @@ export function initSettingsModal(el: SettingsElements): void {
     s.addEventListener('change', syncKnobDisabled);
   }
   el.checkScalpLcHardMaxEnabled.addEventListener('change', syncKnobDisabled);
+  // ★v0.8.2: System B の mode/tri-state を変えたら B の入力有効/無効を同期。
+  for (const s of [el.selectLcFloorModeB, el.selectLcCeilingModeB, el.selectTrendVetoModeB,
+                   el.selectCooldownModeB, el.selectBiasModeB, el.selectRangeModeB, el.selectHardMaxEnabledB]) {
+    s.addEventListener('change', syncKnobDisabledB);
+  }
 
   async function open() {
     el.modal.classList.remove('hidden');
@@ -573,6 +663,25 @@ export function initSettingsModal(el: SettingsElements): void {
       body.scalpLcHardMaxEnabled = el.checkScalpLcHardMaxEnabled.checked;
       const hardMaxRaw = el.inputScalpLcHardMax.value.trim();
       body.scalpLcHardMaxYen = hardMaxRaw === '' ? null : Number(hardMaxRaw);
+      // ★v0.8.2: System B(紙専用)。value 系は空欄→null(=A追従で unset) / mode・tri-state は select 値をそのまま
+      //   ('' A追従 / 'manual'|'ai' / 'true'|'false' / 'none'|'long'|'short')。サーバ側 buildSignalB で unset/明示保存を判定。
+      const numOrNull = (v: string): number | null => (v.trim() === '' ? null : Number(v.trim()));
+      body.signalB = {
+        scalpLcFloorYen: numOrNull(el.inputScalpLcFloorB.value),
+        scalpLcCeilingYen: numOrNull(el.inputScalpLcCeilingB.value),
+        scalpTrendVetoYen: numOrNull(el.inputScalpTrendVetoB.value),
+        scalpCooldownSec: numOrNull(el.inputScalpCooldownB.value),
+        scalpLcHardMaxYen: numOrNull(el.inputScalpLcHardMaxB.value),
+        scalpBias: el.selectScalpBiasB.value,
+        scalpRangeEnabled: el.selectRangeEnabledB.value,
+        scalpLcHardMaxEnabled: el.selectHardMaxEnabledB.value,
+        scalpLcFloorSource: el.selectLcFloorModeB.value,
+        scalpLcCeilingSource: el.selectLcCeilingModeB.value,
+        scalpTrendVetoSource: el.selectTrendVetoModeB.value,
+        scalpCooldownSource: el.selectCooldownModeB.value,
+        scalpBiasSource: el.selectBiasModeB.value,
+        scalpRangeSource: el.selectRangeModeB.value,
+      };
 
       const result = await saveSettings(body);
       if (!result.ok) {

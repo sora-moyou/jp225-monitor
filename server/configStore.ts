@@ -58,7 +58,32 @@ export interface UserConfig {
   //   有効時は手動でもAIでも |entry−SL| がこの円超のレッグを必ず落とす(最後の安全網)。無効時はハード上限なし。
   scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 150。
   scalpLcHardMaxEnabled?: boolean;     // LC安全上限を有効にするか。未設定は true(既定で安全網ON)。
+  // ★v0.8.2: System B(紙専用の並走エンジン)の独立設定。A と同じ knob 一式を持つ(全て任意)。
+  //   B リゾルバは signalB.<knob> を優先し、未設定は A(グローバル)値/directive にフォールバックする
+  //   (箱出しは B も A と同一挙動→そこから B だけ差分)。実売買 A には一切影響しない(B は currentSignal を出さない)。
+  signalB?: SignalBConfig;
 }
+
+// ★v0.8.2: System B の独立設定ブロック。A と同じ knob 一式(全て任意=未設定は A へフォールバック)。
+export interface SignalBConfig {
+  scalpLcCeilingYen?: number;
+  scalpBias?: ScalpBias;
+  scalpCooldownSec?: number;
+  scalpRangeEnabled?: boolean;
+  scalpTrendVetoYen?: number;
+  scalpLcFloorYen?: number;
+  scalpLcHardMaxYen?: number;
+  scalpLcHardMaxEnabled?: boolean;
+  scalpLcFloorSource?: KnobSource;
+  scalpLcCeilingSource?: KnobSource;
+  scalpTrendVetoSource?: KnobSource;
+  scalpCooldownSource?: KnobSource;
+  scalpBiasSource?: KnobSource;
+  scalpRangeSource?: KnobSource;
+}
+
+// ★v0.8.2: シグナル系統プロファイル。'A'(実売買・グローバル設定=既定/省略と同一) / 'B'(紙専用・signalB 設定)。
+export type SignalProfile = 'A' | 'B';
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
 export type ScalpBias = 'long' | 'short' | 'none';
@@ -216,6 +241,24 @@ function resolveNumeric(key: keyof typeof PARAM_BOUNDS): number {
   return typeof v === 'number' ? v : PARAM_BOUNDS[key].default;
 }
 
+// ★v0.8.2: プロファイル対応の knob 生値読み取り。profile==='B' のとき signalB.<key> を優先し、
+//   未設定/undefined は A(グローバル・トップレベル)値へフォールバックする。profile 省略/'A' は
+//   トップレベルのみ=既存挙動と完全一致(=A はバイト不変)。
+function readKnobRaw(profile: SignalProfile | undefined, key: string): unknown {
+  const cfg = loadConfig() as Record<string, unknown>;
+  if (profile === 'B') {
+    const b = cfg.signalB as Record<string, unknown> | undefined;
+    if (b && b[key] !== undefined) return b[key];
+  }
+  return cfg[key];
+}
+
+// ★v0.8.2: プロファイル対応の数値 knob。profile 省略/'A' は resolveNumeric と完全一致。
+function resolveNumericProfile(profile: SignalProfile | undefined, key: keyof typeof PARAM_BOUNDS): number {
+  const v = readKnobRaw(profile, key);
+  return typeof v === 'number' ? v : PARAM_BOUNDS[key].default;
+}
+
 export function resolveShockParams(): ShockParams {
   return {
     ...DEFAULT_SHOCK_PARAMS,   // 固定: avgLen/breakLen/sameDirLen/sameDirNeed
@@ -235,30 +278,31 @@ export function resolveGranvilleMaMid(): number { return resolveNumeric('granvil
 export function resolveGranvilleMaLong(): number { return resolveNumeric('granvilleMaLong'); }
 
 // AIエントリー: 最大初期LC(円)。未設定は PARAM_BOUNDS 既定(65)。buildScalpPlan の LC 上限既定に使う。
-export function resolveScalpLcCeiling(): number { return resolveNumeric('scalpLcCeilingYen'); }
+// ★v0.8.2: profile 省略/'A'=グローバル(既存挙動一致) / 'B'=signalB 優先→未設定はグローバルへフォールバック。
+export function resolveScalpLcCeiling(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpLcCeilingYen'); }
 
 // AIエントリー: 決済後の再ARM抑止秒数。未設定は PARAM_BOUNDS 既定(90)。0で無効。
-export function resolveScalpCooldownSec(): number { return resolveNumeric('scalpCooldownSec'); }
+export function resolveScalpCooldownSec(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpCooldownSec'); }
 
 // AIエントリー: トレンド veto 閾値(円)。未設定は PARAM_BOUNDS 既定(100)。0で無効(veto しない=現行挙動)。
 // 直近10分でこの円以上動いていたらトレンドと見なし、逆行するフェード新規(scalp-plan)を落とす。
-export function resolveScalpTrendVetoYen(): number { return resolveNumeric('scalpTrendVetoYen'); }
+export function resolveScalpTrendVetoYen(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpTrendVetoYen'); }
 
 // AIエントリー: バイアス。未設定/不正値は 'none'(両方向)。
-export function resolveScalpBias(): ScalpBias {
-  const v = loadConfig().scalpBias;
+export function resolveScalpBias(profile?: SignalProfile): ScalpBias {
+  const v = readKnobRaw(profile, 'scalpBias');
   return v === 'long' || v === 'short' ? v : 'none';
 }
 
 // AIエントリー: レンジ両面ストラドルの許可。★実験終了(v0.7.53)により既定OFF。
 // 未設定/非boolean は false(実験終了・紙計測で不利=フェードを既定で出さない)。true で再有効化可(コード温存)。
-export function resolveScalpRangeEnabled(): boolean {
-  const v = loadConfig().scalpRangeEnabled;
+export function resolveScalpRangeEnabled(profile?: SignalProfile): boolean {
+  const v = readKnobRaw(profile, 'scalpRangeEnabled');
   return typeof v === 'boolean' ? v : false;
 }
 
 // ★v0.7.56: AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(45)。プロンプトにのみ反映。
-export function resolveScalpLcFloorYen(): number { return resolveNumeric('scalpLcFloorYen'); }
+export function resolveScalpLcFloorYen(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpLcFloorYen'); }
 
 // ─── v0.7.56: 委任 directive リゾルバ({mode,value}) ───────────────────────
 // 各 knob を「手動(数値/enum を強制)」か「AI委任(該当制約を課さない)」で返す。
@@ -271,41 +315,44 @@ export function parseKnobSource(v: unknown): KnobSource {
   return typeof v === 'string' && v.trim().toLowerCase() === 'ai' ? 'ai' : 'manual';
 }
 
+// ★v0.8.2: 各 directive も profile 対応。profile 省略/'A'=グローバル(既存挙動一致) /
+//   'B'=signalB の source/値を優先し、未設定はグローバルの source/値へフォールバック。
+
 /** 初期LC下限 directive。value=下限(円)。ai=下限を課さない。 */
-export function resolveScalpLcFloorDirective(): KnobDirective<number> {
-  return { mode: parseKnobSource(loadConfig().scalpLcFloorSource), value: resolveScalpLcFloorYen() };
+export function resolveScalpLcFloorDirective(profile?: SignalProfile): KnobDirective<number> {
+  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpLcFloorSource')), value: resolveScalpLcFloorYen(profile) };
 }
 
 /** 最大初期LC directive。value=上限(円)。ai=上限で落とさない(hardMax は別に効く)。 */
-export function resolveScalpLcCeilingDirective(): KnobDirective<number> {
-  return { mode: parseKnobSource(loadConfig().scalpLcCeilingSource), value: resolveScalpLcCeiling() };
+export function resolveScalpLcCeilingDirective(profile?: SignalProfile): KnobDirective<number> {
+  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpLcCeilingSource')), value: resolveScalpLcCeiling(profile) };
 }
 
 /** トレンドveto directive。value=閾値(円)。ai=数値veto無効(AI自己判断)。 */
-export function resolveScalpTrendVetoDirective(): KnobDirective<number> {
-  return { mode: parseKnobSource(loadConfig().scalpTrendVetoSource), value: resolveScalpTrendVetoYen() };
+export function resolveScalpTrendVetoDirective(profile?: SignalProfile): KnobDirective<number> {
+  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpTrendVetoSource')), value: resolveScalpTrendVetoYen(profile) };
 }
 
 /** クールダウン directive。value=秒。ai=ゲート無効。 */
-export function resolveScalpCooldownDirective(): KnobDirective<number> {
-  return { mode: parseKnobSource(loadConfig().scalpCooldownSource), value: resolveScalpCooldownSec() };
+export function resolveScalpCooldownDirective(profile?: SignalProfile): KnobDirective<number> {
+  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpCooldownSource')), value: resolveScalpCooldownSec(profile) };
 }
 
 /** バイアス directive。value='long'|'short'|'none'。ai=方向veto無効(自由方向)。 */
-export function resolveScalpBiasDirective(): KnobDirective<ScalpBias> {
-  return { mode: parseKnobSource(loadConfig().scalpBiasSource), value: resolveScalpBias() };
+export function resolveScalpBiasDirective(profile?: SignalProfile): KnobDirective<ScalpBias> {
+  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpBiasSource')), value: resolveScalpBias(profile) };
 }
 
 /** レンジ両面 directive。value=on/off(bool)。ai=range 採用可否を AI が決める(range許可)。 */
-export function resolveScalpRangeDirective(): KnobDirective<boolean> {
-  return { mode: parseKnobSource(loadConfig().scalpRangeSource), value: resolveScalpRangeEnabled() };
+export function resolveScalpRangeDirective(profile?: SignalProfile): KnobDirective<boolean> {
+  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpRangeSource')), value: resolveScalpRangeEnabled(profile) };
 }
 
 /** ★LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。
  *  enabled 未設定は true(既定で安全網ON)。value 未設定は PARAM_BOUNDS 既定(150)。 */
-export function resolveScalpLcHardMax(): { enabled: boolean; value: number } {
-  const v = loadConfig().scalpLcHardMaxEnabled;
-  return { enabled: typeof v === 'boolean' ? v : true, value: resolveNumeric('scalpLcHardMaxYen') };
+export function resolveScalpLcHardMax(profile?: SignalProfile): { enabled: boolean; value: number } {
+  const v = readKnobRaw(profile, 'scalpLcHardMaxEnabled');
+  return { enabled: typeof v === 'boolean' ? v : true, value: resolveNumericProfile(profile, 'scalpLcHardMaxYen') };
 }
 
 // v0.6.0: 的中率の「成功」判定しきい値(順行% ≥ これ)。シグナル種別ごとに持てる(既定は全種別同値 0.1%)。

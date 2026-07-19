@@ -23,8 +23,9 @@ import {
   resolveScalpCooldownDirective,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
-  type KnobDirective,
+  type KnobDirective, type SignalProfile,
 } from '../configStore.js';
+import type { SignalTradeInsert } from '../db/store.js';
 
 const NIKKEI_SYMBOL = 'NIY=F';
 const QTY = 1;   // 紙トラッキングは常に1枚。
@@ -440,75 +441,256 @@ function engineEnabled(): boolean {
   return !/^(0|false|off|no)$/i.test(v.trim());
 }
 
-let state: EngineState = { phase: 'flat' };
-// 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番して更新し、
-// 擬似約定(filled)後も保持する(見送り none では更新しない)。null = まだ一度も ARM していない。
-let signalIdCounter = 0;
-let currentSignal: CurrentSignal | null = null;
-let running = false;
-let planning = false;
-let lastPlanAt = 0;
-let lastBroadcastJson = '';
-// 決済(filled→flat)時刻。この後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。null=まだ決済無し。
-let lastSignalExitAt: number | null = null;
-// cooldown ログの多重抑止(毎tick出さない)。決済ごとに false へ戻し、cooldown 中に一度だけ出す。
-let cooldownLogged = false;
-const planIntervalMs = resolvePlanIntervalMs();
-
-// ── 見送り(direction:'none')後の再計画抑止 ──────────────────────
-// none が返ったら「そのときの価格」をアンカーとして記録し、価格が節目(主要レベル)を跨ぐまで
-// 再計画を抑止する(固定間隔で見送りを繰り返さない)。null = 抑止していない。
-let planSuppressedAnchor: number | null = null;
 // 抑止中の安全弁: 節目を跨がなくてもこの長間隔が経てば1回だけ再計画を許す(詰まり防止)。
 const SUPPRESS_SAFETY_MS = 20 * 60_000;
 
-/** 起動: 非公開 exit 実装をロードしてエンジンを有効化(冪等)。 */
+/** System B(紙専用)を個別に無効化する env(既定は有効)。SIGNAL_TRADE_B=0/false/off でオフ。
+ *  A は SIGNAL_TRADE(engineEnabled)配下で不変。B の並走(独立の AI 呼び出し)を止めたい時に使う。 */
+function engineBEnabled(): boolean {
+  const v = process.env.SIGNAL_TRADE_B;
+  if (v === undefined) return true;
+  return !/^(0|false|off|no)$/i.test(v.trim());
+}
+
+/** ★v0.8.2: エンジンインスタンスの構成。A(実売買・グローバル設定)と B(紙専用・signalB 設定)で切り替える。 */
+export interface EngineConfig {
+  profile: SignalProfile;                       // 設定解決 & scalp-plan プロファイル('A' | 'B')
+  systemTag: 'A' | 'B' | null;                  // persist の system 列。A は null(=既存挙動と byte 一致)/ B は 'B'
+  broadcastType: 'signalTrade' | 'signalTradeB'; // SSE イベント名
+  maintainsCurrentSignal: boolean;              // A=true(currentSignal/hold を露出)/ B=false(絶対に露出しない)
+}
+
+/** ★v0.8.2: トレードシグナル紙エンジン(インスタンス化)。純関数(advance/detectFill/…)は共有・不変。
+ *  A インスタンスは currentSignal/hold を露出し 'signalTrade' を出す(=trade2 が従来どおり追従・実売買A)。
+ *  B インスタンスは currentSignal を一切持たず 'signalTradeB' を別露出する(紙のみ・trade2 は B を追わない)。
+ *  ★A(profile:'A')の挙動は全て従来のモジュール singleton と byte 一致(提案/arm/約定/決済/記録/SSE/currentSignal)。 */
+export class SignalEngine {
+  private state: EngineState = { phase: 'flat' };
+  // 現在シグナル(trade2 追従用・A のみ)。ARM ごとに signalId を単調増加で採番して更新し、
+  // 擬似約定(filled)後も保持する(見送り none では更新しない)。null = まだ一度も ARM していない。
+  private signalIdCounter = 0;
+  private currentSignal: CurrentSignal | null = null;
+  private running = false;
+  private planning = false;
+  private lastPlanAt = 0;
+  private lastBroadcastJson = '';
+  // 決済(filled→flat)時刻。この後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。null=まだ決済無し。
+  private lastSignalExitAt: number | null = null;
+  // cooldown ログの多重抑止(毎tick出さない)。決済ごとに false へ戻し、cooldown 中に一度だけ出す。
+  private cooldownLogged = false;
+  private readonly planIntervalMs = resolvePlanIntervalMs();
+  // 見送り(direction:'none')後の再計画抑止アンカー。null = 抑止していない。
+  private planSuppressedAnchor: number | null = null;
+
+  constructor(private readonly cfg: EngineConfig) {}
+
+  /** ログ接頭辞(A=[signalTrade] で従来ログと byte 一致 / B=[signalTradeB])。 */
+  private get logTag(): string { return this.cfg.profile === 'B' ? '[signalTradeB]' : '[signalTrade]'; }
+
+  /** SSE/hold に載せる現在シグナル。A は currentSignal / B は常に null(currentSignal を露出しない)。 */
+  private signalForState(): CurrentSignal | null {
+    return this.cfg.maintainsCurrentSignal ? this.currentSignal : null;
+  }
+
+  /** 起動: 非公開 exit 実装をロードしてエンジンを有効化(冪等)。 */
+  async start(): Promise<void> {
+    if (this.running) return;
+    if (!engineEnabled()) { console.log(`${this.logTag} disabled (SIGNAL_TRADE=0)`); return; }
+    if (this.cfg.profile === 'B' && !engineBEnabled()) { console.log('[signalTradeB] disabled (SIGNAL_TRADE_B=0)'); return; }
+    const kind = await loadExitImpl();
+    this.running = true;
+    console.log(`${this.logTag} engine started (exit=${kind}, planInterval=${Math.round(this.planIntervalMs / 1000)}s)`);
+  }
+
+  stop(): void { this.running = false; }
+
+  /** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
+  getState(now = Date.now()): SignalTradeState {
+    const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
+    return toSignalTradeState(this.state, price, now, this.signalForState());
+  }
+
+  /** 現在シグナル(trade2 追従用)。A のみ。B は常に null(=露出しない)。 */
+  getCurrentSignal(): CurrentSignal | null { return this.signalForState(); }
+
+  getPhase(): SignalPhase { return this.state.phase; }
+
+  /** 保有中の意図(hold・trade2 追従用)。A の filled 中のみ非 null。B は常に null。 */
+  getHold(): SignalHold | null { return computeHold(this.state, this.signalForState()); }
+
+  /** テスト/リセット用: エンジン内部状態を初期化する。 */
+  reset(): void {
+    this.state = { phase: 'flat' };
+    this.signalIdCounter = 0;
+    this.currentSignal = null;
+    this.planning = false;
+    this.lastPlanAt = 0;
+    this.lastBroadcastJson = '';
+    this.planSuppressedAnchor = null;
+    this.lastSignalExitAt = null;
+    this.cooldownLogged = false;
+  }
+
+  // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。系統タグ(A=null/B='B')を付与する。
+  private persistTrade(t: RecordedTrade): void {
+    try {
+      const db = openDb(resolveDbPath());
+      try {
+        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag));
+      } finally { db.close(); }
+    } catch (e) {
+      console.warn(`${this.logTag} persist failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 非公開: FLAT かつ間隔経過なら AI へプランを1本要求(非同期・多重発火ガード)。
+  // 見送り(none)抑止中は、価格が節目を跨ぐ(shouldRearmOnLevel)まで要求しない。安全弁として
+  // SUPPRESS_SAFETY_MS 経過時のみ抑止中でも1本要求を許す(詰まり防止)。
+  private maybeRequestPlan(price: number, now: number): void {
+    if (this.planning || this.state.phase !== 'flat') return;
+    if (!inPollWindow(now)) return;   // 取引時間外は要求しない。
+
+    // クールダウンゲート: 決済(filled→flat)後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。
+    // ★v0.7.56: クールダウンが AI委任(mode==='ai')のときはゲートを無効化(AI の選択性に委ねる)。manual のみゲート。
+    const cd = resolveScalpCooldownDirective(this.cfg.profile);
+    if (cd.mode === 'manual' && inCooldown(this.lastSignalExitAt, now, cd.value)) {
+      if (!this.cooldownLogged) {
+        const remain = Math.max(0, Math.ceil((this.lastSignalExitAt! + cd.value * 1000 - now) / 1000));
+        console.log(`${this.logTag} cooldown 決済後の再ARM抑止(あと${remain}秒)`);
+        this.cooldownLogged = true;
+      }
+      return;
+    }
+
+    // 見送り抑止ゲート: アンカーが在れば、節目クロス or 安全弁時間まで再計画を抑止する。
+    if (this.planSuppressedAnchor !== null) {
+      const levels = getLevelsSnapshot();
+      if (shouldRearmOnLevel(this.planSuppressedAnchor, price, levels)) {
+        const b = rearmBounds(this.planSuppressedAnchor, levels);
+        console.log(`${this.logTag} plan-rearm 節目クロス anchor=${Math.round(this.planSuppressedAnchor)} `
+          + `price=${Math.round(price)} bounds=[${b.lower ?? '±'},${b.upper ?? '±'}]`
+          + `${b.usedFallback ? ' (±50fallback)' : ''}`);
+        this.planSuppressedAnchor = null;   // 再武装(=以降は通常の間隔判定へ)。
+      } else if (now - this.lastPlanAt >= SUPPRESS_SAFETY_MS) {
+        console.log(`${this.logTag} plan-rearm 安全弁(${Math.round(SUPPRESS_SAFETY_MS / 60_000)}分経過) `
+          + `anchor=${Math.round(this.planSuppressedAnchor)} price=${Math.round(price)}`);
+        // アンカーは維持(none が返れば下でアンカー更新)。安全弁として1本だけ要求へ進む。
+      } else {
+        return;   // 抑止継続。
+      }
+    }
+
+    if (now - this.lastPlanAt < this.planIntervalMs) return;
+    this.planning = true;
+    this.lastPlanAt = now;   // 起動直後の多重要求を防ぐため、要求時点で更新する。
+    const anchorPrice = price;   // 見送りが返った場合のアンカー(要求時点の現在値)。
+    void (async () => {
+      try {
+        // route(/api/scalp-plan・trade2)と同一の共通関数を使う。profile で A/B の設定を解決する
+        // (A=グローバル=trade2 と同条件 / B=signalB)。画像未生成/LLM 失敗は result.ok=false → FLAT 維持(見送り)。
+        const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
+        const result = await runScalpPlanWithChart({ profile: this.cfg.profile });
+        if (this.state.phase === 'flat' && result.ok) {
+          if (result.plan.direction === 'none') {
+            // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
+            this.planSuppressedAnchor = anchorPrice;
+            console.log(`${this.logTag} plan-suppress 見送り→節目まで抑止 anchor=${Math.round(anchorPrice)}`);
+          } else {
+            const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
+            if (armed) {
+              // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
+              armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+              this.state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
+              this.planSuppressedAnchor = null;         // actionable で抑止解除。
+              if (this.cfg.maintainsCurrentSignal) {
+                // ARM ごとに signalId を単調増加で採番し、現在シグナルを更新(A のみ・filled 後も保持・none では更新しない)。
+                this.signalIdCounter += 1;
+                this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
+              }
+              this.broadcastSignalState(Date.now());    // ARM 時に即 broadcast(A は trade2 が即追従できるよう)。
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`${this.logTag} plan request failed:`, e instanceof Error ? e.message : String(e));
+      } finally {
+        this.planning = false;
+      }
+    })();
+  }
+
+  // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
+  private broadcastSignalState(now: number): void {
+    const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
+    const s = toSignalTradeState(this.state, price, now, this.signalForState());
+    const json = JSON.stringify(s);
+    if (json !== this.lastBroadcastJson) {
+      this.lastBroadcastJson = json;
+      broadcast({ type: this.cfg.broadcastType, payload: s });
+    }
+  }
+
+  /** priceLoop から毎 tick 呼ぶ。現在値で遷移を進め、決済を記録し、必要なら次プランを要求し、
+   *  state を SSE broadcast する。エンジン未起動時は何もしない(既存 SSE を汚さない)。 */
+  feed(price: number, now: number): void {
+    if (!this.running) return;
+    try {
+      const { next, recorded } = advance(this.state, price, now);
+      this.state = next;
+      if (recorded) {
+        this.persistTrade(recorded);
+        // 決済(filled→flat)= 全建玉クローズ。クールダウン起点を記録し、ログ抑止を解除(次tickで一度出す)。
+        this.lastSignalExitAt = now;
+        this.cooldownLogged = false;
+      }
+      this.maybeRequestPlan(price, now);
+      this.broadcastSignalState(now);
+    } catch (e) {
+      console.warn(`${this.logTag} tick error:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+// ─── インスタンス: A(実売買・グローバル設定)/ B(紙専用・signalB 設定) ─────────────
+// ★A は従来の singleton と同一構成(profile:'A'・system=null・'signalTrade'・currentSignal 露出)=挙動 byte 不変。
+const engineA = new SignalEngine({ profile: 'A', systemTag: null, broadcastType: 'signalTrade', maintainsCurrentSignal: true });
+// B は紙専用: signalB 設定・system='B'・'signalTradeB'・currentSignal を一切持たない(trade2 は B を追わない)。
+const engineB = new SignalEngine({ profile: 'B', systemTag: 'B', broadcastType: 'signalTradeB', maintainsCurrentSignal: false });
+
+/** 起動: A と B の両エンジンを有効化(冪等)。A の起動挙動/ログは従来と同一。 */
 export async function startSignalEngine(): Promise<void> {
-  if (running) return;
-  if (!engineEnabled()) { console.log('[signalTrade] disabled (SIGNAL_TRADE=0)'); return; }
-  const kind = await loadExitImpl();
-  running = true;
-  console.log(`[signalTrade] engine started (exit=${kind}, planInterval=${Math.round(planIntervalMs / 1000)}s)`);
+  await engineA.start();
+  await engineB.start();
 }
 
-export function stopSignalEngine(): void {
-  running = false;
+export function stopSignalEngine(): void { engineA.stop(); engineB.stop(); }
+
+/** 現在の SSE state(A=実売買)。stream.ts の初回送出 / 各 tick の broadcast 用。外部契約は従来と byte 一致。 */
+export function getSignalTradeState(now = Date.now()): SignalTradeState { return engineA.getState(now); }
+
+/** ★v0.8.2: System B(紙専用)の現在 SSE state。signal/hold は含まない(currentSignal を露出しない)。 */
+export function getSignalTradeStateB(now = Date.now()): SignalTradeState { return engineB.getState(now); }
+
+/** 現在シグナル(trade2 追従用=A のみ)。まだ ARM していなければ null。表示/連携専用(発注はしない)。 */
+export function getCurrentSignal(): CurrentSignal | null { return engineA.getCurrentSignal(); }
+
+/** 現在の phase(flat|armed|filled・A)。trade2 の late-join 用 getter。エンジン挙動は不変(露出のみ)。 */
+export function getSignalPhase(): SignalPhase { return engineA.getPhase(); }
+
+/** 保有中の意図(hold・trade2 追従用=A)。filled の間だけ返す(決済逆指値=毎tick算出)。他は null。 */
+export function getSignalHold(): SignalHold | null { return engineA.getHold(); }
+
+/** priceLoop から毎 tick 呼ぶ。A と B の両エンジンへ同じ現在値を供給する(A の挙動は不変・B は独立に並走)。 */
+export function feedSignalEngine(price: number, now: number): void {
+  engineA.feed(price, now);
+  engineB.feed(price, now);
 }
 
-/** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
-export function getSignalTradeState(now = Date.now()): SignalTradeState {
-  const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-  return toSignalTradeState(state, price, now, currentSignal);
-}
+/** テスト/リセット用: A エンジン内部状態を初期化する(従来と同一=A の回帰テスト互換)。 */
+export function _resetSignalEngine(): void { engineA.reset(); }
 
-/** 現在シグナル(trade2 追従用)。まだ ARM していなければ null。表示/連携専用(発注はしない)。 */
-export function getCurrentSignal(): CurrentSignal | null {
-  return currentSignal;
-}
-
-/** 現在の phase(flat|armed|filled)。trade2 が「armed の間だけ追従」するための late-join 用 getter。
- *  signalId が null(未ARM)でも phase は返る(flat 等)。エンジン挙動は不変(露出のみ)。 */
-export function getSignalPhase(): SignalPhase {
-  return state.phase;
-}
-
-/** 保有中の意図(hold・trade2 追従用)。filled の間だけ返す(決済逆指値=毎tick算出)。他は null。 */
-export function getSignalHold(): SignalHold | null {
-  return computeHold(state, currentSignal);
-}
-
-/** テスト/リセット用: エンジン内部状態を初期化する。 */
-export function _resetSignalEngine(): void {
-  state = { phase: 'flat' };
-  signalIdCounter = 0;
-  currentSignal = null;
-  planning = false;
-  lastPlanAt = 0;
-  lastBroadcastJson = '';
-  planSuppressedAnchor = null;
-  lastSignalExitAt = null;
-  cooldownLogged = false;
-}
+/** テスト/リセット用: B エンジン内部状態を初期化する。 */
+export function _resetSignalEngineB(): void { engineB.reset(); }
 
 /** 決済記録の meta(JSON文字列)を組み立てる純関数。v0.7.54: AI 自己レジーム/確信度/veto発火 + ctxV。
  *  planMeta が空/欠落でも ctxV:'rich' は常に記録する(rich文脈で生成された世代の印)。 */
@@ -533,17 +715,34 @@ export function knobSnapshot<T>(d: KnobDirective<T>, realizedLcYen?: number): Kn
 }
 
 /** ★v0.7.56: 現在の設定(config)から実効設定スナップショットを組み立てる純関数(config 読みのみ)。
- *  realizedLcYen(採用/約定レッグの |entry−SL|)を渡すと、AI委任の LC(lcFloor/lcCeiling)の value に実測を入れる。 */
-export function buildSettingsSnapshot(realizedLcYen?: number): SignalSettingsSnapshot {
-  const hardMax = resolveScalpLcHardMax();
+ *  realizedLcYen(採用/約定レッグの |entry−SL|)を渡すと、AI委任の LC(lcFloor/lcCeiling)の value に実測を入れる。
+ *  ★v0.8.2: profile を渡すと B(signalB→A フォールバック)の実効設定を反映。省略/'A'=グローバル(現行と byte 一致)。 */
+export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalProfile): SignalSettingsSnapshot {
+  const hardMax = resolveScalpLcHardMax(profile);
   return {
-    lcFloor: knobSnapshot(resolveScalpLcFloorDirective(), realizedLcYen),
-    lcCeiling: knobSnapshot(resolveScalpLcCeilingDirective(), realizedLcYen),
+    lcFloor: knobSnapshot(resolveScalpLcFloorDirective(profile), realizedLcYen),
+    lcCeiling: knobSnapshot(resolveScalpLcCeilingDirective(profile), realizedLcYen),
     lcHardMax: { enabled: hardMax.enabled, value: hardMax.value },
-    trendVeto: knobSnapshot(resolveScalpTrendVetoDirective()),
-    cooldown: knobSnapshot(resolveScalpCooldownDirective()),
-    bias: knobSnapshot(resolveScalpBiasDirective()),
-    range: knobSnapshot(resolveScalpRangeDirective()),
+    trendVeto: knobSnapshot(resolveScalpTrendVetoDirective(profile)),
+    cooldown: knobSnapshot(resolveScalpCooldownDirective(profile)),
+    bias: knobSnapshot(resolveScalpBiasDirective(profile)),
+    range: knobSnapshot(resolveScalpRangeDirective(profile)),
+  };
+}
+
+/** ★v0.8.2: RecordedTrade + 系統タグ(A=null/B='B')から DB 挿入行を組み立てる純関数(テスト可能)。
+ *  A(system=null)は従来と byte 一致の行を作る。mode/meta の付与規約も従来どおり。 */
+export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | null): SignalTradeInsert {
+  return {
+    entryT: t.entryT, entryPrice: t.entryPrice, dir: t.dir,
+    exitT: t.exitT, exitPrice: t.exitPrice, pnl: t.pnl, qty: t.qty,
+    rationale: t.rationale,
+    // range 由来のみ 'range' タグ、それ以外は 'directional'(別枠集計・後方互換)。
+    mode: t.mode === 'range' ? 'range' : 'directional',
+    // v0.7.54: AI 自己レジーム/確信度/veto発火 + v0.7.56: 実効設定スナップショット を JSON で記録(後の A/B 実測用)。
+    meta: buildTradeMetaJson(t.planMeta, t.settings),
+    // ★v0.8.2: 系統タグ。A は null(=既存挙動と同一) / B は 'B'。
+    system: system ?? undefined,
   };
 }
 
@@ -562,131 +761,3 @@ export function realizedLcFromArmed(a: ArmedBracket): number | undefined {
   return undefined;
 }
 
-// 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。
-function persistTrade(t: RecordedTrade): void {
-  try {
-    const db = openDb(resolveDbPath());
-    try {
-      insertSignalTrade(db, {
-        entryT: t.entryT, entryPrice: t.entryPrice, dir: t.dir,
-        exitT: t.exitT, exitPrice: t.exitPrice, pnl: t.pnl, qty: t.qty,
-        rationale: t.rationale,
-        // range 由来のみ 'range' タグ、それ以外は 'directional'(別枠集計・後方互換)。
-        mode: t.mode === 'range' ? 'range' : 'directional',
-        // v0.7.54: AI 自己レジーム/確信度/veto発火 + v0.7.56: 実効設定スナップショット を JSON で記録(後の A/B 実測用)。
-        meta: buildTradeMetaJson(t.planMeta, t.settings),
-      });
-    } finally { db.close(); }
-  } catch (e) {
-    console.warn('[signalTrade] persist failed:', e instanceof Error ? e.message : String(e));
-  }
-}
-
-// 非公開: FLAT かつ間隔経過なら AI へプランを1本要求(非同期・多重発火ガード)。
-// 見送り(none)抑止中は、価格が節目を跨ぐ(shouldRearmOnLevel)まで要求しない。安全弁として
-// SUPPRESS_SAFETY_MS 経過時のみ抑止中でも1本要求を許す(詰まり防止)。
-function maybeRequestPlan(price: number, now: number): void {
-  if (planning || state.phase !== 'flat') return;
-  if (!inPollWindow(now)) return;   // 取引時間外は要求しない。
-
-  // クールダウンゲート: 決済(filled→flat)後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。
-  // 既存の見送り抑止/節目リアーム/間隔ゲートに AND(=最も早く弾く)。0で無効。cooldown 中は一度だけ log。
-  // ★v0.7.56: クールダウンが AI委任(mode==='ai')のときはゲートを無効化(AI の選択性に委ねる)。manual のみゲート。
-  const cd = resolveScalpCooldownDirective();
-  if (cd.mode === 'manual' && inCooldown(lastSignalExitAt, now, cd.value)) {
-    if (!cooldownLogged) {
-      const remain = Math.max(0, Math.ceil((lastSignalExitAt! + cd.value * 1000 - now) / 1000));
-      console.log(`[signalTrade] cooldown 決済後の再ARM抑止(あと${remain}秒)`);
-      cooldownLogged = true;
-    }
-    return;
-  }
-
-  // 見送り抑止ゲート: アンカーが在れば、節目クロス or 安全弁時間まで再計画を抑止する。
-  if (planSuppressedAnchor !== null) {
-    const levels = getLevelsSnapshot();
-    if (shouldRearmOnLevel(planSuppressedAnchor, price, levels)) {
-      const b = rearmBounds(planSuppressedAnchor, levels);
-      console.log(`[signalTrade] plan-rearm 節目クロス anchor=${Math.round(planSuppressedAnchor)} `
-        + `price=${Math.round(price)} bounds=[${b.lower ?? '±'},${b.upper ?? '±'}]`
-        + `${b.usedFallback ? ' (±50fallback)' : ''}`);
-      planSuppressedAnchor = null;   // 再武装(=以降は通常の間隔判定へ)。
-    } else if (now - lastPlanAt >= SUPPRESS_SAFETY_MS) {
-      console.log(`[signalTrade] plan-rearm 安全弁(${Math.round(SUPPRESS_SAFETY_MS / 60_000)}分経過) `
-        + `anchor=${Math.round(planSuppressedAnchor)} price=${Math.round(price)}`);
-      // アンカーは維持(none が返れば下でアンカー更新)。安全弁として1本だけ要求へ進む。
-    } else {
-      return;   // 抑止継続。
-    }
-  }
-
-  if (now - lastPlanAt < planIntervalMs) return;
-  planning = true;
-  lastPlanAt = now;   // 起動直後の多重要求を防ぐため、要求時点で更新する。
-  const anchorPrice = price;   // 見送りが返った場合のアンカー(要求時点の現在値)。
-  void (async () => {
-    try {
-      // route(/api/scalp-plan・trade2)と同一の共通関数を使う＝チャート撮影＋ビジョン＋ガードレール＋
-      // LC 上限/バイアス(monitor 設定既定)込みで提案を得る。override は渡さない(＝trade2 と同条件)。
-      // 画像未生成/LLM 失敗は result.ok=false → 下の分岐に入らず FLAT 維持(＝見送り)。
-      const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
-      const result = await runScalpPlanWithChart();
-      if (state.phase === 'flat' && result.ok) {
-        if (result.plan.direction === 'none') {
-          // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
-          planSuppressedAnchor = anchorPrice;
-          console.log(`[signalTrade] plan-suppress 見送り→節目まで抑止 anchor=${Math.round(anchorPrice)}`);
-        } else {
-          // v0.7.54: AI 自己レジーム/確信度(result.plan)＋トレンド veto 発火(result.vetoFired)を armed へ持ち回る。
-          const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
-          if (armed) {
-            // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る。
-            //   AI委任の LC は採用レッグの実測 LC 幅を value に入れる(measurable なもののみ)。
-            armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed));
-            state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
-            planSuppressedAnchor = null;         // actionable で抑止解除。
-            // ARM ごとに signalId を単調増加で採番し、現在シグナルを更新(filled 後も保持・none では更新しない)。
-            signalIdCounter += 1;
-            currentSignal = armedToCurrentSignal(armed, signalIdCounter);
-            broadcastSignalState(Date.now());    // ARM 時に即 broadcast(trade2 が即追従できるよう)。
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[signalTrade] plan request failed:', e instanceof Error ? e.message : String(e));
-    } finally {
-      planning = false;
-    }
-  })();
-}
-
-// 非公開: 現在の state + currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
-function broadcastSignalState(now: number): void {
-  const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-  const s = toSignalTradeState(state, price, now, currentSignal);
-  const json = JSON.stringify(s);
-  if (json !== lastBroadcastJson) {
-    lastBroadcastJson = json;
-    broadcast({ type: 'signalTrade', payload: s });
-  }
-}
-
-/** priceLoop から毎 tick 呼ぶ。現在値で遷移を進め、決済を記録し、必要なら次プランを要求し、
- *  state を SSE broadcast する。エンジン未起動時は何もしない(既存 SSE を汚さない)。 */
-export function feedSignalEngine(price: number, now: number): void {
-  if (!running) return;
-  try {
-    const { next, recorded } = advance(state, price, now);
-    state = next;
-    if (recorded) {
-      persistTrade(recorded);
-      // 決済(filled→flat)= 全建玉クローズ。クールダウン起点を記録し、ログ抑止を解除(次tickで一度出す)。
-      lastSignalExitAt = now;
-      cooldownLogged = false;
-    }
-    maybeRequestPlan(price, now);
-    broadcastSignalState(now);
-  } catch (e) {
-    console.warn('[signalTrade] tick error:', e instanceof Error ? e.message : String(e));
-  }
-}

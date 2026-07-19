@@ -54,6 +54,9 @@ export function initSchema(db: DatabaseSync): void {
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
   if (!stCols.includes('mode')) db.exec('ALTER TABLE signal_trades ADD COLUMN mode TEXT');
+  // ★v0.8.2: A/B 2系統タグ。'A'(実売買・現行) / 'B'(紙専用の並走エンジン)。
+  //   既存DBへ後付けマイグレーション(NULL は 'A' 扱い=後方互換・既存行は全て A)。
+  if (!stCols.includes('system')) db.exec('ALTER TABLE signal_trades ADD COLUMN system TEXT');
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
@@ -285,6 +288,7 @@ export interface SignalTradeRow {
   exit_t: number; exit_price: number; pnl: number; qty: number;
   rationale: string | null; meta: string | null;
   mode: string | null;   // 'range' / 'directional'(NULL は directional 扱い=後方互換)
+  system: string | null; // ★v0.8.2: 'A'(実売買) / 'B'(紙専用)。NULL は 'A' 扱い(後方互換)。
 }
 
 export interface SignalTradeInsert {
@@ -292,25 +296,37 @@ export interface SignalTradeInsert {
   exitT: number; exitPrice: number; pnl: number; qty: number;
   rationale?: string | null; meta?: string | null;
   mode?: string | null;   // レンジ由来='range' / 単方向='directional'。未指定は NULL(=directional)。
+  system?: 'A' | 'B' | null;   // ★v0.8.2: 系統タグ。A は NULL(=既存挙動と同一) / B は 'B'。
+}
+
+// ★v0.8.2: 系統フィルタ。'A' は NULL 行も含む(既存/A の行)。'B' は 'B' 行のみ。未指定は全件。
+export type SignalSystemFilter = 'A' | 'B';
+function systemWhere(system: SignalSystemFilter | undefined): { clause: string; params: string[] } {
+  if (system === 'B') return { clause: ' WHERE system = ?', params: ['B'] };
+  if (system === 'A') return { clause: " WHERE (system = ? OR system IS NULL)", params: ['A'] };
+  return { clause: '', params: [] };
 }
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
-    t.rationale ?? null, t.meta ?? null, t.mode ?? null);
+    t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null);
 }
 
-/** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。 */
-export function getSignalTrades(db: DatabaseSync, limit = 500): SignalTradeRow[] {
-  return db.prepare('SELECT * FROM signal_trades ORDER BY exit_t DESC LIMIT ?')
-    .all(Math.max(1, Math.min(2000, limit))) as unknown as SignalTradeRow[];
+/** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。
+ *  ★v0.8.2: system で系統を絞れる('A'=NULL含む / 'B'=Bのみ / 未指定=全件)。 */
+export function getSignalTrades(db: DatabaseSync, limit = 500, system?: SignalSystemFilter): SignalTradeRow[] {
+  const w = systemWhere(system);
+  return db.prepare(`SELECT * FROM signal_trades${w.clause} ORDER BY exit_t DESC LIMIT ?`)
+    .all(...w.params, Math.max(1, Math.min(2000, limit))) as unknown as SignalTradeRow[];
 }
 
-/** 全トレードを削除し、削除件数を返す(設定からの履歴消去用)。 */
-export function clearSignalTrades(db: DatabaseSync): number {
-  const before = (db.prepare('SELECT COUNT(*) AS n FROM signal_trades').get() as { n: number }).n;
-  db.prepare('DELETE FROM signal_trades').run();
+/** 指定系統(未指定=全件)のトレードを削除し、削除件数を返す(設定からの履歴消去用)。 */
+export function clearSignalTrades(db: DatabaseSync, system?: SignalSystemFilter): number {
+  const w = systemWhere(system);
+  const before = (db.prepare(`SELECT COUNT(*) AS n FROM signal_trades${w.clause}`).get(...w.params) as { n: number }).n;
+  db.prepare(`DELETE FROM signal_trades${w.clause}`).run(...w.params);
   return before;
 }

@@ -2,7 +2,7 @@ import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } fr
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPng } from '../chart/chartShot.js';
-import { resolvePort, resolveScalpTrendVetoYen } from '../configStore.js';
+import { resolvePort, resolveScalpTrendVetoYen, type SignalProfile } from '../configStore.js';
 import { barsFor } from '../loops/alertLoop.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
 import { openDb, resolveDbPath, getRecentBars, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
@@ -14,7 +14,7 @@ const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
 
 /** 構造化データ(数値主軸)＋自分の紙トレード成績を組み立てる(DB 読み・欠損は各ブロック省略)。
  *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。 */
-function buildRichScalpContext(symbol: string, currentPrice: number, now: number): string {
+function buildRichScalpContext(symbol: string, currentPrice: number, now: number, profile?: SignalProfile): string {
   if (!(typeof currentPrice === 'number' && currentPrice > 0)) return '';
   try {
     const db = openDb(resolveDbPath());
@@ -23,7 +23,9 @@ function buildRichScalpContext(symbol: string, currentPrice: number, now: number
       const levels = getLevelsSnapshot();
       const alerts = getRecentAlerts(db, 8);
       const session = getSessionOHLC(db, symbol, 1)[0] ?? null;
-      const trades = getSignalTrades(db, 30);
+      // ★v0.8.2: 自系統の紙成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
+      //   A は自分の履歴だけを見る=B の紙トレードに汚染されない(=A の提案が B の存在で変わらない)。
+      const trades = getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A');
       const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session });
       const history = buildScalpTradeHistory(trades, now);
       return [marketData, history].filter(Boolean).join('\n\n');
@@ -57,6 +59,9 @@ export interface RunScalpPlanOverrides {
   lcFloorYen?: number;
   /** 初期 LC(損切り)幅の上限[円]。未指定は monitor 設定(resolveScalpLcCeiling・既定65)。 */
   lcCeilingYen?: number;
+  /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル(実売買A・現行と byte 一致) / 'B'=System B(紙専用・signalB 設定)。
+   *  trend veto 閾値・LC/バイアス・自系統の紙成績文脈が profile で切り替わる。 */
+  profile?: SignalProfile;
 }
 
 /** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
@@ -102,14 +107,14 @@ export async function runScalpPlanWithChart(
 
   // ── レジーム/勢いを1回だけ算出し、(a)技術文脈への注入 と (b)コードの trend veto の両方へ同じ値を渡す(一貫)。
   //   リアルタイム足は close のみ(o/h/l/c 無し)なので close を OHLC 全てに写像する(swing=close の高安)。
-  const vetoYen = resolveScalpTrendVetoYen();
+  const vetoYen = resolveScalpTrendVetoYen(overrides.profile);
   const ohlc = barsFor(symbol).map(b => ({ t: b.t, o: b.close, h: b.close, l: b.close, c: b.close }));
   const regime = computeRegime(ohlc, Date.now(), vetoYen > 0 ? vetoYen : 100);
   // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
   const baseTech = buildNikkeiTechnical(undefined, price);
   // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
-  //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。
-  const rich = buildRichScalpContext(symbol, price ?? 0, Date.now());
+  //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
+  const rich = buildRichScalpContext(symbol, price ?? 0, Date.now(), overrides.profile);
   const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime)}${rich ? `\n\n${rich}` : ''}`;
   // veto 無効(0)は trend を渡さない=現行挙動(veto なし)。>0 のときだけ {dir,strong} を渡してコード veto を効かせる。
   const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
@@ -125,5 +130,6 @@ export async function runScalpPlanWithChart(
     lcFloorYen: overrides.lcFloorYen,
     lcCeilingYen: overrides.lcCeilingYen,
     trend,
+    profile: overrides.profile,   // ★v0.8.2: A(既定)は byte 一致 / B は signalB 設定で解決。
   });
 }

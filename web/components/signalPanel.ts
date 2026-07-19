@@ -73,7 +73,8 @@ const fmtPnl = (v: number): string => `${v >= 0 ? '+' : ''}${Math.round(v).toLoc
 // 遷移検知用の直前状態。
 let prevPhase: SignalTradeState['phase'] | null = null;
 let prevExitAt = 0;
-let clearTimer: ReturnType<typeof setTimeout> | null = null;
+// ★v0.8.2: 決済一時表示の自動クリアタイマは要素ごとに持つ(A/B の2パネルが互いのタイマを消さないように)。
+const clearTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 /**
  * 純関数: パネル本文を組み立てるための表示モデルを返す (DOM 非依存=テスト可能)。
@@ -125,10 +126,15 @@ export function buildSignalView(s: SignalTradeState | null, now: number = Date.n
   return { cls: 'flat', main: 'シグナル待機', rationale: '' };
 }
 
+/** renderSignalPanel のオプション。★v0.8.2: System B 併記に使う。
+ *  badge=先頭に付ける小ラベル(例 '📝紙のみ') / sound=音の遷移判定を行うか(B は false=A の音状態を汚さない)。 */
+export interface RenderPanelOpts { badge?: string; sound?: boolean }
+
 /** 既存描画パイプラインから毎 tick 呼ぶ。DOM を安全に (rationale は textContent) 更新する。 */
-export function renderSignalPanel(el: HTMLElement, s: SignalTradeState | null): void {
-  // ── 音の遷移判定 ──
-  if (s) {
+export function renderSignalPanel(el: HTMLElement, s: SignalTradeState | null, opts: RenderPanelOpts = {}): void {
+  const sound = opts.sound !== false;   // 既定 true(A)。B は sound:false で音・遷移状態を共有しない。
+  // ── 音の遷移判定(A のみ。prevPhase/prevExitAt は A 専用の共有状態) ──
+  if (s && sound) {
     if (prevPhase !== 'armed' && s.phase === 'armed') signalBeep('armed');
     if (prevPhase !== 'filled' && s.phase === 'filled') signalBeep('filled');
     if (s.lastExit && s.lastExit.at > prevExitAt) { signalBeep('exit'); prevExitAt = s.lastExit.at; }
@@ -138,11 +144,19 @@ export function renderSignalPanel(el: HTMLElement, s: SignalTradeState | null): 
   const view = buildSignalView(s);
   el.className = `signal-panel signal-${view.cls}`;
 
+  const children: HTMLElement[] = [];
+  if (opts.badge) {
+    const b = document.createElement('span');
+    b.className = 'signal-badge';
+    b.textContent = opts.badge;   // 固定文言(呼び出し側指定)
+    children.push(b);
+  }
   const mainEl = document.createElement('div');
   mainEl.className = 'signal-main';
   mainEl.textContent = view.main;
+  children.push(mainEl);
 
-  el.replaceChildren(mainEl);
+  el.replaceChildren(...children);
   if (view.rationale) {
     const r = document.createElement('div');
     r.className = 'signal-rationale';
@@ -150,10 +164,11 @@ export function renderSignalPanel(el: HTMLElement, s: SignalTradeState | null): 
     el.appendChild(r);
   }
 
-  // 直近決済の一時表示は数十秒後に「待機」へ自動で戻す (SSE が来なくても消えるよう保険)。
-  if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+  // 直近決済の一時表示は数十秒後に「待機」へ自動で戻す (SSE が来なくても消えるよう保険)。要素ごとのタイマ。
+  const existing = clearTimers.get(el);
+  if (existing) { clearTimeout(existing); clearTimers.delete(el); }
   if (view.cls === 'exit' && s?.lastExit) {
     const remain = EXIT_DISPLAY_MS - (Date.now() - s.lastExit.at);
-    clearTimer = setTimeout(() => renderSignalPanel(el, s), Math.max(500, remain + 100));
+    clearTimers.set(el, setTimeout(() => renderSignalPanel(el, s, opts), Math.max(500, remain + 100)));
   }
 }

@@ -16,6 +16,13 @@ export interface SignalTradesElements {
   openBtn: HTMLButtonElement; modal: HTMLElement; backdrop: HTMLElement;
   closeBtn: HTMLButtonElement; summary: HTMLElement; body: HTMLElement;
   canvas: HTMLCanvasElement;
+  // ★v0.8.2: A/B 系統セレクタ(履歴を A=実売買 / B=紙専用 で切り替え)。lite は非表示=常に A。
+  systemSelect?: HTMLSelectElement | null;
+}
+
+// ★v0.8.2: 系統セレクタの現在値('A'|'B')。要素が無ければ 'A'(既定・lite/後方互換)。
+function selectedSystem(el: SignalTradesElements): 'A' | 'B' {
+  return el.systemSelect && el.systemSelect.value === 'B' ? 'B' : 'A';
 }
 
 const fmtTime = (t: number | null): string => t == null ? '—'
@@ -120,7 +127,8 @@ export function initSignalTradesModal(el: SignalTradesElements): void {
     el.summary.innerHTML = '読み込み中…';
     el.body.innerHTML = '';
     try {
-      const res = await fetch(apiUrl('/api/signal-trades'));
+      const system = selectedSystem(el);
+      const res = await fetch(apiUrl(`/api/signal-trades?system=${system}`));
       const data = await res.json() as SignalTradesResp;
       if (data.error) { el.summary.innerHTML = `取得失敗: ${data.error}`; return; }
       const trades = data.trades ?? [];
@@ -146,6 +154,8 @@ export function initSignalTradesModal(el: SignalTradesElements): void {
   function close() { el.modal.classList.add('hidden'); }
   el.openBtn.addEventListener('click', open);
   el.closeBtn.addEventListener('click', close);
+  // ★v0.8.2: A/B 系統を切り替えたら再読込(選択系統の履歴+収益曲線を表示)。
+  el.systemSelect?.addEventListener('change', () => void load());
   el.backdrop.addEventListener('click', close);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !el.modal.classList.contains('hidden')) close();
@@ -154,19 +164,22 @@ export function initSignalTradesModal(el: SignalTradesElements): void {
   (el.modal as unknown as { _reloadSignalTrades?: () => void })._reloadSignalTrades = load;
 }
 
-/** 設定モーダルの「トレードシグナル履歴を消去」ボタンを配線する。 */
+/** 設定モーダルの「トレードシグナル履歴を消去」ボタンを配線する。
+ *  ★v0.8.2: getSystem で消去対象の系統(A|B)を決める(履歴モーダルのセレクタと連動)。既定は A。 */
 export function initSignalClearButton(
   btn: HTMLButtonElement,
   result: HTMLElement,
   onCleared?: () => void,
+  getSystem?: () => 'A' | 'B',
 ): void {
   btn.addEventListener('click', async () => {
-    if (!window.confirm('トレードシグナル履歴をすべて消去します。よろしいですか?')) return;
+    const system = getSystem?.() ?? 'A';
+    if (!window.confirm(`トレードシグナル履歴(系統${system})をすべて消去します。よろしいですか?`)) return;
     btn.disabled = true;
     result.className = 'update-result';
     result.textContent = '消去中…';
     try {
-      const res = await fetch(apiUrl('/api/signal-trades/clear'), { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/signal-trades/clear?system=${system}`), { method: 'POST' });
       const data = await res.json() as { ok?: boolean; cleared?: number; error?: string };
       if (res.ok && data.ok) {
         result.className = 'update-result ok';

@@ -167,6 +167,21 @@ initSettingsModal({
   selectRangeMode:     document.getElementById('scalp-range-mode') as HTMLSelectElement,
   checkScalpLcHardMaxEnabled: document.getElementById('scalp-lc-hardmax-enabled') as HTMLInputElement,
   inputScalpLcHardMax: document.getElementById('scalp-lc-hardmax') as HTMLInputElement,
+  // ★v0.8.2: System B(紙専用)の設定入力。
+  inputScalpLcCeilingB: document.getElementById('scalp-lc-ceiling-b') as HTMLInputElement,
+  selectScalpBiasB:     document.getElementById('scalp-bias-b') as HTMLSelectElement,
+  inputScalpCooldownB:  document.getElementById('scalp-cooldown-b') as HTMLInputElement,
+  inputScalpTrendVetoB: document.getElementById('scalp-trend-veto-b') as HTMLInputElement,
+  selectRangeEnabledB:  document.getElementById('scalp-range-enabled-b') as HTMLSelectElement,
+  inputScalpLcFloorB:   document.getElementById('scalp-lc-floor-b') as HTMLInputElement,
+  selectLcFloorModeB:   document.getElementById('scalp-lc-floor-mode-b') as HTMLSelectElement,
+  selectLcCeilingModeB: document.getElementById('scalp-lc-ceiling-mode-b') as HTMLSelectElement,
+  selectTrendVetoModeB: document.getElementById('scalp-trend-veto-mode-b') as HTMLSelectElement,
+  selectCooldownModeB:  document.getElementById('scalp-cooldown-mode-b') as HTMLSelectElement,
+  selectBiasModeB:      document.getElementById('scalp-bias-mode-b') as HTMLSelectElement,
+  selectRangeModeB:     document.getElementById('scalp-range-mode-b') as HTMLSelectElement,
+  selectHardMaxEnabledB: document.getElementById('scalp-lc-hardmax-enabled-b') as HTMLSelectElement,
+  inputScalpLcHardMaxB: document.getElementById('scalp-lc-hardmax-b') as HTMLInputElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,
   backdrop:       document.getElementById('settings-backdrop') as HTMLElement,
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
@@ -265,8 +280,13 @@ if (signalTradesModalEl) {
     summary:  document.getElementById('signal-trades-summary') as HTMLElement,
     body:     document.getElementById('signal-trades-body') as HTMLElement,
     canvas:   document.getElementById('signal-trades-equity') as HTMLCanvasElement,
+    systemSelect: document.getElementById('signal-trades-system') as HTMLSelectElement | null,
   });
 }
+
+// ★v0.8.2: 履歴消去の対象系統は、履歴モーダルの A/B セレクタと連動(未表示/lite は A)。
+const signalTradesSystemSelect = document.getElementById('signal-trades-system') as HTMLSelectElement | null;
+const currentSignalSystem = (): 'A' | 'B' => (signalTradesSystemSelect?.value === 'B' ? 'B' : 'A');
 
 // 設定モーダル内: シグナル音トグル + 履歴消去ボタン
 const signalSoundToggle = document.getElementById('settings-signal-sound') as HTMLInputElement | null;
@@ -276,7 +296,7 @@ const clearSignalResult = document.getElementById('settings-clear-signal-result'
 if (clearSignalBtn && clearSignalResult) {
   initSignalClearButton(clearSignalBtn, clearSignalResult, () => {
     (signalTradesModalEl as unknown as { _reloadSignalTrades?: () => void } | null)?._reloadSignalTrades?.();
-  });
+  }, currentSignalSystem);
 }
 
 const logsOpenBtn = document.getElementById('open-logs') as HTMLButtonElement | null;
@@ -298,6 +318,7 @@ const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
 if (levelsBodyEl) initLevelsPanel(levelsBodyEl);
 const signalPanelEl = document.getElementById('signal-panel');
+const signalPanelBEl = document.getElementById('signal-panel-b');   // ★v0.8.2: System B(📝紙のみ)併記
 // 当面、再起動後も直近アラートを残す（localStorage から復元）。
 restoreSavedBanners(bannerEl);
 const statusEl = document.getElementById('connection-status')!;
@@ -350,6 +371,12 @@ fetch(apiUrl('/api/version'))
       openLogsBtn: document.getElementById('open-logs'),
       paramsBtn: document.getElementById('params-btn'),
       scalpFieldset: document.getElementById('ai-entry-fieldset'),
+      // ★v0.8.2: lite は System B(紙専用)を一切表示しない。
+      signalPanelB: document.getElementById('signal-panel-b'),
+      signalTradesSystem: document.getElementById('signal-trades-system-row'),
+      // ★lite 追加(ユーザー指示): Web検索モデル設定 と データ(DB管理)fieldset も隠す。API キーは表示のまま。
+      webSearchModelFieldset: document.getElementById('websearch-model-fieldset'),
+      dataFieldset: document.getElementById('data-fieldset'),
     });
   })
   .catch(() => { if (versionEl) versionEl.textContent = 'v?'; });
@@ -483,6 +510,8 @@ connectStream({
   },
   onNews: (news) => renderNews(newsListEl, news),
   onSignalTrade: (s) => { if (signalPanelEl) renderSignalPanel(signalPanelEl, s); },
+  // ★v0.8.2: System B(紙専用)。📝紙のみバッジ付きで併記。音は鳴らさない(A の音状態を汚さない)。
+  onSignalTradeB: (s) => { if (signalPanelBEl) renderSignalPanel(signalPanelBEl, s, { badge: '📝紙のみ(B)', sound: false }); },
 });
 
 const updateToastEl = document.getElementById('update-toast');

@@ -7,7 +7,10 @@ import {
   advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   computeHold, inCooldown, buildPlanMeta, buildTradeMetaJson,
   buildSettingsSnapshot, knobSnapshot, realizedLcFromArmed,
-  type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal,
+  buildSignalTradeInsert, getSignalTradeState, getSignalTradeStateB,
+  getCurrentSignal, getSignalHold, getSignalPhase,
+  _resetSignalEngine, _resetSignalEngineB,
+  type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal, type RecordedTrade,
 } from './engine.js';
 import { resetConfigCache, type KnobDirective } from '../configStore.js';
 import type { SignalSettingsSnapshot } from '../types.js';
@@ -747,5 +750,60 @@ describe('buildSettingsSnapshot(config から実効設定)', () => {
     expect(s.lcCeiling).toEqual({ mode: 'ai', value: 118 });
     expect(s.lcFloor).toEqual({ mode: 'manual', value: 45 });   // floor は manual → 設定値
     expect(s.trendVeto).toEqual({ mode: 'ai' });                // trendVeto は LC 系でない → value 省略
+  });
+
+  // ★v0.8.2: buildSettingsSnapshot('B') は signalB を反映(A は不変)。
+  it("profile='B' は signalB を反映し、A(省略)は不変", () => {
+    writeConfig({ scalpLcCeilingYen: 65, signalB: { scalpLcCeilingYen: 40, scalpBias: 'short' } });
+    const a = buildSettingsSnapshot();          // A=省略
+    const b = buildSettingsSnapshot(undefined, 'B');
+    expect(a.lcCeiling).toEqual({ mode: 'manual', value: 65 });
+    expect(a.bias).toEqual({ mode: 'manual', value: 'none' });
+    expect(b.lcCeiling).toEqual({ mode: 'manual', value: 40 });   // signalB
+    expect(b.bias).toEqual({ mode: 'manual', value: 'short' });   // signalB
+    expect(b.lcFloor).toEqual({ mode: 'manual', value: 45 });     // signalB 未設定 → A(既定)へフォールバック
+  });
+});
+
+// ★v0.8.2: 系統タグ付き DB 挿入(純関数)。A(null)は従来と同一行 / B は system='B'。
+describe('buildSignalTradeInsert(系統タグ)', () => {
+  const base: RecordedTrade = {
+    entryT: 1000, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 38050, pnl: 50, qty: 1, rationale: 'x',
+  };
+  it('A(null)は system 省略(=既存挙動)・mode=directional', () => {
+    const ins = buildSignalTradeInsert(base, null);
+    expect(ins.system).toBeUndefined();
+    expect(ins.mode).toBe('directional');
+    expect(ins.dir).toBe('buy');
+  });
+  it("B は system='B'", () => {
+    const ins = buildSignalTradeInsert(base, 'B');
+    expect(ins.system).toBe('B');
+  });
+  it('range 由来は mode=range(タグは系統と独立)', () => {
+    const ins = buildSignalTradeInsert({ ...base, mode: 'range' }, 'B');
+    expect(ins.mode).toBe('range');
+    expect(ins.system).toBe('B');
+  });
+});
+
+// ★v0.8.2: B は currentSignal/hold を一切露出しない。A の getter は B の存在に影響されない(実売買 A の不変性)。
+describe('System B は currentSignal を露出しない / A は不変', () => {
+  beforeEach(() => { _resetSignalEngine(); _resetSignalEngineB(); });
+  it('getSignalTradeStateB は flat で signal/hold を持たない', () => {
+    const sb = getSignalTradeStateB(123);
+    expect(sb.phase).toBe('flat');
+    expect(sb.signal).toBeUndefined();
+    expect(sb.hold).toBeUndefined();
+  });
+  it('A の getter(currentSignal/hold/phase/state)は B を動かしても不変(初期=未ARM)', () => {
+    // B を reset しても A の公開契約は初期状態のまま(相互干渉なし)。
+    _resetSignalEngineB();
+    expect(getCurrentSignal()).toBeNull();
+    expect(getSignalHold()).toBeNull();
+    expect(getSignalPhase()).toBe('flat');
+    const sa = getSignalTradeState(123);
+    expect(sa.phase).toBe('flat');
+    expect(sa.signal).toBeUndefined();
   });
 });

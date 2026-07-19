@@ -137,5 +137,8 @@ export type SSEEvent =
   | { type: 'levels'; payload: LevelsResult }
   // v0.7.24: 市場開場フラグ。価格ボードが「取引時間外(閉場・正常)」と「取得不能(フィード障害)」を区別する。
   | { type: 'market'; payload: { open: boolean } }
-  // トレードシグナルの現在状態(flat/armed/filled)。既存イベントは不変・これは新規追加。
-  | { type: 'signalTrade'; payload: SignalTradeState };
+  // トレードシグナルの現在状態(flat/armed/filled)。既存イベントは不変・これは A(実売買)系統。
+  | { type: 'signalTrade'; payload: SignalTradeState }
+  // ★v0.8.2: System B(紙専用の並走系統)の現在状態。A とは別イベントで露出する。
+  //   B は currentSignal/hold を持たない(trade2 は B を絶対に追わない)=payload の signal/hold は常に欠落。
+  | { type: 'signalTradeB'; payload: SignalTradeState };

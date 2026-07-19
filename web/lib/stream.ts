@@ -12,6 +12,8 @@ interface StreamHandlers {
   onMarket?: (open: boolean) => void;
   // トレードシグナル (表示専用・紙トラッキング)。backend の broadcast({type:'signalTrade'}) を受ける。省略可。
   onSignalTrade?: (s: SignalTradeState) => void;
+  // ★v0.8.2: System B(紙専用の並走系統)。backend の broadcast({type:'signalTradeB'}) を受ける。省略可。
+  onSignalTradeB?: (s: SignalTradeState) => void;
 }
 
 export function connectStream(handlers: StreamHandlers): () => void {
@@ -48,6 +50,11 @@ export function connectStream(handlers: StreamHandlers): () => void {
     es.addEventListener('signalTrade', (e) => {
       try { handlers.onSignalTrade?.(JSON.parse((e as MessageEvent).data)); }
       catch (err) { console.error('parse signalTrade', err); }
+    });
+
+    es.addEventListener('signalTradeB', (e) => {
+      try { handlers.onSignalTradeB?.(JSON.parse((e as MessageEvent).data)); }
+      catch (err) { console.error('parse signalTradeB', err); }
     });
 
     es.addEventListener('market', (e) => {

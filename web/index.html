@@ -79,7 +79,7 @@
         <div class="exit-hint">OpenAI は画像対応で安定運用の要（少額課金）。Web検索キーは<strong>任意</strong>: チャットの Web 検索で使う専用キーで、空欄なら上の Gemini キーを流用します（課金 Gemini グラウンディング用）。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます。</strong></div>
       </fieldset>
 
-      <fieldset class="settings-section">
+      <fieldset class="settings-section" id="websearch-model-fieldset">
         <legend>Web検索モデル</legend>
         <div class="setting-row">
           <label>Web検索モデル (Gemini・grounding 対応)</label>
@@ -95,65 +95,144 @@
 
       <fieldset class="settings-section" id="ai-entry-fieldset">
         <legend>AIエントリー</legend>
-        <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。</div>
-        <div class="setting-row">
+        <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。<br>★v0.8.2: 各行は <b>A(実売買・trade2が追従)</b> と <b>B(📝紙のみ・並走比較)</b> を横並びで設定します。B は空欄/「A追従」なら A と同じ設定で動きます(B だけ差分を付けて比較)。B は実売買に一切渡りません。</div>
+        <div class="setting-row ab-row">
           <label>初期LC下限(円)</label>
-          <select id="scalp-lc-floor-mode" class="knob-mode">
-            <option value="manual">手動</option>
-            <option value="ai">AI委任</option>
-          </select>
-          <input type="number" id="scalp-lc-floor" autocomplete="off" min="20" max="300" step="1" placeholder="45 (既定)" />
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <select id="scalp-lc-floor-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-lc-floor" autocomplete="off" min="20" max="300" step="1" placeholder="45 (既定)" />
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-lc-floor-mode-b" class="knob-mode">
+              <option value="">A追従</option>
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-lc-floor-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
+          </span>
         </div>
-        <div class="setting-row">
+        <div class="setting-row ab-row">
           <label>最大初期LC(円)</label>
-          <select id="scalp-lc-ceiling-mode" class="knob-mode">
-            <option value="manual">手動</option>
-            <option value="ai">AI委任</option>
-          </select>
-          <input type="number" id="scalp-lc-ceiling" autocomplete="off" min="20" max="300" step="1" placeholder="65 (既定)" />
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <select id="scalp-lc-ceiling-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-lc-ceiling" autocomplete="off" min="20" max="300" step="1" placeholder="65 (既定)" />
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-lc-ceiling-mode-b" class="knob-mode">
+              <option value="">A追従</option>
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-lc-ceiling-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
+          </span>
         </div>
-        <div class="setting-row">
+        <div class="setting-row ab-row">
           <label>トレンドveto(円)</label>
-          <select id="scalp-trend-veto-mode" class="knob-mode">
-            <option value="manual">手動</option>
-            <option value="ai">AI委任</option>
-          </select>
-          <input type="number" id="scalp-trend-veto" autocomplete="off" min="0" max="1000" step="1" placeholder="100 (既定・0で無効)" />
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <select id="scalp-trend-veto-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-trend-veto" autocomplete="off" min="0" max="1000" step="1" placeholder="100 (既定・0で無効)" />
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-trend-veto-mode-b" class="knob-mode">
+              <option value="">A追従</option>
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-trend-veto-b" autocomplete="off" min="0" max="1000" step="1" placeholder="A追従" />
+          </span>
         </div>
-        <div class="setting-row">
+        <div class="setting-row ab-row">
           <label>クールダウン(秒)</label>
-          <select id="scalp-cooldown-mode" class="knob-mode">
-            <option value="manual">手動</option>
-            <option value="ai">AI委任</option>
-          </select>
-          <input type="number" id="scalp-cooldown" autocomplete="off" min="0" max="3600" step="1" placeholder="90 (既定・0で無効)" />
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <select id="scalp-cooldown-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-cooldown" autocomplete="off" min="0" max="3600" step="1" placeholder="90 (既定・0で無効)" />
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-cooldown-mode-b" class="knob-mode">
+              <option value="">A追従</option>
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-cooldown-b" autocomplete="off" min="0" max="3600" step="1" placeholder="A追従" />
+          </span>
         </div>
-        <div class="setting-row">
+        <div class="setting-row ab-row">
           <label>バイアス</label>
-          <select id="scalp-bias-mode" class="knob-mode">
-            <option value="manual">手動</option>
-            <option value="ai">AI委任</option>
-          </select>
-          <select id="scalp-bias">
-            <option value="none">両方向（既定）</option>
-            <option value="long">買い中心（売り新規を見送り）</option>
-            <option value="short">売り中心（買い新規を見送り）</option>
-          </select>
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <select id="scalp-bias-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <select id="scalp-bias">
+              <option value="none">両方向（既定）</option>
+              <option value="long">買い中心（売り新規を見送り）</option>
+              <option value="short">売り中心（買い新規を見送り）</option>
+            </select>
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-bias-mode-b" class="knob-mode">
+              <option value="">A追従</option>
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <select id="scalp-bias-b">
+              <option value="">A追従</option>
+              <option value="none">両方向</option>
+              <option value="long">買い中心</option>
+              <option value="short">売り中心</option>
+            </select>
+          </span>
         </div>
-        <div class="setting-row">
+        <div class="setting-row ab-row">
           <label>レンジ両面(実験)</label>
-          <select id="scalp-range-mode" class="knob-mode">
-            <option value="manual">手動</option>
-            <option value="ai">AI委任</option>
-          </select>
-          <input type="checkbox" id="scalp-range-enabled" />
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <select id="scalp-range-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="checkbox" id="scalp-range-enabled" />
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-range-mode-b" class="knob-mode">
+              <option value="">A追従</option>
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <select id="scalp-range-enabled-b">
+              <option value="">A追従</option>
+              <option value="true">ON</option>
+              <option value="false">OFF</option>
+            </select>
+          </span>
         </div>
-        <div class="setting-row">
+        <div class="setting-row ab-row">
           <label>LC安全上限(円)</label>
-          <input type="checkbox" id="scalp-lc-hardmax-enabled" />
-          <input type="number" id="scalp-lc-hardmax" autocomplete="off" min="20" max="500" step="1" placeholder="150 (既定)" />
+          <span class="ab-col"><span class="ab-tag">A</span>
+            <input type="checkbox" id="scalp-lc-hardmax-enabled" />
+            <input type="number" id="scalp-lc-hardmax" autocomplete="off" min="20" max="500" step="1" placeholder="150 (既定)" />
+          </span>
+          <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
+            <select id="scalp-lc-hardmax-enabled-b">
+              <option value="">A追従</option>
+              <option value="true">有効</option>
+              <option value="false">無効</option>
+            </select>
+            <input type="number" id="scalp-lc-hardmax-b" autocomplete="off" min="20" max="500" step="1" placeholder="A追従" />
+          </span>
         </div>
-        <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。monitorのシグナルエンジンと jp225-Trade の両方に反映されます。<br>★LC安全上限: 実弾の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・150円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。</div>
+        <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。<b>A</b> は monitorのシグナルエンジンと jp225-Trade の両方(実売買)に反映されます。<b>B</b> は紙専用の並走比較のみで、実売買には一切渡りません。<br>★LC安全上限: 実弾の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・150円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。</div>
       </fieldset>
 
       <div class="setting-row">
@@ -181,7 +260,7 @@
         <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
       </fieldset>
 
-      <fieldset class="settings-section">
+      <fieldset class="settings-section" id="data-fieldset">
         <legend>データ</legend>
         <div class="version-row">
           <button type="button" id="settings-merge-db" class="btn-secondary">別PCのDBをマージ</button>
@@ -361,6 +440,14 @@
           <button type="button" id="signal-trades-close" class="btn-secondary">閉じる</button>
         </div>
       </div>
+      <!-- ★v0.8.2: A/B 系統セレクタ。A=実売買 / B=紙専用。lite は非表示=常に A。 -->
+      <div id="signal-trades-system-row" class="setting-row" style="margin-bottom:8px">
+        <label for="signal-trades-system">系統</label>
+        <select id="signal-trades-system">
+          <option value="A">A（実売買）</option>
+          <option value="B">B（📝紙のみ）</option>
+        </select>
+      </div>
       <div id="signal-trades-summary" class="ah-summary"></div>
       <canvas id="signal-trades-equity" class="signal-equity"></canvas>
       <div id="signal-trades-body" class="ah-body"></div>
@@ -387,7 +474,12 @@
       <section id="price-grid" class="price-grid"></section>
 
       <!-- トレードシグナル (表示専用・紙トラッキング)。主要レベルの直上に目立つパネルで現在シグナルを表示。 -->
+      <!-- A=実売買系統(trade2 が追従)。B=紙専用の並走系統(下段・📝紙のみ)。lite は B を非表示。 -->
       <section id="signal-panel" class="signal-panel signal-flat">
+        <div class="signal-main">シグナル待機</div>
+      </section>
+      <section id="signal-panel-b" class="signal-panel signal-flat signal-panel-b">
+        <span class="signal-badge">📝紙のみ(B)</span>
         <div class="signal-main">シグナル待機</div>
       </section>
 

@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { register, unregister } from '../sse/broker.js';
 import { getPrices, getNews } from '../cache.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
-import { getSignalTradeState } from '../signalTrade/engine.js';
+import { getSignalTradeState, getSignalTradeStateB } from '../signalTrade/engine.js';
 import { isMarketOpen } from '../../collector/session.js';
 
 export function streamHandler(req: Request, res: Response): void {
@@ -31,6 +31,8 @@ export function streamHandler(req: Request, res: Response): void {
 
   // トレードシグナルの現在状態を接続直後に一回送る(engine の tick broadcast を取りこぼす新規接続を補う)。
   res.write(`event: signalTrade\ndata: ${JSON.stringify(getSignalTradeState())}\n\n`);
+  // ★v0.8.2: System B(紙専用)の現在状態も接続直後に一回送る(A とは別イベント。currentSignal は含まない)。
+  res.write(`event: signalTradeB\ndata: ${JSON.stringify(getSignalTradeStateB())}\n\n`);
 
   register(res);
   req.on('close', () => unregister(res));

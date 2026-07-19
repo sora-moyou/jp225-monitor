@@ -21,14 +21,25 @@ export interface VariantElements {
   openLogsBtn?: ToggleableEl | null;       // ④ サーバログ(📋)
   paramsBtn?: ToggleableEl | null;         // ④ 詳細パラメータ(🎛️)
   scalpFieldset?: ToggleableEl | null;     // ⑤ 設定モーダル「AIエントリー」fieldset
+  // ★v0.8.2: lite は System B(紙専用)を一切表示しない。パネルの B 併記と履歴の A/B 系統セレクタを隠す
+  //   (AIエントリー fieldset は lite で既に非表示=B 設定列も自動で隠れる)。
+  signalPanelB?: ToggleableEl | null;      // パネルの B 併記セクション(#signal-panel-b)
+  signalTradesSystem?: ToggleableEl | null; // 履歴の A/B 系統セレクタ行(#signal-trades-system-row)
+  // ★v0.8.2(ユーザー指示): lite は Web検索モデル設定 と データ(DB管理) fieldset も隠す(API キーは表示のまま)。
+  webSearchModelFieldset?: ToggleableEl | null; // 設定「Web検索モデル」fieldset(#websearch-model-fieldset)
+  dataFieldset?: ToggleableEl | null;           // 設定「データ」fieldset(#data-fieldset)
 }
 
 // variant に応じて表示/非表示を切り替える純関数。
-// full は何も隠さない(要素は触らない=現行と完全同一)。lite は 4 要素を隠す。
+// full は何も隠さない(要素は触らない=現行と完全同一)。lite は指定要素を隠す。
 // null 要素はスキップ(部分 DOM/テストでも安全)。
 export function applyVariantVisibility(variant: Variant, els: VariantElements): void {
   if (variant !== 'lite') return; // full=全表示。安全側。
-  const targets = [els.alertsHistoryBtn, els.openLogsBtn, els.paramsBtn, els.scalpFieldset];
+  const targets = [
+    els.alertsHistoryBtn, els.openLogsBtn, els.paramsBtn, els.scalpFieldset,
+    els.signalPanelB, els.signalTradesSystem,   // ★v0.8.2: B 関連を lite で非表示。
+    els.webSearchModelFieldset, els.dataFieldset,   // ★v0.8.2(ユーザー指示): モデル設定 と データ を lite で非表示。
+  ];
   for (const el of targets) {
     if (!el) continue;
     el.hidden = true;

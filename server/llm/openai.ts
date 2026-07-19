@@ -13,7 +13,7 @@ import {
   resolveApiKey,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective,
-  type ScalpBias, type KnobSource,
+  type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
 import { tokyoCashOpen } from '../../collector/session.js';
 import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
@@ -1194,6 +1194,9 @@ export interface ScalpPlanInput {
   /** 生きたトレンド(勢い)のヒント。runner が barsFor から computeRegime で算出して渡す。
    *  strong のときトレンドに逆行するフェード新規を enforcePlanConstraints が落とす。未指定は veto なし(現行挙動)。 */
   trend?: TrendHint;
+  /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル設定(=現行挙動と byte 一致・実売買A) /
+   *  'B'=System B の独立設定(signalB 優先→未設定はグローバルへフォールバック)。各 knob の解決だけが切り替わる。 */
+  profile?: SignalProfile;
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -1405,12 +1408,14 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const refPrice = prices.find(p => p.symbol === symbol)?.price ?? 0;
   // ★v0.7.56: 各 knob の directive(manual/ai)を解決。既定は全て manual=現状の挙動を一切変えない。
   //   manual は数値/enum を強制(従来どおり)/ ai は該当制約を課さず AI に委任する。LC安全上限は独立の安全系。
-  const floorD = resolveScalpLcFloorDirective();
-  const ceilingD = resolveScalpLcCeilingDirective();
-  const biasD = resolveScalpBiasDirective();
-  const rangeD = resolveScalpRangeDirective();
-  const trendD = resolveScalpTrendVetoDirective();
-  const hardMax = resolveScalpLcHardMax();
+  // ★v0.8.2: プロファイル(A|B)で knob を解決。未指定=A=グローバル(現行と byte 一致)。
+  const profile = input.profile;
+  const floorD = resolveScalpLcFloorDirective(profile);
+  const ceilingD = resolveScalpLcCeilingDirective(profile);
+  const biasD = resolveScalpBiasDirective(profile);
+  const rangeD = resolveScalpRangeDirective(profile);
+  const trendD = resolveScalpTrendVetoDirective(profile);
+  const hardMax = resolveScalpLcHardMax(profile);
   // 初期 LC 幅の上限とバイアスは、要求で明示されなければ monitor 設定を既定に使う(＝直呼びのシグナルエンジンも
   // monitor 設定に従う=単一の真実)。上限はサニタイズ・クランプ後にプロンプトへ反映し、最終保証は enforcePlanConstraints。
   const ceilingMode = ceilingD.mode;
@@ -1424,7 +1429,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const trendVetoYen = trendD.mode === 'manual' ? trendD.value : 0;
   // ★委任ノート: AI に委任した knob だけ「この値はあなたが決める(自由・根拠を述べよ)」を追記する。
   //   全 knob 手動(既定)では '' = プロンプトは従来と byte 単位で不変(回帰なし)。
-  const cooldownD = resolveScalpCooldownDirective();
+  const cooldownD = resolveScalpCooldownDirective(profile);
   const delegationNote = buildDelegationNote(
     { lcFloor: floorD.mode, lcCeiling: ceilingD.mode, trendVeto: trendD.mode,
       cooldown: cooldownD.mode, bias: biasD.mode, range: rangeD.mode },

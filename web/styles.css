@@ -146,6 +146,19 @@ body {
 .signal-exit { border-color: var(--up); }
 .signal-exit .signal-main { color: var(--up); }
 
+/* ★v0.8.2: System B(紙専用)併記パネル。A の直下に少し控えめに置く(点線・薄め)。 */
+.signal-panel-b { margin-top: 6px; border-style: dashed; opacity: 0.92; }
+.signal-badge {
+  display: inline-block; font-size: 10px; font-weight: 700; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-bottom: 3px;
+  letter-spacing: 0.02em;
+}
+/* ★v0.8.2: AIエントリー設定の A/B 横並び行。A 群・B 群を並べ、B 群は左に細い区切り。 */
+.ab-row { flex-wrap: wrap; align-items: flex-start; }
+.ab-col { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ab-col-b { padding-left: 8px; margin-left: 4px; border-left: 1px dashed var(--border); }
+.ab-tag { font-size: 10px; font-weight: 700; color: var(--muted); min-width: 10px; }
+
 /* トレードシグナル履歴モーダル: 収益曲線 canvas と集計 */
 .signal-equity { width: 100%; height: 160px; display: block; margin: 8px 0 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
 .signal-stats { display: flex; gap: 18px; font-size: 13px; margin-bottom: 6px; }

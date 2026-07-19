@@ -113,7 +113,7 @@ function trade(over: Partial<SignalTradeRow>): SignalTradeRow {
   return {
     id: 1, entry_t: 1000, entry_price: 38000, dir: 'buy',
     exit_t: 2000, exit_price: 38050, pnl: 50, qty: 1,
-    rationale: null, meta: null, mode: null, ...over,
+    rationale: null, meta: null, mode: null, system: null, ...over,
   };
 }
 
