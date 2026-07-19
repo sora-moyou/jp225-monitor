@@ -57,7 +57,11 @@ console.log('wrote', metaOut, meta);
 
 if (dry) { console.log('--dry: skip GitHub upload'); process.exit(0); }
 
-try { execSync('gh release view basedata-latest', { stdio: 'ignore' }); }
-catch { execSync('gh release create basedata-latest --title "Base data (N225 mini 1min)" --notes "Auto-published base data. Updated weekly."', { stdio: 'inherit' }); }
-execSync(`gh release upload basedata-latest ${out} ${metaOut} --clobber`, { stdio: 'inherit' });
-console.log('✅ uploaded gz + meta to release basedata-latest');
+// ★basedata-latest は必ず public の jp225-monitor へ公開する(アプリの取得元 server/routes/basedata.ts と一致)。
+//   dev origin が private の jp225-monitor2 に移ったため、--repo を明示しないと private 側へ誤公開してしまう
+//   (=アプリが取得できず取込不能)。取り違え防止に repo をハードコードする。
+const BASEDATA_REPO = 'sora-moyou/jp225-monitor';
+try { execSync(`gh release view basedata-latest --repo ${BASEDATA_REPO}`, { stdio: 'ignore' }); }
+catch { execSync(`gh release create basedata-latest --repo ${BASEDATA_REPO} --title "Base data (N225 mini 1min)" --notes "Auto-published base data. Updated weekly."`, { stdio: 'inherit' }); }
+execSync(`gh release upload basedata-latest ${out} ${metaOut} --repo ${BASEDATA_REPO} --clobber`, { stdio: 'inherit' });
+console.log(`✅ uploaded gz + meta to release basedata-latest (${BASEDATA_REPO})`);
