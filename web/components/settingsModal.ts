@@ -196,7 +196,15 @@ function providerMark(p: { enabled: boolean; paused: boolean } | undefined): { m
   return { mark: '🟢', title: '有効(設定済)' };
 }
 
-export function initSettingsModal(el: SettingsElements): void {
+// ★v0.8.3: 設定モーダル分割後、🎛️(詳細設定)側からも移設フィールド(Web検索モデル/AIエントリー/データ)を
+//   読み込み/保存できるよう、全入力の load(refresh) と save(doSave) を戻り値として公開する。
+//   入力は id 参照(getElementById)なので DOM がどちらのモーダルにあっても同じハンドラで動く。
+export interface SettingsController {
+  refresh: () => Promise<void>;
+  save: () => Promise<void>;
+}
+
+export function initSettingsModal(el: SettingsElements): SettingsController {
   let current: SettingsResponse | null = null;
 
   async function refresh() {
@@ -607,8 +615,8 @@ export function initSettingsModal(el: SettingsElements): void {
     el.inputGroq.value = '';
     el.inputOpenai.value = '';
     el.inputWebSearch.value = '';
-    el.inputWebSearchModel.value = '';
-    el.inputWebSearchOpenaiModel.value = '';
+    // ★Web検索モデル欄は🎛️(詳細設定)へ移設済み=⚙️の閉じるでクリアしない(閉じる度に空になり
+    //   保存で既定へ戻る事故を防ぐ。ライフサイクルは🎛️の open→refresh が管理)。
   }
 
   el.openBtn.addEventListener('click', () => { void open(); });
@@ -618,7 +626,9 @@ export function initSettingsModal(el: SettingsElements): void {
     if (e.key === 'Escape' && !el.modal.classList.contains('hidden')) close();
   });
 
-  el.saveBtn.addEventListener('click', async () => {
+  // ★v0.8.3: 全入力(APIキー＋移設した Web検索モデル/AIエントリー/データ操作は id 参照)を1回の POST で保存する。
+  //   ⚙️保存ボタンと 🎛️保存ボタンの両方から呼ぶ(どちらから押しても同じ項目・同じ /api/settings/keys で byte 等価)。
+  async function doSave(): Promise<void> {
     el.saveBtn.disabled = true;
     const originalText = el.saveBtn.textContent ?? '保存';
     el.saveBtn.textContent = '保存中...';
@@ -697,7 +707,9 @@ export function initSettingsModal(el: SettingsElements): void {
       el.saveBtn.disabled = false;
       el.saveBtn.textContent = originalText;
     }
-  });
+  }
+
+  el.saveBtn.addEventListener('click', () => { void doSave(); });
 
   // 初回起動時にプロバイダ未設定なら自動オープン
   void (async () => {
@@ -706,4 +718,7 @@ export function initSettingsModal(el: SettingsElements): void {
       void open();
     }
   })();
+
+  // ★v0.8.3: 🎛️(詳細設定)側からも移設フィールドを読み込み/保存できるよう公開。
+  return { refresh, save: doSave };
 }

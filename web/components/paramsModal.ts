@@ -40,6 +40,11 @@ export interface ParamsElements {
   saveBtn: HTMLButtonElement;
   portWarning: HTMLElement;
   status: HTMLElement;
+  // ★v0.8.3: 設定モーダル分割で 🎛️ に移設したフィールド(Web検索モデル/AIエントリー/データ)の
+  //   読込・保存は設定モーダル側のコントローラに委譲する(id 参照なので同じハンドラで動く)。
+  //   開いた時に onOpen で移設フィールドを反映し、保存時に onSave で同じ /api/settings/keys に保存する。
+  onOpen?: () => Promise<void> | void;
+  onSave?: () => Promise<void> | void;
 }
 
 export function initParamsModal(el: ParamsElements): void {
@@ -64,7 +69,12 @@ export function initParamsModal(el: ParamsElements): void {
     }
   }
 
-  function open() { el.modal.classList.remove('hidden'); void refresh(); }
+  function open() {
+    el.modal.classList.remove('hidden');
+    void refresh();
+    // ★v0.8.3: 移設フィールド(Web検索モデル/AIエントリー/データ)を設定コントローラで反映。
+    void el.onOpen?.();
+  }
   function close() { el.modal.classList.add('hidden'); }
 
   el.openBtn.addEventListener('click', open);
@@ -79,6 +89,9 @@ export function initParamsModal(el: ParamsElements): void {
     const orig = el.saveBtn.textContent ?? '保存';
     el.saveBtn.textContent = '保存中...';
     try {
+      // ★v0.8.3: 先に移設フィールド(Web検索モデル/AIエントリー/データ操作は id 参照)を
+      //   設定コントローラ経由で保存(⚙️ 保存と同じ /api/settings/keys・同じ項目)。
+      await el.onSave?.();
       const body: Record<string, number> = {};
       for (const p of PARAMS) {
         const input = inputOf(p.inputId);

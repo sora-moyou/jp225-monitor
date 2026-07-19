@@ -141,7 +141,9 @@ setupResize('levels-resize', '.levels-panel', 'levels-height', 60);
 setupColResize('col-resize', '.main-grid', 'main-split');
 
 // 設定モーダル
-initSettingsModal({
+// ★v0.8.3: 戻り値のコントローラ(refresh/save)を 🎛️(詳細設定)側にも渡し、
+//   移設した Web検索モデル/AIエントリー/データを 🎛️ の開閉・保存でも往復させる。
+const settingsCtl = initSettingsModal({
   openBtn:        document.getElementById('settings-btn') as HTMLButtonElement,
   modal:          document.getElementById('settings-modal') as HTMLElement,
   closeBtn:       document.getElementById('settings-close') as HTMLButtonElement,
@@ -206,6 +208,9 @@ initParamsModal({
   saveBtn:     document.getElementById('params-save') as HTMLButtonElement,
   portWarning: document.getElementById('params-port-warning') as HTMLElement,
   status:      document.getElementById('params-status') as HTMLElement,
+  // ★v0.8.3: 🎛️ を開いたら移設フィールドを反映し、🎛️ 保存で移設フィールドも保存する。
+  onOpen:      () => settingsCtl.refresh(),
+  onSave:      () => settingsCtl.save(),
 });
 
 // ③ Ctrl + / Ctrl - / Ctrl 0 でチャート以外のUI文字サイズを可変 (zoom)。localStorage 永続。

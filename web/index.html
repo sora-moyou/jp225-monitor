@@ -16,8 +16,8 @@
       <button id="alerts-history-btn" class="topbar-btn" title="アラート履歴・的中率">📊</button>
       <button id="signal-trades-btn" class="topbar-btn" title="トレードシグナル履歴・収益曲線">📈</button>
       <button id="open-logs" class="topbar-btn" title="サーバログを見る">📋</button>
-      <button id="params-btn" class="topbar-btn" title="詳細パラメータ設定">🎛️</button>
-      <button id="settings-btn" class="settings-btn" title="API設定">⚙️</button>
+      <button id="params-btn" class="topbar-btn" title="詳細設定">🎛️</button>
+      <button id="settings-btn" class="settings-btn" title="設定">⚙️</button>
     </div>
   </header>
 
@@ -26,7 +26,7 @@
     <div id="settings-backdrop" class="modal-backdrop"></div>
     <div class="modal-content">
       <div class="modal-topbar">
-        <h2>API キー設定</h2>
+        <h2>設定（APIキー）</h2>
         <div class="modal-actions">
           <button type="button" id="settings-close" class="btn-secondary">閉じる</button>
           <button type="button" id="settings-save" class="btn-primary">保存</button>
@@ -79,6 +79,59 @@
         <div class="exit-hint">OpenAI は画像対応で安定運用の要（少額課金）。Web検索キーは<strong>任意</strong>: チャットの Web 検索で使う専用キーで、空欄なら上の Gemini キーを流用します（課金 Gemini グラウンディング用）。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます。</strong></div>
       </fieldset>
 
+<div class="setting-row">
+        <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
+        <div id="settings-test-result" class="update-result"></div>
+        <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。<br>各キー左のマーク: 🟢 有効(設定済) / 🟡 待機中(429=枠切れで一時休止) / ⚪ 未設定 ／「キーを検証」後: ✅ 実際に通った / ❌ 無効(401等)。</div>
+      </div>
+
+      <fieldset class="settings-section">
+        <legend>更新</legend>
+        <div class="version-row">
+          現在のバージョン: <span id="settings-current-version">…</span>
+          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
+        </div>
+        <div id="settings-update-result" class="update-result"></div>
+        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
+      </fieldset>
+
+      <fieldset class="settings-section">
+        <legend>終了</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="settings-full-exit" />
+          完全終了（ウィンドウ×／終了でデーモンの価格収集も停止する）
+        </label>
+        <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
+      </fieldset>
+
+<fieldset class="settings-section">
+        <legend>トレードシグナル（表示専用）</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="settings-signal-sound" checked />
+          シグナル発生時にアラート音を鳴らす
+        </label>
+        <div class="version-row" style="margin-top:8px">
+          <button type="button" id="settings-clear-signal" class="btn-secondary">トレードシグナル履歴を消去</button>
+        </div>
+        <div id="settings-clear-signal-result" class="update-result"></div>
+        <div class="exit-hint">AIエントリー＋phase-exit決済を紙トラッキングした表示専用のシグナルです。売買命令は送りません。履歴の消去は元に戻せません。</div>
+      </fieldset>
+
+      <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
+    </div>
+  </div>
+
+  <!-- 詳細パラメータ モーダル (将来パラメータ追加に備えて設定とは別) -->
+  <div id="params-modal" class="modal hidden">
+    <div id="params-backdrop" class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-topbar">
+        <h2>詳細設定</h2>
+        <div class="modal-actions">
+          <button type="button" id="params-close" class="btn-secondary">閉じる</button>
+          <button type="button" id="params-save" class="btn-primary">保存</button>
+        </div>
+      </div>
       <fieldset class="settings-section" id="websearch-model-fieldset">
         <legend>Web検索モデル</legend>
         <div class="setting-row">
@@ -235,31 +288,6 @@
         <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。<b>A</b> は monitorのシグナルエンジンと jp225-Trade の両方(実売買)に反映されます。<b>B</b> は紙専用の並走比較のみで、実売買には一切渡りません。<br>★LC安全上限: 実弾の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・150円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。</div>
       </fieldset>
 
-      <div class="setting-row">
-        <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
-        <div id="settings-test-result" class="update-result"></div>
-        <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。<br>各キー左のマーク: 🟢 有効(設定済) / 🟡 待機中(429=枠切れで一時休止) / ⚪ 未設定 ／「キーを検証」後: ✅ 実際に通った / ❌ 無効(401等)。</div>
-      </div>
-
-      <fieldset class="settings-section">
-        <legend>更新</legend>
-        <div class="version-row">
-          現在のバージョン: <span id="settings-current-version">…</span>
-          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
-        </div>
-        <div id="settings-update-result" class="update-result"></div>
-        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
-      </fieldset>
-
-      <fieldset class="settings-section">
-        <legend>終了</legend>
-        <label class="exit-check">
-          <input type="checkbox" id="settings-full-exit" />
-          完全終了（ウィンドウ×／終了でデーモンの価格収集も停止する）
-        </label>
-        <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
-      </fieldset>
-
       <fieldset class="settings-section" id="data-fieldset">
         <legend>データ</legend>
         <div class="version-row">
@@ -279,34 +307,6 @@
         <div class="exit-hint">選んだ DB の内容で現在の DB を<b>丸ごと置き換え</b>ます（既存データは消去・自動バックアップ後）。2台を完全に同一データにしたい時用。collector/jp225-Trade を停止し自動再起動。パッケージ版でのみ利用可。</div>
       </fieldset>
 
-      <fieldset class="settings-section">
-        <legend>トレードシグナル（表示専用）</legend>
-        <label class="exit-check">
-          <input type="checkbox" id="settings-signal-sound" checked />
-          シグナル発生時にアラート音を鳴らす
-        </label>
-        <div class="version-row" style="margin-top:8px">
-          <button type="button" id="settings-clear-signal" class="btn-secondary">トレードシグナル履歴を消去</button>
-        </div>
-        <div id="settings-clear-signal-result" class="update-result"></div>
-        <div class="exit-hint">AIエントリー＋phase-exit決済を紙トラッキングした表示専用のシグナルです。売買命令は送りません。履歴の消去は元に戻せません。</div>
-      </fieldset>
-
-      <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
-    </div>
-  </div>
-
-  <!-- 詳細パラメータ モーダル (将来パラメータ追加に備えて設定とは別) -->
-  <div id="params-modal" class="modal hidden">
-    <div id="params-backdrop" class="modal-backdrop"></div>
-    <div class="modal-content">
-      <div class="modal-topbar">
-        <h2>詳細パラメータ</h2>
-        <div class="modal-actions">
-          <button type="button" id="params-close" class="btn-secondary">閉じる</button>
-          <button type="button" id="params-save" class="btn-primary">保存</button>
-        </div>
-      </div>
       <fieldset class="settings-section">
         <legend>定期 API ポーリング / アラート</legend>
         <label>
