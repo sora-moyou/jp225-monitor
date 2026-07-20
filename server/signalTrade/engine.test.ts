@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
-  advance, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
+  advance, ARMED_TIMEOUT_MS, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   computeHold, inCooldown, buildPlanMeta, buildTradeMetaJson,
   buildSettingsSnapshot, knobSnapshot, realizedLcFromArmed,
   buildSignalTradeInsert, getSignalTradeState, getSignalTradeStateB,
@@ -109,6 +109,36 @@ describe('advance', () => {
       armed: { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, stopEntry: 38100, stopLossForStop: 38050, rationale: 'r', at: 0 },
     };
     expect(advance(st, 38000, 1).next.phase).toBe('armed');
+  });
+
+  it('armed が ARMED_TIMEOUT_MS 超で未約定 → 取消して flat(armedTimedOut・記録なし)', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at: 1000 },
+    };
+    // タイムアウト直前(未達): 価格が指値37950に未達(38000) → 据え置き。
+    const under = advance(st, 38000, 1000 + ARMED_TIMEOUT_MS - 1);
+    expect(under.next.phase).toBe('armed');
+    expect(under.armedTimedOut).toBeUndefined();
+    // タイムアウト到達: 未約定のまま時間切れ → 取消して flat(次計画へ)。決済記録は出さない。
+    const over = advance(st, 38000, 1000 + ARMED_TIMEOUT_MS);
+    expect(over.next.phase).toBe('flat');
+    expect(over.armedTimedOut).toBe(true);
+    expect(over.recorded).toBeUndefined();
+    expect(over.next.lastExit).toBeUndefined();   // キャンセルは決済ではない(lastExit を作らない)。
+  });
+
+  it('range armed も ARMED_TIMEOUT_MS 超で取消→flat', () => {
+    const st: EngineState = {
+      phase: 'armed',
+      armed: {
+        direction: 'buy', rationale: 'r', at: 0, mode: 'range',
+        range: { upper: { side: 'sell', type: 'limit', entry: 66000, stopLoss: 66050 }, lower: { side: 'buy', type: 'limit', entry: 65000, stopLoss: 64950 } },
+      },
+    };
+    const over = advance(st, 65500, ARMED_TIMEOUT_MS);   // 65500 は上下どちらの entry にも未達。
+    expect(over.next.phase).toBe('flat');
+    expect(over.armedTimedOut).toBe(true);
   });
 
   it('filled → 逆指値ヒットで flat + 決済記録(簡易=初期LC固定)', () => {

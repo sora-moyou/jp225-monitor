@@ -217,12 +217,24 @@ export function equitySeries(trades: Array<{ exit_t: number; pnl: number }>): Eq
   return sorted.map(t => { cum += t.pnl; return { t: t.exit_t, pnl: t.pnl, cum }; });
 }
 
+/** 未約定ブラケット(armed)のタイムアウト[ms]。この時間内に指値/逆指値のどちらも約定しなければ
+ *  ブラケットを取消して FLAT に戻す(=次の計画を再要求できるようにする)。trade2 側の 15分と揃える。
+ *  ★これが無いと「価格が到達しない指値」で armed のまま永久固着し、maybeRequestPlan が phase!=flat で
+ *    弾かれてエンジンが全シグナルを停止する(2026-07-21 の System B 停止の実原因)。 */
+export const ARMED_TIMEOUT_MS = 15 * 60_000;
+
 /** 現在値 price を受けて armed→filled / filled→flat の遷移を1歩進める純関数(DB/LLM は呼ばない)。
- *  filled では peakProfit を更新し、ラチェット逆指値に達したら決済して RecordedTrade を返す。 */
+ *  filled では peakProfit を更新し、ラチェット逆指値に達したら決済して RecordedTrade を返す。
+ *  armed が ARMED_TIMEOUT_MS を超えて未約定なら取消して FLAT(armedTimedOut=true)。 */
 export function advance(
   st: EngineState, price: number, now: number,
-): { next: EngineState; recorded?: RecordedTrade } {
+): { next: EngineState; recorded?: RecordedTrade; armedTimedOut?: boolean } {
   if (st.phase === 'armed' && st.armed) {
+    // ★未約定タイムアウト: どちらのレッグも約定しないまま一定時間経過 → 取消して FLAT(再計画可能に)。
+    //   armed.at はブラケット武装時刻。約定判定より前に評価する(タイムアウトが最優先)。
+    if (st.armed.at != null && now - st.armed.at >= ARMED_TIMEOUT_MS) {
+      return { next: { phase: 'flat', lastExit: st.lastExit }, armedTimedOut: true };
+    }
     // ★レンジ両面ストラドル: mode/range で gating(direction では判定しない)。上下どちらか跨いだ side を約定。
     if (st.armed.mode === 'range' || st.armed.range != null) {
       const rf = detectRangeFill(st.armed, price);
@@ -445,6 +457,9 @@ function engineEnabled(): boolean {
 // 抑止中の安全弁: 節目を跨がなくてもこの長間隔が経てば1回だけ再計画を許す(詰まり防止)。
 const SUPPRESS_SAFETY_MS = 20 * 60_000;
 
+// ★診断ハートビートの間隔[ms]。各エンジンがこの間隔で phase/planning/経過を1行ログする(固着の早期発見)。
+const HEARTBEAT_MS = 5 * 60_000;
+
 /** System B(紙専用)を個別に無効化する env(既定は有効)。SIGNAL_TRADE_B=0/false/off でオフ。
  *  A は SIGNAL_TRADE(engineEnabled)配下で不変。B の並走(独立の AI 呼び出し)を止めたい時に使う。 */
 function engineBEnabled(): boolean {
@@ -636,8 +651,13 @@ export class SignalEngine {
   feed(price: number, now: number): void {
     if (!this.running) return;
     try {
-      const { next, recorded } = advance(this.state, price, now);
+      const { next, recorded, armedTimedOut } = advance(this.state, price, now);
       this.state = next;
+      if (armedTimedOut) {
+        // ★未約定ブラケットの取消。以降 phase=flat で maybeRequestPlan が再計画できる(固着解除)。
+        console.log(`${this.logTag} armed-timeout 未約定ブラケットを取消→FLAT`
+          + `(${Math.round(ARMED_TIMEOUT_MS / 60_000)}分 未約定・再計画へ)`);
+      }
       if (recorded) {
         this.persistTrade(recorded);
         // 決済(filled→flat)= 全建玉クローズ。クールダウン起点を記録し、ログ抑止を解除(次tickで一度出す)。
@@ -645,10 +665,27 @@ export class SignalEngine {
         this.cooldownLogged = false;
       }
       this.maybeRequestPlan(price, now);
+      this.heartbeat(now);   // ★診断: 定期にエンジン状態を1行ログ(固着の早期発見)。
       this.broadcastSignalState(now);
     } catch (e) {
       console.warn(`${this.logTag} tick error:`, e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /** ★診断ログ(HEARTBEAT_MS 毎に1行): 各エンジンの生存と状態を可視化する。固着(armed のまま / planning が
+   *  真のまま)を早期に発見できるよう、phase・planning・arm 経過・最終計画からの経過を出す。
+   *  例) `[signalTradeB] hb phase=armed planning=false sinceArm=8m lastPlan=8m前 suppressed=false`
+   *  → sinceArm が伸び続ける=未約定固着(ARMED_TIMEOUT_MS で自動取消される) / phase=flat かつ planning=true が
+   *    続く=計画要求が返らず固着。今回のような無音停止の原因究明を容易にする(通常運用の負荷は無視できる)。 */
+  private lastHeartbeatAt = 0;
+  private heartbeat(now: number): void {
+    if (now - this.lastHeartbeatAt < HEARTBEAT_MS) return;
+    this.lastHeartbeatAt = now;
+    const phase = this.state.phase;
+    const mins = (t: number | undefined | null): string => (t ? `${Math.round((now - t) / 60_000)}m` : '-');
+    const sinceArm = phase === 'armed' ? mins(this.state.armed?.at) : '-';
+    console.log(`${this.logTag} hb phase=${phase} planning=${this.planning} sinceArm=${sinceArm} `
+      + `lastPlan=${mins(this.lastPlanAt)}前 suppressed=${this.planSuppressedAnchor != null}`);
   }
 }
 
