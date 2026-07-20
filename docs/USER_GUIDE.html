@@ -773,17 +773,12 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="hero-inner">
     <div class="hero-text">
       <span class="badge">● Windows 10 / 11 · 無料 · v0.8.7</span>
-      <h1>AI が値動きを監視し、<br>売買シグナルを提案する。</h1>
+      <h1>AI が値動きやニュースを監視し、<br>売買シグナルを提案する。</h1>
       <p class="lead">
         日経 225 先物 (OSE mini) をリアルタイムで監視。AI が相場状況を読んで<strong>買い/売りのエントリー(指値 + 逆指値 + 損切り)</strong>を提案し、
-        段階的に利益をロックする決済ロジックで<strong>紙の上の損益を自動集計</strong>します。急変が起きたときは、その原因をニュースや他銘柄からたどって日本語で説明。
+        段階的に利益をロックする決済ロジックで<strong>シグナルの損益を自動で記録</strong>します。急変が起きたときは、その原因をニュースや他銘柄からたどって日本語で説明。
         価格は 24/7 デーモンで蓄積され、起動時に即ウォームアップ。
-        <br><strong>※ シグナルは表示専用。実際の売買命令は一切送りません。</strong>
       </p>
-      <div class="hero-actions">
-        <a class="btn btn-primary" href="#signal">売買シグナルの仕組み</a>
-        <a class="btn btn-ghost" href="https://github.com/sora-moyou/jp225-monitor/releases/latest" target="_blank" rel="noopener">ダウンロード ↗</a>
-      </div>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
   </div>
@@ -804,7 +799,9 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <div class="step-num">1</div>
       <h3>ダウンロード</h3>
       <p style="margin-bottom:14px;">
-        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a>を開きます。
+        配布は GitHub 上で行っています。<strong>まず GitHub アカウントを作成し、ログイン</strong>してからダウンロードしてください。
+        アカウントが無い方は <a href="https://github.com/signup" target="_blank" rel="noopener">github.com/signup</a> で<strong>無料</strong>で作れます
+        (メールアドレスとパスワードのみ)。ログイン後、<a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a>を開きます。
       </p>
       <div class="download-alert">
         <div class="download-title">📥 Releases ページの見方</div>
@@ -883,7 +880,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="annotations">
     <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>価格カード</strong><p>日経 225 先物(<code>NIY=F</code>・OSE リアルタイム)、ナスダック 100 先物などを更新。日経の値の上に<strong>「1 分」(率 %)</strong>と<strong>「10 秒」(値幅・円)</strong>の 2 段モメンタムを表示します。</p></div></div>
-    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>トレードシグナル(表示専用・紙)</strong><p>現在のシグナル(買い/売り・指値/逆指値+LC)を大きな文字で表示。理由は白文字。<strong>売買命令は一切送りません</strong>。</p></div></div>
+    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>売買シグナル</strong><p>現在のシグナル(買い/売り・指値/逆指値+LC)を大きな文字で表示。提案の理由は白文字で示します。</p></div></div>
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>主要レベル(節目)</strong><p>★ 点数つきの上値/下値メド。セッション高安・フィボナッチ・反応水準・下降/上昇トレンドライン(合流)・出来高帯・もみ合い帯・日足 MA5/20/50/75・日足バンド(MA25±1σ/±2σ)を、現値位置でソートして表示。</p></div></div>
     <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>AI チャット</strong><p>①テクニカル分析 ②ファンダメンタル分析 ③スイング分析 のプリセット + 自由入力。市場の現状(価格/節目/アラート/本日 OHLC/ニュース)を踏まえて回答。キー設定時は Web 検索も可能です。</p></div></div>
     <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>ALERTS(アラート + AI 説明)</strong><p>急変・暴落・水準抜け/反発・ダブルトップ/ボトム・トレンド転換・グランビル・日足 MA/バンドなどの異常を検知し、AI が原因を日本語で説明。事後の値動き(+5/15/30 分)も記録します。</p></div></div>
@@ -898,7 +895,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="section-head">
     <span class="section-eyebrow">主役の機能</span>
     <h2>AI が売買シグナルを提案</h2>
-    <p>AI が値動きを監視して、買い/売りのエントリー(<strong>指値 + 逆指値 + 損切り</strong>)を提案。段階的に利益をロックする決済で、紙の上の損益を自動集計します。★ 実際の売買命令は一切送りません。</p>
+    <p>AI が値動きやニュースを監視して、買い/売りのエントリー(<strong>指値 + 逆指値 + 損切り</strong>)を提案。段階的に利益をロックする決済で、シグナルの損益を自動で記録します。</p>
   </div>
 
   <div class="flow">
@@ -913,7 +910,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       </div>
       <div>
         <strong>② phase-exit で段階的に利益確定</strong>
-        <p>含み益に応じて利益を段階的にロックする決済ロジックで、紙上の損益を集計します。</p>
+        <p>含み益に応じて利益を段階的にロックする決済ロジックで、シグナルの損益を集計します。</p>
       </div>
       <div>
         <strong>③ 履歴・収益曲線を確認</strong>
@@ -922,9 +919,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
   </div>
 
-  <div class="callout success" style="margin-top:24px;">
-    <strong>あくまで表示・記録のみ。</strong> 売買シグナルは紙のトラッキングで、<strong>実際の売買命令は送りません</strong>。損益はすべて紙の上での集計です。売買の判断・執行はご自身で行ってください。
-  </div>
 </section>
 
 <!-- ─── アラート(補助) ─── -->
@@ -1040,7 +1034,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="flow">
     <figure class="flow-img">
       <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings-app.png" alt="設定モーダル — 更新 / 終了 / トレードシグナル">
-      <figcaption>設定モーダル下部 — 更新をチェック / 完全終了 / トレードシグナル(表示専用)の音・履歴消去</figcaption>
+      <figcaption>設定モーダル下部 — 更新をチェック / 完全終了 / 売買シグナルの音・履歴消去</figcaption>
     </figure>
     <div class="flow-steps">
       <div>
@@ -1052,7 +1046,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         <p>チェックを ON にすると、終了時にバックグラウンドの<strong>価格収集デーモンも停止</strong>します。<strong>既定(OFF)なら、閉じても収集を継続</strong>し、次回起動時に即ウォームアップできます。</p>
       </div>
       <div>
-        <strong>トレードシグナル(表示専用)</strong>
+        <strong>売買シグナル</strong>
         <p>シグナル発生時の<strong>アラート音 ON/OFF</strong>と<strong>履歴の消去</strong>ができます。</p>
       </div>
     </div>
@@ -1091,7 +1085,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <h2>ご利用にあたって</h2>
   </div>
   <div class="callout warn">
-    本アプリは<strong>情報提供・分析支援ツール</strong>であり、投資助言ではありません。<strong>トレードシグナルは表示専用</strong>で、実際の売買命令は送りません。売買の判断・結果はすべて<strong>ご自身の責任</strong>で行ってください。
+    本アプリは<strong>情報提供・分析支援ツール</strong>であり、投資助言ではありません。売買シグナルはあくまで<strong>参考情報</strong>です。売買の判断・結果はすべて<strong>ご自身の責任</strong>で行ってください。
   </div>
 </section>
 
