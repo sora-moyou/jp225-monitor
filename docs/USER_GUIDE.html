@@ -758,7 +758,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       JP225 Monitor <span class="v">利用ガイド</span>
     </a>
     <nav>
-      <a href="#versions">2つの版</a>
       <a href="#install">導入</a>
       <a href="#tour">画面ツアー</a>
       <a href="#alerts">アラート</a>
@@ -790,37 +789,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
 <main>
 
-<!-- ─── 2つの版 ─── -->
-<section class="section" id="versions" style="padding-top: var(--space-lg);">
-  <div class="section-head">
-    <span class="section-eyebrow">重要</span>
-    <h2>2 つの版があります</h2>
-    <p>動作は同一。違いは「画面に出す設定の範囲」だけです。まずは表示縮小版で十分です。</p>
-  </div>
-
-  <div class="steps" style="grid-template-columns: 1fr 1fr;">
-    <div class="step step-key">
-      <div class="step-num">🟢</div>
-      <h3>JP225 Monitor(表示縮小版・公開版)</h3>
-      <p style="margin-bottom:12px;">ふだん使い向け。<strong>価格監視・AI 急変説明・トレードシグナル表示・API キー設定</strong>が使えます。細かな設定(アラート履歴・サーバログ・詳細パラメータ・AI エントリー設定・Web 検索モデル・データ DB 管理)は<strong>非表示</strong>で、シンプルに使えます。</p>
-      <p><a href="https://github.com/sora-moyou/jp225-monitor/releases/latest" target="_blank" rel="noopener">表示縮小版をダウンロード ↗</a></p>
-    </div>
-    <div class="step step-info">
-      <div class="step-num">🎛️</div>
-      <h3>JP225 Monitor2(フル版・開発版)</h3>
-      <p style="margin-bottom:12px;">全機能版。上記に加えて<strong>アラート履歴・サーバログ・詳細パラメータ・AI エントリーの細部設定・Web 検索モデル・データ DB 管理</strong>を表示・変更できます。トレード bot(trade2)と連携するのもこちらです。</p>
-      <p><a href="https://github.com/sora-moyou/jp225-monitor2-releases/releases/latest" target="_blank" rel="noopener">フル版(monitor2)をダウンロード ↗</a></p>
-    </div>
-  </div>
-
-  <div class="callout success" style="margin-top:24px;">
-    <strong>版・動作は完全に同一</strong>で、違いは<strong>画面に出す設定の範囲だけ</strong>です。<strong>設定・データは両者で共有</strong>します(同じ設定ファイル・同じ価格 DB を使います)。
-  </div>
-  <div class="callout warn" style="margin-top:12px;">
-    ⚠️ <strong>monitor と monitor2 は同時に起動できません。</strong> monitor2 が優先で、<strong>monitor2 を起動すると表示縮小版の monitor は自動終了</strong>します。細かな設定を変えたいときは monitor2 を使ってください。
-  </div>
-</section>
-
 <!-- ─── 導入 ─── -->
 <section class="section" id="install">
   <div class="section-head">
@@ -834,7 +802,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <div class="step-num">1</div>
       <h3>ダウンロード</h3>
       <p style="margin-bottom:14px;">
-        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a>(表示縮小版)を開きます。
+        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a>を開きます。
       </p>
       <div class="download-alert">
         <div class="download-title">📥 Releases ページの見方</div>
@@ -904,7 +872,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="section-head">
     <span class="section-eyebrow">画面ツアー</span>
     <h2>どこに何があるか</h2>
-    <p>起動直後の画面(表示縮小版)。価格カード・トレードシグナル・主要レベル・AI チャット・アラート・チャート・ニュースが 1 画面に収まります。</p>
+    <p>起動直後の画面。価格カード・トレードシグナル・主要レベル・AI チャット・アラート・チャート・ニュースが 1 画面に収まります。</p>
   </div>
 
   <div class="shot-wrap">
@@ -913,7 +881,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="annotations">
     <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>価格カード</strong><p>日経 225 先物(<code>NIY=F</code>・OSE リアルタイム)、ナスダック 100 先物などを更新。日経の値の上に<strong>「1 分」(率 %)</strong>と<strong>「10 秒」(値幅・円)</strong>の 2 段モメンタムを表示します。</p></div></div>
-    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>トレードシグナル(表示専用・紙)</strong><p>現在のシグナル(買い/売り・指値/逆指値+LC)を大きな文字で表示。理由は白文字。<strong>売買命令は一切送りません</strong>。※フル版は A / B の 2 系統を併記(B は 📝 紙のみ)。</p></div></div>
+    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>トレードシグナル(表示専用・紙)</strong><p>現在のシグナル(買い/売り・指値/逆指値+LC)を大きな文字で表示。理由は白文字。<strong>売買命令は一切送りません</strong>。</p></div></div>
     <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>主要レベル(節目)</strong><p>★ 点数つきの上値/下値メド。セッション高安・フィボナッチ・反応水準・下降/上昇トレンドライン(合流)・出来高帯・もみ合い帯・日足 MA5/20/50/75・日足バンド(MA25±1σ/±2σ)を、現値位置でソートして表示。</p></div></div>
     <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>AI チャット</strong><p>①テクニカル分析 ②ファンダメンタル分析 ③スイング分析 のプリセット + 自由入力。市場の現状(価格/節目/アラート/本日 OHLC/ニュース)を踏まえて回答。キー設定時は Web 検索も可能です。</p></div></div>
     <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>ALERTS(アラート + AI 説明)</strong><p>急変・暴落・水準抜け/反発・ダブルトップ/ボトム・トレンド転換・グランビル・日足 MA/バンドなどの異常を検知し、AI が原因を日本語で説明。事後の値動き(+5/15/30 分)も記録します。</p></div></div>
@@ -950,7 +918,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 
   <div class="callout" style="margin-top:24px;">
-    <strong>的中率の確認:</strong> 各アラートの事後値動き(+5/15/30 分)は <strong>📊 アラート履歴</strong>で確認できます(※<strong>フル版のみ表示</strong>)。表示縮小版では履歴パネルは非表示です。
+    <strong>事後の値動きも記録:</strong> 各アラートの発生後の値動き(+5/15/30 分)を自動で記録し、AI の原因説明とあわせて振り返りに使えます。
   </div>
 </section>
 
@@ -984,7 +952,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 
   <div class="callout success" style="margin-top:24px;">
-    <strong>あくまで表示・記録のみ。</strong> トレードシグナルは紙のトラッキングで、<strong>実際の売買命令は送りません</strong>。フル版では A / B の 2 系統を持てます(A = 実売買 bot に渡す想定 / B = 別設定の紙で比較)。
+    <strong>あくまで表示・記録のみ。</strong> トレードシグナルは紙のトラッキングで、<strong>実際の売買命令は送りません</strong>。損益はすべて紙の上での集計です。
   </div>
 </section>
 
@@ -1089,34 +1057,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 </section>
 
-<!-- ─── 詳細設定(フル版のみ) ─── -->
-<section class="section" id="advanced">
-  <div class="section-head">
-    <span class="section-eyebrow">フル版のみ</span>
-    <h2>詳細設定(🎛️)</h2>
-    <p>細部の調整はフル版(monitor2)の 🎛️ から。表示縮小版では非表示です(利用者が細部を変更しない設計)。</p>
-  </div>
-
-  <div class="ref">
-    <details>
-      <summary>Web 検索モデル</summary>
-      <div class="ref-body">チャットの Web 検索に使うモデルを個別に指定できます(Gemini 側 / OpenAI 側)。空欄で既定に戻ります。</div>
-    </details>
-    <details>
-      <summary>AI エントリー設定</summary>
-      <div class="ref-body">トレードシグナルのエントリー生成を、各項目ごとに<strong>手動</strong>か<strong>AI 委任</strong>かで切り替えられます: LC 上限・下限、安全上限、トレンド veto、クールダウン、バイアス、レンジ両面 など。</div>
-    </details>
-    <details>
-      <summary>データ(DB 管理)</summary>
-      <div class="ref-body">別 PC の DB をマージ / このPC の DB をコピー / DB を置き換え(インポート)。2 台で同一データに揃えてバックテストの一致に使えます。</div>
-    </details>
-    <details>
-      <summary>ポーリング・急変アラート・主要レベルのパラメータ</summary>
-      <div class="ref-body">定期 API ポーリング間隔、急変アラートの各しきい値、主要レベルの束ね幅・表示本数・合流ボーナス等を、リビルド不要・保存で即反映で調整できます。</div>
-    </details>
-  </div>
-</section>
-
 <!-- ─── 取引時間・基礎データ ─── -->
 <section class="section" id="hours">
   <div class="section-head">
@@ -1165,8 +1105,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
     <div>
       <a href="https://github.com/sora-moyou/jp225-monitor">GitHub</a> ·
-      <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">最新版</a> ·
-      <a href="https://github.com/sora-moyou/jp225-monitor2-releases/releases/latest">フル版(monitor2)</a>
+      <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">最新版</a>
     </div>
   </div>
 </footer>
