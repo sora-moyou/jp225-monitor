@@ -105,7 +105,7 @@
       </fieldset>
 
 <fieldset class="settings-section">
-        <legend>トレードシグナル（表示専用）</legend>
+        <legend>売買シグナル</legend>
         <label class="exit-check">
           <input type="checkbox" id="settings-signal-sound" checked />
           シグナル発生時にアラート音を鳴らす
@@ -114,7 +114,7 @@
           <button type="button" id="settings-clear-signal" class="btn-secondary">トレードシグナル履歴を消去</button>
         </div>
         <div id="settings-clear-signal-result" class="update-result"></div>
-        <div class="exit-hint">AIエントリー＋phase-exit決済を紙トラッキングした表示専用のシグナルです。売買命令は送りません。履歴の消去は元に戻せません。</div>
+        <div class="exit-hint">AI が値動きやニュースから提案する売買シグナルです。履歴の消去は元に戻せません。</div>
       </fieldset>
 
       <p class="modal-hint">空欄のフィールドは変更されません。設定済みフィールドを置き換えるには新キーを入力。</p>
@@ -444,8 +444,8 @@
       <div id="signal-trades-system-row" class="setting-row" style="margin-bottom:8px">
         <label for="signal-trades-system">系統</label>
         <select id="signal-trades-system">
-          <option value="A">A（実売買）</option>
-          <option value="B">B（📝紙のみ）</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
         </select>
       </div>
       <div id="signal-trades-summary" class="ah-summary"></div>
@@ -479,7 +479,7 @@
         <div class="signal-main">シグナル待機</div>
       </section>
       <section id="signal-panel-b" class="signal-panel signal-flat signal-panel-b">
-        <span class="signal-badge">📝紙のみ(B)</span>
+        <span class="signal-badge">B</span>
         <div class="signal-main">シグナル待機</div>
       </section>
 

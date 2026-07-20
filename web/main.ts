@@ -516,7 +516,7 @@ connectStream({
   onNews: (news) => renderNews(newsListEl, news),
   onSignalTrade: (s) => { if (signalPanelEl) renderSignalPanel(signalPanelEl, s); },
   // ★v0.8.2: System B(紙専用)。📝紙のみバッジ付きで併記。音は鳴らさない(A の音状態を汚さない)。
-  onSignalTradeB: (s) => { if (signalPanelBEl) renderSignalPanel(signalPanelBEl, s, { badge: '📝紙のみ(B)', sound: false }); },
+  onSignalTradeB: (s) => { if (signalPanelBEl) renderSignalPanel(signalPanelBEl, s, { badge: 'B', sound: false }); },
 });
 
 const updateToastEl = document.getElementById('update-toast');
