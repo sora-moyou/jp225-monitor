@@ -473,14 +473,13 @@
     <div class="left-col">
       <section id="price-grid" class="price-grid"></section>
 
-      <!-- トレードシグナル (表示専用・紙トラッキング)。主要レベルの直上に目立つパネルで現在シグナルを表示。 -->
-      <!-- A=実売買系統(trade2 が追従)。B=紙専用の並走系統(下段・📝紙のみ)。lite は B を非表示。 -->
+      <!-- 売買シグナル枠と保有枠は別枠。シグナル枠は現在シグナルを常時表示(保有中も消えない)、
+           保有枠は建値+含みを表示。主要レベルの直上に配置。 -->
       <section id="signal-panel" class="signal-panel signal-flat">
         <div class="signal-main">シグナル待機</div>
       </section>
-      <section id="signal-panel-b" class="signal-panel signal-flat signal-panel-b">
-        <span class="signal-badge">B</span>
-        <div class="signal-main">シグナル待機</div>
+      <section id="position-panel" class="signal-panel position-panel signal-flat">
+        <div class="signal-main">保有なし</div>
       </section>
 
       <section id="levels-panel" class="levels-panel">

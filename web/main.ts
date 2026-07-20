@@ -15,7 +15,7 @@ import { initAlertsHistoryModal } from './components/alertsHistoryModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
 import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader, getTopSymbolChange1m } from './lib/correlationClient.js';
 import { initLevelsPanel, setLevels, setLevelsPrice } from './components/levelsPanel.js';
-import { renderSignalPanel, initSignalSoundToggle } from './components/signalPanel.js';
+import { renderSignalPanel, renderPositionPanel, initSignalSoundToggle } from './components/signalPanel.js';
 import { initSignalTradesModal, initSignalClearButton } from './components/signalTradesModal.js';
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
@@ -323,7 +323,7 @@ const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
 if (levelsBodyEl) initLevelsPanel(levelsBodyEl);
 const signalPanelEl = document.getElementById('signal-panel');
-const signalPanelBEl = document.getElementById('signal-panel-b');   // ★v0.8.2: System B(📝紙のみ)併記
+const positionPanelEl = document.getElementById('position-panel');   // ★保有枠(シグナルとは別枠)
 // 当面、再起動後も直近アラートを残す（localStorage から復元）。
 restoreSavedBanners(bannerEl);
 const statusEl = document.getElementById('connection-status')!;
@@ -376,8 +376,7 @@ fetch(apiUrl('/api/version'))
       openLogsBtn: document.getElementById('open-logs'),
       paramsBtn: document.getElementById('params-btn'),
       scalpFieldset: document.getElementById('ai-entry-fieldset'),
-      // ★v0.8.2: lite は System B(紙専用)を一切表示しない。
-      signalPanelB: document.getElementById('signal-panel-b'),
+      // ★lite は履歴モーダルの A/B 系統セレクタを非表示(B の成績は full のみで確認)。
       signalTradesSystem: document.getElementById('signal-trades-system-row'),
       // ★lite 追加(ユーザー指示): Web検索モデル設定 と データ(DB管理)fieldset も隠す。API キーは表示のまま。
       webSearchModelFieldset: document.getElementById('websearch-model-fieldset'),
@@ -514,9 +513,12 @@ connectStream({
     scheduleExplanation(alert, banner);
   },
   onNews: (news) => renderNews(newsListEl, news),
-  onSignalTrade: (s) => { if (signalPanelEl) renderSignalPanel(signalPanelEl, s); },
-  // ★v0.8.2: System B(紙専用)。📝紙のみバッジ付きで併記。音は鳴らさない(A の音状態を汚さない)。
-  onSignalTradeB: (s) => { if (signalPanelBEl) renderSignalPanel(signalPanelBEl, s, { badge: 'B', sound: false }); },
+  // ★シグナル枠(現在シグナル・保有中も保持)と保有枠(建値+含み)を別枠で描く。
+  onSignalTrade: (s) => {
+    if (signalPanelEl) renderSignalPanel(signalPanelEl, s);
+    if (positionPanelEl) renderPositionPanel(positionPanelEl, s);
+  },
+  // ★System B のライブ表示は廃止(B の成績は履歴モーダルの A/B セレクタで確認)。SSE signalTradeB は購読しない。
 });
 
 const updateToastEl = document.getElementById('update-toast');

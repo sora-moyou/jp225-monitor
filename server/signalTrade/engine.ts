@@ -335,6 +335,7 @@ export function toSignalTradeState(
       stopEntry: signal.stopEntry,
       stopLossForLimit: signal.stopLossForLimit,
       stopLossForStop: signal.stopLossForStop,
+      rationale: signal.rationale,
       at: signal.at,
     };
     // レンジ両面は mode/range を露出(trade2 追従用・directional では付与しない)。

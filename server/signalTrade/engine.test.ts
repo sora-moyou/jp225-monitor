@@ -598,7 +598,7 @@ describe('toSignalTradeState signal', () => {
   it('signal を渡すと SSE state に signal(id+full plan)が入る', () => {
     const st: EngineState = { phase: 'flat' };
     const s = toSignalTradeState(st, 38000, 9, sig);
-    expect(s.signal).toEqual({ signalId: 7, direction: 'buy', limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050, at: 5 });
+    expect(s.signal).toEqual({ signalId: 7, direction: 'buy', limitEntry: 37950, stopEntry: 38100, stopLossForLimit: 37900, stopLossForStop: 38050, rationale: 'r', at: 5 });
   });
   it('filled でも signal を保持(擬似約定後も追従情報が残る)', () => {
     const st: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 37950, qty: 1, initialStop: 37900, peakProfit: 0, rationale: 'r', at: 7 } };

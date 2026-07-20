@@ -109,6 +109,7 @@ export interface SignalTradeState {
     direction: 'buy' | 'sell';
     limitEntry?: number; stopEntry?: number;
     stopLossForLimit?: number; stopLossForStop?: number;
+    rationale?: string;   // ★保有中もシグナル枠に理由を表示するため(現在シグナルの根拠)。
     at: number;
     // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
     mode?: 'range';

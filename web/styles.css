@@ -125,8 +125,8 @@ body {
 .alert .close:hover { color: var(--text); }
 .alert .explanation { color: var(--text); }
 
-/* ─── トレードシグナル (表示専用・紙トラッキング) ─────────────────────
-   価格カードと主要レベルの間に置く目立つパネル。phase で枠色を切替える。 */
+/* ─── 売買シグナル / 保有 ─────────────────────
+   価格カードと主要レベルの間に置く目立つパネル。シグナル枠と保有枠を別枠で縦に並べる。 */
 .signal-panel {
   flex: 0 0 auto;
   padding: 8px 12px;
@@ -146,8 +146,8 @@ body {
 .signal-exit { border-color: var(--up); }
 .signal-exit .signal-main { color: var(--up); }
 
-/* ★v0.8.2: System B(紙専用)併記パネル。A の直下に少し控えめに置く(点線・薄め)。 */
-.signal-panel-b { margin-top: 6px; border-style: dashed; opacity: 0.92; }
+/* 保有枠。シグナル枠の直下に少し間隔を空けて置く(別枠)。 */
+.position-panel { margin-top: 6px; }
 .signal-badge {
   display: inline-block; font-size: 10px; font-weight: 700; color: var(--muted);
   border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-bottom: 3px;

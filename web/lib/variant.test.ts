@@ -17,21 +17,20 @@ describe('normalizeVariant', () => {
 });
 
 describe('applyVariantVisibility', () => {
-  // ★v0.8.2: lite で隠す全要素(履歴/ログ/params/AIエントリー + B関連 + Web検索モデル/データ fieldset)。
+  // lite で隠す全要素(履歴/ログ/params/AIエントリー + B系統セレクタ + Web検索モデル/データ fieldset)。
   function allEls() {
     return {
       alertsHistoryBtn: mockEl(),
       openLogsBtn: mockEl(),
       paramsBtn: mockEl(),
       scalpFieldset: mockEl(),
-      signalPanelB: mockEl(),
       signalTradesSystem: mockEl(),
       webSearchModelFieldset: mockEl(),
       dataFieldset: mockEl(),
     };
   }
 
-  it('lite は 8 要素(履歴/ログ/params/AIエントリー/Bパネル/B系統セレクタ/Web検索モデル/データ)を隠す', () => {
+  it('lite は 7 要素(履歴/ログ/params/AIエントリー/B系統セレクタ/Web検索モデル/データ)を隠す', () => {
     const els = allEls();
     applyVariantVisibility('lite', els);
     for (const el of Object.values(els)) {
@@ -40,14 +39,13 @@ describe('applyVariantVisibility', () => {
     }
   });
 
-  it('lite は System B 関連(Bパネル/B系統セレクタ)を確実に隠す', () => {
+  it('lite は履歴の A/B 系統セレクタを確実に隠す', () => {
     const els = allEls();
     applyVariantVisibility('lite', els);
-    expect(els.signalPanelB.hidden).toBe(true);
     expect(els.signalTradesSystem.hidden).toBe(true);
   });
 
-  it('full は何も隠さない(全要素そのまま=B も表示)', () => {
+  it('full は何も隠さない(全要素そのまま)', () => {
     const els = allEls();
     applyVariantVisibility('full', els);
     for (const el of Object.values(els)) {

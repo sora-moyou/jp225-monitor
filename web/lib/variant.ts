@@ -21,9 +21,8 @@ export interface VariantElements {
   openLogsBtn?: ToggleableEl | null;       // ④ サーバログ(📋)
   paramsBtn?: ToggleableEl | null;         // ④ 詳細パラメータ(🎛️)
   scalpFieldset?: ToggleableEl | null;     // ⑤ 設定モーダル「AIエントリー」fieldset
-  // ★v0.8.2: lite は System B(紙専用)を一切表示しない。パネルの B 併記と履歴の A/B 系統セレクタを隠す
-  //   (AIエントリー fieldset は lite で既に非表示=B 設定列も自動で隠れる)。
-  signalPanelB?: ToggleableEl | null;      // パネルの B 併記セクション(#signal-panel-b)
+  // lite は履歴の A/B 系統セレクタを隠す(B の成績は full のみで確認)。
+  //   B のライブパネルは廃止済み(#signal-panel-b は存在しない)。
   signalTradesSystem?: ToggleableEl | null; // 履歴の A/B 系統セレクタ行(#signal-trades-system-row)
   // ★v0.8.2(ユーザー指示): lite は Web検索モデル設定 と データ(DB管理) fieldset も隠す(API キーは表示のまま)。
   webSearchModelFieldset?: ToggleableEl | null; // 設定「Web検索モデル」fieldset(#websearch-model-fieldset)
@@ -37,7 +36,7 @@ export function applyVariantVisibility(variant: Variant, els: VariantElements): 
   if (variant !== 'lite') return; // full=全表示。安全側。
   const targets = [
     els.alertsHistoryBtn, els.openLogsBtn, els.paramsBtn, els.scalpFieldset,
-    els.signalPanelB, els.signalTradesSystem,   // ★v0.8.2: B 関連を lite で非表示。
+    els.signalTradesSystem,   // 履歴の A/B セレクタを lite で非表示。
     els.webSearchModelFieldset, els.dataFieldset,   // ★v0.8.2(ユーザー指示): モデル設定 と データ を lite で非表示。
   ];
   for (const el of targets) {
