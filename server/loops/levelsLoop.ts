@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars } from '../db/store.js';
+import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars, getDailyCloses, upsertDailyClose } from '../db/store.js';
 import { computeVolumeProfile } from '../volumeProfile.js';
 import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeTrendLines } from '../trendLines.js';
@@ -14,7 +14,7 @@ import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
 import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
 import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../crash.js';
-import { computeDailyBands, dailyCloseSeries, type DailyBand } from '../dailyBand.js';
+import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
 import type { AlertSignal, SignalType } from '../signals/types.js';
 import { resolveLevelsConfig } from '../configStore.js';
 
@@ -110,14 +110,37 @@ let trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: n
 // (= MA25/σ が現在値に合わせて毎ティック動く)。
 const DAILYBAND_CHECK_MS = 60_000;
 const DAILYBAND_COOLDOWN_MS = 20 * 60_000;   // ゾーン(40円刻み)×方向の発火クールダウン
+// 日足MA線(v0.8.6): MA75 に取引日終値≥75本が要るため、確定終値の保持を ~80本に拡張(75確定+現在値=76)。
+const DAILY_CLOSES_KEEP = 80;
+// getSessionOHLC の取得セッション数。200 → 約115 Day セッション(≥75)を賄う(daily_closes 空の初回フォールバック用)。
+const DAILYBAND_FETCH_SESSIONS = 200;
 let lastDailyBandCheck = 0;
-let confirmedDailyCloses: number[] = [];     // 確定済み取引日終値(=各日の日中15:45クローズ・古い→新しい、直近~30本)。60sキャッシュ。
-let dailyBandLevels: DailyBand[] = [];        // 毎ティック再計算(confirmed24 + 現在値)。
+let confirmedDailyCloses: number[] = [];     // 確定済み取引日終値(=各日の日中15:45クローズ・古い→新しい、直近~80本)。60sキャッシュ。daily_closes 優先。
+let dailyBandLevels: DailyBand[] = [];        // 毎ティック再計算(confirmed24 + 現在値)。MA25±σバンド。
+let dailyMaLevels: DailyMA[] = [];            // 毎ティック再計算(confirmed + 現在値)。日足MA5/20/50/75(線のみ)。
 const lastDailyBandEmit = new Map<string, number>();
+const lastDailyMaEmit = new Map<string, number>();   // MA線はバンドと別ゾーン管理(相互抑制しない)。
 
 /** 価格比(%)→円。スイング/節目の閾値を現値に追従させる(固定円のドリフト=水準上昇で相対的に小さくなる問題を解消)。 */
 export function yenPct(price: number, pct: number): number {
   return Math.max(1, Math.round(price * pct));
+}
+
+/**
+ * 確定 Day 終値(進行中の日は含めない)を daily_closes へ永続化し、日足MA/バンド用の終値系列(古い→新しい)を返す。
+ * ・upsert: 直近 keep 本を毎cycle upsert。空DB(アップグレード後)でも初回cycleで daily_closes が完全になる(≤80件/60s)。
+ * ・source: 「豊富な方」を採用。durable(daily_closes)がまだ疎でも getSessionOHLC 由来 fallback が勝ち、
+ *   バンド(MA25±σ・>=24 必要)が従来より痩せて消えることを防ぐ。daily_closes 完全時は durable≥fallback で従来とバイト等価。
+ * export はテスト(空DBでもバンドが空にならない回帰)用。副作用(upsert)あり。
+ */
+export function persistAndResolveDailyCloses(
+  database: DatabaseSync, symbol: string,
+  confirmed: { sessionDate: string; close: number; openT: number }[], keep: number,
+): number[] {
+  for (const d of confirmed.slice(-keep)) upsertDailyClose(database, symbol, d.sessionDate, d.close, d.openT);
+  const durableCloses = getDailyCloses(database, symbol, keep).map(r => r.close);
+  const fallbackCloses = confirmed.map(s => s.close);
+  return (durableCloses.length >= fallbackCloses.length ? durableCloses : fallbackCloses).slice(-keep);
 }
 
 /** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
@@ -244,19 +267,25 @@ function tick(): void {
     if (now - lastDailyBandCheck >= DAILYBAND_CHECK_MS || confirmedDailyCloses.length === 0) {
       lastDailyBandCheck = now;
       try {
-        const days = getSessionOHLC(db, SYMBOL, 60)
+        const days = getSessionOHLC(db, SYMBOL, DAILYBAND_FETCH_SESSIONS)
           .filter(s => s.session === 'Day')   // ★日中セッション=取引日の終値(15:45)を採る
           .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));   // 古い→新しい
         // 今が日中セッション中なら、最新の日中足は「進行中(15:45前=未確定)」なので除外(現在値で代表)。
         const inDay = cs?.session === 'Day';
         const confirmed = inDay ? days.slice(0, -1) : days;
-        confirmedDailyCloses = confirmed.slice(-30).map(s => s.close);
+        // ★永続化+終値系列の決定(空DB回帰対策のため純ヘルパに切り出し・テスト対象)。
+        confirmedDailyCloses = persistAndResolveDailyCloses(db, SYMBOL, confirmed, DAILY_CLOSES_KEEP);
       } catch (err) { console.warn('[levelsLoop] daily bands (confirmed closes) failed:', err instanceof Error ? err.message : err); }
     }
     // バンド算出は毎ティック(現在値を進行中取引日の終値として append し MA25/σ を再計算)。
+    // ★バンド(MA25±σ)は従来どおり keep=24(24確定+現在値=25)で不変。confirmed の保持本数が増えても
+    //   dailyCloseSeries が -24 に切るため結果は同一(最後25値が一致)。
     dailyBandLevels = confirmedDailyCloses.length >= 24
       ? computeDailyBands(dailyCloseSeries(confirmedDailyCloses, latest.price))
       : [];
+    // 日足MA線(MA5/20/50/75・線のみ)。MA75 用に keep=75(=75確定+現在値=76)で長い系列を渡す。
+    // 不足期間(例: 確定<50)は computeDailyMAs 側でスキップされる(その線は出さない)。
+    dailyMaLevels = computeDailyMAs(dailyCloseSeries(confirmedDailyCloses, latest.price, 75));
     const tCompute = Date.now();
     const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels, trendlineLevels);
     const computeMs = Date.now() - tCompute;
@@ -458,6 +487,44 @@ function tick(): void {
       }
     } catch (err) {
       console.warn('[levelsLoop] dailyband detect failed:', err instanceof Error ? err.message : err);
+    }
+    // ── 日足MA線検知(dailyMa): MA5/20/50/75 の各線で水準抜け/反発を評価し直接 emit(バンドと同機構・集約なし)──
+    // detectionKind は 'dailyband' を再利用(履歴の種別表示は「日足バンド」・ノート文の「日足MA5」等で区別)。
+    // クールダウンはバンドと別ゾーン管理(lastDailyMaEmit)にして相互抑制しない。ラベル=日足MA5/20/50/75。
+    try {
+      if (dailyMaLevels.length > 0) {
+        const sinceT = now - RECENT_BARS_MIN * 60_000;
+        const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+        const maLevelList = dailyMaLevels.map(m => ({ price: m.price, label: m.label }));   // label='MA5' 等
+        const emitMa = (price: number, direction: 'up' | 'down', label: string, note: string): void => {
+          const key = `${direction}@${Math.round(price / 40) * 40}`;
+          if (now - (lastDailyMaEmit.get(key) ?? -Infinity) <= DAILYBAND_COOLDOWN_MS) return;
+          lastDailyMaEmit.set(key, now);
+          console.log(`[levelsLoop] dailyma ${direction} @${Math.round(price)} (${label})`);
+          emitAlert({
+            symbol: SYMBOL, symbolLabel: '日経225先物',
+            changePercent: 0, windowSeconds: 60, detectionKind: 'dailyband', direction,
+            triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+            level: Math.round(price), note,
+            referenceKind: label.toLowerCase(), referencePrice: Math.round(price),   // 'ma5'/'ma20'/'ma50'/'ma75'
+          });
+        };
+        // 水準抜け(break)
+        for (const bsig of detectLevelBreak(maLevelList, recent, latest.price)) {
+          const price = Math.round(bsig.level);
+          const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
+          emitMa(price, bsig.kind, bsig.label, `日足${bsig.label} ${price.toLocaleString('ja-JP')}を${dirWord}`);
+        }
+        // 反発(support/resistance)
+        for (const h of detectLevelHold(maLevelList, recent, latest.price)) {
+          const price = Math.round(h.level);
+          const direction = h.kind === 'support' ? 'up' : 'down';
+          const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
+          emitMa(price, direction, h.label, `日足${h.label} ${price.toLocaleString('ja-JP')}が${word}の可能性`);
+        }
+      }
+    } catch (err) {
+      console.warn('[levelsLoop] dailyma detect failed:', err instanceof Error ? err.message : err);
     }
     // 診断ログ: 最初の3tick / 遅い時(DB>500ms or compute>150ms) / 水準が空の時 に出す。
     // 通常は無音。これを見れば「どのステージで詰まるか」「水準が空になっていないか」が分かる。

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { upsertBar } from './db/store.js';
+import { upsertBar, upsertDailyClose } from './db/store.js';
 import { classifySession } from '../collector/session.js';
 import type { BaseBar } from './basedataDate.js';
 
@@ -27,6 +27,9 @@ export interface ImportResult { inserted: number; updated: number; skipped: numb
 export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
   let applied = 0, skipped = 0, futureDropped = 0, latestFuture = 0, from = Infinity, to = -Infinity;
   const futureCutoff = Date.now() + 2 * 60_000;
+  // 取引日15:45終値の永続化用: 各 Day セッションの「最後に存在する bar」= その日の終値(15:45 が
+  // 無ければ Day セッション最終 bar が代替終値)。session_date ごとに最大 t の bar を追う。
+  const dayLast = new Map<string, { t: number; close: number }>();
   db.exec('BEGIN');
   try {
     for (const b of bars) {
@@ -38,12 +41,27 @@ export function importBars(db: DatabaseSync, bars: BaseBar[]): ImportResult {
       const s = classifySession(b.t);
       if (!s) { skipped++; continue; }
       upsertBar(db, SYMBOL, b.t, b.o, b.h, b.l, b.c, b.v, s.sessionDate, s.session);
+      if (s.session === 'Day') {
+        const cur = dayLast.get(s.sessionDate);
+        if (!cur || b.t > cur.t) dayLast.set(s.sessionDate, { t: b.t, close: b.c });
+      }
       applied++; if (b.t < from) from = b.t; if (b.t > to) to = b.t;
     }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
+  }
+  // 取り込んだ範囲の各取引日終値を daily_closes に upsert(歴史分を埋める)。件数は日数ぶん(≪バー数)。
+  if (dayLast.size > 0) {
+    db.exec('BEGIN');
+    try {
+      for (const [sessionDate, v] of dayLast) upsertDailyClose(db, SYMBOL, sessionDate, v.close, v.t);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
   }
   if (futureDropped > 0) {
     console.error(`[basedata] ERROR: dropped ${futureDropped} future-dated bars on import `

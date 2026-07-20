@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { initSchema } from './db/store.js';
+import { initSchema, getDailyCloses } from './db/store.js';
 import { rowToBar, parseNdjsonLine, importBars } from './basedata.js';
 
 describe('rowToBar (xlsx A=セッション日付 → 実時刻 epoch)', () => {
@@ -78,6 +78,27 @@ describe('importBars', () => {
     expect(r.inserted + r.updated).toBe(0);
     const cnt = (db.prepare('SELECT COUNT(*) n FROM bars_1m').get() as any).n;
     expect(cnt).toBe(0);
+    db.close();
+  });
+
+  it('取り込み時に各取引日(Dayセッション)終値を daily_closes に保存する(15:45欠損時は最終bar代替)', () => {
+    const db = new DatabaseSync(':memory:'); initSchema(db);
+    const J = (day: number, jh: number, jm = 0): number => Date.UTC(2026, 5, day, jh - 9, jm);
+    const bar = (t: number, c: number) => ({ t, o: c, h: c, l: c, c, v: 1 });
+    const bars = [
+      // 6-01(月) Day: 最終 bar = 15:44(=15:45クローズ相当)→ 38150 が終値
+      bar(J(1, 9, 0), 38000), bar(J(1, 12, 0), 38100), bar(J(1, 15, 44), 38150),
+      // 6-02(火) Day: 15:44 が欠損 → Day セッション最終 bar(15:00)を代替終値に → 38250
+      bar(J(2, 9, 0), 38200), bar(J(2, 15, 0), 38250),
+      // 夜間 bar は Day 終値に使わない(session=Night)
+      bar(J(1, 17, 0), 37900),
+    ];
+    importBars(db, bars);
+    const rows = getDailyCloses(db, 'NIY=F', 10);
+    expect(rows.map(r => [r.session_date, r.close])).toEqual([
+      ['2026-06-01', 38150],
+      ['2026-06-02', 38250],
+    ]);
     db.close();
   });
 });

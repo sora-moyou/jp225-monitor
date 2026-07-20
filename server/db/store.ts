@@ -34,6 +34,10 @@ export function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (symbol, t)
     );
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
+    CREATE TABLE IF NOT EXISTS daily_closes (
+      symbol TEXT NOT NULL, session_date TEXT NOT NULL, close REAL NOT NULL, t INTEGER NOT NULL,
+      PRIMARY KEY (symbol, session_date)
+    );
     CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       symbol TEXT NOT NULL, triggered_at INTEGER NOT NULL,
@@ -139,6 +143,30 @@ export function upsertBar(
       o = excluded.o, h = excluded.h, l = excluded.l, c = excluded.c,
       volume = excluded.volume, session_date = excluded.session_date, session = excluded.session
   `).run(symbol, sessionDate, session, minute, o, h, l, c, volume);
+}
+
+// ─── 取引日15:45終値の永続化(daily_closes・v0.8.6) ───
+// 取引日=日中(Day)セッション。その終値(=15:45クローズ・無ければ当該Dayセッションの最後に存在する bar)を
+// session_date 単位で durable に保存する。基礎データ import で歴史分を埋め、ライブで確定日を追記する。
+// 日足MA(MA5/20/50/75)/MA25バンドの終値系列はこの完全な系列を優先して使い、欠損日(15:45が無い日)も残さない。
+
+export interface DailyCloseRow { symbol: string; session_date: string; close: number; t: number; }
+
+/** 取引日終値を upsert(symbol+session_date で全上書き)。close=Dayセッション終値、t=その終値の時刻。 */
+export function upsertDailyClose(db: DatabaseSync, symbol: string, sessionDate: string, close: number, t: number): void {
+  if (!Number.isFinite(close) || close <= 0) return;
+  db.prepare(`
+    INSERT INTO daily_closes (symbol, session_date, close, t) VALUES (?, ?, ?, ?)
+    ON CONFLICT(symbol, session_date) DO UPDATE SET close = excluded.close, t = excluded.t
+  `).run(symbol, sessionDate, close, t);
+}
+
+/** 直近 limit 件の取引日終値を古い→新しい順で返す(MA/バンドの終値系列用)。 */
+export function getDailyCloses(db: DatabaseSync, symbol: string, limit: number): DailyCloseRow[] {
+  const rows = db.prepare(
+    'SELECT symbol, session_date, close, t FROM daily_closes WHERE symbol = ? ORDER BY session_date DESC LIMIT ?',
+  ).all(symbol, Math.max(1, Math.min(2000, limit))) as unknown as DailyCloseRow[];
+  return rows.reverse();   // session_date DESC で直近 limit 件 → 反転して古い→新しい
 }
 
 /** cutoff(epoch ms) より古い ticks を削除 (bars_1m は残す)。 */

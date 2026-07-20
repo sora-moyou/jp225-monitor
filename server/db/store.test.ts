@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getBarCloseNear, getAlertsNeedingFollowup, updateAlertReturns, insertSignalTrade, getSignalTrades } from './store.js';
+import { initSchema, recordTick, getRecentBars, getRecentTicks, getLatestTick, openDb, pruneTicks, getSessionOHLC, upsertBar, getMeta, setMeta, insertAlert, getRecentAlerts, getBarCloseAt, getBarCloseNear, getAlertsNeedingFollowup, updateAlertReturns, insertSignalTrade, getSignalTrades, upsertDailyClose, getDailyCloses } from './store.js';
 
 function memDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -230,6 +230,48 @@ describe('alerts store', () => {
     const r = getRecentAlerts(db, 1)[0]!;
     expect([r.ret5, r.ret15, r.ret30]).toEqual([0.1, 0.2, 0.3]);
     expect(getAlertsNeedingFollowup(db, now).length).toBe(0);   // ret30 が埋まったので対象外
+    db.close();
+  });
+});
+
+// ─── daily_closes(取引日15:45終値の永続化) ───
+describe('daily_closes upsert/get', () => {
+  it('upsert して古い→新しい順で取り出せる', () => {
+    const db = memDb();
+    upsertDailyClose(db, 'NIY=F', '2026-06-03', 38300, 3000);
+    upsertDailyClose(db, 'NIY=F', '2026-06-01', 38100, 1000);
+    upsertDailyClose(db, 'NIY=F', '2026-06-02', 38200, 2000);
+    const rows = getDailyCloses(db, 'NIY=F', 10);
+    expect(rows.map(r => r.session_date)).toEqual(['2026-06-01', '2026-06-02', '2026-06-03']);
+    expect(rows.map(r => r.close)).toEqual([38100, 38200, 38300]);
+    db.close();
+  });
+
+  it('同 session_date は close/t を上書き(基礎=正)', () => {
+    const db = memDb();
+    upsertDailyClose(db, 'NIY=F', '2026-06-01', 38100, 1000);
+    upsertDailyClose(db, 'NIY=F', '2026-06-01', 38150, 1500);
+    const rows = getDailyCloses(db, 'NIY=F', 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ session_date: '2026-06-01', close: 38150, t: 1500 });
+    db.close();
+  });
+
+  it('limit は直近ぶんを返す(古い→新しい順)', () => {
+    const db = memDb();
+    for (let i = 1; i <= 5; i++) upsertDailyClose(db, 'NIY=F', `2026-06-0${i}`, 38000 + i, i * 1000);
+    const rows = getDailyCloses(db, 'NIY=F', 3);
+    expect(rows.map(r => r.session_date)).toEqual(['2026-06-03', '2026-06-04', '2026-06-05']);
+    db.close();
+  });
+
+  it('symbol ごとに独立、close≤0 は無視', () => {
+    const db = memDb();
+    upsertDailyClose(db, 'NIY=F', '2026-06-01', 38100, 1000);
+    upsertDailyClose(db, 'NQ=F', '2026-06-01', 20000, 1000);
+    upsertDailyClose(db, 'NIY=F', '2026-06-02', 0, 2000);      // close≤0 は保存しない
+    expect(getDailyCloses(db, 'NIY=F', 10).map(r => r.session_date)).toEqual(['2026-06-01']);
+    expect(getDailyCloses(db, 'NQ=F', 10)).toHaveLength(1);
     db.close();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDailyBands, dailyCloseSeries } from './dailyBand.js';
+import { computeDailyBands, computeDailyMAs, dailyCloseSeries } from './dailyBand.js';
 
 describe('computeDailyBands', () => {
   it('returns [] when fewer than 25 closes', () => {
@@ -84,6 +84,41 @@ describe('computeDailyBands', () => {
   });
 });
 
+describe('computeDailyMAs (日足MA5/20/50/75・線のみ)', () => {
+  it('十分な本数があれば MA5/20/50/75 の4水準を返す', () => {
+    const closes = Array.from({ length: 100 }, () => 38000);
+    const mas = computeDailyMAs(closes);
+    expect(mas.map(m => m.period)).toEqual([5, 20, 50, 75]);
+    expect(mas.map(m => m.label)).toEqual(['MA5', 'MA20', 'MA50', 'MA75']);
+    expect(mas.every(m => m.price === 38000)).toBe(true);
+  });
+
+  it('期間に満たない終値はスキップする(不足MAは出さない)', () => {
+    expect(computeDailyMAs([]).map(m => m.period)).toEqual([]);
+    expect(computeDailyMAs(Array.from({ length: 4 }, () => 1)).map(m => m.period)).toEqual([]);   // <5
+    expect(computeDailyMAs(Array.from({ length: 5 }, () => 1)).map(m => m.period)).toEqual([5]);   // 5だけ
+    expect(computeDailyMAs(Array.from({ length: 20 }, () => 1)).map(m => m.period)).toEqual([5, 20]);
+    expect(computeDailyMAs(Array.from({ length: 74 }, () => 1)).map(m => m.period)).toEqual([5, 20, 50]);   // 75未満
+    expect(computeDailyMAs(Array.from({ length: 75 }, () => 1)).map(m => m.period)).toEqual([5, 20, 50, 75]);
+  });
+
+  it('各MAは直近period本の単純平均・整数に丸める', () => {
+    // 末尾5本 = 38010..38014 平均=38012、末尾20本 = 37995..38014 平均=38004.5→38005(round)
+    const closes = Array.from({ length: 20 }, (_, i) => 37995 + i);
+    const mas = computeDailyMAs(closes);
+    expect(mas.find(m => m.period === 5)!.price).toBe(38012);
+    expect(mas.find(m => m.period === 20)!.price).toBe(38005);
+    expect(mas.every(m => Number.isInteger(m.price))).toBe(true);
+  });
+
+  it('直近period本のみ使う(それ以前は無視)', () => {
+    // 先頭にゴミ、末尾5本だけ 40000 → MA5=40000
+    const closes = [...Array.from({ length: 10 }, () => 1), ...Array.from({ length: 5 }, () => 40000)];
+    const mas = computeDailyMAs(closes);
+    expect(mas.find(m => m.period === 5)!.price).toBe(40000);
+  });
+});
+
 describe('dailyCloseSeries (realtime MA25, v0.6.22)', () => {
   it('24 confirmed + current price -> 25 values ending in the price', () => {
     const confirmed = Array.from({ length: 24 }, (_, i) => 38000 + i);
@@ -91,6 +126,15 @@ describe('dailyCloseSeries (realtime MA25, v0.6.22)', () => {
     expect(series).toHaveLength(25);
     expect(series[series.length - 1]).toBe(39999);
     expect(series.slice(0, 24)).toEqual(confirmed);
+  });
+
+  it('keep を大きくすると MA50/75 用に長い系列を返す(バンドは既定24で不変)', () => {
+    const confirmed = Array.from({ length: 90 }, (_, i) => 38000 + i);
+    expect(dailyCloseSeries(confirmed, 40000)).toHaveLength(25);          // 既定 keep=24 → 25値(バンド用・不変)
+    const long = dailyCloseSeries(confirmed, 40000, 75);
+    expect(long).toHaveLength(76);                                        // 75確定 + 現在値
+    expect(long[long.length - 1]).toBe(40000);
+    expect(long.slice(0, 75)).toEqual(confirmed.slice(-75));
   });
 
   it('30 confirmed -> keeps only the last 24 then appends the current price', () => {
