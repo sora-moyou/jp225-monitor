@@ -102,15 +102,16 @@ const TREND_LOOKBACK_DAYS = 15;   // 反応水準と同程度の期間からス�
 const TREND_CONFLUENCE_YEN = 40;  // 合流ゲート: ライン価格が水平の反応水準(2回以上)とこの距離内の線だけ採用
 let lastTrendCheck = 0;
 let trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [];
-// ── 日足バンド(v0.6.17 → v0.6.22 リアルタイム化): 夜間セッション終値25本の MA25 ±1σ/±2σ の5水準。
+// ── 日足バンド(v0.6.17 → v0.6.22 リアルタイム化 → v0.8.6 取引日足化): 取引日足の終値25本の MA25 ±1σ/±2σ の5水準。
+// ★取引日足 = 夜間(17:00)〜翌日中(15:45)を1日とし、終値は「日中セッションの15:45クローズ」(基礎データの取引日日足と同じ定義)。
 // 現値がこの帯を抜け/反発したら dailyband アラートを直接 emit(crash 同様・集約は通さない)。
-// v0.6.22: 最後の日足(進行中の夜間足)は確定を待たず現在値を終値とする。確定済み夜間終値の取得/フィルタは
+// v0.6.22: 最後の日足(進行中の取引日)は確定を待たず現在値を終値とする。確定済み取引日終値(=各日の15:45)の取得/フィルタは
 // セッション境界でしか変わらないため約60秒キャッシュのままだが、現在値の追加とバンド算出は毎ティック実行する
 // (= MA25/σ が現在値に合わせて毎ティック動く)。
 const DAILYBAND_CHECK_MS = 60_000;
 const DAILYBAND_COOLDOWN_MS = 20 * 60_000;   // ゾーン(40円刻み)×方向の発火クールダウン
 let lastDailyBandCheck = 0;
-let confirmedNightCloses: number[] = [];     // 確定済み夜間終値(古い→新しい、直近~30本)。60sキャッシュ。
+let confirmedDailyCloses: number[] = [];     // 確定済み取引日終値(=各日の日中15:45クローズ・古い→新しい、直近~30本)。60sキャッシュ。
 let dailyBandLevels: DailyBand[] = [];        // 毎ティック再計算(confirmed24 + 現在値)。
 const lastDailyBandEmit = new Map<string, number>();
 
@@ -235,25 +236,26 @@ function tick(): void {
           .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
       } catch (err) { console.warn('[levelsLoop] trend lines failed:', err instanceof Error ? err.message : err); }
     }
-    // 日足バンド(MA25 ±1σ/±2σ)。日足=夜間セッション、終値=各夜間クローズ。
-    // 確定済み夜間終値の取得/フィルタは約60秒キャッシュ(セッション境界でしか変わらない)。
-    // v0.6.22: 進行中の夜間足は EXCLUDE し、代わりに現在値を「進行中日足の終値」として扱う。
-    if (now - lastDailyBandCheck >= DAILYBAND_CHECK_MS || confirmedNightCloses.length === 0) {
+    // 日足バンド(MA25 ±1σ/±2σ)。★取引日足=夜間(17:00)〜翌日中(15:45)、終値=日中セッションの15:45クローズ。
+    // 確定済み取引日終値の取得/フィルタは約60秒キャッシュ(セッション境界でしか変わらない)。
+    // v0.8.6: 進行中の取引日(=日中セッション進行中)は EXCLUDE し、代わりに現在値を「進行中取引日の終値」として扱う。
+    //   ・日中セッション中(cs.session==='Day') → 当日の日中足は未確定(15:45前) → 除外、現在値で代表。
+    //   ・夜間/場外(15:45後) → 当日の15:45は確定済み → 含める。現在値は次の取引日(17:00開始)の進行を代表する。
+    if (now - lastDailyBandCheck >= DAILYBAND_CHECK_MS || confirmedDailyCloses.length === 0) {
       lastDailyBandCheck = now;
       try {
-        const nights = getSessionOHLC(db, SYMBOL, 60)
-          .filter(s => s.session === 'Night')
+        const days = getSessionOHLC(db, SYMBOL, 60)
+          .filter(s => s.session === 'Day')   // ★日中セッション=取引日の終値(15:45)を採る
           .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));   // 古い→新しい
-        // 今が夜間セッション中なら、getSessionOHLC が返す最新の夜間足は「進行中(未確定)」なので除外する
-        // (これは現在値で代表される)。それ以外は全て確定済み。
-        const inNight = cs?.session === 'Night';
-        const confirmed = inNight ? nights.slice(0, -1) : nights;
-        confirmedNightCloses = confirmed.slice(-30).map(s => s.close);
+        // 今が日中セッション中なら、最新の日中足は「進行中(15:45前=未確定)」なので除外(現在値で代表)。
+        const inDay = cs?.session === 'Day';
+        const confirmed = inDay ? days.slice(0, -1) : days;
+        confirmedDailyCloses = confirmed.slice(-30).map(s => s.close);
       } catch (err) { console.warn('[levelsLoop] daily bands (confirmed closes) failed:', err instanceof Error ? err.message : err); }
     }
-    // バンド算出は毎ティック(現在値を進行中日足の終値として append し MA25/σ を再計算)。
-    dailyBandLevels = confirmedNightCloses.length >= 24
-      ? computeDailyBands(dailyCloseSeries(confirmedNightCloses, latest.price))
+    // バンド算出は毎ティック(現在値を進行中取引日の終値として append し MA25/σ を再計算)。
+    dailyBandLevels = confirmedDailyCloses.length >= 24
+      ? computeDailyBands(dailyCloseSeries(confirmedDailyCloses, latest.price))
       : [];
     const tCompute = Date.now();
     const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels, trendlineLevels);
