@@ -100,7 +100,11 @@ app.get('/api/current-signal', currentSignalHandler);
 // スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
 app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
-app.get('/api/version', (_req, res) => res.json({ version: APP_VERSION, name: 'JP225 Monitor', variant: resolveVariant() }));
+// name は製品名(variant 由来): full=JP225 Monitor2 / lite=JP225 Monitor。trade2 が接続先を書き出しで判別できるように。
+app.get('/api/version', (_req, res) => {
+  const variant = resolveVariant();
+  res.json({ version: APP_VERSION, name: variant === 'full' ? 'JP225 Monitor2' : 'JP225 Monitor', variant });
+});
 
 const isPkg = (process as unknown as { pkg?: unknown }).pkg !== undefined;
 const distWeb = isPkg
