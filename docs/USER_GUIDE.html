@@ -758,11 +758,12 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       JP225 Monitor <span class="v">利用ガイド</span>
     </a>
     <nav>
-      <a href="#quickstart">セットアップ</a>
-      <a href="#whatsnew">v0.4 新機能</a>
+      <a href="#versions">2つの版</a>
+      <a href="#install">導入</a>
       <a href="#tour">画面ツアー</a>
-      <a href="#features">機能</a>
-      <a href="#faq">FAQ</a>
+      <a href="#alerts">アラート</a>
+      <a href="#signal">トレードシグナル</a>
+      <a href="#settings">設定</a>
       <a href="https://github.com/sora-moyou/jp225-monitor">GitHub ↗</a>
     </nav>
   </div>
@@ -772,12 +773,16 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="hero" id="top">
   <div class="hero-inner">
     <div class="hero-text">
-      <span class="badge">● Windows 10 / 11 · 無料 · v0.7.59</span>
-      <h1>急変を 30 秒で<br>AI が日本語で説明する。</h1>
+      <span class="badge">● Windows 10 / 11 · 無料 · v0.8.7</span>
+      <h1>急変を、AI が<br>日本語で説明する。</h1>
       <p class="lead">
-        日経 225 先物 (OSE mini) の価格変動をリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定。
-        その後 AI が、急変の原因をニュースや他銘柄から考えて、説明します。価格は 24/7 デーモンで蓄積し、起動時に即ウォームアップ。
+        日経 225 先物 (OSE mini) の値動きをリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定し、
+        急変が起きたら AI がニュースや他銘柄から原因を考えて日本語で説明します。価格は 24/7 デーモンで蓄積され、起動時に即ウォームアップ。
       </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#install">導入手順を見る</a>
+        <a class="btn btn-ghost" href="https://github.com/sora-moyou/jp225-monitor/releases/latest" target="_blank" rel="noopener">ダウンロード ↗</a>
+      </div>
     </div>
     <img class="hero-icon" src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/src-tauri/icons/128x128@2x.png" alt="アプリアイコン">
   </div>
@@ -785,187 +790,231 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
 <main>
 
-<!-- ─── Quick start ─── -->
-<section class="section" id="quickstart" style="padding-top: var(--space);">
+<!-- ─── 2つの版 ─── -->
+<section class="section" id="versions" style="padding-top: var(--space-lg);">
+  <div class="section-head">
+    <span class="section-eyebrow">重要</span>
+    <h2>2 つの版があります</h2>
+    <p>動作は同一。違いは「画面に出す設定の範囲」だけです。まずは表示縮小版で十分です。</p>
+  </div>
+
+  <div class="steps" style="grid-template-columns: 1fr 1fr;">
+    <div class="step step-key">
+      <div class="step-num">🟢</div>
+      <h3>JP225 Monitor(表示縮小版・公開版)</h3>
+      <p style="margin-bottom:12px;">ふだん使い向け。<strong>価格監視・AI 急変説明・トレードシグナル表示・API キー設定</strong>が使えます。細かな設定(アラート履歴・サーバログ・詳細パラメータ・AI エントリー設定・Web 検索モデル・データ DB 管理)は<strong>非表示</strong>で、シンプルに使えます。</p>
+      <p><a href="https://github.com/sora-moyou/jp225-monitor/releases/latest" target="_blank" rel="noopener">表示縮小版をダウンロード ↗</a></p>
+    </div>
+    <div class="step step-info">
+      <div class="step-num">🎛️</div>
+      <h3>JP225 Monitor2(フル版・開発版)</h3>
+      <p style="margin-bottom:12px;">全機能版。上記に加えて<strong>アラート履歴・サーバログ・詳細パラメータ・AI エントリーの細部設定・Web 検索モデル・データ DB 管理</strong>を表示・変更できます。トレード bot(trade2)と連携するのもこちらです。</p>
+      <p><a href="https://github.com/sora-moyou/jp225-monitor2-releases/releases/latest" target="_blank" rel="noopener">フル版(monitor2)をダウンロード ↗</a></p>
+    </div>
+  </div>
+
+  <div class="callout success" style="margin-top:24px;">
+    <strong>版・動作は完全に同一</strong>で、違いは<strong>画面に出す設定の範囲だけ</strong>です。<strong>設定・データは両者で共有</strong>します(同じ設定ファイル・同じ価格 DB を使います)。
+  </div>
+  <div class="callout warn" style="margin-top:12px;">
+    ⚠️ <strong>monitor と monitor2 は同時に起動できません。</strong> monitor2 が優先で、<strong>monitor2 を起動すると表示縮小版の monitor は自動終了</strong>します。細かな設定を変えたいときは monitor2 を使ってください。
+  </div>
+</section>
+
+<!-- ─── 導入 ─── -->
+<section class="section" id="install">
   <div class="section-head">
     <span class="section-eyebrow">3 ステップ</span>
-    <h2>3 分でセットアップ</h2>
-    <p>ダウンロードから初回起動まで。API キーは無料で取得できます。</p>
+    <h2>導入はかんたん</h2>
+    <p>ダウンロード → インストール → API キーを 1 つ設定。以後はアプリ内「更新をチェック」で自動更新。Windows 10 / 11・無料です。</p>
   </div>
 
   <div class="steps">
     <div class="step step-info">
       <div class="step-num">1</div>
       <h3>ダウンロード</h3>
-      <p style="margin-bottom: 14px;">
-        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a> を開きます。
+      <p style="margin-bottom:14px;">
+        <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a>(表示縮小版)を開きます。
       </p>
       <div class="download-alert">
-        <div class="download-title">
-          📥 Releases ページの見方
-        </div>
+        <div class="download-title">📥 Releases ページの見方</div>
         <p class="download-body">
-          ページを開いただけでは <code>.exe</code> は見えません。<strong>下にスクロール</strong> して <strong>Assets</strong> セクションを探してください。
+          ページを開いただけでは <code>.exe</code> は見えません。<strong>下にスクロール</strong>して <strong>Assets</strong> を探してください。
         </p>
         <ol class="download-steps">
-          <li>リリース説明の下、▶ <strong>Assets</strong> という折り畳みを <strong>クリックして展開</strong></li>
-          <li>4 つのファイルが表示されるので、その中の <span class="file-pill">📦 JP225.Monitor_X.X.X_x64-setup.exe</span> をクリック</li>
+          <li>▶ <strong>Assets</strong> の折り畳みを<strong>クリックして展開</strong></li>
+          <li>署名済みの <span class="file-pill">📦 JP225.Monitor_X.X.X_x64-setup.exe</span> をクリック</li>
         </ol>
-        <p class="download-body" style="margin-top: 10px; font-size: 12.5px; color: var(--text-faint);">
-          ※ <code>.sig</code> や <code>latest.json</code> はアプリ側が自動更新で使うもので、利用者は触る必要はありません。
+        <p class="download-body" style="margin-top:10px; font-size:12.5px; color:var(--text-faint);">
+          ※ <code>.sig</code> や <code>latest.json</code> はアプリが自動更新で使うもので、利用者は触る必要はありません。
         </p>
       </div>
     </div>
     <div class="step step-emph">
       <div class="step-num">2</div>
       <h3>インストール</h3>
-      <p style="margin-bottom: 14px;">
+      <p style="margin-bottom:14px;">
         ダウンロードした <code>.exe</code> をダブルクリック。
       </p>
       <div class="smartscreen-alert">
-        <div class="smartscreen-title">
-          ⚠ ここで多くの人が止まります
-        </div>
+        <div class="smartscreen-title">⚠ ここで多くの人が止まります</div>
         <p class="smartscreen-body">
-          <strong>「Windows によって PC が保護されました」</strong> という<strong>青い画面</strong>が出ます。
-          「実行しない」ボタンしか見えませんが、慌てないでください。
+          <strong>「Windows によって PC が保護されました」</strong>という<strong>青い画面</strong>が出ます。「実行しない」しか見えませんが、慌てないでください。
         </p>
         <ol class="smartscreen-steps">
           <li>左上の小さな <span class="kbd-blue">詳細情報</span> リンクをクリック</li>
-          <li>すると下に <span class="kbd-blue">実行</span> ボタンが出現するので、それをクリック</li>
+          <li>下に現れた <span class="kbd-blue">実行</span> ボタンをクリック</li>
         </ol>
-        <p class="smartscreen-body" style="margin-top: 10px; font-size: 12.5px; color: var(--text-faint);">
-          ※ 無料配布アプリ全般で出る警告で、害はありません。気になる場合は <a href="https://github.com/sora-moyou/jp225-monitor">GitHub のソースコード</a> を確認できます。
+        <p class="smartscreen-body" style="margin-top:10px; font-size:12.5px; color:var(--text-faint);">
+          ※ 無料配布アプリ全般で出る警告で、害はありません。ウィザードに従って進めれば完了です。
         </p>
       </div>
-      <p style="margin-top: 14px;">
-        ウィザードに従ってインストール → スタートメニューから <strong>JP225 Monitor</strong> 起動。
-      </p>
     </div>
     <div class="step step-key">
       <div class="step-num">3</div>
-      <h3>API キーを設定</h3>
-      <p style="margin-bottom: 14px;">
-        起動時に設定モーダルが自動で開きます (未設定時)。後から開く時は <strong>右上の <span class="kbd">⚙️</span></strong>。
+      <h3>API キーを 1 つ設定</h3>
+      <p style="margin-bottom:14px;">
+        初回起動時に設定モーダルが自動で開きます。後から開くときは<strong>右上の <span class="kbd">⚙️</span></strong>。
       </p>
       <div class="apikey-alert">
-        <div class="apikey-title">
-          🔑 ここを忘れると AI 機能が動きません
-        </div>
+        <div class="apikey-title">🔑 これを忘れると AI 機能が動きません</div>
         <p class="apikey-body">
-          AI 説明 / AI チャット / ニュース翻訳のために、<strong>API キーを 1 つ以上</strong>設定する必要があります。Gemini が無料で品質も十分。
+          AI 急変説明 / AI チャット / ニュース翻訳のために、<strong>API キーを 1 つ以上</strong>設定します。<strong>Gemini が無料でおすすめ</strong>。
         </p>
         <ol class="apikey-steps">
           <li><a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a> でキー発行 → <strong>コピー</strong></li>
-          <li>Gemini 欄に <strong>貼り付け</strong> (空欄保存は無変更なので注意)</li>
+          <li>Gemini 欄に<strong>貼り付け</strong>(空欄保存は無変更なので注意)</li>
           <li>右下の <span class="kbd-green">保存</span> をクリック</li>
           <li>状態が <span class="dot green" style="display:inline-block;vertical-align:middle"></span> 緑になれば完了</li>
         </ol>
-        <p class="apikey-body" style="margin-top: 10px; font-size: 12.5px; color: var(--text-faint);">
-          ※ 詳しい操作は下の「<a href="#setup-walkthrough">設定画面の使い方</a>」に画面付きで解説。
+        <p class="apikey-body" style="margin-top:10px; font-size:12.5px; color:var(--text-faint);">
+          ※ 詳しくは下の「<a href="#settings">設定 — API キー</a>」を参照。
         </p>
       </div>
     </div>
   </div>
+
+  <div class="callout" style="margin-top:24px;">
+    <strong>以後の更新は自動。</strong> インストール後は起動時に新版を自動チェックし、⚙️ 設定の「更新をチェック」からいつでも手動確認もできます。
+  </div>
 </section>
 
-<!-- ─── What's new in v0.4 ─── -->
-<section class="section" id="whatsnew">
+<!-- ─── 画面ツアー ─── -->
+<section class="section" id="tour">
   <div class="section-head">
-    <span class="section-eyebrow">v0.4 の新機能</span>
-    <h2>v0.4 で変わったこと</h2>
-    <p>価格は OSE mini のリアルタイム配信に切替。24/7 蓄積デーモンと主要レベル表示を新搭載。</p>
+    <span class="section-eyebrow">画面ツアー</span>
+    <h2>どこに何があるか</h2>
+    <p>起動直後の画面(表示縮小版)。価格カード・トレードシグナル・主要レベル・AI チャット・アラート・チャート・ニュースが 1 画面に収まります。</p>
+  </div>
+
+  <div class="shot-wrap">
+    <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/overview.png" alt="JP225 Monitor 全体画面">
+  </div>
+
+  <div class="annotations">
+    <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>価格カード</strong><p>日経 225 先物(<code>NIY=F</code>・OSE リアルタイム)、ナスダック 100 先物などを更新。日経の値の上に<strong>「1 分」(率 %)</strong>と<strong>「10 秒」(値幅・円)</strong>の 2 段モメンタムを表示します。</p></div></div>
+    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>トレードシグナル(表示専用・紙)</strong><p>現在のシグナル(買い/売り・指値/逆指値+LC)を大きな文字で表示。理由は白文字。<strong>売買命令は一切送りません</strong>。※フル版は A / B の 2 系統を併記(B は 📝 紙のみ)。</p></div></div>
+    <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>主要レベル(節目)</strong><p>★ 点数つきの上値/下値メド。セッション高安・フィボナッチ・反応水準・下降/上昇トレンドライン(合流)・出来高帯・もみ合い帯・日足 MA5/20/50/75・日足バンド(MA25±1σ/±2σ)を、現値位置でソートして表示。</p></div></div>
+    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>AI チャット</strong><p>①テクニカル分析 ②ファンダメンタル分析 ③スイング分析 のプリセット + 自由入力。市場の現状(価格/節目/アラート/本日 OHLC/ニュース)を踏まえて回答。キー設定時は Web 検索も可能です。</p></div></div>
+    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>ALERTS(アラート + AI 説明)</strong><p>急変・暴落・水準抜け/反発・ダブルトップ/ボトム・トレンド転換・グランビル・日足 MA/バンドなどの異常を検知し、AI が原因を日本語で説明。事後の値動き(+5/15/30 分)も記録します。</p></div></div>
+    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>チャート</strong><p>TradingView(Japan 225 CFD)を埋め込み表示。時間足を切り替えられます。</p></div></div>
+    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>NEWS</strong><p>日英のニュースを集約表示。英語見出しは <code>[訳]</code> ボタンで日本語化できます。</p></div></div>
+    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>🔔 サウンドを有効化</strong><p>右下のボタン。ブラウザの制約で、<strong>初回に 1 回クリック</strong>すると通知音が有効になります。</p></div></div>
+  </div>
+</section>
+
+<!-- ─── アラートの種類 ─── -->
+<section class="section" id="alerts">
+  <div class="section-head">
+    <span class="section-eyebrow">アラート</span>
+    <h2>アラートの種類</h2>
+    <p>日経 225 先物の異常を検知。値動き系は AI が原因を説明、テクニカル系は根拠付きの固定文で表示します。</p>
   </div>
 
   <div class="features">
     <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg></div>
-      <h3>価格収集デーモン (24/7 蓄積 + アラート記録)</h3>
-      <p>常駐デーモンが <strong>月 8:45〜土 6:00</strong> (Day 8:45-15:45 / Night 17:00-翌 6:00、休場日除く) に価格を SQLite へ蓄積。モニター起動時に <strong>即ウォームアップ</strong> され、メドや z-score 判定がすぐ揃います。<strong>v0.5 からはデーモン自身が急変アラートを検知して履歴に記録</strong> するので、<strong>アプリを閉じていても 24/7 でアラート履歴が貯まり</strong> ます (デーモン稼働中はデーモンが唯一の記録者、アプリは表示のみ・二重記録なし)。設定の「終了」で <strong>「完全終了」にチェック</strong> すると閉じる時にデーモンも停止、<strong>未チェック (既定) ならバックグラウンドで収集を継続</strong> します。</p>
-      <span class="tag">v0.4</span> <span class="tag">v0.5</span>
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+      <h3>急変・暴落(値動き系)</h3>
+      <p><strong>急変</strong> — 完成 1 分足の価格変化スコア(絶対値幅 + 直近ボラ比)。<br><strong>暴落(crash)</strong> — セッション高値から一定 % の下落。<br>いずれも AI がニュース・他資産から原因を「ファンダ要因かテクニカル要因か」判定して説明します。</p>
     </div>
     <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></div>
-      <h3>主要レベル パネル (意識される水準を点数化)</h3>
-      <p>チャート脇に <strong>上値/下値メド</strong> を表示。v0.4.27 で精度を大幅強化:</p>
-      <ul style="margin:6px 0; padding-left:18px; font-size:14px;">
-        <li><strong>多スイング・多比率フィボナッチ</strong> — 5/10/20セッション＋当日の各スイングから、戻し (23.6/38.2/50/61.8/78.6%) ＋ 拡張 (127.2/161.8%) を描画 (50% ＝ 方向転換ライン ⚑)。</li>
-        <li><strong>反応水準 (v0.6.10)</strong> — <strong>価格が複数回 反転・止まった実反応の帯</strong>を最重視(反転回数が多いほど強い)。キリ番/セッション極値と重なれば合流で最上位化。「何度も効いた近い節目」を AI 並みに拾います。</li>
-        <li><strong>価格帯別出来高 (v0.6.13)</strong> — 基礎データ(週次)の出来高から <strong>厚い出来高帯 (HVN) ・最大出来高価格 (POC)</strong> を算出。需給が積み上がった durable な S/R として候補化。</li>
-        <li><strong>もみ合い帯 (v0.6.14)</strong> — 出来高フィードが無い<strong>直近(1日)</strong>については、<strong>価格が往復しつつ停滞した帯(時間滞在)</strong>を出来高の<strong>次善の指標</strong>として節目化。実出来高より一段下の重みで、指値/逆指値の遠方水準にも反映。</li>
-        <li><strong>有効トレンドライン (v0.6.15 / 合流ゲート v0.6.16)</strong> — 1H/3H のスイング点から、<strong>3点以上が接する</strong>斜めの支持線(切り上がる安値結び=上昇)/抵抗線(切り下がる高値結び=下降)を自動検出し、<strong>現在のライン価格</strong>を節目化。<strong>一度引いたらブレイクするまで有効</strong>(割れたら自動で消える)。<strong>過去6ヶ月のバックテスト</strong>で「単独の3点ラインは乱択並み、<strong>水平の反応水準と合流した線だけ反発率が明確に高い</strong>(非合流比+9〜12pt)」と判明したため、<strong>反応水準(2回以上効いた水平S/R)と重なる線だけ</strong>を採用。遠方の指値/逆指値にも反映。</li>
-        <li><strong>多時間スケールの水準</strong> — 過去セッション高安に加え、<strong>前日終値・長期(20セッション)高安・節目 (250/500/1000円)</strong> を候補化。</li>
-        <li><strong>高値/安値 更新中は Fib 拡張が前方目標 (v0.6.10)</strong> — 直近レンジを抜けてトレンド継続中は、上(下)に過去 S/R が無いため <strong>Fib 拡張 (127.2/161.8%)</strong> を強めて前方目標として表示。</li>
-        <li><strong>遠い水準も表示 (指値向け, v0.6.10)</strong> — 近接の実戦水準に加え、<strong>窓外の主要水準も上位2本まで</strong>表示(リミット注文の置き場に)。tier(★)は近接水準基準で算出し、遠方を含めても近接の★が潰れません。</li>
-        <li><strong>点数化（意識度スコア）</strong> — 約25円幅で束ね、重み合計・被テスト回数・合流で採点。<strong>複数スイングのフィボや異種水準が重なる「合流帯」を ★★ で最優先表示</strong>(日経で非常に効く価格帯)。★＝注目、無印＝通常。代表価格は平均値ではなく <strong>実際に意識される実価格</strong>。</li>
-        <li><strong>🎛️で可変</strong> — 束ね幅・表示本数・選抜窓・合流ボーナス・被テスト係数を詳細パラメータからリビルド不要で調整。</li>
-      </ul>
-      <p>各レベルに <strong>現値からの距離</strong> 付き・リアルタイム更新。高さは区切りをドラッグで可変。</p>
-      <span class="tag">v0.4</span>
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg></div>
+      <h3>水準系(テクニカル)</h3>
+      <p><strong>水準抜け・反発</strong>(意識される節目のブレイク/反発)、<strong>ブレイク</strong>、<strong>ダブルトップ・ボトム</strong>、<strong>トレンド転換</strong>(MA 抜け + 傾き反転)。すべて確定スイングと ★ 水準のみを対象に、価格/MA を併記して表示します。</p>
     </div>
     <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div>
-      <h3>基礎データ取り込み</h3>
-      <p>N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、<strong>メドの履歴を一気に深く</strong> できます。設定の <strong>「更新」→「更新をチェック」→「取り込み」</strong>。既存の新しいデータは消えず、<strong>追記/更新のみ</strong> なので安全です。</p>
-      <span class="tag">v0.4</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></div>
-      <h3>詳細パラメータ (🎛️)</h3>
-      <p>ツールバーの <strong>🎛️</strong> ボタンで開く専用モーダル。<strong>Price polling / News polling / Sidecar port / アラート クールダウン (分, 既定 15)</strong> に加え、<strong>「急変アラート」セクション</strong>で急変検知のしきい値を直接調整できます（v0.4.26〜）: 1分/2分急変値幅・加速度しきい値・スコア用値幅・平均変化倍率・急変スコア閾値・急変クールダウン本数・寄り抑制本数・超短期フラッシュ値幅・<strong>グランビル中期/長期MA本数</strong>。<strong>リビルド不要・保存で即反映</strong>し、急変系のしきい値・クールダウン本数・寄り抑制本数は<strong>収集デーモンの記録にも自動反映</strong>されます（フラッシュ値幅はモニター表示のみ）。</p>
-      <span class="tag">v0.4</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg></div>
-      <h3>UI 文字サイズ可変</h3>
-      <p><span class="kbd">Ctrl</span> <span class="kbd">+</span> / <span class="kbd">Ctrl</span> <span class="kbd">−</span> で画面の文字サイズを拡大縮小 (<span class="kbd">Ctrl</span> <span class="kbd">0</span> でリセット)。<strong>チャートは実寸を維持</strong> します。</p>
-      <span class="tag">v0.4</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></div>
-      <h3>アラート表示の改善</h3>
-      <p>各行の冒頭に <strong>発生時刻 (チップ表示)</strong>。<strong>最大 10 件のローリング表示</strong> で、<strong>再起動後も保持</strong> されます。</p>
-      <span class="tag">v0.4</span>
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg></div>
+      <h3>グランビル・日足系</h3>
+      <p><strong>グランビル</strong>(押し目買い・戻り売り・転換)、<strong>日足バンド</strong>(MA25 ±σ)、<strong>日足 MA5/20/50/75</strong> のサポート/レジスタンス。中長期の節目に対する反応を捉えます。</p>
     </div>
   </div>
 
-  <!-- 詳細パラメータ screenshot -->
-  <div class="flow" style="margin-top: 40px;">
-    <figure class="flow-img">
-      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/params.png" alt="詳細パラメータ">
-      <figcaption>🎛️ 詳細パラメータ モーダル — Price polling / News polling / Sidecar port / アラート クールダウン (分) と急変アラートの各しきい値</figcaption>
-    </figure>
-    <figure class="flow-img">
-      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/params-levels.png" alt="主要レベル パラメータ">
-      <figcaption>主要レベルのパラメータ (束ね許容 / 上下表示数 / 近接選抜窓 / 合流ボーナス / 被テスト加点 / 直近高安の範囲) — いずれもリビルド不要・即反映</figcaption>
-    </figure>
-    <div class="flow-steps">
-      <div>
-        <strong>ツールバーの <span class="kbd">🎛️</span> を開く</strong>
-        <p>価格・ニュースのポーリングまわりとアラートの再発火間隔を、API キー設定とは別のこのモーダルで管理します。</p>
-      </div>
-      <div>
-        <strong>Price / News polling を調整</strong>
-        <p>Yahoo 系の取得が重い時は Price polling を上げると安定します。News polling は既定 60 秒。</p>
-      </div>
-      <div>
-        <strong>アラート クールダウン (分)</strong>
-        <p>同方向アラートの最短再発火間隔。<strong>既定 15 分</strong>。鳴りすぎる時は伸ばし、機敏にしたい時は縮めます (逆方向は起点越えで即解禁)。</p>
-      </div>
-    </div>
-  </div>
-
-  <div class="callout success" style="margin-top: 24px;">
-    <strong>価格はリアルタイムに。</strong> v0.4 系では日経 225 先物の価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、従来の CME 経由 (約 10 分遅延) ではありません。
+  <div class="callout" style="margin-top:24px;">
+    <strong>的中率の確認:</strong> 各アラートの事後値動き(+5/15/30 分)は <strong>📊 アラート履歴</strong>で確認できます(※<strong>フル版のみ表示</strong>)。表示縮小版では履歴パネルは非表示です。
   </div>
 </section>
 
-<!-- ─── API setup (tabs) ─── -->
-<section class="section">
+<!-- ─── トレードシグナル ─── -->
+<section class="section" id="signal">
   <div class="section-head">
-    <span class="section-eyebrow">API キー</span>
-    <h2>1 つだけ取れば動きます</h2>
-    <p>3 つのプロバイダから 1 つ以上を選択。複数登録するとレート制限時に自動で次へフォールバック。</p>
+    <span class="section-eyebrow">トレードシグナル</span>
+    <h2>表示専用の「紙トラッキング」</h2>
+    <p>AI がエントリーを提案し、紙の上で損益を集計します。★ 売買命令は一切送りません。</p>
+  </div>
+
+  <div class="flow">
+    <figure class="flow-img">
+      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/signal-history.png" alt="トレードシグナル履歴と収益曲線">
+      <figcaption>📈 トレードシグナル履歴・収益曲線 — 件数 / 勝率 / 累積損益 + 一覧</figcaption>
+    </figure>
+    <div class="flow-steps">
+      <div>
+        <strong>AI がエントリーを提案</strong>
+        <p>指値 + 逆指値のプランを提示。現在のシグナルはトレードシグナル パネルに大きく表示されます。</p>
+      </div>
+      <div>
+        <strong>phase-exit で段階的に利益確定</strong>
+        <p>含み益に応じて利益を段階的にロックする決済ロジックで、紙上の損益を集計します。</p>
+      </div>
+      <div>
+        <strong>履歴・収益曲線を確認</strong>
+        <p>📈 ボタンで履歴と収益曲線(件数・勝率・累積損益 + 一覧)を表示。設定でシグナル発生時のアラート音 ON/OFF・履歴消去ができます。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout success" style="margin-top:24px;">
+    <strong>あくまで表示・記録のみ。</strong> トレードシグナルは紙のトラッキングで、<strong>実際の売買命令は送りません</strong>。フル版では A / B の 2 系統を持てます(A = 実売買 bot に渡す想定 / B = 別設定の紙で比較)。
+  </div>
+</section>
+
+<!-- ─── 設定: APIキー ─── -->
+<section class="section" id="settings">
+  <div class="section-head">
+    <span class="section-eyebrow">設定 — API キー</span>
+    <h2>キーは 1 つで動きます</h2>
+    <p>⚙️「設定」から。無料キーだけで十分に使えます。複数登録するとレート制限時に自動でフォールバック。</p>
+  </div>
+
+  <div class="flow" style="margin-bottom:32px;">
+    <figure class="flow-img">
+      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings-keys.png" alt="設定モーダル — API キー">
+      <figcaption>設定モーダル — API キー欄(無料: Gemini / Groq、有料: OpenAI / Web 検索)。「キーを検証」で各キーの有効性を確認できます。</figcaption>
+    </figure>
+    <div class="flow-steps">
+      <div>
+        <strong>無料キーから設定</strong>
+        <p><strong>Gemini</strong>(画像対応・日次 1500 回・おすすめ)/ <strong>Groq</strong>(テキスト専用・高速・日次 14400 回)。どちらも無料。</p>
+      </div>
+      <div>
+        <strong>安定運用には OpenAI(任意・有料)</strong>
+        <p>画像対応で、Gemini が枠切れ(429)のときの<strong>最後の砦</strong>。少額の課金で長く使えます。もう 1 つの Gemini キーはチャットの Web 検索用に使えます。</p>
+      </div>
+      <div>
+        <strong>「キーを検証」で確認</strong>
+        <p>各キー行の状態: 🟢 有効 / 🟡 待機中(429) / ⚪ 未設定。検証ボタンで実際に通るか確認できます(✅ 有効 / ❌ 無効)。</p>
+      </div>
+    </div>
   </div>
 
   <div class="setup">
@@ -974,589 +1023,133 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <button class="setup-tab" data-tab="groq">Groq <span class="pill">無料</span></button>
       <button class="setup-tab" data-tab="openai">OpenAI <span class="pill paid">有料</span></button>
     </div>
-
     <div class="setup-panel active" data-panel="gemini">
-      <h4>Gemini 2.5 Flash Lite — 1500 req / 日</h4>
+      <h4>Gemini — 画像対応・日次 1500 回・おすすめ</h4>
       <ol>
         <li><a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a> を開く</li>
-        <li>Google アカウントでログイン</li>
-        <li><strong>「Create API key」</strong> → 表示された <code>AIza...</code> をコピー</li>
-        <li>JP225 Monitor の設定モーダル「Gemini」欄に貼り付け → <strong>保存</strong></li>
-        <li>状態表示が <span class="dot green" style="display:inline-block;vertical-align:middle"></span> 緑になれば完了</li>
+        <li>Google アカウントでログイン → <strong>「Create API key」</strong></li>
+        <li>表示された <code>AIza...</code> をコピー → 設定の「Gemini」欄に貼り付け → <strong>保存</strong></li>
       </ol>
     </div>
-
     <div class="setup-panel" data-panel="groq">
-      <h4>Groq Llama 3.3 70B — 14400 req / 日 (実質無制限)</h4>
+      <h4>Groq — テキスト専用・高速・日次 14400 回</h4>
       <ol>
         <li><a href="https://console.groq.com/keys">console.groq.com/keys</a> を開く</li>
         <li>アカウント作成 → <strong>「Create API Key」</strong></li>
         <li><code>gsk_...</code> をコピー → 設定画面に貼り付け</li>
       </ol>
-      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">
-        激しく使う場合のフォールバック用。Gemini と併設すると 429 時に自動切替。
-      </p>
+      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">テキスト専用のため、チャート画像を見る AI(トレードシグナル)では使われません。チャット/説明の予備として無料で有用。</p>
     </div>
-
     <div class="setup-panel" data-panel="openai">
-      <h4>OpenAI GPT-4o-mini — 従量課金 (500 円〜)</h4>
+      <h4>OpenAI — 画像対応・従量課金(少額)</h4>
       <ol>
         <li><a href="https://platform.openai.com/api-keys">platform.openai.com/api-keys</a> を開く</li>
-        <li>クレジット入金 (<strong>500 円程度で十分</strong>) → <strong>「Create new secret key」</strong></li>
+        <li>少額のクレジット入金 → <strong>「Create new secret key」</strong></li>
         <li><code>sk-...</code> をコピー → 設定画面に貼り付け</li>
       </ol>
-      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">
-        Gemini と Groq の両方がレート制限に達した時のみ呼ばれます。最後の砦なので呼び出しはごく稀。入金は 500 円程度でも長く使えます。
-      </p>
+      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">画像対応 + 最後の砦。有効にしておくと画像判断が常に通り、運用が安定します。</p>
     </div>
   </div>
 
-  <h3 style="margin-top:28px">どのキーを設定すべきか (選び方)</h3>
-  <p>3 プロバイダは <strong>Gemini → Groq → OpenAI の順で試し、成功した最初の1つ</strong>を使います (自動フォールバック)。エラー種別で挙動が変わります:</p>
-  <ul>
-    <li><strong>429 (枠切れ/レート制限)・5xx・タイムアウト・413 (リクエスト過大)</strong> → <strong>次のプロバイダへ自動フォールバック</strong>。だから複数入れておくと止まりません。</li>
-    <li><strong>401 (キー無効) / 404 (モデル廃止)</strong> → その場で停止 (誤設定を隠さないため)。→ 該当キーを直す必要があります。</li>
-  </ul>
-  <table>
-    <thead><tr><th>プロバイダ</th><th>料金</th><th>画像(チャート)判断</th><th>役割・おすすめ</th></tr></thead>
-    <tbody>
-      <tr><td><strong>Gemini</strong></td><td>無料 (日次上限あり)</td><td>◯ 対応</td><td>主力。無料で品質十分。ただし無料枠は 429 になりやすい</td></tr>
-      <tr><td><strong>Groq</strong></td><td>無料・高速</td><td><strong>✕ テキストのみ</strong></td><td>フォールバック用。チャット/説明の予備。<strong>チャート画像を使う AI (スキャルのシグナル) では使われません</strong></td></tr>
-      <tr><td><strong>OpenAI</strong> (gpt-4o-mini)</td><td>従量 (安価)</td><td>◯ 対応</td><td><strong>最後の砦かつ画像対応。ここを有効にしておくのが安定の要</strong></td></tr>
-    </tbody>
-  </table>
-  <div class="callout" style="margin-top:16px">
-    <strong>おすすめの入れ方:</strong> <strong>Gemini (無料) + OpenAI (少額課金) の2つ</strong>を設定。普段は無料の Gemini、429 で枠が切れたら OpenAI に自動で切り替わります。<strong>チャート画像を見るスキャルのシグナルは Gemini か OpenAI のみ</strong>が担うので (Groq はテキスト専用)、<strong>OpenAI キーが有効だと画像判断が常に通り安定します</strong>。Groq は「チャットの予備」として無料なので入れておいて損はありません。
+  <div class="callout success" style="margin-top:24px;">
+    <strong>保存先はローカルのみ:</strong> 入力したキーは <code>~/.jp225-monitor/config.json</code> に保存され、<strong>アプリ外部に送信されることはありません</strong>。
   </div>
-  <h4 style="margin-top:20px">キーの並び (無料 / 有料)</h4>
-  <p>設定モーダルの API キー欄は <strong>【無料】Gemini・Groq</strong> と <strong>【有料】OpenAI・Web検索キー</strong> の 2 グループに分かれています。まずは無料キーだけで動きます。</p>
-  <h4 style="margin-top:20px">Web検索キー (チャットの Web 検索)</h4>
-  <p>チャットの Web 検索は <strong>Gemini キーがあれば Gemini の Google 検索グラウンディング</strong>を使います。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます</strong> (自動フォールバック)。<strong>「Web検索キー」</strong>欄は任意の専用キー (空欄なら上の共通 Gemini キーを使用)。未設定でも、チャットは検索なしで回答します。</p>
-  <h4 style="margin-top:20px">Web検索モデル (独立セクション・各欄に説明)</h4>
-  <p>キー欄とは別の <strong>「Web検索モデル」</strong> セクションで、検索に使うモデルを個別に指定できます。どちらも空欄で既定に戻ります。</p>
-  <ul>
-    <li><strong>Web検索モデル (Gemini・grounding 対応)</strong> — Gemini キーで Web 検索するときのモデル。grounding 対応が必要 (Gemini 3.x 系)。既定 <code>gemini-flash-latest</code>。</li>
-    <li><strong>OpenAI Web検索モデル</strong> — Gemini キーが無い/枠切れのとき OpenAI で Web 検索するモデル。Web 検索対応 (search-preview 系)。既定 <code>gpt-4o-mini-search-preview</code>。</li>
-  </ul>
-  <h4 style="margin-top:20px">各キーの状態マーク (設定モーダル)</h4>
-  <p>設定モーダルの各キー行の左に、そのキーの状態が表示されます:</p>
-  <ul>
-    <li>🟢 <strong>有効</strong> (設定済み・使用可能)</li>
-    <li>🟡 <strong>待機中</strong> (429=枠切れで一時休止中・自動で他プロバイダにフォールバック中。時間で復帰)</li>
-    <li>⚪ <strong>未設定</strong></li>
-    <li>「<strong>キーを検証</strong>」ボタンを押すと、各キーへ極小テストを送って実際に通るか確認します: <strong>✅ 有効 / ❌ 無効 (401 等はキーを差し替え)</strong>。</li>
-  </ul>
-  <p style="color:var(--text-muted);font-size:13px">「設定済み(🟢)」と「実際に有効(✅)」は別物です。取引/シグナルが止まったら、まず「キーを検証」で ❌ のキーが無いか確認してください (特に OpenAI の 401=キー失効)。</p>
+  <div class="callout warn" style="margin-top:12px;">
+    <strong>未設定でも動きます。</strong> 価格監視・アラート音・チャートはキー無しで動作。無効になるのは AI 説明・AI チャット・ニュース翻訳の 3 機能だけです。
+  </div>
+</section>
 
-  <div class="callout warn" style="margin-top:24px">
-    <strong>未設定でも動きます。</strong> 価格監視 / アラート音 / チャートは API キー無しでも動作。
-    無効になるのは「なぜ動いた」AI 説明、AI チャット、ニュース翻訳の 3 機能のみ。
+<!-- ─── 設定: 更新/終了/シグナル音 ─── -->
+<section class="section" id="settings-app">
+  <div class="section-head">
+    <span class="section-eyebrow">設定 — 更新 / 終了 / シグナル音</span>
+    <h2>更新・終了時の挙動</h2>
+    <p>アプリ本体と基礎データの更新、終了時のデーモン停止、トレードシグナル音を設定します。</p>
   </div>
 
-  <!-- ─── Settings walkthrough ─── -->
-  <div id="setup-walkthrough" style="margin-top: 56px; scroll-margin-top: 80px;">
-    <h3 style="font-size: 22px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; text-align:center;">
-      設定画面の使い方
-    </h3>
-    <p style="text-align:center; color: var(--text-muted); margin-bottom: 24px;">
-      ⚙️ アイコンを押してから API キー保存まで、6 ステップ。
-    </p>
-
-    <div class="flow">
-      <figure class="flow-img">
-        <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings.png" alt="設定モーダル">
-        <figcaption>設定モーダル — 上から状態表示、API キー欄 (Gemini / Groq / OpenAI) + <strong>チャット Web 検索用の「Web検索キー」と「Web検索モデル」</strong>、更新 (現在バージョン + 「更新をチェック」でアプリ本体と基礎データを同時確認)</figcaption>
-      </figure>
-      <figure class="flow-img">
-        <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/db-manage.png" alt="DB 管理">
-        <figcaption>設定モーダル下部 — 終了 (完全終了でデーモンも停止) と <strong>データ管理</strong> (別PCのDBをマージ / このPCのDBをコピー / DBを置き換え=インポート)。2台で同一データに揃えてバックテスト一致に使えます。</figcaption>
-      </figure>
-
-      <div class="flow-steps">
-        <div>
-          <strong>右上の <span class="kbd">⚙️</span> をクリック</strong>
-          <p>トップバー右端のギアアイコン。初回起動時は API キー未設定なので自動で開きます。</p>
-        </div>
-        <div>
-          <strong>状態を確認</strong>
-          <p>モーダル上部に <span class="dot green" style="display:inline-block;vertical-align:middle"></span> gemini / groq / openai が並びます。<span class="dot green" style="display:inline-block;vertical-align:middle"></span>=設定済み / <span class="dot white" style="display:inline-block;vertical-align:middle"></span>=未設定。</p>
-        </div>
-        <div>
-          <strong>「キー取得 ↗」リンクをクリック</strong>
-          <p>該当プロバイダのキー発行ページが別タブで開きます。Gemini 推奨。</p>
-        </div>
-        <div>
-          <strong>キーをコピー</strong>
-          <p>発行ページで <code>AIza...</code> / <code>gsk_...</code> / <code>sk-...</code> をコピー。</p>
-        </div>
-        <div>
-          <strong>JP225 Monitor に戻り、対応欄に貼り付け</strong>
-          <p>「設定済み (上書きする場合のみ入力)」プレースホルダの入力欄に貼り付け。<strong>空欄保存は無変更</strong> なので、既存キーを残したい時は触らない。</p>
-        </div>
-        <div>
-          <strong>右下の <span class="kbd">保存</span> をクリック</strong>
-          <p>状態表示が <span class="dot green" style="display:inline-block;vertical-align:middle"></span> 緑に切り替わる。「閉じる」でモーダル退場。これで AI 説明・チャット・翻訳が即有効化。</p>
-        </div>
+  <div class="flow">
+    <figure class="flow-img">
+      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings-app.png" alt="設定モーダル — 更新 / 終了 / トレードシグナル">
+      <figcaption>設定モーダル下部 — 更新をチェック / 完全終了 / トレードシグナル(表示専用)の音・履歴消去</figcaption>
+    </figure>
+    <div class="flow-steps">
+      <div>
+        <strong>更新をチェック</strong>
+        <p>アプリ本体 + 基礎データ(1 分足履歴)の新着を確認・取り込み。<strong>既存データは消えず</strong>、追記/更新のみで安全です。</p>
       </div>
-    </div>
-
-    <div class="callout success" style="margin-top: 24px;">
-      <strong>保存先:</strong> 入力したキーは <code>~/.jp225-monitor/config.json</code> にローカル保存されます。アプリ外部に送信されることはありません。
-    </div>
-    <div class="callout" style="margin-top: 12px;">
-      <strong>polling 設定:</strong> 価格・ニュースの取得間隔と port は v0.4 系では <strong>ツールバーの 🎛️ 詳細パラメータ</strong> モーダルに分離されました (Price polling / News polling / Sidecar port / アラート クールダウン)。詳しくは <a href="#whatsnew">v0.4 の新機能</a> を参照。範囲外の値 (例 Price polling=100ms) は reject されます。
-    </div>
-    <div class="callout" style="margin-top: 12px;">
-      <strong>更新 (v0.3.18〜 / v0.4 で統合):</strong> 設定モーダルの「更新」セクションに現在のバージョンが表示され、<strong>「更新をチェック」</strong>ボタン1つで<strong>アプリ本体と基礎データを同時に確認</strong>します。アプリに更新があればその場の「更新」ボタンから DL + 再起動、基礎データに新着があれば「取り込み」ボタンで適用 (起動時の自動トースト通知に加えての手動確認手段)。
-    </div>
-    <div class="callout" style="margin-top: 12px;">
-      <strong>基礎データ (v0.4):</strong> 「更新」セクションの <strong>「更新をチェック」→「取り込み」</strong> で、N225mini の Excel 履歴 (1 分足) を GitHub 経由でローカル DB に取り込み、主要レベルの履歴を深くできます。既存の新しいデータは消えず追記/更新のみ。
-    </div>
-    <div class="callout" style="margin-top: 12px;">
-      <strong>終了 (v0.4):</strong> 「終了」セクションの <strong>「完全終了」</strong> チェックを ON にすると、ウィンドウを閉じた時に <strong>24/7 価格収集デーモンも一緒に停止</strong> します。<strong>未チェック (既定) なら閉じてもバックグラウンドで価格収集を継続</strong> し、次回起動時に即ウォームアップできます。
+      <div>
+        <strong>完全終了</strong>
+        <p>チェックを ON にすると、終了時にバックグラウンドの<strong>価格収集デーモンも停止</strong>します。<strong>既定(OFF)なら、閉じても収集を継続</strong>し、次回起動時に即ウォームアップできます。</p>
+      </div>
+      <div>
+        <strong>トレードシグナル(表示専用)</strong>
+        <p>シグナル発生時の<strong>アラート音 ON/OFF</strong>と<strong>履歴の消去</strong>ができます。</p>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- ─── Tour (annotated screenshot) ─── -->
-<section class="section" id="tour">
+<!-- ─── 詳細設定(フル版のみ) ─── -->
+<section class="section" id="advanced">
   <div class="section-head">
-    <span class="section-eyebrow">画面ツアー</span>
-    <h2>どこに何があるか</h2>
-    <p>起動直後の画面を 8 つの要素で説明します。価格カードの 2 段モメンタムと主要レベル パネルにも注目。</p>
-  </div>
-
-  <div class="shot-wrap">
-    <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/main-dashboard.png" alt="メインダッシュボード">
-    <span class="ann-pin" style="top: 5.5%;  left: 48%;">1</span>
-    <span class="ann-pin" style="top: 5.5%;  left: 75%;">2</span>
-    <span class="ann-pin" style="top: 5.5%;  left: 97%;">3</span>
-    <span class="ann-pin" style="top: 13%;   left: 13%;">4</span>
-    <span class="ann-pin" style="top: 29%;   left: 13%;">5</span>
-    <span class="ann-pin" style="top: 88%;   left: 13%;">6</span>
-    <span class="ann-pin" style="top: 20%;   left: 72%;">7</span>
-    <span class="ann-pin" style="top: 56%;   left: 72%;">8</span>
-    <span class="ann-pin" style="top: 86%;   left: 72%;">9</span>
-  </div>
-
-  <div class="annotations">
-    <div class="ann"><div class="ann-num">1</div><div class="ann-body"><strong>相関リーダー</strong><p>NK225 と最も相関する銘柄を表示。5 分ごとに再評価され、その時々で最も連動性の高い指標がわかる。</p></div></div>
-    <div class="ann"><div class="ann-num">2</div><div class="ann-body"><strong>受信中バッジ + API ドット</strong><p>SSE 接続状態 + Y/G/Gr/O 各データソースの稼働状況。hover でカウントダウン表示。</p></div></div>
-    <div class="ann"><div class="ann-num">3</div><div class="ann-body"><strong>📋 ログ・⚙️ 設定</strong><p>サーバログ閲覧と全設定画面の入り口。API キー追加もここから。</p></div></div>
-    <div class="ann"><div class="ann-num">4</div><div class="ann-body"><strong>価格カード (2 段モメンタム)</strong><p>監視銘柄をリアルタイム更新。緑=上昇 / 赤=下落、急変時はハイライト点滅。日経の値の上には <strong>「1分」(率 %) と「10秒」(値幅・円)</strong> の 2 段モメンタムを表示。「日経225先物」は <code>NIY=F</code> 表記ですが、価格は <strong>OSE mini (大阪取引所) のリアルタイム配信</strong> を主軸にしており、~66,000〜67,000 円台の日経指数そのままが出ます。</p></div></div>
-    <div class="ann"><div class="ann-num">5</div><div class="ann-body"><strong>主要レベル (メド) パネル</strong><p>価格カード下のパネルに、過去セッション高安を主軸とした <strong>上値/下値メド</strong> (重なるレベルは強レベル ★、フィボ 50% は方向転換ライン ⚑、<strong>ADR 予測メド</strong> も) を現値からの距離付きで表示します。区切りのドラッグで高さ可変。</p></div></div>
-    <div class="ann"><div class="ann-num">6</div><div class="ann-body"><strong>AI チャット入力 + 定型質問</strong><p>「今の地合いは?」「<strong>なぜ急落した?</strong>」など自由質問。<strong>Enter で送信</strong>、Shift+Enter で改行。入力欄の上の<strong>定型質問ボタン(①②)</strong>か番号「1」「2」でもワンタップ質問可。現在の全銘柄価格 + 直近ニュース + 日経225先物のテクニカル要約に加え、<strong>このアプリ自身の監視データ(直近アラートの要約・本日のセッション OHLC)</strong>が自動付与され、「なぜ急落?」には直近の急変を特定して原因分析します。</p></div></div>
-    <div class="ann"><div class="ann-num">7</div><div class="ann-body"><strong>アラート + AI 説明</strong><p><strong>アラートは日経 225 先物 (NIY=F) 単独</strong>で発火 (横断確認なし・リアルタイム)。各行の冒頭に <strong>発生時刻チップ</strong>。急変・暴落を検知すると 30 秒以内(暴落は即時)に AI が要因を 1〜2 文で説明 (同時刻に大きく動いた他資産も材料に)。<strong>テクニカル系(ダブル天底/MAサポレジ/水準サポレジ・水準抜け/スイング形成/トレンド転換)は AI を呼ばず固定文で表示</strong>(価格・MA を併記)。🔄 で再生成、× で消去。最大 10 件保持。</p></div></div>
-    <div class="ann"><div class="ann-num">8</div><div class="ann-body"><strong>TradingView チャート</strong><p>右カラム中段に表示。チャート銘柄は <code>FOREXCOM:JP225</code> (FOREX.com の Japan 225 CFD、JPY 建て) で、<strong>参照指数は日経 225 と同一</strong>。価格カード「日経225先物」(<code>NIY=F</code>) とほぼ一致します。区切りのドラッグで高さ可変。</p></div></div>
-    <div class="ann"><div class="ann-num">9</div><div class="ann-body"><strong>ニュース (RSS + 米経済指標 + 日経総合)</strong><p>日本 7 + 英語 14 の RSS フィードを 60 秒間隔で集約。加えて <strong>米経済指標 (CPI・雇用統計など、結果/予想/前回 + 発表直後の NK225 夜間先物の反応 pt)</strong> と <strong>日経225 総合ニュース</strong> をマージ表示 (重複除去)。英語見出しは <code>[訳]</code> ボタンで日本語化可能。</p></div></div>
-  </div>
-
-  <div class="callout" style="margin-top: 28px;">
-    <strong>💡 価格カード「日経225先物」とチャート銘柄の関係</strong><br>
-    どちらも <strong>同じ日経 225 指数</strong> を見ています。価格カード (OSE mini リアルタイム、<code>NIY=F</code> 表記) とチャート <code>FOREXCOM:JP225</code> (FOREX.com の JPY 建て Japan 225 CFD) は商品種別こそ違いますが、参照指数は同一・通貨も同じ JPY なので、表示数字も % 変動もほぼ一致します。
-  </div>
-</section>
-
-<!-- ─── Features ─── -->
-<section class="section" id="features">
-  <div class="section-head">
-    <span class="section-eyebrow">機能一覧</span>
-    <h2>できること</h2>
-  </div>
-
-  <div class="features">
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>アラート体系 (v0.6 再設計・2層 + コンフルエンス集約)</h3>
-      <p><strong>アラートは日経 225 先物 (NIY=F) 単独で発火</strong>。「トレーダーが転換点で問う問い」に、根拠付きで・もっともらしい時だけ答える設計です。2 層構成:</p>
-      <p><strong>L1 値動き(大きく動いた事実)</strong><br>
-        ① <strong>急変</strong> — 完成 1 分足の価格変化(円)のスコア方式(6 条件)。<strong>絶対的にも十分動いた時のみ</strong>(微小値動きで相対条件だけで鳴るのを防止)。<br>
-        ② <strong>超短期フラッシュ</strong> — 5〜10 秒窓で値幅 ≥ 80 円。<br>
-        ③ <strong>暴落 (crash)</strong> — <strong>セッション高値から 3% 以上の下落</strong>。AI が広い(24時間)ニュース窓で原因を分析。常駐デーモンが <strong>24/7 記録</strong>(夜間にアプリを閉じていても拾う)。<br>
-        L1 はニュースと他資産から AI が<strong>「ファンダ要因かテクニカル要因か」</strong>を判定(該当ニュースが無ければ「テクニカル要因の可能性」と明示)。</p>
-      <p><strong>L2 テクニカル状態(反転/継続の局面)</strong> — すべて<strong>確定スイングピボット</strong>と<strong>意識される水準のみ</strong>(主要レベル パネルの ★ 水準 + 主要スイング)を対象に検知し、固定文で表示(LLM 不使用):<br>
-        ④ <strong>ダブル天井/大底</strong>(複数セッションをまたぐ大きな W/M、ネック越えで成立)<br>
-        ⑤ <strong>MA サポート/レジスタンス</strong>(価格が MA で支持/抵抗)<br>
-        ⑥ <strong>水準サポート/レジスタンス</strong>(意識水準で反発確認後。例「セッション最安値がサポートされた可能性」)<br>
-        ⑦ <strong>水準抜け</strong>(意識水準のブレイク)<br>
-        ⑧ <strong>スイング転換点の形成</strong>(押し安値/戻り高値をつけた)<br>
-        ⑨ <strong>トレンド転換</strong>(MA 抜け + 傾き反転)</p>
-      <p><strong>コンフルエンス集約</strong> — 同じ局面(同方向・近接基準)で複数シグナルが整合すると<strong>1 本に統合し強調</strong>。意味の薄い乱発を抑えます。各シグナルは<strong>「{基準名}{動作}の可能性」+ 価格/MA</strong> を併記し、チャートで確認できます。</p>
-      <p><strong>寄り (Day 8:45 / Night 17:00) から 3 本(=最初の 3 分)は全アラートを抑制</strong>。発火頻度は種別ごとのクールダウンと有意性ゲートで管理(リリース前に実データで発火頻度を監査)。</p>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
-      <h3>ニュース選別の質 (v0.3.9)</h3>
-      <p>金融関連性判定をタイトル+本文ハイブリッドに、LLM へ渡すニュースは急変時刻 ±15 分 → ±60 分 → 4 時間の段階フォールバックで近接優先。的外れな材料引用を抑制。</p>
-      <span class="tag">trader-focused</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"/></svg></div>
-      <h3>米経済指標 + 日経総合ニュース (v0.7.6)</h3>
-      <p>News に 2 つの実用ソースを追加。<strong>米経済指標</strong> (CPI・雇用統計など) は <strong>結果 / 予想 / 前回</strong> の 3 点セットに、<strong>発表直後の日経225 夜間先物の反応 (pt)</strong> を併記 — 「その指標に相場がどう反応したか」がひと目でわかります。加えて <strong>日経225 総合ニュース</strong> も取り込み、国内外 RSS とマージ (重複除去) して時系列表示します。</p>
-      <span class="tag">v0.7.6</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div>
-      <h3>AI 自動説明</h3>
-      <p>関連性をスコアリングし、方向整合性 (リスクオン/オフ) を判定して因果を提示。<strong>参照ニュースは「前回テキストに実際に提示したニュース以降」</strong>に限定し、同じ古い材料を毎回引かないようにします(API 節約モードで説明を出さなかった間のニュースは取りこぼさず次回に持ち越し・暴落 crash のみ広い 24 時間窓)。<strong>同時刻に大きく動いた他資産 (他指数・FX・商品・値がさ株 |z|≥4.0) も判断材料</strong>に。指数寄与の大きい値がさ株(ファストリ等)は指数急変の真因になり得るため、方向が一致すれば理由に挙げます。</p>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-      <h3>AI チャット (モニターのデータを参照 + Web 検索)</h3>
-      <p>「今の地合いは?」「<strong>なぜ急落した?</strong>」など自由質問。現在価格・テクニカル要約・<strong>会話の文脈に沿ったニュース</strong>に加え、<strong>このアプリ自身の監視データ(直近アラートの要約・本日のセッション OHLC)</strong>を自動でコンテキストに渡し、必要なら直近の急変を特定して原因を分析・種別ごとの的中率や本日/直近の値動きも即答します。<strong>Web 検索 (Gemini の Google 検索グラウンディング)</strong> も搭載し、手元に無い最新の出来事は AI が自分で検索して出典付きで答えます。設定の「<strong>Web検索キー</strong>」に Gemini キーを入れると有効 (空欄なら共通の Gemini キーを使用)、「<strong>Web検索モデル</strong>」で使用モデルを指定 (既定 <code>gemini-flash-latest</code>)。未設定/枠切れでも従来どおり検索なしで回答します。<strong>ワンタップの定型質問</strong>(① テクニカル分析 ② ファンダメンタル分析 ③ スイング分析〔上昇/下落/レンジ の3シナリオ〕)も用意、入力欄に「1」「2」「3」と打っても送れます。</p>
-      <span class="tag">v0.7.7</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>
-      <h3>ニュース翻訳</h3>
-      <p>英語タイトルの <code>[訳]</code> クリックで日本語化。LRU キャッシュで再翻訳ゼロ。</p>
-      <span class="tag">on-demand</span>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></div>
-      <h3>音声アラート</h3>
-      <p>急変動でビープ音。上昇=高音 (1046 Hz)、下落=低音 (659 Hz)。初回のみ手動有効化が必要。</p>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
-      <h3>自動アップデート</h3>
-      <p>起動 5 秒後に新版チェック。利用可能なら右上トースト通知 → ワンクリックで DL + 再起動。<strong>v0.3.18 以降は設定画面の「更新をチェック」</strong>でいつでも手動確認も可能。</p>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
-      <h3>値がさ株・他資産を AI 材料に (v0.3.19)</h3>
-      <p>キーエンス / ファーストリテイリング / ディスコ / SMC / 東京エレクトロン / ソフトバンクグループ / キオクシアHD の 7 値がさ株も裏で監視。単独アラートは出さず、<strong>日経 225 先物アラート時に大きく動いていれば (|z|≥4.0) AI 説明の連動材料</strong>として渡します。</p>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
-      <h3>レイアウト & カスタマイズ</h3>
-      <p>polling 間隔 (price / news)・sidecar port・アラート クールダウンは <strong>🎛️ 詳細パラメータ</strong> から可変。<strong>パネルの境界をドラッグ</strong>して各欄の高さや左右カラムの幅も自由に調整 (左右の中央線はダブルクリックで 1:2 に初期化)。<span class="kbd">Ctrl</span> <span class="kbd">+</span>/<span class="kbd">−</span> で文字サイズも変更可。</p>
-    </div>
-    <div class="feature">
-      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg></div>
-      <h3>取引時間外は省電力 (v0.7.5)</h3>
-      <p>価格・ニュース・アラート・相関・主要レベル・予測の各更新ループを<strong>取引時間外 (夜間休場帯 6:00–8:45・週末・祝日・昼休み 15:45–17:00) は自動休止</strong>。ネットワーク/CPU/DB の無駄打ちを止め、セッション開始 5 分前に自動再開します (常駐デーモンは従来から休場時バックオフ済)。取引時間内の挙動は不変。</p>
-      <span class="tag">省電力</span>
-    </div>
-  </div>
-</section>
-
-<!-- ─── API status dots ─── -->
-<section class="section" id="dots">
-  <div class="section-head">
-    <span class="section-eyebrow">「受信中」の右にある 4 つの○</span>
-    <h2>API ステータスドット</h2>
-    <p>5 秒ごとに自動更新される、データソースの稼働状況インジケータ。</p>
-  </div>
-
-  <div style="text-align:center; margin: 0 0 32px;">
-    <div class="dots-demo">
-      <span class="dot-chip"><span class="dot green"></span>Y</span>
-      <span class="dot-chip"><span class="dot green"></span>G</span>
-      <span class="dot-chip"><span class="dot green"></span>Gr</span>
-      <span class="dot-chip"><span class="dot green"></span>O</span>
-    </div>
-  </div>
-
-  <table class="dot-table">
-    <thead>
-      <tr><th>ラベル</th><th>意味</th><th>状態の読み方</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><strong>Y</strong></td>
-        <td>Yahoo Finance (価格)</td>
-        <td>
-          <span class="dot green" style="display:inline-block"></span> 正常 /
-          <span class="dot yellow" style="display:inline-block"></span> 予備経路 (Yahoo chart API) にフォールバック中 (5 分で再試行)
-        </td>
-      </tr>
-      <tr>
-        <td><strong>G</strong></td>
-        <td>Gemini (LLM 第 1)</td>
-        <td>
-          <span class="dot green" style="display:inline-block"></span> 正常 /
-          <span class="dot yellow" style="display:inline-block"></span> 429 で待機 /
-          <span class="dot white" style="display:inline-block"></span> キー未設定
-        </td>
-      </tr>
-      <tr>
-        <td><strong>Gr</strong></td>
-        <td>Groq (LLM 第 2)</td>
-        <td>同上</td>
-      </tr>
-      <tr>
-        <td><strong>O</strong></td>
-        <td>OpenAI (LLM 第 3)</td>
-        <td>同上</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <div class="callout" style="margin-top:24px">
-    <strong>hover でカウントダウン表示。</strong>
-    例: 「Yahoo: fallback中 (残 2:35 / 13:47:50 復帰予定)」「gemini: 待機中 (残 1:20 / 13:46:00 復帰予定)」。
-  </div>
-</section>
-
-<!-- ─── FAQ ─── -->
-<section class="section" id="faq">
-  <div class="section-head">
-    <span class="section-eyebrow">FAQ</span>
-    <h2>よくある質問</h2>
-  </div>
-
-  <div class="faq">
-    <details>
-      <summary>アラート音が鳴りません</summary>
-      <div class="faq-body">
-        ブラウザのセキュリティ仕様で、初回起動時はユーザー操作が必要です。画面右下の <strong>「🔔 サウンドを有効化」</strong> ボタンを 1 回クリックすれば、以降は自動でビープが鳴ります。
-      </div>
-    </details>
-
-    <details>
-      <summary>「切断」のままで価格が出ない</summary>
-      <div class="faq-body">
-        <ol>
-          <li>アプリを完全終了 (タスクトレイにアイコンがあれば右クリック → 終了)</li>
-          <li>再起動 (スタートメニューから)</li>
-          <li>それでもダメなら、最新インストーラで上書きインストール (設定は保持されます)</li>
-        </ol>
-      </div>
-    </details>
-
-    <details>
-      <summary>アラートは出るのに「なぜ動いた」説明が表示されません</summary>
-      <div class="faq-body">
-        API ドットを確認:
-        <ul>
-          <li>全部 <span class="dot white" style="display:inline-block"></span> = キー未設定 → ⚙️ から 1 つ以上設定</li>
-          <li>全部 <span class="dot yellow" style="display:inline-block"></span> = 全プロバイダ 429 中 → 数分待つ。または別プロバイダ追加</li>
-        </ul>
-      </div>
-    </details>
-
-    <details>
-      <summary>Y (Yahoo) が黄色のまま</summary>
-      <div class="faq-body">
-        Yahoo の <code>quote()</code> (crumb) が拒否されている状態 (短時間に多数アクセスで 429)。価格データは <strong>予備経路 (Yahoo chart API、crumb 不要)</strong> が代替するので <strong>画面の価格は引き続き更新</strong> されます。90s → 3min → 5min の段階で自動的に通常経路を再試行。<span style="color:var(--text-faint)">※ v0.3.28 で旧 Investing.com スクレイプ (Cloudflare ブロックで機能不全) から chart API へ置換。</span>
-        <p style="margin-top: 8px;">v0.3.7〜v0.3.9 では 1 tick あたり Yahoo を 2 回呼んでいた残骸コードのせいで黄色から戻らない不具合が出ていました。<strong>v0.3.10 で単一バルク呼び出しに統合済み</strong> — 黄色固定はもう起きません。</p>
-      </div>
-    </details>
-
-    <details>
-      <summary>価格カードが <code>---</code> のまま</summary>
-      <div class="faq-body">
-        価格ソース (OSE mini フィード / Yahoo フォールバック) が同時失敗中。ネット接続を確認、数分待つ、ダメなら再起動。
-      </div>
-    </details>
-
-    <details>
-      <summary>「Node.js JavaScript Runtime」へのアクセスを許可しますか? と出た / まちがって「キャンセル」を押した</summary>
-      <div class="faq-body">
-        <p><strong>結論:「許可」を押してください(安全です)。</strong> これは Windows が「このアプリの通信を許可していいか」を確認する標準のダイアログです。JP225 Monitor は中で小さな <strong>Node.js</strong> サーバー(発行元: Node.js)を動かしているため、こう表示されます。通信はあなたのパソコンの中だけ (localhost) で完結します。</p>
-
-        <p><strong>「キャンセル」を押してしまった場合:</strong> 多くの場合そのままでもアプリは動きます(パソコン内の通信のため)。それでも動かない・気になるときは、次の手順で「ブロック設定」を消せます。むずかしくありません:</p>
-        <ol>
-          <li>スタートボタン →「<strong>Windows セキュリティ</strong>」と入力して開く</li>
-          <li>「<strong>ファイアウォールとネットワーク保護</strong>」→ 画面下の「<strong>詳細設定</strong>」をクリック(管理者の確認が出たら「はい」)</li>
-          <li>左側の「<strong>受信の規則</strong>」をクリック</li>
-          <li>一覧から「<strong>Node.js JavaScript Runtime</strong>」を探す(複数あることがあります)</li>
-          <li>見つけたものを右クリック →「<strong>削除</strong>」(複数あれば全部削除)</li>
-          <li>JP225 Monitor をもう一度起動 → 同じダイアログが出たら今度は「<strong>許可</strong>」を押す</li>
-        </ol>
-        <p>パソコンに詳しい人向け(管理者の PowerShell で一括削除):<br>
-        <code>Get-NetFirewallRule -DisplayName 'Node.js*' | Where-Object Action -eq 'Block' | Remove-NetFirewallRule</code></p>
-      </div>
-    </details>
-
-    <details>
-      <summary>SmartScreen 警告は危険ではないですか?</summary>
-      <div class="faq-body">
-        無料配布アプリ全般で出る警告です。ソースコードは <a href="https://github.com/sora-moyou/jp225-monitor">GitHub</a> で全公開されているので、不安な場合は読んでから判断してください。「詳細情報」→「実行」で起動できます。
-      </div>
-    </details>
-
-    <details>
-      <summary>アプリを入れ直したい(再インストール)/ インストールに失敗するとき</summary>
-      <div class="faq-body">
-        <p><strong>まず安心してください:</strong> 設定や履歴データはアプリ本体とは別の場所に保存されるので、入れ直しても<strong>消えません</strong>。</p>
-        <p><strong>入れ直す手順(初心者向け):</strong></p>
-        <ol>
-          <li><strong>アプリを完全に終了する。</strong> 右上の ⚙️ から「完全終了」、または画面右下の通知領域(時計の近く)のアイコンを右クリックして終了。確実にしたいときは<strong>パソコンを再起動</strong>すると安心です。</li>
-          <li>(きれいに入れ直す場合)古い版をアンインストール: スタート →「設定」→「アプリ」→「インストールされているアプリ」→「<strong>JP225 Monitor</strong>」→「⋯(または ⋮)」→「<strong>アンインストール</strong>」。<br>※ アンインストールしなくても、新しいインストーラで<strong>上書き更新</strong>できます。</li>
-          <li>最新のインストーラを入手: <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">GitHub Releases ページ</a> を開き、下にスクロールして <strong>Assets</strong> を展開 → <code>JP225.Monitor_X.X.X_x64-setup.exe</code> をダウンロード。</li>
-          <li>ダウンロードした <code>.exe</code> をダブルクリック。青い「Windows によって PC が保護されました」が出たら「<strong>詳細情報</strong>」→「<strong>実行</strong>」。</li>
-          <li>ウィザードに従ってインストール → スタートメニューから <strong>JP225 Monitor</strong> を起動。</li>
-        </ol>
-        <p><strong>うまくいかないとき:</strong></p>
-        <ul>
-          <li>「<strong>Error opening file for writing</strong>(ファイルを書き込めません)」と出た → アプリか収集デーモンがまだ動いています。手順1で完全終了するか、パソコンを再起動してから、もう一度インストーラを実行してください。</li>
-          <li>「<strong>Node.js…</strong> へのアクセスを許可しますか?」が出た → ひとつ上の FAQ を参照(「許可」を押せば OK)。</li>
-        </ul>
-        <p style="font-size: 12.5px; color: var(--text-faint);">※ ふだんのアップデートはアプリが自動で行うので、再インストールは不要です。再インストールは調子が悪いときの復旧用です。</p>
-      </div>
-    </details>
-
-    <details>
-      <summary>サーバログを見たい (デバッグ用)</summary>
-      <div class="faq-body">
-        トップバーの <strong>📋</strong> ボタンでログモーダルが開きます。直近 200 行を表示、新しいログが自動で下に追加。アプリ再起動で消えます。
-      </div>
-    </details>
-
-    <details>
-      <summary>polling 間隔 / アラート クールダウンを変えたい</summary>
-      <div class="faq-body">
-        ツールバーの <strong>🎛️ 詳細パラメータ</strong> モーダル (v0.4 で ⚙️ から分離)。
-        <ul>
-          <li>Price polling (ms)。Yahoo 429 が頻発するなら大きめに</li>
-          <li>News polling (ms, デフォルト 60000)</li>
-          <li>Sidecar port: 1024–65535 (デフォルト 3000)。変更時はアプリ再起動必要</li>
-          <li>アラート クールダウン (分, 既定 15)。鳴りすぎる時は伸ばす (逆方向は起点越えで即解禁)</li>
-        </ul>
-      </div>
-    </details>
-
-    <details>
-      <summary>新版が出たらどうやって知る?</summary>
-      <div class="faq-body">
-        起動 5 秒後に updater が自動チェック。新版があれば右上にトースト通知が出ます。クリック 1 つで DL + 自動再起動 (約 30 秒)。「後で」は 24 時間後再通知。
-        <p style="margin-top: 8px;">また、⚙️ 設定画面の「更新」セクションの <strong>「更新をチェック」</strong> ボタンで、いつでも手動でアプリ本体と基礎データの新着を確認できます (v0.3.18〜)。更新があればその場で適用可能。</p>
-      </div>
-    </details>
-
-    <details>
-      <summary>更新時に「Error opening file for writing」エラーが出る</summary>
-      <div class="faq-body">
-        起動中のサイドカープロセスがファイルロックしているのが原因です。<strong>v0.3.3 以降のインストーラ</strong> で preinstall フックを追加し、書き込み前に自動 taskkill するので、もう出ません。
-        <p style="margin-top: 8px;">v0.3.2 以前を使っていてエラーに当たった場合:</p>
-        <ol>
-          <li>ダイアログで <strong>「中止(A)」</strong> をクリック (※「無視(I)」は絶対押さない — 旧 sidecar.exe が残り起動不能になる)</li>
-          <li><code>Ctrl + Shift + Esc</code> でタスクマネージャ → 「詳細」タブ</li>
-          <li><code>jp225-sidecar.exe</code> と <code>jp225-monitor.exe</code> を右クリック → タスクの終了</li>
-          <li>数秒待ってインストーラを再実行</li>
-        </ol>
-      </div>
-    </details>
-
-    <details>
-      <summary>日経 225 先物の表示価格が想定と違う</summary>
-      <div class="faq-body">
-        日経指数そのままの値 (~66,000〜67,000 円台) が表示されます。<strong>v0.4 系では価格は OSE mini (大阪取引所) のリアルタイム配信が主軸</strong>で、従来の CME 経由 (約 10 分遅延) ではありません (Yahoo は予備経路)。<code>NIY=F</code> はカード上の表記名として残っています。
-        <p style="margin-top: 8px;">参考: ごく初期 (v0.3.7 以前) は <code>NK=F</code> を JPY 換算した ~1 千万円台が出ていましたが、これは Yahoo の古い ALTSYMBOL であり換算も不要だったため、v0.3.8 で撤去済みです。</p>
-      </div>
-    </details>
-
-    <details>
-      <summary>カードの価格はチャートと数字が違うんですが</summary>
-      <div class="faq-body">
-        <strong>ほぼ一致</strong> します。価格カードの「日経225先物」(OSE mini リアルタイム) もチャート (<code>FOREXCOM:JP225</code>) も同じ日経 225 指数を JPY で表示しているため、差は売買スプレッド・取引時間帯の鮮度程度です。
-        <p style="margin-top: 8px;">ごく初期 (v0.3.7 以前) のバージョンを使っている場合は古い NK=F × USD/JPY 換算値 (~1 千万円台) になっているので、最新版にアップデートしてください。</p>
-      </div>
-    </details>
-  </div>
-</section>
-
-<!-- ─── Reference ─── -->
-<section class="section">
-  <div class="section-head">
-    <span class="section-eyebrow">リファレンス</span>
-    <h2>詳細情報</h2>
+    <span class="section-eyebrow">フル版のみ</span>
+    <h2>詳細設定(🎛️)</h2>
+    <p>細部の調整はフル版(monitor2)の 🎛️ から。表示縮小版では非表示です(利用者が細部を変更しない設計)。</p>
   </div>
 
   <div class="ref">
-
     <details>
-      <summary>監視している銘柄一覧 (実装ベース)</summary>
-      <div class="ref-body">
-        <p style="margin-bottom: 12px;"><strong>価格カードに表示 (7 銘柄、main カテゴリ)</strong> — リアルタイム取得できる銘柄をカード表示。<strong>アラートを出すのは日経 225 先物 (NIY=F) のみ</strong> (横断確認は v0.3.35 で廃止)。他の 6 銘柄は AI 説明の連動材料 (|z|≥4.0) として使われます。</p>
-        <table class="ref-table">
-          <thead>
-            <tr>
-              <th>銘柄</th>
-              <th>コード</th>
-              <th>通貨</th>
-              <th>役割</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>日経 225 先物</td><td><code>NIY=F</code></td><td>JPY</td><td><strong>アラート対象</strong> — ①急変(完成1分足の価格変化スコア方式) + ②超短期フラッシュ(値幅・円, 5〜10秒) + ③グランビル(中期25・長期75 併用) + ④ダブルトップ/ボトム(高安水準手前10円・髭タッチ) の 4 条件。寄りから3本は抑制</td></tr>
-            <tr><td>ナスダック 100 先物</td><td><code>NQ=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>ダウ先物</td><td><code>YM=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>香港ハンセン</td><td><code>^HSI</code></td><td>HKD</td><td>AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>WTI 原油</td><td><code>CL=F</code></td><td>USD</td><td>AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>米 10 年債利回り</td><td><code>^TNX</code></td><td>—</td><td>AI 材料 (|z|≥4.0)</td></tr>
-            <tr><td>ドル円</td><td><code>JPY=X</code></td><td>JPY</td><td>AI 材料 (|z|≥4.0)</td></tr>
-          </tbody>
-        </table>
-        <p style="margin-top: 10px; color: var(--text-faint); font-size: 13px;">
-          v0.4 系で銘柄構成を整理し、リアルタイム取得が難しい <code>ES=F</code> (S&amp;P500 先物) と <code>^VIX</code> を外し、<code>^HSI</code> (香港ハンセン) を追加しました。日経の価格は OSE mini のリアルタイム配信が主軸 (Yahoo は予備)。USD 建て銘柄 (NQ/YM/CL) は USD のまま表示します。
-        </p>
-
-        <p style="margin-top: 20px; margin-bottom: 12px;"><strong>バックグラウンド監視 (7 銘柄、heavyweight カテゴリ)</strong> — カード非表示。日経 225 への寄与度が高い東証の値がさ株（高株価）。<strong>単独アラートは出さず</strong>、NIY=F アラート時に大きく動いていれば (|z|≥4.0) AI 説明の連動材料として渡します。</p>
-        <table class="ref-table">
-          <thead>
-            <tr>
-              <th>銘柄</th>
-              <th>コード</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>キーエンス</td><td><code>6861.T</code></td></tr>
-            <tr><td>ファーストリテイリング</td><td><code>9983.T</code></td></tr>
-            <tr><td>ディスコ</td><td><code>6146.T</code></td></tr>
-            <tr><td>SMC</td><td><code>6273.T</code></td></tr>
-            <tr><td>東京エレクトロン</td><td><code>8035.T</code></td></tr>
-            <tr><td>ソフトバンクグループ</td><td><code>9984.T</code></td></tr>
-            <tr><td>キオクシアHD</td><td><code>285A.T</code></td></tr>
-          </tbody>
-        </table>
-
-        <p style="margin-top: 16px; color: var(--text-faint); font-size: 13px;">
-          ※ <strong>アラートを出すのは日経 225 先物 (NIY=F) のみ</strong>。発火条件は <strong>①急変 (完成1分足の価格変化スコア方式・バー数クールダウン)</strong>、<strong>②超短期フラッシュ (値幅・円, 5〜10秒)</strong>、<strong>③グランビル (中期25・長期75 併用)</strong>、<strong>④ダブルトップ/ボトム (高安水準手前10円・髭タッチ・ネック不要)</strong> の 4 つ。<strong>短期(率%, 〜60秒)/長期(5分)の z-score 方式は v0.4.24 で撤廃</strong>。<strong>寄り(Day 8:45 / Night 17:00)から3本は全アラート抑制</strong>。横断確認 (他指数・FX) は v0.3.35 で廃止。他の銘柄は単独アラートを出さず、NIY=F アラート時に <strong>|z| ≥ 4.0</strong> で大きく動いていれば「大きく動いた他資産」として AI 説明に渡されます。
-        </p>
-      </div>
+      <summary>Web 検索モデル</summary>
+      <div class="ref-body">チャットの Web 検索に使うモデルを個別に指定できます(Gemini 側 / OpenAI 側)。空欄で既定に戻ります。</div>
     </details>
-
     <details>
-      <summary>データの保存場所</summary>
-      <div class="ref-body">
-        <table class="ref-table">
-          <tbody>
-            <tr><td>設定 (API キー、polling 間隔、クールダウン)</td><td><code>%USERPROFILE%\.jp225-monitor\config.json</code></td></tr>
-            <tr><td>蓄積価格 DB (24/7 収集デーモン / 基礎データ)</td><td><code>%APPDATA%\jp225-monitor\jp225.db</code> (node:sqlite, WAL)</td></tr>
-            <tr><td>ログ</td><td>アプリ内 📋 モーダルのみ (ファイル保存なし、再起動で消失)</td></tr>
-            <tr><td>アプリ本体</td><td><code>C:\Program Files\JP225 Monitor\</code></td></tr>
-          </tbody>
-        </table>
-        <p style="margin-top:14px"><code>config.json</code> はテキストファイルなのでメモ帳で開けます (但し構造を壊すと起動失敗するので慎重に)。</p>
-      </div>
+      <summary>AI エントリー設定</summary>
+      <div class="ref-body">トレードシグナルのエントリー生成を、各項目ごとに<strong>手動</strong>か<strong>AI 委任</strong>かで切り替えられます: LC 上限・下限、安全上限、トレンド veto、クールダウン、バイアス、レンジ両面 など。</div>
     </details>
-
     <details>
-      <summary>動作環境</summary>
+      <summary>データ(DB 管理)</summary>
+      <div class="ref-body">別 PC の DB をマージ / このPC の DB をコピー / DB を置き換え(インポート)。2 台で同一データに揃えてバックテストの一致に使えます。</div>
+    </details>
+    <details>
+      <summary>ポーリング・急変アラート・主要レベルのパラメータ</summary>
+      <div class="ref-body">定期 API ポーリング間隔、急変アラートの各しきい値、主要レベルの束ね幅・表示本数・合流ボーナス等を、リビルド不要・保存で即反映で調整できます。</div>
+    </details>
+  </div>
+</section>
+
+<!-- ─── 取引時間・基礎データ ─── -->
+<section class="section" id="hours">
+  <div class="section-head">
+    <span class="section-eyebrow">リファレンス</span>
+    <h2>取引時間・基礎データ</h2>
+  </div>
+
+  <div class="ref">
+    <details open>
+      <summary>取引時間(OSE・2024 年 11 月延長後)</summary>
       <div class="ref-body">
         <ul>
-          <li><strong>Windows 10 / 11</strong> (64-bit)</li>
-          <li><strong>WebView2 Runtime</strong>: Win 11 標準同梱、Win 10 でも近年は標準。万が一未インストールなら <a href="https://developer.microsoft.com/microsoft-edge/webview2/">Microsoft Edge WebView2</a> から</li>
-          <li>インターネット接続 (Yahoo Finance + LLM API + RSS フィード)</li>
-          <li>LLM API キー 1 つ以上 (任意、Gemini は無料)</li>
+          <li><strong>日中(Day):</strong> 08:45 – 15:45</li>
+          <li><strong>夜間(Night):</strong> 17:00 – 翌 06:00</li>
+          <li><strong>取引日足:</strong> 夜間 17:00 〜 翌日中 15:45(終値 = 15:45)</li>
         </ul>
       </div>
     </details>
-
     <details>
-      <summary>アンインストール</summary>
-      <div class="ref-body">
-        <ol>
-          <li><strong>Windows 設定</strong> → <strong>アプリ</strong> → <strong>インストール済みのアプリ</strong></li>
-          <li><strong>JP225 Monitor</strong> を検索 → <strong>アンインストール</strong></li>
-          <li>(任意) <code>%USERPROFILE%\.jp225-monitor</code> (設定) と <code>%APPDATA%\jp225-monitor</code> (蓄積 DB) のフォルダを削除すれば設定・蓄積データもクリア</li>
-        </ol>
-      </div>
+      <summary>価格データ(24/7 蓄積)</summary>
+      <div class="ref-body">価格は 24/7 の収集デーモンが SQLite に蓄積し、アプリ起動時に即ウォームアップします。これにより主要レベルや急変判定が起動直後から揃います。取引時間外は各更新ループを自動休止し、セッション開始前に自動再開します。</div>
     </details>
+  </div>
+</section>
+
+<!-- ─── 免責 ─── -->
+<section class="section" id="disclaimer">
+  <div class="section-head">
+    <span class="section-eyebrow">免責</span>
+    <h2>ご利用にあたって</h2>
+  </div>
+  <div class="callout warn">
+    本アプリは<strong>情報提供・分析支援ツール</strong>であり、投資助言ではありません。<strong>トレードシグナルは表示専用</strong>で、実際の売買命令は送りません。売買の判断・結果はすべて<strong>ご自身の責任</strong>で行ってください。
   </div>
 </section>
 
@@ -1573,7 +1166,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <div>
       <a href="https://github.com/sora-moyou/jp225-monitor">GitHub</a> ·
       <a href="https://github.com/sora-moyou/jp225-monitor/releases/latest">最新版</a> ·
-      <a href="https://github.com/sora-moyou/jp225-monitor/blob/master/USER_GUIDE.md">md 版</a>
+      <a href="https://github.com/sora-moyou/jp225-monitor2-releases/releases/latest">フル版(monitor2)</a>
     </div>
   </div>
 </footer>
