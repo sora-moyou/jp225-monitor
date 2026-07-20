@@ -760,8 +760,8 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     <nav>
       <a href="#install">導入</a>
       <a href="#tour">画面ツアー</a>
+      <a href="#signal">売買シグナル</a>
       <a href="#alerts">アラート</a>
-      <a href="#signal">トレードシグナル</a>
       <a href="#settings">設定</a>
       <a href="https://github.com/sora-moyou/jp225-monitor">GitHub ↗</a>
     </nav>
@@ -773,13 +773,15 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="hero-inner">
     <div class="hero-text">
       <span class="badge">● Windows 10 / 11 · 無料 · v0.8.7</span>
-      <h1>急変を、AI が<br>日本語で説明する。</h1>
+      <h1>AI が値動きを監視し、<br>売買シグナルを提案する。</h1>
       <p class="lead">
-        日経 225 先物 (OSE mini) の値動きをリアルタイムで監視。直近のボラティリティを基準に「いまの相場として異常か」を判定し、
-        急変が起きたら AI がニュースや他銘柄から原因を考えて日本語で説明します。価格は 24/7 デーモンで蓄積され、起動時に即ウォームアップ。
+        日経 225 先物 (OSE mini) をリアルタイムで監視。AI が相場状況を読んで<strong>買い/売りのエントリー(指値 + 逆指値 + 損切り)</strong>を提案し、
+        段階的に利益をロックする決済ロジックで<strong>紙の上の損益を自動集計</strong>します。急変が起きたときは、その原因をニュースや他銘柄からたどって日本語で説明。
+        価格は 24/7 デーモンで蓄積され、起動時に即ウォームアップ。
+        <br><strong>※ シグナルは表示専用。実際の売買命令は一切送りません。</strong>
       </p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="#install">導入手順を見る</a>
+        <a class="btn btn-primary" href="#signal">売買シグナルの仕組み</a>
         <a class="btn btn-ghost" href="https://github.com/sora-moyou/jp225-monitor/releases/latest" target="_blank" rel="noopener">ダウンロード ↗</a>
       </div>
     </div>
@@ -872,7 +874,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   <div class="section-head">
     <span class="section-eyebrow">画面ツアー</span>
     <h2>どこに何があるか</h2>
-    <p>起動直後の画面。価格カード・トレードシグナル・主要レベル・AI チャット・アラート・チャート・ニュースが 1 画面に収まります。</p>
+    <p>起動直後の画面。<strong>売買シグナル</strong>を中心に、価格カード・主要レベル・AI チャット・アラート・チャート・ニュースが 1 画面に収まります。</p>
   </div>
 
   <div class="shot-wrap">
@@ -891,12 +893,46 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 </section>
 
-<!-- ─── アラートの種類 ─── -->
+<!-- ─── 売買シグナル(主役) ─── -->
+<section class="section" id="signal">
+  <div class="section-head">
+    <span class="section-eyebrow">主役の機能</span>
+    <h2>AI が売買シグナルを提案</h2>
+    <p>AI が値動きを監視して、買い/売りのエントリー(<strong>指値 + 逆指値 + 損切り</strong>)を提案。段階的に利益をロックする決済で、紙の上の損益を自動集計します。★ 実際の売買命令は一切送りません。</p>
+  </div>
+
+  <div class="flow">
+    <figure class="flow-img">
+      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/signal-history.png" alt="トレードシグナル履歴と収益曲線">
+      <figcaption>📈 トレードシグナル履歴・収益曲線 — 件数 / 勝率 / 累積損益 + 一覧</figcaption>
+    </figure>
+    <div class="flow-steps">
+      <div>
+        <strong>① AI がエントリーを提案</strong>
+        <p>相場状況を読んで、買い/売りの向きと<strong>指値 + 逆指値 + 損切り(LC)</strong>のプランを提示。現在のシグナルは画面左上のパネルに大きく表示され、発生時にはアラート音でも知らせます。</p>
+      </div>
+      <div>
+        <strong>② phase-exit で段階的に利益確定</strong>
+        <p>含み益に応じて利益を段階的にロックする決済ロジックで、紙上の損益を集計します。</p>
+      </div>
+      <div>
+        <strong>③ 履歴・収益曲線を確認</strong>
+        <p>📈 ボタンで履歴と収益曲線(件数・勝率・累積損益 + 一覧)を表示。再起動しても履歴は残り、設定でシグナル発生時のアラート音 ON/OFF・履歴消去ができます。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout success" style="margin-top:24px;">
+    <strong>あくまで表示・記録のみ。</strong> 売買シグナルは紙のトラッキングで、<strong>実際の売買命令は送りません</strong>。損益はすべて紙の上での集計です。売買の判断・執行はご自身で行ってください。
+  </div>
+</section>
+
+<!-- ─── アラート(補助) ─── -->
 <section class="section" id="alerts">
   <div class="section-head">
-    <span class="section-eyebrow">アラート</span>
-    <h2>アラートの種類</h2>
-    <p>日経 225 先物の異常を検知。値動き系は AI が原因を説明、テクニカル系は根拠付きの固定文で表示します。</p>
+    <span class="section-eyebrow">補助 — アラート</span>
+    <h2>急変を検知し、AI が原因を説明</h2>
+    <p>シグナルの判断材料として、日経 225 先物の異常を検知。値動き系は AI が原因を日本語で説明、テクニカル系は根拠付きの固定文で表示します。</p>
   </div>
 
   <div class="features">
@@ -919,40 +955,6 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 
   <div class="callout" style="margin-top:24px;">
     <strong>事後の値動きも記録:</strong> 各アラートの発生後の値動き(+5/15/30 分)を自動で記録し、AI の原因説明とあわせて振り返りに使えます。
-  </div>
-</section>
-
-<!-- ─── トレードシグナル ─── -->
-<section class="section" id="signal">
-  <div class="section-head">
-    <span class="section-eyebrow">トレードシグナル</span>
-    <h2>表示専用の「紙トラッキング」</h2>
-    <p>AI がエントリーを提案し、紙の上で損益を集計します。★ 売買命令は一切送りません。</p>
-  </div>
-
-  <div class="flow">
-    <figure class="flow-img">
-      <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/signal-history.png" alt="トレードシグナル履歴と収益曲線">
-      <figcaption>📈 トレードシグナル履歴・収益曲線 — 件数 / 勝率 / 累積損益 + 一覧</figcaption>
-    </figure>
-    <div class="flow-steps">
-      <div>
-        <strong>AI がエントリーを提案</strong>
-        <p>指値 + 逆指値のプランを提示。現在のシグナルはトレードシグナル パネルに大きく表示されます。</p>
-      </div>
-      <div>
-        <strong>phase-exit で段階的に利益確定</strong>
-        <p>含み益に応じて利益を段階的にロックする決済ロジックで、紙上の損益を集計します。</p>
-      </div>
-      <div>
-        <strong>履歴・収益曲線を確認</strong>
-        <p>📈 ボタンで履歴と収益曲線(件数・勝率・累積損益 + 一覧)を表示。設定でシグナル発生時のアラート音 ON/OFF・履歴消去ができます。</p>
-      </div>
-    </div>
-  </div>
-
-  <div class="callout success" style="margin-top:24px;">
-    <strong>あくまで表示・記録のみ。</strong> トレードシグナルは紙のトラッキングで、<strong>実際の売買命令は送りません</strong>。損益はすべて紙の上での集計です。
   </div>
 </section>
 
