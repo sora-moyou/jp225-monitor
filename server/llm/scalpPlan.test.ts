@@ -1253,6 +1253,26 @@ describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決�
     const s = buildStrategySpec({ ...base, hardMax: { enabled: false, value: 150 } });
     expect(s).toContain('安全上限 無効');
   });
+  it('節目への置き方(指値=5〜10円内側 / 逆指値=0〜5円外側)を含む', () => {
+    const s = buildStrategySpec(base);
+    expect(s).toContain('節目への置き方');
+    expect(s).toContain('5〜10円');
+    expect(s).toContain('0〜5円');
+    expect(s).toContain('内側');
+    expect(s).toContain('外側');
+  });
+});
+
+describe('節目への指値/逆指値プレースメント規則(約定重視)', () => {
+  it('system prompt と question にも同じ規則(節目オフセット)を注入する', () => {
+    for (const t of [buildScalpSystemPrompt(), buildScalpQuestion()]) {
+      expect(t).toContain('節目');
+      expect(t).toContain('5〜10円');    // 指値=内側オフセット
+      expect(t).toContain('0〜5円');     // 逆指値=外側オフセット
+      expect(t).toContain('内側');
+      expect(t).toContain('外側');
+    }
+  });
 });
 
 describe('buildScalpPlan (no-key path)', () => {
