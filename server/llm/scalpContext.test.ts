@@ -123,6 +123,19 @@ describe('buildScalpTradeHistory', () => {
     expect(buildScalpTradeHistory([trade({}), trade({})], NOW)).toBe('');
   });
 
+  it('直近から負けが続くと連敗数を出す(trades は exit_t DESC=新しい順)', () => {
+    // 先頭(最新)から3連敗 → 「3連敗中」。range 切替検討の材料。
+    const losing: SignalTradeRow[] = [
+      trade({ id: 1, pnl: -30 }), trade({ id: 2, pnl: -40 }), trade({ id: 3, pnl: -20 }), trade({ id: 4, pnl: 50 }),
+    ];
+    expect(buildScalpTradeHistory(losing, NOW)).toContain('3連敗中');
+    // 最新が勝ち → 連敗行は出さない。
+    const notLosing: SignalTradeRow[] = [
+      trade({ id: 1, pnl: 40 }), trade({ id: 2, pnl: -40 }), trade({ id: 3, pnl: -20 }),
+    ];
+    expect(buildScalpTradeHistory(notLosing, NOW)).not.toContain('連敗中');
+  });
+
   it('全体勝率・純pnl・方向別・mode別・負け例を集計する', () => {
     const trades: SignalTradeRow[] = [
       trade({ id: 1, dir: 'buy', pnl: 60, mode: 'directional' }),

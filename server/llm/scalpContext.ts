@@ -228,6 +228,11 @@ export function buildScalpTradeHistory(trades: SignalTradeRow[], now: number): s
   lines.push(`方向別: buy ${buy.n}件 勝率${buy.wr}% ${sgn(buy.pnl)} / sell ${sell.n}件 勝率${sell.wr}% ${sgn(sell.pnl)}`);
   lines.push(`mode別: directional ${dir.n}件 勝率${dir.wr}% ${sgn(dir.pnl)} / range ${rng.n}件 勝率${rng.wr}% ${sgn(rng.pnl)}`);
   if (losers.length > 0) lines.push(`直近の負け: ${losers.join(' / ')}`);
+  // ★現在の連敗数(直近=trades[0] から負けが続く本数。getSignalTrades は exit_t DESC=新しい順)。
+  //   range=AI 委任時に「単方向が機能していない→レンジ両面(range)が有効か」を AI が判断する材料。
+  let lossStreak = 0;
+  for (const t of trades) { if (t.pnl < 0) lossStreak++; else break; }
+  if (lossStreak >= 2) lines.push(`★現在 ${lossStreak}連敗中(単方向が機能していない可能性→レンジ両面(range)への切替が有効か検討)`);
 
   // ★v0.7.56: 設定つき成績。meta.settings を持つトレードだけ集計/要約する(旧世代は従来行のみ)。
   const withSettings = trades

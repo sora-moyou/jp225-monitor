@@ -1215,6 +1215,11 @@ describe('buildDelegationNote(委任ノート)', () => {
     expect(n).toContain('方向');
     expect(n).toContain('レンジ両面');
   });
+  it('range=ai → 連敗時にレンジ両面へ切替を検討する指示が入る', () => {
+    const n = buildDelegationNote({ ...allManual, range: 'ai' }, ctx);
+    expect(n).toContain('連敗');
+    expect(n).toContain('range(両面)へ切り替え');
+  });
 });
 
 describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決済ロジック)', () => {
