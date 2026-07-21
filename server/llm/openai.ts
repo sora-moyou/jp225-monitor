@@ -848,6 +848,7 @@ export function buildScalpQuestion(
     '指値は節目の5〜10円 内側[現在値側]にずらす=買いはサポートの5〜10円上・売りはレジスタンスの5〜10円下。' +
     '逆指値は節目の0〜5円 外側[抜ける方向]にずらす=買いはレジスタンスの0〜5円上・売りはサポートの0〜5円下。' +
     '節目ちょうどだと指値は刺さらず/逆指値はだまし[往復]に遭いやすいため) ' +
+    '(★方向と指値/逆指値の位置[必須]: 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置くと即約定・不正なので厳禁) ' +
     '③それぞれのストップ(逆指値の損切り)を定めてください。ただしストップ幅に5円加えること。' +
     '損切りは必ずエントリーの外側に置く(買いは各エントリーより下・売りは各エントリーより上)。指値レッグの損切りは limitEntry の外側・逆指値レッグの損切りは stopEntry の外側。内側/反対側には置かないこと。' +
     '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。' +
@@ -905,6 +906,7 @@ export function buildScalpSystemPrompt(
 - direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
 - buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/逆指値のみ)でもよい。
 - ★【節目への置き方(約定させるため必須)】指値・逆指値を狙う節目(サポート/レジスタンス)ちょうどに置かないこと。指値(押し目買い/戻り売り)は節目より 5〜10円 内側(現在値側)にずらす: 買いは対象サポートの 5〜10円上、売りは対象レジスタンスの 5〜10円下。逆指値(ブレイク追随)は節目より 0〜5円 外側(抜ける方向)にずらす: 買いは対象レジスタンスの 0〜5円上、売りは対象サポートの 0〜5円下。理由: 指値を節目ちょうどに置くと反応して約定しない(刺さらない)ことが多く、逆指値を節目ちょうどに置くとだまし(往復)に遭いやすい。range の各レッグ(limit=逆張り指値 / stop=抜け追随逆指値)も同じ置き方にする。
+- ★【方向と指値/逆指値の位置(必須)】現在値(refPrice)に対して: 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置く(買いなのに指値が現在値の上/売りなのに指値が現在値の下 等)と即約定してしまい不正なので厳禁。
 - それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、逆指値レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
 - ★【損切りの向き(必須)】損切り(stopLossForLimit / stopLossForStop)は必ずエントリーの外側に置くこと: 買い(long)は各エントリーより下、売り(short)は各エントリーより上。指値レッグの損切りは limitEntry の外側、逆指値レッグの損切りは stopEntry の外側に置く。損切りをエントリーの内側や反対側(買いなのに上・売りなのに下)に置いてはならない(その建玉を保護しない不正なストップになる)。range の各レッグも同様に、buy レッグの stopLoss は entry の下・sell レッグの stopLoss は entry の上に置く。
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。${ceilingYen}円を超える損切りは出さない。
@@ -1042,6 +1044,17 @@ export function stopSideOk(side: 'buy' | 'sell', entry: number, stopLoss: number
   return side === 'buy' ? stopLoss < entry : stopLoss > entry;
 }
 
+/** エントリーが refPrice の正しい側にあるか(幾何・純関数)。
+ *  limit(指値=押し目/戻り): buy は現在値より下・sell は現在値より上。
+ *  stop(逆指値=ブレイク追随): buy は現在値より上・sell は現在値より下。
+ *  境界(entry===refPrice=距離0)は即約定=不正。refPrice 非有限は検証しない(true=従来通り通す)。 */
+export function entrySideOk(direction: 'buy' | 'sell', kind: 'limit' | 'stop', entry: number, refPrice: number): boolean {
+  if (!Number.isFinite(refPrice)) return true;
+  // buy 指値=下 / buy 逆指値=上 / sell 指値=上 / sell 逆指値=下。
+  const wantBelow = kind === 'limit' ? direction === 'buy' : direction === 'sell';
+  return wantBelow ? entry < refPrice : entry > refPrice;
+}
+
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
  *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
 export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
@@ -1122,10 +1135,13 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     return { ok: false, error: 'invalid price field(s): at least one leg required' };
   }
   // ★損切りの向き検証(orientation): buy は損切りが各エントリーの下・sell は上。境界(SL==entry=幅0)も不正。
-  //   違反レッグは落とす(既存の「片レッグ落とし」と同じ機構=entry+SL を省く)。ここは幾何(向き)のみで、
-  //   LC 幅≤上限の強制は enforce の責務(不変)。両レッグとも向き違反で落ちたら「見送り(none)」を ok:true で返す。
-  const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!);
-  const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!);
+  //   加えて★エントリー位置の向き検証(entrySideOk): refPrice(現在値=SSOT)に対し 指値/逆指値が正しい側にあるか。
+  //   買いは 指値=現在値より下・逆指値=現在値より上/売りは 指値=現在値より上・逆指値=現在値より下(逆置きは即約定=不正)。
+  //   レッグは stopSideOk と entrySideOk の両方を満たすときだけ有効。違反レッグは落とす(既存の「片レッグ落とし」と同じ
+  //   機構=entry+SL を省く)。ここは幾何(向き)のみで、LC 幅≤上限の強制は enforce の責務(不変)。
+  //   両レッグとも違反で落ちたら「見送り(none)」を ok:true で返す。
+  const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!) && entrySideOk(o.direction, 'limit', limitEntry!, refPrice);
+  const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!) && entrySideOk(o.direction, 'stop', stopEntry!, refPrice);
   if (!limitLegOk && !stopLegOk) {
     return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
   }
@@ -1255,6 +1271,7 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     '- 損切りは本来のストップ幅に +5円 加える(往復のダマシ緩衝)',
     '- 指値/逆指値は現在値からそれぞれ最低 50円 離す',
     '- 節目への置き方(約定重視・節目ちょうどには置かない): 指値=狙う節目の 5〜10円 内側(現在値側)[買い=サポート+5〜10円 / 売り=レジスタンス−5〜10円]。逆指値=狙う節目の 0〜5円 外側(抜ける方向)[買い=レジスタンス+0〜5円 / 売り=サポート−0〜5円]。理由: 節目ちょうどだと指値は刺さらず・逆指値はだまし(往復)に遭いやすい',
+    '- ★方向と指値/逆指値の位置(必須): 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置くと即約定・不正なので厳禁',
     `- トレンド判定: 直近10分で ±${i.trendVeto.value}円 以上動けばトレンド=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止${knobTag(i.trendVeto.mode)}`,
     `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
     `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,

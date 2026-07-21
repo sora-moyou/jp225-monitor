@@ -4,7 +4,7 @@ import {
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
-  parseAiRegime, parseAiConfidence, stopSideOk,
+  parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
   lcLegExceeds, buildDelegationNote, buildStrategySpec,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan, type KnobModes,
@@ -170,6 +170,103 @@ describe('stopSideOk(損切りの向き・純関数)', () => {
     expect(stopSideOk('sell', 100, 110)).toBe(true);
     expect(stopSideOk('sell', 100, 90)).toBe(false);   // 下=逆側
     expect(stopSideOk('sell', 100, 100)).toBe(false);  // 境界(幅0)=不正
+  });
+});
+
+// エントリー位置の向き検証(refPrice=現在値 に対する 指値/逆指値 の幾何)。
+describe('entrySideOk(エントリー位置の向き・純関数)', () => {
+  const REF_P = 100;
+  it('買い: 指値=現在値より下だけ true / 上は false', () => {
+    expect(entrySideOk('buy', 'limit', 90, REF_P)).toBe(true);
+    expect(entrySideOk('buy', 'limit', 110, REF_P)).toBe(false);
+  });
+  it('買い: 逆指値=現在値より上だけ true / 下は false', () => {
+    expect(entrySideOk('buy', 'stop', 110, REF_P)).toBe(true);
+    expect(entrySideOk('buy', 'stop', 90, REF_P)).toBe(false);
+  });
+  it('売り: 指値=現在値より上だけ true / 下は false', () => {
+    expect(entrySideOk('sell', 'limit', 110, REF_P)).toBe(true);
+    expect(entrySideOk('sell', 'limit', 90, REF_P)).toBe(false);
+  });
+  it('売り: 逆指値=現在値より下だけ true / 上は false', () => {
+    expect(entrySideOk('sell', 'stop', 90, REF_P)).toBe(true);
+    expect(entrySideOk('sell', 'stop', 110, REF_P)).toBe(false);
+  });
+  it('境界(entry===refPrice=距離0)は不正(false)', () => {
+    expect(entrySideOk('buy', 'limit', 100, REF_P)).toBe(false);
+    expect(entrySideOk('sell', 'stop', 100, REF_P)).toBe(false);
+  });
+  it('refPrice 非有限は検証しない(true=従来通り通す)', () => {
+    expect(entrySideOk('buy', 'limit', 110, NaN)).toBe(true);
+    expect(entrySideOk('sell', 'stop', 110, Infinity)).toBe(true);
+  });
+});
+
+// エントリー位置の向き検証(parse・directional): 反転プランを見送り化/レッグ落とし。
+describe('parseScalpPlan エントリー位置の向き検証(directional)', () => {
+  // REF=38250。
+  it('反転 SELL(指値=現在値より下・逆指値=現在値より上)→ 両レッグ不正で見送り(none)', () => {
+    // sell なのに 指値38200<REF(下=不正)・逆指値38300>REF(上=不正)。SL 向きは各レッグ正しくしておく。
+    const raw = JSON.stringify({
+      direction: 'sell', rationale: '反転プラン', refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38260,   // SL は entry の上=sell として正
+      stopEntry: 38300, stopLossForStop: 38360,     // SL は entry の上=sell として正
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.plan.limitEntry).toBeUndefined();
+      expect(r.plan.stopEntry).toBeUndefined();
+      expect(r.plan.refPrice).toBe(REF);
+    }
+  });
+
+  it('正しい SELL(指値=現在値より上・逆指値=現在値より下)→ 両レッグ維持', () => {
+    // sell: 指値38300>REF(戻り売り)・逆指値38200<REF(下抜け追随)。SL 向きも各レッグ正。
+    const raw = JSON.stringify({
+      direction: 'sell', rationale: '戻り売り+下抜け', refPrice: 1,
+      limitEntry: 38300, stopLossForLimit: 38360,   // 上=正
+      stopEntry: 38200, stopLossForStop: 38260,     // 上=正
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('sell');
+      expect(r.plan.limitEntry).toBe(38300);
+      expect(r.plan.stopLossForLimit).toBe(38360);
+      expect(r.plan.stopEntry).toBe(38200);
+      expect(r.plan.stopLossForStop).toBe(38260);
+    }
+  });
+
+  it('正しい BUY(指値=現在値より下・逆指値=現在値より上)→ 両レッグ維持(goodPlan)', () => {
+    // goodPlan: buy・指値38200<REF・逆指値38350>REF・SL 向きも正。
+    const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopEntry).toBe(38350);
+    }
+  });
+
+  it('反転 BUY レッグ(指値=現在値より上)→ その指値レッグを落とす(正しい逆指値は残す)', () => {
+    // buy なのに 指値38300>REF(上=不正)→落とす。逆指値38350>REF(上=正)・SL 向きも正→残す。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '指値だけ反転', refPrice: 1,
+      limitEntry: 38300, stopLossForLimit: 38250,   // SL は entry の下=buy として正(entry 位置だけ不正)
+      stopEntry: 38350, stopLossForStop: 38300,     // 逆指値は完全に正
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBeUndefined();     // entry 位置が現在値の上=落とす
+      expect(r.plan.stopLossForLimit).toBeUndefined();
+      expect(r.plan.stopEntry).toBe(38350);
+      expect(r.plan.stopLossForStop).toBe(38300);
+    }
   });
 });
 
@@ -492,6 +589,23 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
     expect(q).not.toContain('95');
     expect(s).toContain('65');
     expect(s).not.toContain('95');
+  });
+
+  it('3つの常時注入ビルダーに現在値ベースの位置ルール(買い=指値下/逆指値上・売り=指値上/逆指値下)が入る', () => {
+    const spec = buildStrategySpec({
+      floor: { mode: 'manual', value: 45 },
+      ceiling: { mode: 'manual', value: 65 },
+      trendVeto: { mode: 'manual', value: 100 },
+      cooldown: { mode: 'manual', value: 90 },
+      bias: { mode: 'manual', value: 'none' },
+      range: { mode: 'manual', value: false },
+      hardMax: { enabled: true, value: 150 },
+      exitDesc: '【決済ロジック】…',
+    });
+    for (const t of [buildScalpQuestion(), buildScalpSystemPrompt(), spec]) {
+      expect(t).toContain('指値=現在値より上');   // 売りの指値=現在値より上
+      expect(t).toContain('指値=現在値より下');   // 買いの指値=現在値より下
+    }
   });
 
   it('lcFloorYen/lcCeilingYen をプロンプトに反映(例: 50〜120)', () => {
