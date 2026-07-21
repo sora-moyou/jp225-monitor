@@ -862,6 +862,7 @@ export function buildScalpQuestion(
     '(b)逆指値レッグを出さず「指値のみ」で取引する(stopEntry と stopLossForStop を出さない)。' +
     `対称に、指値レッグが構造上どうしても${ceilingYen}円超になるなら、指値レッグを省いて逆指値のみにしてもよい。` +
     `どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも${ceilingYen}円以内に収まらなければ direction:"none" で見送ること。` +
+    '(★rationale[説明文]は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」等と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」等と書かない。実際の注文と食い違う説明は禁止) ' +
     trendGuidance(trendVetoYen)
   );
 }
@@ -913,7 +914,7 @@ export function buildScalpSystemPrompt(
 - ★この LC 上限(≤${ceilingYen}円)は 指値レッグ・逆指値レッグ それぞれ独立に 満たすこと。逆指値(ブレイク追随)は現在値/節目から離れるほど LC が広がりやすい。逆指値レッグの LC が${ceilingYen}円を超えるなら、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、(b)逆指値レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上${ceilingYen}円超になるなら指値レッグを省いて逆指値のみにしてもよい。どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
 - すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
-- rationale は日本語で判断根拠を簡潔に述べる。${trendVetoYen > 0 ? `
+- rationale は日本語で判断根拠を簡潔に述べる。★rationale は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)。${trendVetoYen > 0 ? `
 - ★【レジーム/勢い】${trendGuidance(trendVetoYen)}` : ''}`;
 }
 
@@ -1057,6 +1058,29 @@ export function entrySideOk(direction: 'buy' | 'sell', kind: 'limit' | 'stop', e
 
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
  *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
+/** ★表示整合(v0.7.41): 最終 plan に実際に採用されたエントリーレッグを、日本語の短い注記文字列にする純関数。
+ *  パネルは plan.rationale をそのまま表示するため、AI の自由文が「出していないレッグ(逆指値等)を置いた」と
+ *  語っても、この注記を末尾に足すことで表示が実プランと矛盾しないようにする。private 定数は一切出さない。
+ *  - hasLimit/hasStop: 最終 plan に指値/逆指値レッグが入っているか(plan.limitEntry/stopEntry != null)。
+ *  - limitDropped/stopDropped: AI が出したが検証(向き/対の整合)で落とされたレッグ=「不採用」タグを付す。
+ *  レッグ皆無(理論上は directional で起きない)なら空文字を返す(追記しない)。 */
+export function buildLegNote(
+  args: { hasLimit: boolean; hasStop: boolean; limitDropped?: boolean; stopDropped?: boolean },
+): string {
+  const { hasLimit, hasStop, limitDropped, stopDropped } = args;
+  const base =
+    hasLimit && hasStop ? '（実際の注文: 指値+逆指値）'
+    : hasLimit ? '（実際の注文: 指値のみ・逆指値レッグなし）'
+    : hasStop ? '（実際の注文: 逆指値のみ・指値レッグなし）'
+    : '';
+  if (!base) return '';
+  // AI が出したが検証で落ちたレッグの理由タグ(短く・定数非開示)。
+  const drop =
+    (limitDropped ? '（指値レッグは条件を満たさず不採用）' : '') +
+    (stopDropped ? '（逆指値レッグは条件を満たさず不採用）' : '');
+  return base + drop;
+}
+
 export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   const text = (raw ?? '').trim();
   if (!text) return { ok: false, error: 'empty response' };
@@ -1156,6 +1180,16 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     plan.stopEntry = stopEntry!;
     plan.stopLossForStop = stopLossForStop!;
   }
+  // ★表示整合: 実際に採用したレッグを rationale 末尾に機械生成の注記として追記(directional のみ)。
+  //   採用の有無は最終 plan から判定。AI が出したが検証で落ちたレッグは「不採用」タグを付す。none/range 経路は
+  //   触らない(上で return 済み)。rationale(元テキスト)は不変のまま、注記は1回だけ連結する=冪等。
+  const legNote = buildLegNote({
+    hasLimit: plan.limitEntry != null,
+    hasStop: plan.stopEntry != null,
+    limitDropped: hasLimitLeg && !limitLegOk,
+    stopDropped: hasStopLeg && !stopLegOk,
+  });
+  if (legNote) plan.rationale = `${rationale} ${legNote}`;
   return { ok: true, plan: withMeta(plan) };
 }
 
@@ -1272,6 +1306,7 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     '- 指値/逆指値は現在値からそれぞれ最低 50円 離す',
     '- 節目への置き方(約定重視・節目ちょうどには置かない): 指値=狙う節目の 5〜10円 内側(現在値側)[買い=サポート+5〜10円 / 売り=レジスタンス−5〜10円]。逆指値=狙う節目の 0〜5円 外側(抜ける方向)[買い=レジスタンス+0〜5円 / 売り=サポート−0〜5円]。理由: 節目ちょうどだと指値は刺さらず・逆指値はだまし(往復)に遭いやすい',
     '- ★方向と指値/逆指値の位置(必須): 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置くと即約定・不正なので厳禁',
+    '- ★rationale(説明文)は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)',
     `- トレンド判定: 直近10分で ±${i.trendVeto.value}円 以上動けばトレンド=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止${knobTag(i.trendVeto.mode)}`,
     `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
     `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,

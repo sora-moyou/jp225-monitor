@@ -5,7 +5,7 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
-  lcLegExceeds, buildDelegationNote, buildStrategySpec,
+  lcLegExceeds, buildDelegationNote, buildStrategySpec, buildLegNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan, type KnobModes,
 } from './openai.js';
@@ -156,6 +156,95 @@ describe('parseScalpPlan', () => {
     const r = parseScalpPlan(JSON.stringify({ direction: 'buy', rationale: '理由' }), REF);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain('at least one leg');
+  });
+});
+
+// ─── 表示整合: buildLegNote(採用レッグの機械生成注記・純関数) ───
+describe('buildLegNote(採用レッグ注記・純関数)', () => {
+  it('両レッグ→「指値+逆指値」', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: true })).toBe('（実際の注文: 指値+逆指値）');
+  });
+  it('指値のみ→「指値のみ・逆指値レッグなし」', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: false })).toBe('（実際の注文: 指値のみ・逆指値レッグなし）');
+  });
+  it('逆指値のみ→「逆指値のみ・指値レッグなし」', () => {
+    expect(buildLegNote({ hasLimit: false, hasStop: true })).toBe('（実際の注文: 逆指値のみ・指値レッグなし）');
+  });
+  it('レッグ皆無→空文字(追記しない)', () => {
+    expect(buildLegNote({ hasLimit: false, hasStop: false })).toBe('');
+  });
+  it('AI が出した逆指値レッグが落とされた→不採用タグを付す', () => {
+    const s = buildLegNote({ hasLimit: true, hasStop: false, stopDropped: true });
+    expect(s).toBe('（実際の注文: 指値のみ・逆指値レッグなし）（逆指値レッグは条件を満たさず不採用）');
+  });
+  it('AI が出した指値レッグが落とされた→不採用タグを付す', () => {
+    const s = buildLegNote({ hasLimit: false, hasStop: true, limitDropped: true });
+    expect(s).toBe('（実際の注文: 逆指値のみ・指値レッグなし）（指値レッグは条件を満たさず不採用）');
+  });
+});
+
+// ─── 表示整合: parseScalpPlan が rationale 末尾にレッグ注記を追記する ───
+describe('parseScalpPlan レッグ注記(表示整合)', () => {
+  it('指値のみプラン(AI が逆指値を出さない)→ rationale 末尾が「指値のみ・逆指値レッグなし」・元テキストは前置で保持', () => {
+    const { stopEntry, stopLossForStop, ...limitOnly } = goodPlan;
+    void stopEntry; void stopLossForStop;
+    const r = parseScalpPlan(JSON.stringify(limitOnly), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.rationale.startsWith('押し目買い。直近安値38200が支持。')).toBe(true);
+      expect(r.plan.rationale.endsWith('（実際の注文: 指値のみ・逆指値レッグなし）')).toBe(true);
+      // AI は逆指値を出していないので不採用タグは付かない。
+      expect(r.plan.rationale).not.toContain('不採用');
+    }
+  });
+
+  it('AI が逆指値レッグを出したが entrySideOk 違反で落ちた→指値レッグ維持+「逆指値レッグ…不採用」注記', () => {
+    // buy: 指値は正。逆指値 entry 38200(現在値38250より下=buy には不正)→ 逆指値レッグを落とす。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '押し目・逆指値も置いたつもり', refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38150,   // 正
+      stopEntry: 38200, stopLossForStop: 38150,     // entry が現在値より下=buy の逆指値として不正
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopEntry).toBeUndefined();
+      expect(r.plan.rationale).toContain('（実際の注文: 指値のみ・逆指値レッグなし）');
+      expect(r.plan.rationale).toContain('（逆指値レッグは条件を満たさず不採用）');
+    }
+  });
+
+  it('正しい両レッグ→注記は「指値+逆指値」', () => {
+    const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.rationale).toContain('（実際の注文: 指値+逆指値）');
+      expect(r.plan.rationale).not.toContain('不採用');
+    }
+  });
+
+  it('none の rationale は注記を付けない(不変)', () => {
+    const r = parseScalpPlan(JSON.stringify({ direction: 'none', rationale: '様子見。' }), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.plan.rationale).toBe('様子見。');
+  });
+
+  it('range の rationale は注記を付けない(不変)', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジ・両面。', refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+      },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('range');
+      expect(r.plan.rationale).toBe('レンジ・両面。');
+    }
   });
 });
 
@@ -605,6 +694,22 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
     for (const t of [buildScalpQuestion(), buildScalpSystemPrompt(), spec]) {
       expect(t).toContain('指値=現在値より上');   // 売りの指値=現在値より上
       expect(t).toContain('指値=現在値より下');   // 買いの指値=現在値より下
+    }
+  });
+
+  it('3つの常時注入ビルダーに「実際に出力したレッグだけ説明」の指示が入る(表示整合・v0.7.41)', () => {
+    const spec = buildStrategySpec({
+      floor: { mode: 'manual', value: 45 },
+      ceiling: { mode: 'manual', value: 65 },
+      trendVeto: { mode: 'manual', value: 100 },
+      cooldown: { mode: 'manual', value: 90 },
+      bias: { mode: 'manual', value: 'none' },
+      range: { mode: 'manual', value: false },
+      hardMax: { enabled: true, value: 150 },
+      exitDesc: '【決済ロジック】…',
+    });
+    for (const t of [buildScalpQuestion(), buildScalpSystemPrompt(), spec]) {
+      expect(t).toContain('実際に出力したレッグだけ説明');
     }
   });
 

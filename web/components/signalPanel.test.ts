@@ -32,6 +32,56 @@ describe('buildSignalView(シグナル枠)', () => {
     expect(v.main).not.toContain('保有');   // 保有はシグナル枠には出さない(別枠)
   });
 
+  it('★A案: 決済で即クリア。sig.at <= lastExit.at(既決済トレードのシグナル)は「シグナル待機」に戻る', () => {
+    const s: SignalTradeState = {
+      phase: 'flat', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 65395, stopLossForLimit: 65345, rationale: 'r', at: 10 },
+      lastExit: { exitPrice: 65500, pnl: 105, at: 20 },
+    };
+    const v = buildSignalView(s);
+    expect(v.cls).toBe('flat');
+    expect(v.main).toBe('シグナル待機');
+  });
+
+  it('決済後に来た新シグナル(sig.at > lastExit.at)は再び描く(🎯)', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 65395, stopLossForLimit: 65345, rationale: 'r', at: 30 },
+      lastExit: { exitPrice: 65500, pnl: 105, at: 20 },
+    };
+    const v = buildSignalView(s);
+    expect(v.cls).toBe('armed');
+    expect(v.main).toContain('🎯 シグナル');
+  });
+
+  it('★保有中(filled) + 前トレードの古い lastExit(sig.at > lastExit.at)は描き続ける(v0.9.0維持)', () => {
+    const s: SignalTradeState = {
+      phase: 'filled', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 65395, stopLossForLimit: 65345, rationale: 'r', at: 30 },
+      position: { direction: 'buy', entryPrice: 65395, qty: 1, unrealized: 30, at: 31 },
+      lastExit: { exitPrice: 64000, pnl: -50, at: 20 },
+    };
+    const v = buildSignalView(s);
+    expect(v.main).toContain('🎯 シグナル');
+  });
+
+  it('lastExit が無い(初回)ときは抑制しない(描く)', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 65395, stopLossForLimit: 65345, rationale: 'r', at: 10 },
+    };
+    expect(buildSignalView(s).main).toContain('🎯 シグナル');
+  });
+
+  it('sig.at 欠落 + lastExit 有りは抑制しない(安全側=表示)', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 65395, stopLossForLimit: 65345, rationale: 'r' },
+      lastExit: { exitPrice: 65500, pnl: 105, at: 20 },
+    };
+    expect(buildSignalView(s).main).toContain('🎯 シグナル');
+  });
+
   it('レンジ両面は上下レッグを描く', () => {
     const s: SignalTradeState = {
       phase: 'armed', updatedAt: 0,

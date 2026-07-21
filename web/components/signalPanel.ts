@@ -104,6 +104,14 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   const sig: SignalCurrent | undefined = s?.signal ?? (s?.entry ? { ...s.entry } : undefined);
   if (!sig) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
 
+  // ★A案: 決済で即クリア。直近決済(lastExit)がこのシグナル発生後(sig.at <= lastExit.at)なら、
+  //   その建玉は既に決済済み=シグナルは役目を終えたので「シグナル待機」に戻す。
+  //   armed/filled 中は lastExit が前トレードの古いもの(sig.at > lastExit.at)なので描き続ける。
+  //   決済後に来る新シグナル(sig.at > lastExit.at)は再び描く。sig.at 欠落時は抑制しない(安全側=表示)。
+  if (s?.lastExit && sig.at != null && s.lastExit.at != null && sig.at <= s.lastExit.at) {
+    return { cls: 'flat', main: 'シグナル待機', rationale: '' };
+  }
+
   // ★レンジ両面ストラドル: 上下の各レッグを side/type/entry で明示表示。
   if (sig.mode === 'range' && sig.range) {
     const legStr = (leg: SignalRangeLeg, pos: '上' | '下'): string =>
