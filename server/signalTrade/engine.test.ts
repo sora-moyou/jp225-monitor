@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, ARMED_TIMEOUT_MS, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
+  rangeTpTrigger, RANGE_TP_OFFSET_YEN,
   computeHold, inCooldown, buildPlanMeta, buildTradeMetaJson,
   buildSettingsSnapshot, knobSnapshot, realizedLcFromArmed,
   buildSignalTradeInsert, getSignalTradeState, getSignalTradeStateB,
@@ -835,5 +836,162 @@ describe('System B は currentSignal を露出しない / A は不変', () => {
     const sa = getSignalTradeState(123);
     expect(sa.phase).toBe('flat');
     expect(sa.signal).toBeUndefined();
+  });
+});
+
+// ─── レンジ建玉のTP決済(固定LC損切り + 反対側節目手前の成行TP) ───
+describe('rangeTpTrigger', () => {
+  it('buy は rangeTp−5(節目手前で利食い)', () => {
+    expect(rangeTpTrigger('buy', 66000)).toBe(65995);
+    expect(RANGE_TP_OFFSET_YEN).toBe(5);
+  });
+  it('sell は rangeTp+5', () => {
+    expect(rangeTpTrigger('sell', 65000)).toBe(65005);
+  });
+  it('offset は差し替え可能(既定=RANGE_TP_OFFSET_YEN)', () => {
+    expect(rangeTpTrigger('buy', 66000, 10)).toBe(65990);
+    expect(rangeTpTrigger('sell', 65000, 10)).toBe(65010);
+  });
+});
+
+describe('advance: レンジ建玉のTP/固定LC決済(fade ストラドル)', () => {
+  // fade(指値)両面: 下=買い指値65000(LC64900) / 上=売り指値66000(LC66100)。
+  // 下レッグ約定(ロング)→ 反対=上節目66000 は利益側 → rangeTp=66000。
+  const fadeStraddle: ArmedBracket = {
+    direction: 'buy', rationale: 'range', at: 0, mode: 'range', range: {
+      upper: { side: 'sell', type: 'limit', entry: 66000, stopLoss: 66100 },
+      lower: { side: 'buy', type: 'limit', entry: 65000, stopLoss: 64900 },
+    },
+  };
+
+  it('LONG: 下レッグ約定で rangeTp=反対上節目(66000)を据える', () => {
+    const { next } = advance({ phase: 'armed', armed: fadeStraddle }, 65000, 1000);
+    expect(next.phase).toBe('filled');
+    expect(next.position).toMatchObject({ direction: 'buy', entryPrice: 65000, initialStop: 64900, mode: 'range', rangeTp: 66000 });
+  });
+
+  it('LONG: TPトリガー手前(65994)では保有継続(65995=66000−5 未達)', () => {
+    const filled = advance({ phase: 'armed', armed: fadeStraddle }, 65000, 1000).next;
+    const r = advance(filled, 65994, 1100);
+    expect(r.next.phase).toBe('filled');
+    expect(r.recorded).toBeUndefined();
+  });
+
+  it('LONG: TPトリガー(65995)到達で成行決済(exit=現在値=65995・phase-exit 非経由)', () => {
+    const filled = advance({ phase: 'armed', armed: fadeStraddle }, 65000, 1000).next;
+    const r = advance(filled, 65995, 1200);
+    expect(r.next.phase).toBe('flat');
+    expect(r.recorded?.exitPrice).toBe(65995);
+    expect(r.recorded?.pnl).toBe(995);        // 65995−65000
+    expect(r.recorded?.mode).toBe('range');
+    expect(r.next.lastExit).toEqual({ exitPrice: 65995, pnl: 995, at: 1200 });
+  });
+
+  it('LONG: TPトリガーより上に飛んでも成行=現在値で決済(66020)', () => {
+    const filled = advance({ phase: 'armed', armed: fadeStraddle }, 65000, 1000).next;
+    const r = advance(filled, 66020, 1300);
+    expect(r.recorded?.exitPrice).toBe(66020);
+    expect(r.recorded?.pnl).toBe(1020);
+  });
+
+  it('LONG: 固定初期LC(64900)到達で損切り(ラチェットせず・exit=LC価格)', () => {
+    // phase-exit を差し替えて「もし phase-exit を通れば別価格」の状況でも、range は固定LCで決済することを示す。
+    _setExitImpl(() => 64950);   // これが使われたら exit=64950 になるはず(=使われない証明)。
+    const filled = advance({ phase: 'armed', armed: fadeStraddle }, 65000, 1000).next;
+    const r = advance(filled, 64900, 1400);
+    expect(r.next.phase).toBe('flat');
+    expect(r.recorded?.exitPrice).toBe(64900);   // 固定 initialStop(phase-exit の 64950 ではない)
+    expect(r.recorded?.pnl).toBe(-100);
+    expect(r.recorded?.mode).toBe('range');
+  });
+
+  it('SHORT: 上レッグ約定で rangeTp=反対下節目(65000)・トリガー65005で成行決済', () => {
+    // 上レッグ(売り)約定(ショート)→ 反対=下節目65000 は利益側 → rangeTp=65000・trigger=65005。
+    const filled = advance({ phase: 'armed', armed: fadeStraddle }, 66000, 2000).next;
+    expect(filled.position).toMatchObject({ direction: 'sell', entryPrice: 66000, initialStop: 66100, mode: 'range', rangeTp: 65000 });
+    const hold = advance(filled, 65005, 2100);
+    expect(hold.next.phase).toBe('flat');
+    expect(hold.recorded?.exitPrice).toBe(65005);
+    expect(hold.recorded?.pnl).toBe(995);        // 66000−65005
+  });
+});
+
+describe('advance: breakout ストラドルは反対節目=損側 → rangeTp を据えず phase-exit にフォールバック', () => {
+  // breakout(逆指値)両面: 上=買い逆指値66000(LC65900) / 下=売り逆指値65000(LC65100)。
+  // 上レッグ約定(ロング)→ 反対=下節目65000 は建値66000 より下=損側 → rangeTp を据えない。
+  const breakoutStraddle: ArmedBracket = {
+    direction: 'buy', rationale: 'range', at: 0, mode: 'range', range: {
+      upper: { side: 'buy', type: 'stop', entry: 66000, stopLoss: 65900 },
+      lower: { side: 'sell', type: 'stop', entry: 65000, stopLoss: 65100 },
+    },
+  };
+  it('LONG(上抜け約定): rangeTp は据えない → 既存 phase-exit(下)へ落ちる', () => {
+    const { next } = advance({ phase: 'armed', armed: breakoutStraddle }, 66000, 1000);
+    expect(next.phase).toBe('filled');
+    expect(next.position?.rangeTp).toBeUndefined();
+    // phase-exit(簡易=初期LC 65900)で損切りされる=range TP 経路に入らない。
+    const r = advance(next, 65900, 1100);
+    expect(r.next.phase).toBe('flat');
+    expect(r.recorded?.exitPrice).toBe(65900);
+    expect(r.recorded?.mode).toBe('range');   // タグは range 由来のまま
+  });
+});
+
+describe('advance: 片レッグ range(反対レッグ無し)は rangeTp を据えず phase-exit', () => {
+  it('下レッグのみの range → 反対無し → rangeTp 未設定・既存 phase-exit', () => {
+    const single: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+      lower: { side: 'buy', type: 'limit', entry: 65000, stopLoss: 64900 },
+    } };
+    const { next } = advance({ phase: 'armed', armed: single }, 65000, 1000);
+    expect(next.position?.rangeTp).toBeUndefined();
+    const r = advance(next, 64900, 1100);   // 初期LC=phase-exit(簡易)で決済
+    expect(r.next.phase).toBe('flat');
+    expect(r.recorded?.pnl).toBe(-100);
+  });
+});
+
+describe('computeHold: レンジ建玉は固定LC exitStop + rangeTp/tpTrigger を公開', () => {
+  const sig: CurrentSignal = { signalId: 7, at: 5, direction: 'buy', rationale: 'r', mode: 'range' };
+  it('range(rangeTp 設定済): exitStop=固定 initialStop・rangeTp/tpTrigger を付与', () => {
+    // phase-exit を差し替えても range の exitStop は固定 initialStop(ラチェットしない)であることを示す。
+    _setExitImpl(() => 64950);
+    const st: EngineState = { phase: 'filled', position: {
+      direction: 'buy', entryPrice: 65000, qty: 1, initialStop: 64900, peakProfit: 400, rationale: 'r', at: 7, mode: 'range', rangeTp: 66000,
+    } };
+    expect(computeHold(st, sig)).toEqual({
+      signalId: 7, direction: 'buy', entryPrice: 65000, exitStop: 64900, at: 7, rangeTp: 66000, tpTrigger: 65995,
+    });
+  });
+  it('SHORT range: tpTrigger=rangeTp+5', () => {
+    const st: EngineState = { phase: 'filled', position: {
+      direction: 'sell', entryPrice: 66000, qty: 1, initialStop: 66100, peakProfit: 0, rationale: 'r', at: 3, mode: 'range', rangeTp: 65000,
+    } };
+    expect(computeHold(st, sig)).toMatchObject({ exitStop: 66100, rangeTp: 65000, tpTrigger: 65005 });
+  });
+  it('range だが rangeTp 無し(片レッグ/breakout): 既存 phase-exit(exitStop=restingStopOf)・rangeTp 無し', () => {
+    const pos: OpenPosition = { direction: 'buy', entryPrice: 65000, qty: 1, initialStop: 64900, peakProfit: 400, rationale: 'r', at: 7, mode: 'range' };
+    const hold = computeHold({ phase: 'filled', position: pos }, sig)!;
+    expect(hold.exitStop).toBe(restingStopOf(pos));   // = 簡易 phase-exit(初期LC)
+    expect('rangeTp' in hold).toBe(false);
+    expect('tpTrigger' in hold).toBe(false);
+  });
+});
+
+// ★byte 互換保証: directional 建玉の advance/computeHold は range 変更後も従来と完全一致。
+describe('directional は range 変更の影響を受けない(byte 互換)', () => {
+  const sig: CurrentSignal = { signalId: 9, at: 3, direction: 'buy', rationale: 'r', limitEntry: 37950, stopLossForLimit: 37900 };
+  it('advance(filled→逆指値決済)は従来どおり(mode/rangeTp 無し・phase-exit)', () => {
+    const st: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r', at: 500 } };
+    const { next, recorded } = advance(st, 37950, 2000);
+    expect(next.phase).toBe('flat');
+    expect(next.lastExit).toEqual({ exitPrice: 37950, pnl: -50, at: 2000 });
+    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37950, pnl: -50, qty: 1, rationale: 'r' });
+    expect(recorded?.mode).toBeUndefined();
+  });
+  it('computeHold は従来どおり(exitStop=restingStopOf・rangeTp/tpTrigger 無し)', () => {
+    const pos: OpenPosition = { direction: 'buy', entryPrice: 37950, qty: 1, initialStop: 37900, peakProfit: 400, rationale: 'r', at: 7 };
+    const hold = computeHold({ phase: 'filled', position: pos }, sig)!;
+    expect(hold).toEqual({ signalId: 9, direction: 'buy', entryPrice: 37950, exitStop: 37900, at: 7 });
+    expect('rangeTp' in hold).toBe(false);
   });
 });

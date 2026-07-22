@@ -127,6 +127,10 @@ export interface SignalTradeState {
     entryPrice: number;
     exitStop: number | null;
     at: number;   // エントリー約定時刻(= position.at)。建玉の対応キー(exitStop 自体は毎tick動く)。
+    // ★レンジ建玉のTP(反対側レンジ節目・利益側のみ)。設定時は損側=固定initialStop(ラチェットせず)、
+    //   利側=tpTrigger(節目の5円内側)到達で成行決済。directional / rangeTp 無しでは付与しない。
+    rangeTp?: number;      // 反対側レンジ節目(TP目標の生値)。
+    tpTrigger?: number;    // 成行TPの発火価格(buy=rangeTp−5 / sell=rangeTp+5)。
   };
   updatedAt: number;
 }

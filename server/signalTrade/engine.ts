@@ -85,7 +85,8 @@ export interface OpenPosition {
   peakProfit: number;
   rationale: string;
   at: number;     // 約定時刻(= 記録の entry_t)
-  mode?: 'range';  // レンジ由来の建玉(タグ計測用)。約定後は通常の単方向ポジションとして扱う(決済は既存 exitStop)。
+  mode?: 'range';  // レンジ由来の建玉(タグ計測用)。rangeTp が無ければ約定後も通常の単方向ポジション扱い(決済は既存 exitStop)。
+  rangeTp?: number;  // レンジ建玉のTP目標(反対側レンジ節目・利益側にある場合のみ設定)。設定時は損側=固定initialStop・利側=節目手前で成行決済(phase-exit を使わない)。
   planMeta?: PlanMeta;   // v0.7.54: AI 自己レジーム/確信度 + veto 発火(決済 meta へ引き継ぐ)。
   settings?: SignalSettingsSnapshot;   // ★v0.7.56: 実効設定スナップショット(決済 meta へ引き継ぐ)。
 }
@@ -105,6 +106,10 @@ export interface SignalHold {
   entryPrice: number;
   exitStop: number | null;
   at: number;   // エントリー約定時刻(= position.at)。建玉の対応キー。
+  // ★レンジ建玉のTP(反対側レンジ節目・利益側のみ設定)。設定時は exitStop=固定initialStop(ラチェットせず)。
+  //   directional / rangeTp 無しの建玉では付与しない(=既存の exitStop 契約と byte 一致)。
+  rangeTp?: number;      // 反対側レンジ節目(TP目標の生値)。
+  tpTrigger?: number;    // 成行TPの発火価格(buy=rangeTp−5 / sell=rangeTp+5)。
 }
 
 export interface RecordedTrade {
@@ -178,6 +183,19 @@ export function restingStopOf(pos: OpenPosition): number | null {
 export function computeHold(st: EngineState, signal: CurrentSignal | null): SignalHold | null {
   if (st.phase !== 'filled' || !st.position || !signal) return null;
   const p = st.position;
+  // ★レンジ建玉(rangeTp 設定済): 損側は固定初期LC(ラチェットしない)、利側は反対側節目手前の成行TP。
+  //   exitStop=initialStop(固定)+ rangeTp/tpTrigger を公開する(trade2 が固定LC/成行TPを追従できる)。
+  if (p.mode === 'range' && p.rangeTp != null) {
+    return {
+      signalId: signal.signalId,
+      direction: p.direction,
+      entryPrice: p.entryPrice,
+      exitStop: p.initialStop,
+      at: p.at,
+      rangeTp: p.rangeTp,
+      tpTrigger: rangeTpTrigger(p.direction, p.rangeTp),
+    };
+  }
   return {
     signalId: signal.signalId,
     direction: p.direction,
@@ -193,6 +211,14 @@ export function computeHold(st: EngineState, signal: CurrentSignal | null): Sign
 export function inCooldown(lastExitAt: number | null, now: number, cooldownSec: number): boolean {
   if (!(cooldownSec > 0) || lastExitAt == null) return false;
   return now - lastExitAt < cooldownSec * 1000;
+}
+
+/** ★レンジ建玉のTP発火価格。反対側レンジ節目の「手前(offset 円内側)」で成行決済する目標価格を返す純関数。
+ *  buy(下レッグ約定・上節目がTP): rangeTp−offset に上昇したら決済 / sell(上レッグ約定・下節目がTP): rangeTp+offset に下落したら決済。
+ *  offset だけ内側に置くのは、反対側の指値まで完全到達する前に確実に利食うため(反対側到達=そこで逆張り指値が待つ水準)。 */
+export const RANGE_TP_OFFSET_YEN = 5;
+export function rangeTpTrigger(direction: 'buy' | 'sell', rangeTp: number, offset: number = RANGE_TP_OFFSET_YEN): number {
+  return direction === 'buy' ? rangeTp - offset : rangeTp + offset;
 }
 
 /** 現在値が決済逆指値に達したか。達したら exit 価格(= 逆指値)、未達なら null。 */
@@ -250,6 +276,23 @@ export function advance(
         at: now,
         mode: 'range',   // タグ計測用: この建玉は range 由来。
       };
+      // ★レンジTP: 反対側(未約定)レッグの建値を求め、それが利益側にあるときだけ rangeTp に据える。
+      //   detectRangeFill と同じ選択ロジックで「どちらが約定したか」を判定し反対側 entry を取る。
+      //   fade(指値)ストラドルは反対節目=利益側 → TP。breakout(逆指値)は反対節目=損側 → 設定せず既存 phase-exit に落ちる(自動で安全)。
+      const upper = st.armed.range?.upper;
+      const lower = st.armed.range?.lower;
+      let oppositeEntry: number | undefined;
+      if (upper && price >= upper.entry) oppositeEntry = lower?.entry;        // 上レッグ約定 → 反対=下レッグ
+      else if (lower && price <= lower.entry) oppositeEntry = upper?.entry;   // 下レッグ約定 → 反対=上レッグ
+      if (oppositeEntry != null && Number.isFinite(oppositeEntry)) {
+        // 節目(rangeTp)だけでなく、5円内側の成行トリガ(rangeTpTrigger)も利益側にあるときだけ TP を据える。
+        //   これで幅<5円の退化レンジ(trigger が建値近辺=小損TP)を弾き、fill 直後の誤決済を防ぐ(現実のAIは出さないが防御)。
+        const trigger = rangeTpTrigger(rf.side, oppositeEntry);
+        const onProfitSide = rf.side === 'buy'
+          ? (oppositeEntry > rf.entryPrice && trigger > rf.entryPrice)
+          : (oppositeEntry < rf.entryPrice && trigger < rf.entryPrice);
+        if (onProfitSide) position.rangeTp = oppositeEntry;
+      }
       if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
       if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
       return { next: { phase: 'filled', position, lastExit: st.lastExit } };
@@ -273,6 +316,35 @@ export function advance(
 
   if (st.phase === 'filled' && st.position) {
     const pos = st.position;
+    // ★レンジ建玉(rangeTp 設定済)= 損側は固定初期LC(ラチェットしない)/ 利側は反対側節目手前で成行決済(phase-exit を使わない)。
+    //   directional / rangeTp 無しの建玉はこの分岐に入らず、既存の phase-exit(下)へ落ちる=byte 不変。
+    if (pos.mode === 'range' && pos.rangeTp != null) {
+      // 決済記録の共通組み立て(range タグ + planMeta/settings 引き継ぎ)。
+      const mkRecorded = (exitPrice: number, pnl: number): RecordedTrade => {
+        const r: RecordedTrade = {
+          entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
+          exitT: now, exitPrice, pnl, qty: pos.qty, rationale: pos.rationale, mode: 'range',
+        };
+        if (pos.planMeta) r.planMeta = pos.planMeta;
+        if (pos.settings) r.settings = pos.settings;
+        return r;
+      };
+      // 損側: 固定初期LC(ラチェットせず)。到達したらその逆指値で決済。両側が同 tick で満たす場合は損側優先(安全)。
+      const stopHit = detectExit(pos, price, pos.initialStop);
+      if (stopHit != null) {
+        const pnl = realizedPnl(pos.direction, pos.entryPrice, stopHit, pos.qty);
+        return { next: { phase: 'flat', lastExit: { exitPrice: stopHit, pnl, at: now } }, recorded: mkRecorded(stopHit, pnl) };
+      }
+      // 利側: 反対側レンジ節目の手前(RANGE_TP_OFFSET_YEN 内側)に達したら成行(=現在値)で決済。
+      const trigger = rangeTpTrigger(pos.direction, pos.rangeTp);
+      const tpHit = pos.direction === 'buy' ? price >= trigger : price <= trigger;
+      if (tpHit) {
+        const pnl = realizedPnl(pos.direction, pos.entryPrice, price, pos.qty);
+        return { next: { phase: 'flat', lastExit: { exitPrice: price, pnl, at: now } }, recorded: mkRecorded(price, pnl) };
+      }
+      // どちらも未到達 → 保有継続(peak 更新は range 決済に不要)。
+      return { next: { phase: 'filled', position: pos, lastExit: st.lastExit } };
+    }
     const peak = Math.max(pos.peakProfit, unrealizedPt(pos.direction, pos.entryPrice, price));
     const updated: OpenPosition = { ...pos, peakProfit: peak };
     const stop = restingStopOf(updated);
