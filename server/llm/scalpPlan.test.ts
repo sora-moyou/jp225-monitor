@@ -697,6 +697,45 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
     }
   });
 
+  it('3つの常時注入ビルダーに指値/逆指値の距離ルール(両方=間・片方だけ=200円以内)が入る', () => {
+    const spec = buildStrategySpec({
+      floor: { mode: 'manual', value: 45 },
+      ceiling: { mode: 'manual', value: 65 },
+      trendVeto: { mode: 'manual', value: 100 },
+      cooldown: { mode: 'manual', value: 90 },
+      bias: { mode: 'manual', value: 'none' },
+      range: { mode: 'manual', value: false },
+      hardMax: { enabled: true, value: 150 },
+      exitDesc: '【決済ロジック】…',
+    });
+    for (const t of [buildScalpQuestion(), buildScalpSystemPrompt(), spec]) {
+      expect(t).toContain('200円以内');           // 片レッグの距離上限
+      expect(t).toContain('片方だけ');            // 片レッグの条件文
+      expect(t).toContain('間');                  // 両方=現在値が2価格の間
+      expect(t).toContain('400円以内');           // 両レッグの指値↔逆指値の幅上限
+    }
+  });
+
+  it('3つの常時注入ビルダーのレンジ記述に距離ルール(上下2本=幅400円以内・片面=200円以内)が入る', () => {
+    // レンジ(両面ストラドル)にも directional と同じ思想の距離ルールを伝える。
+    const spec = buildStrategySpec({
+      floor: { mode: 'manual', value: 45 },
+      ceiling: { mode: 'manual', value: 65 },
+      trendVeto: { mode: 'manual', value: 100 },
+      cooldown: { mode: 'manual', value: 90 },
+      bias: { mode: 'manual', value: 'none' },
+      range: { mode: 'manual', value: true },
+      hardMax: { enabled: true, value: 150 },
+      exitDesc: '【決済ロジック】…',
+    });
+    // range を有効にした3ビルダー(question/system は rangeEnabled 既定 true)。
+    for (const t of [buildScalpQuestion(), buildScalpSystemPrompt(), spec]) {
+      expect(t).toContain('レンジの距離');
+      expect(t).toContain('400円以内');   // 上下2本の幅上限
+      expect(t).toContain('200円以内');   // 片面レンジの距離上限
+    }
+  });
+
   it('3つの常時注入ビルダーに「実際に出力したレッグだけ説明」の指示が入る(表示整合・v0.7.41)', () => {
     const spec = buildStrategySpec({
       floor: { mode: 'manual', value: 45 },
