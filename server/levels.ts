@@ -2,31 +2,13 @@ import type { SessionOHLC } from './sessionOHLC.js';
 import { isSessionComplete } from './sessionOHLC.js';
 import { deriveSwing, fibLevelsForSwing, currentSessionSwing, DEFAULT_SWING_WINDOWS } from './fibLevels.js';
 import { resolveLevelsConfig } from './configStore.js';
+import type { Level, LevelsResult } from '../core/types.js';
 // 後方互換のため再export(forecast.ts / forecastLoop.ts / 各テストは './levels.js' から import している)。
 export type { SessionOHLC } from './sessionOHLC.js';
 export { isSessionComplete } from './sessionOHLC.js';
-
-export interface Level {
-  price: number;
-  dist: number;             // price - current (5円丸め)
-  labels: string[];
-  strong: boolean;          // 後方互換: tier>=1
-  score: number;            // 意識度スコア
-  tier: 0 | 1 | 2;          // 相対ランク(0=通常 / 1=★ / 2=★★合流帯)
-  confluence: boolean;      // 合流倍率が掛かったか(tier2 判定に使用)
-  fib?: number;             // 0.382 | 0.5 | 0.618 など
-  reversalLine?: boolean;   // fib 50% の方向転換ライン
-}
-export interface LevelsResult {
-  current: number;
-  up: Level[];
-  down: Level[];
-  swing: { high: number; low: number; leg: 'up' | 'down' } | null;
-  reversalSatisfied: boolean;
-  asOf: number;
-  // 高安関係の全水準(クラスタ/上位N選抜・スコア合計によらず全件)。ダブルトップ/ボトム検知用に露出。
-  hlLevels?: { price: number; label: string }[];
-}
+// Level / LevelsResult の宣言は core/types.ts に移設済み(core を非循環に保つため)。
+// 従来どおり './levels.js' から取れるよう再export する(SessionOHLC と同じパターン)。
+export type { Level, LevelsResult } from '../core/types.js';
 
 // ── 調整ノブ(Task5 で config 化予定。ここでは定数を既定値として参照)──
 // 直近高安(直近2)の対象セッション数は config パラメータ(levelLookbackSessions / levelLookbackSessions2)。

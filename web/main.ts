@@ -1,4 +1,4 @@
-import { INSTRUMENTS } from '../server/config.js';
+import { INSTRUMENTS } from '../core/instruments.js';
 import { connectStream } from './lib/stream.js';
 import { fetchExplanation } from './lib/api.js';
 import { renderPriceGrid, flashCard } from './components/priceGrid.js';

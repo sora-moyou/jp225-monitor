@@ -1,5 +1,5 @@
 import type { Price, AlertEvent } from '../types.js';
-import { INSTRUMENTS } from '../../server/config.js';
+import { INSTRUMENTS } from '../../core/instruments.js';
 
 // 日経カード用。短期 = 変化率(%, 直近60秒) / 超短期 = 値幅(円, 5〜10秒) を値だけ描画。
 // 期間ラベル(1分/10秒)はヘッダ行(日経225先物の行)側に置き、grid で各値の真上に揃える。

@@ -1,4 +1,4 @@
-import { INSTRUMENTS } from '../../server/config.js';
+import { INSTRUMENTS } from '../../core/instruments.js';
 import type { Symbol } from '../types.js';
 
 const LABEL_MAP = new Map(INSTRUMENTS.map(i => [i.symbol, i]));
