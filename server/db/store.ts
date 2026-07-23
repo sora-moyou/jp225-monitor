@@ -53,6 +53,11 @@ export function initSchema(db: DatabaseSync): void {
       exit_t INTEGER NOT NULL, exit_price REAL NOT NULL, pnl REAL NOT NULL,
       qty INTEGER NOT NULL, rationale TEXT, meta TEXT, mode TEXT
     );
+    CREATE TABLE IF NOT EXISTS signal_exit_stops (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      t INTEGER NOT NULL, signal_id INTEGER, opened_at INTEGER NOT NULL,
+      direction TEXT NOT NULL, exit_stop REAL NOT NULL, phase TEXT
+    );
   `);
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
@@ -61,6 +66,9 @@ export function initSchema(db: DatabaseSync): void {
   // ★v0.8.2: A/B 2系統タグ。'A'(実売買・現行) / 'B'(紙専用の並走エンジン)。
   //   既存DBへ後付けマイグレーション(NULL は 'A' 扱い=後方互換・既存行は全て A)。
   if (!stCols.includes('system')) db.exec('ALTER TABLE signal_trades ADD COLUMN system TEXT');
+  // ★検証(monitor2⇔trade2 突合)用: signal_id を1級列にして signals_<host>.db⇔forward_<host>.db を equijoin できるようにする。
+  //   既存DBへ後付けマイグレーション(NULL 可=旧行/signalId 未采番の B 行)。RECORD-ONLY(決済ロジック不変)。
+  if (!stCols.includes('signal_id')) db.exec('ALTER TABLE signal_trades ADD COLUMN signal_id INTEGER');
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
@@ -317,6 +325,7 @@ export interface SignalTradeRow {
   rationale: string | null; meta: string | null;
   mode: string | null;   // 'range' / 'directional'(NULL は directional 扱い=後方互換)
   system: string | null; // ★v0.8.2: 'A'(実売買) / 'B'(紙専用)。NULL は 'A' 扱い(後方互換)。
+  signal_id: number | null; // ★検証用: そのトレードの ARM 采番(trade2 の signal_id と join)。NULL=旧行/未采番。
 }
 
 export interface SignalTradeInsert {
@@ -325,6 +334,7 @@ export interface SignalTradeInsert {
   rationale?: string | null; meta?: string | null;
   mode?: string | null;   // レンジ由来='range' / 単方向='directional'。未指定は NULL(=directional)。
   system?: 'A' | 'B' | null;   // ★v0.8.2: 系統タグ。A は NULL(=既存挙動と同一) / B は 'B'。
+  signalId?: number | null;    // ★検証用: ARM 采番。trade2 側の signal_id と equijoin する結合キー。未指定は NULL。
 }
 
 // ★v0.8.2: 系統フィルタ。'A' は NULL 行も含む(既存/A の行)。'B' は 'B' 行のみ。未指定は全件。
@@ -337,10 +347,10 @@ function systemWhere(system: SignalSystemFilter | undefined): { clause: string; 
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
-    t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null);
+    t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null);
 }
 
 /** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。
@@ -357,4 +367,39 @@ export function clearSignalTrades(db: DatabaseSync, system?: SignalSystemFilter)
   const before = (db.prepare(`SELECT COUNT(*) AS n FROM signal_trades${w.clause}`).get(...w.params) as { n: number }).n;
   db.prepare(`DELETE FROM signal_trades${w.clause}`).run(...w.params);
   return before;
+}
+
+// ─── トレードシグナルの決済逆指値(exit-stop)遷移履歴(検証用・RECORD-ONLY) ───
+// 紙建玉の hold.exitStop が「変化するたび」に1行記録する時系列(毎tickではなく変化時のみ=dedupe)。
+// monitor2 のこの系列と trade2 の exit_stop_history を突き合わせ、決済逆指値ラダーの乖離・決済時刻ずれ・
+// 片レッグ約定を検証できる。opened_at(建値時刻)+ direction は signalId 欠落時の二次結合キー。
+// 決済ロジック/SSE/紙トレード結果には一切影響しない(追加の DB 書込のみ)。
+
+export interface SignalExitStopRow {
+  id: number;
+  t: number; signal_id: number | null; opened_at: number;
+  direction: string; exit_stop: number; phase: string | null;
+}
+
+export interface SignalExitStopInsert {
+  t: number;               // 記録時刻(壁時計・= tick の now)。
+  signalId?: number | null; // ARM 采番(trade2 の signal_id と join)。A のみ非 NULL。
+  openedAt: number;        // 建値約定時刻(= hold.at)。二次結合キー。
+  direction: 'buy' | 'sell';
+  exitStop: number;        // その時点の決済逆指値(絶対価格)。
+  phase?: string | null;   // どの決済ルールか(在れば・'range' 等)。無ければ NULL。
+}
+
+/** exit-stop 遷移を1行記録する。dedupe(変化時のみ)は呼び出し側(engine)が担う。 */
+export function insertSignalExitStop(db: DatabaseSync, e: SignalExitStopInsert): void {
+  db.prepare(`
+    INSERT INTO signal_exit_stops (t, signal_id, opened_at, direction, exit_stop, phase)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(e.t, e.signalId ?? null, e.openedAt, e.direction, e.exitStop, e.phase ?? null);
+}
+
+/** exit-stop 遷移を新しい順(直近が先)で最大 limit 件返す(分析/テスト用)。 */
+export function getSignalExitStops(db: DatabaseSync, limit = 1000): SignalExitStopRow[] {
+  return db.prepare('SELECT * FROM signal_exit_stops ORDER BY t DESC LIMIT ?')
+    .all(Math.max(1, Math.min(5000, limit))) as unknown as SignalExitStopRow[];
 }

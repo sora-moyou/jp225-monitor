@@ -17,7 +17,7 @@ import { loadExitImpl } from './exit/index.js';
 import { checkSanity } from './sanity.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
-import { openDb, resolveDbPath, insertSignalTrade } from '../db/store.js';
+import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop } from '../db/store.js';
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
@@ -27,7 +27,7 @@ import {
   inCooldown, realizedLcFromArmed, ARMED_TIMEOUT_MS,
   type SignalPhase, type EngineState, type CurrentSignal, type SignalHold, type RecordedTrade,
 } from './decisions.js';
-import { buildSignalTradeInsert, buildSettingsSnapshot } from './persist.js';
+import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
 
 // 純粋な決定コア(型/純関数)と永続化ビルダーは従来どおり engine.js から公開する(import 元を変えない)。
 export * from './decisions.js';
@@ -94,6 +94,8 @@ export class SignalEngine {
   private readonly planIntervalMs = resolvePlanIntervalMs();
   // 見送り(direction:'none')後の再計画抑止アンカー。null = 抑止していない。
   private planSuppressedAnchor: number | null = null;
+  // ★検証用(RECORD-ONLY): 決済逆指値(hold.exitStop)の「前回記録値」。変化時のみ signal_exit_stops へ1行記録するための dedupe 用。
+  private exitStopTracker: ExitStopTracker = { openedAt: null, value: null };
 
   constructor(private readonly cfg: EngineConfig) {}
 
@@ -142,17 +144,34 @@ export class SignalEngine {
     this.planSuppressedAnchor = null;
     this.lastSignalExitAt = null;
     this.cooldownLogged = false;
+    this.exitStopTracker = { openedAt: null, value: null };
   }
 
   // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。系統タグ(A=null/B='B')を付与する。
+  //   ★検証用: 現在シグナルの signalId(A のみ・B は null)を signal_id 列に載せて trade2 と結合可能にする。
   private persistTrade(t: RecordedTrade): void {
     try {
       const db = openDb(resolveDbPath());
       try {
-        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag));
+        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag, this.currentSignal?.signalId));
       } finally { db.close(); }
     } catch (e) {
       console.warn(`${this.logTag} persist failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 非公開(RECORD-ONLY・検証用): 決済逆指値(hold.exitStop)が「変化したとき」だけ signal_exit_stops へ1行記録する。
+  //   毎tickではなく変化時のみ(buildExitStopRecord の dedupe)。hold は既存の computeHold をそのまま読むだけで
+  //   決済ロジック/SSE には一切影響しない。A のみ(B は signalForState=null → hold=null で自然に無記録)。失敗は握りつぶす。
+  private recordExitStopChange(now: number): void {
+    try {
+      const rec = buildExitStopRecord(computeHold(this.state, this.signalForState()), this.exitStopTracker, now);
+      if (!rec) return;
+      const db = openDb(resolveDbPath());
+      try { insertSignalExitStop(db, rec); } finally { db.close(); }
+      this.exitStopTracker = { openedAt: rec.openedAt, value: rec.exitStop };
+    } catch (e) {
+      console.warn(`${this.logTag} exit-stop record failed:`, e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -271,6 +290,9 @@ export class SignalEngine {
         this.lastSignalExitAt = now;
         this.cooldownLogged = false;
       }
+      // ★検証用(RECORD-ONLY): 決済逆指値が変化していれば signal_exit_stops へ1行記録(変化時のみ・A のみ)。
+      //   state 更新後・broadcast 前に評価。決済ロジック/SSE には影響しない(追加の DB 書込のみ)。
+      this.recordExitStopChange(now);
       this.maybeRequestPlan(price, now);
       this.heartbeat(now);   // ★診断: 定期にエンジン状態を1行ログ(固着の早期発見)。
       this.broadcastSignalState(now);

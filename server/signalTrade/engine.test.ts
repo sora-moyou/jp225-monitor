@@ -11,7 +11,9 @@ import {
 } from './decisions.js';
 import {
   buildTradeMetaJson, buildSettingsSnapshot, knobSnapshot, buildSignalTradeInsert,
+  buildExitStopRecord, type ExitStopTracker,
 } from './persist.js';
+import type { SignalHold } from './decisions.js';
 import {
   getSignalTradeState, getSignalTradeStateB,
   getCurrentSignal, getSignalHold, getSignalPhase,
@@ -819,6 +821,55 @@ describe('buildSignalTradeInsert(系統タグ)', () => {
     const ins = buildSignalTradeInsert({ ...base, mode: 'range' }, 'B');
     expect(ins.mode).toBe('range');
     expect(ins.system).toBe('B');
+  });
+  // ★検証用: signalId(ARM 采番)を渡すと signalId 列に載る / 未指定は従来どおり付与しない(byte 互換)。
+  it('signalId を渡すと ins.signalId に載る(trade2 結合キー)', () => {
+    expect(buildSignalTradeInsert(base, null, 42).signalId).toBe(42);
+    expect(buildSignalTradeInsert(base, 'B', 7).signalId).toBe(7);
+  });
+  it('signalId 未指定/null は付与しない(=既存挙動と byte 一致)', () => {
+    expect('signalId' in buildSignalTradeInsert(base, null)).toBe(false);
+    expect('signalId' in buildSignalTradeInsert(base, null, null)).toBe(false);
+    expect('signalId' in buildSignalTradeInsert(base, null, undefined)).toBe(false);
+  });
+});
+
+// ★検証用(RECORD-ONLY): 決済逆指値(exit-stop)遷移の記録判定=変化時のみ・不変tickは記録しない。
+describe('buildExitStopRecord(exit-stop 遷移の dedupe)', () => {
+  const fresh: ExitStopTracker = { openedAt: null, value: null };
+  const hold: SignalHold = { signalId: 7, direction: 'buy', entryPrice: 38000, exitStop: 37950, at: 500 };
+
+  it('初回(建玉の initial)は記録行を返す(t/signalId/openedAt/direction/exitStop)', () => {
+    const rec = buildExitStopRecord(hold, fresh, 1000);
+    expect(rec).toEqual({ t: 1000, signalId: 7, openedAt: 500, direction: 'buy', exitStop: 37950, phase: null });
+  });
+
+  it('同一建玉かつ同一 exitStop(不変tick)は null(記録しない)', () => {
+    const prev: ExitStopTracker = { openedAt: 500, value: 37950 };
+    expect(buildExitStopRecord(hold, prev, 2000)).toBeNull();
+  });
+
+  it('同一建玉で exitStop が変化したら記録行を返す(ラチェット移動)', () => {
+    const prev: ExitStopTracker = { openedAt: 500, value: 37950 };
+    const moved: SignalHold = { ...hold, exitStop: 38030 };
+    expect(buildExitStopRecord(moved, prev, 3000)).toMatchObject({ openedAt: 500, exitStop: 38030 });
+  });
+
+  it('exitStop が同値でも建玉(openedAt)が変われば記録する(新規建玉)', () => {
+    const prev: ExitStopTracker = { openedAt: 500, value: 37950 };
+    const next: SignalHold = { ...hold, at: 9000 };   // 同じ exitStop 値だが別建玉
+    expect(buildExitStopRecord(next, prev, 4000)).toMatchObject({ openedAt: 9000, exitStop: 37950 });
+  });
+
+  it('hold なし(flat/armed/B)や exitStop=null/非有限は記録しない', () => {
+    expect(buildExitStopRecord(null, fresh, 1)).toBeNull();
+    expect(buildExitStopRecord({ ...hold, exitStop: null }, fresh, 1)).toBeNull();
+    expect(buildExitStopRecord({ ...hold, exitStop: NaN }, fresh, 1)).toBeNull();
+  });
+
+  it('レンジ建玉(rangeTp あり)は phase="range"(固定LC)', () => {
+    const rangeHold: SignalHold = { ...hold, rangeTp: 66000, tpTrigger: 65995 };
+    expect(buildExitStopRecord(rangeHold, fresh, 1)?.phase).toBe('range');
   });
 });
 

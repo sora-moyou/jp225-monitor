@@ -6,14 +6,14 @@
 // 「純関数」ではない(config 依存)。DB への実書込(openDb/insert)は engine.ts が担う。
 
 import type { SignalSettingsSnapshot, KnobSettingSnapshot } from '../types.js';
-import type { PlanMeta, RecordedTrade } from './decisions.js';
+import type { PlanMeta, RecordedTrade, SignalHold } from './decisions.js';
 import {
   resolveScalpCooldownDirective,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
   type KnobDirective, type SignalProfile,
 } from '../configStore.js';
-import type { SignalTradeInsert } from '../db/store.js';
+import type { SignalTradeInsert, SignalExitStopInsert } from '../db/store.js';
 
 /** 決済記録の meta(JSON文字列)を組み立てる純関数。v0.7.54: AI 自己レジーム/確信度/veto発火 + ctxV。
  *  planMeta が空/欠落でも ctxV:'rich' は常に記録する(rich文脈で生成された世代の印)。 */
@@ -54,9 +54,11 @@ export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalPr
 }
 
 /** ★v0.8.2: RecordedTrade + 系統タグ(A=null/B='B')から DB 挿入行を組み立てる純関数(テスト可能)。
- *  A(system=null)は従来と byte 一致の行を作る。mode/meta の付与規約も従来どおり。 */
-export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | null): SignalTradeInsert {
-  return {
+ *  A(system=null)は従来と byte 一致の行を作る。mode/meta の付与規約も従来どおり。
+ *  ★検証用: signalId(ARM 采番)を渡すと signal_id 列に載せる(trade2 と equijoin する結合キー)。
+ *    A のみ非 null / B(currentSignal 無し)は undefined→NULL。省略時も従来と byte 一致(signalId 未指定=NULL)。 */
+export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | null, signalId?: number | null): SignalTradeInsert {
+  const ins: SignalTradeInsert = {
     entryT: t.entryT, entryPrice: t.entryPrice, dir: t.dir,
     exitT: t.exitT, exitPrice: t.exitPrice, pnl: t.pnl, qty: t.qty,
     rationale: t.rationale,
@@ -66,5 +68,32 @@ export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | nul
     meta: buildTradeMetaJson(t.planMeta, t.settings),
     // ★v0.8.2: 系統タグ。A は null(=既存挙動と同一) / B は 'B'。
     system: system ?? undefined,
+  };
+  // ★検証用: 結合キー。渡された時だけ載せる(未指定は従来どおり signal_id=NULL)。
+  if (signalId != null) ins.signalId = signalId;
+  return ins;
+}
+
+/** exit-stop(決済逆指値)遷移の記録タイプ。engine が「前回記録値」を保持し、この純関数で
+ *  「今 tick は記録すべきか(変化したか)」を判定して挿入行を組み立てる。RECORD-ONLY(engine の決定は不変)。 */
+export interface ExitStopTracker { openedAt: number | null; value: number | null; }
+
+/** hold(保有中の意図)から exit-stop 遷移の挿入行を作る純関数。変化なしなら null(=記録しない)。
+ *  - hold が無い(flat/armed/B)・exitStop が null/非有限 → null。
+ *  - 前回と「同一建玉(opened_at)かつ同一 exitStop」→ null(dedupe: 毎tickではなく変化時のみ)。
+ *  - 新規建玉(opened_at 変化)や exitStop 変化 → 挿入行を返す(初回=initial も1行になる)。
+ *  phase は rangeTp があれば 'range'(固定LC建玉)/ 無ければ null(通常の phase-exit)。 */
+export function buildExitStopRecord(
+  hold: SignalHold | null, prev: ExitStopTracker, now: number,
+): SignalExitStopInsert | null {
+  if (!hold || hold.exitStop == null || !Number.isFinite(hold.exitStop)) return null;
+  if (prev.openedAt === hold.at && prev.value === hold.exitStop) return null;
+  return {
+    t: now,
+    signalId: hold.signalId,
+    openedAt: hold.at,
+    direction: hold.direction,
+    exitStop: hold.exitStop,
+    phase: hold.rangeTp != null ? 'range' : null,
   };
 }
