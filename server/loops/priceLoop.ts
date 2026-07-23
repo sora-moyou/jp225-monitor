@@ -5,7 +5,7 @@ import { broadcast } from '../sse/broker.js';
 import { setPrices, getPrices } from '../cache.js';
 import { INSTRUMENTS, PRICE_BACKOFF_MS } from '../config.js';
 import { resolvePricePollMs } from '../configStore.js';
-import { inPollWindow, isMarketOpen } from '../../collector/session.js';
+import { inPollWindow, isMarketOpen } from '../../core/session.js';
 import type { Price } from '../types.js';
 import { feedPrice as tickDetectorFeed, getMomentum } from '../tickDetector.js';
 import { feedSignalEngine } from '../signalTrade/engine.js';

@@ -4,7 +4,7 @@
 // 使い方: npx tsx scripts/sr-retest-sltp-grid.mts [LOOKBACK=10] [tol=20] [maxHoldMin=90]
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const LOOKBACK = Number(process.argv[2] ?? 10);
 const TOL = Number(process.argv[3] ?? 20);

@@ -2,7 +2,7 @@
 // 負エッジ(逆方向を当てる)が一様なのか、特定の条件(トレンド整合/方向/セッション)に偏るのかを見る。
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const KIND = process.argv[2] ?? 'dtb';
 const HZ = Number(process.argv[3] ?? 20);

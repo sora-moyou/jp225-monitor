@@ -3,7 +3,7 @@ import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFoll
   updateAlertReturns, getBarCloseNear, getRecentAlerts, type AlertRow } from './db/store.js';
 import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
-import { classifySession, isWithinOpenGuard } from '../collector/session.js';
+import { classifySession, isWithinOpenGuard } from '../core/session.js';
 import { resolveOpenGuardBars, resolveHitThreshold } from './configStore.js';
 import type { AlertEventPayload } from './types.js';
 

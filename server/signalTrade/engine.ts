@@ -16,7 +16,7 @@ import { computeExitStop, loadExitImpl } from './exit/index.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
 import { openDb, resolveDbPath, insertSignalTrade } from '../db/store.js';
-import { inPollWindow } from '../../collector/session.js';
+import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
 import {

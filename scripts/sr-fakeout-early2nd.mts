@@ -7,7 +7,7 @@
 // 使い方: npx tsx scripts/sr-fakeout-early2nd.mts [SL=40] [ACT=80] [TRAIL=150] [maxHold=240] [reWin=30] [LOOKBACK=10]
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const SL = Number(process.argv[2] ?? 40);
 const ACT = Number(process.argv[3] ?? 80);

@@ -11,7 +11,7 @@ import type { Bar1m, AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.j
 import type { LevelsResult } from '../levels.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 import { rowKind } from '../alertHistory.js';
-import { classifySession, minutesFromOpen } from '../../collector/session.js';
+import { classifySession, minutesFromOpen } from '../../core/session.js';
 import { extractSwingPivots } from '../swingPivots.js';
 
 const MIN = 60_000;

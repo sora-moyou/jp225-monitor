@@ -1,5 +1,5 @@
 import { pearsonAlignedReturns, type Bar, type CorrelationResult } from '../correlation.js';
-import { inPollWindow } from '../../collector/session.js';
+import { inPollWindow } from '../../core/session.js';
 import { INSTRUMENTS } from '../config.js';
 import { getRealtimeBars, getRollingReturn } from '../feedBars.js';
 

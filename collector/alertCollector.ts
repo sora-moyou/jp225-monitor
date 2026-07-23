@@ -7,7 +7,7 @@ import { getLatestTick, insertAlertIfNew, getSessionOHLC, type AlertInsert } fro
 import { followupTick } from '../server/alertHistory.js';
 import { getCooldownMs } from '../server/alertCooldown.js';
 import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../server/crash.js';
-import { classifySession, isWithinOpenGuard } from './session.js';
+import { classifySession, isWithinOpenGuard } from '../core/session.js';
 import { resolveOpenGuardBars } from '../server/configStore.js';
 import type { Bar } from '../server/correlation.js';
 import type { AlertEventPayload } from '../server/types.js';

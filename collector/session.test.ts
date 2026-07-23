@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifySession, inPollWindow, isMarketOpen, tokyoCashOpen } from './session.js';
+import { classifySession, inPollWindow, isMarketOpen, tokyoCashOpen } from '../core/session.js';
 
 // JST epoch helper: y-m-d h:mm (JST) → epoch ms.  (JST = UTC+9, no DST)
 function jst(y: number, mo: number, d: number, h: number, mi: number): number {

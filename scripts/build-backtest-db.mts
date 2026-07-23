@@ -12,7 +12,7 @@ import { existsSync, rmSync } from 'node:fs';
 import XLSX from 'xlsx';
 import { rowToBar, type BaseBar } from '../server/basedataDate.js';
 import { openDb, upsertBar } from '../server/db/store.js';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const JST = 9 * 3600_000;
 const SYMBOL = 'NIY=F';

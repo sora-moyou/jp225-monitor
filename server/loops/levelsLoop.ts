@@ -5,7 +5,7 @@ import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeTrendLines } from '../trendLines.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
 import { broadcast } from '../sse/broker.js';
-import { classifySession, inPollWindow } from '../../collector/session.js';
+import { classifySession, inPollWindow } from '../../core/session.js';
 import { getForecastSnapshot } from './forecastLoop.js';
 import { emitAlert } from '../alertHistory.js';
 import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { classifySession } from '../../collector/session.js';
+import { classifySession } from '../../core/session.js';
 
 /** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。 */
 export function resolveDbPath(): string {

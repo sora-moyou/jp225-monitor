@@ -7,7 +7,7 @@
 // 使い方: npx tsx scripts/sr-retest-backtest.mts [LOOKBACK=10] [buf=2] [R=2] [maxHoldMin=60] [tol=20]
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const LOOKBACK = Number(process.argv[2] ?? 10);   // 直近何セッションの H/L をレベルにするか
 const BUF = Number(process.argv[3] ?? 2);

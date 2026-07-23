@@ -23,7 +23,7 @@ import { aggregateSignals, DEFAULT_AGGREGATE } from '../server/signals/aggregate
 import { computeLevels } from '../server/levels.js';
 import { getSessionOHLC } from '../server/db/store.js';
 import { computeDailyBands, dailyCloseSeries } from '../server/dailyBand.js';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 import { LEVELS_TUNING as T, yenPct } from '../server/loops/levelsLoop.js';
 import type { AlertSignal } from '../server/signals/types.js';
 

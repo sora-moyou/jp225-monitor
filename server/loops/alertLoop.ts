@@ -1,5 +1,5 @@
 import { type Bar } from '../correlation.js';
-import { inPollWindow } from '../../collector/session.js';
+import { inPollWindow } from '../../core/session.js';
 import { DEFAULT_PARAMS } from '../alertDetector.js';
 import { emitAlert } from '../alertHistory.js';
 import { INSTRUMENTS } from '../config.js';

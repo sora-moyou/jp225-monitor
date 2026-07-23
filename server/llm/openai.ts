@@ -15,7 +15,7 @@ import {
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective,
   type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
-import { tokyoCashOpen } from '../../collector/session.js';
+import { tokyoCashOpen } from '../../core/session.js';
 import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';

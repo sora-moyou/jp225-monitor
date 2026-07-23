@@ -1,5 +1,5 @@
 import { INSTRUMENTS } from './config.js';
-import { tokyoCashOpen } from '../collector/session.js';
+import { tokyoCashOpen } from '../core/session.js';
 import { barsFor } from './loops/alertLoop.js';
 import { returns, stdDev, returns5m, DEFAULT_PARAMS } from './alertDetector.js';
 import type { Bar } from './correlation.js';

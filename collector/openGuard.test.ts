@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWithinOpenGuard } from './session.js';
+import { isWithinOpenGuard } from '../core/session.js';
 
 // JST 壁時計 → epoch ms (JST=UTC+9)
 const jst = (y: number, mo: number, d: number, h: number, mi: number): number =>

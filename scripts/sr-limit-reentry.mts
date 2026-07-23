@@ -5,7 +5,7 @@
 // 使い方: npx tsx scripts/sr-limit-reentry.mts [SL=40] [TP=60] [TP2=60] [maxHold=90] [retestWin=30] [reWin=30] [LOOKBACK=10]
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const SL = Number(process.argv[2] ?? 40);
 const TP = Number(process.argv[3] ?? 60);

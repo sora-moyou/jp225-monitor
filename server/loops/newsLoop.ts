@@ -1,5 +1,5 @@
 import { fetchAllNews } from '../sources/rssAggregator.js';
-import { inPollWindow } from '../../collector/session.js';
+import { inPollWindow } from '../../core/session.js';
 import { broadcast } from '../sse/broker.js';
 import { setNews, getNews } from '../cache.js';
 import { resolveNewsPollMs } from '../configStore.js';

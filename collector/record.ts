@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { recordTick } from '../server/db/store.js';
 import type { Price } from '../server/types.js';
 import type { Bar } from '../server/correlation.js';
-import { classifySession } from './session.js';
+import { classifySession } from '../core/session.js';
 
 /** feed のリアルタイム価格を tick/1分足として DB へ。stale・場外(セッション外)はスキップ。 */
 export function recordFeedPrices(db: DatabaseSync, prices: Price[]): void {

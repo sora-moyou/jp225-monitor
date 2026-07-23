@@ -10,7 +10,7 @@ import { fetchAjaxCmePrices } from '../server/sources/ajaxCmePrice.js';
 import { fetchAjaxFxPrices } from '../server/sources/ajaxFxPrice.js';
 import { mergeSources } from '../server/loops/priceLoop.js';
 import type { Price } from '../server/types.js';
-import { inPollWindow } from './session.js';
+import { inPollWindow } from '../core/session.js';
 import { acquireLock, releaseLock } from './lock.js';
 import { AlertCollector } from './alertCollector.js';
 import { writeHeartbeat } from '../server/collectorHeartbeat.js';

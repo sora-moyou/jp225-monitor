@@ -6,7 +6,7 @@
 // 使い方: npx tsx scripts/sr-stop60-runner.mts [OFFSET=60] [SL=40] [ACT=80] [maxHold=180] [reWin=30] [LOOKBACK=10]
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 const OFFSET = Number(process.argv[2] ?? 60);
 const SL = Number(process.argv[3] ?? 40);

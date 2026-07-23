@@ -18,7 +18,7 @@
 
 import XLSX from 'xlsx';
 import { rowToBar } from '../server/basedataDate.js';
-import { classifySession } from '../collector/session.js';
+import { classifySession } from '../core/session.js';
 
 // ============================================================================
 // DATA SOURCE = NATIVE pre-aggregated bars from the data book xlsx (the FIX).

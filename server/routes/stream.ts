@@ -3,7 +3,7 @@ import { register, unregister } from '../sse/broker.js';
 import { getPrices, getNews } from '../cache.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { getSignalTradeState, getSignalTradeStateB } from '../signalTrade/engine.js';
-import { isMarketOpen } from '../../collector/session.js';
+import { isMarketOpen } from '../../core/session.js';
 
 export function streamHandler(req: Request, res: Response): void {
   res.setHeader('Content-Type', 'text/event-stream');

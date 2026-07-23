@@ -3,7 +3,7 @@ import { openDb, resolveDbPath, getSessionOHLC, getRecentBars } from '../db/stor
 import { isSessionComplete } from '../levels.js';
 import { computeADR, projectTargets, computeSeasonality, currentAndNextSlot,
   type ADR, type SlotStat } from '../forecast.js';
-import { classifySession, inPollWindow } from '../../collector/session.js';
+import { classifySession, inPollWindow } from '../../core/session.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 120_000;
