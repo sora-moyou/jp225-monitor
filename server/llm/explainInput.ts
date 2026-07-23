@@ -2,7 +2,7 @@
 // news/crossAsset/newsSince/newsWindowMs/l2Recent を同一規約で組むための単一ソース。
 // 規約: 暴落(crash)はニュース窓を広く(24h)・絞り込みなし(newsSince=0)で原因分析(ユーザー指定)。
 // それ以外は「前回アラート以降」(newsSinceForAlert)に限定し、同じ古いニュースを毎回引用しない。
-import type { ExplainInput } from './openai.js';
+import type { ExplainInput } from './explain.js';
 import { getNews } from '../cache.js';
 import { getSignificantMovers } from '../marketSnapshot.js';
 import { newsSinceForAlert } from '../shockWindow.js';
