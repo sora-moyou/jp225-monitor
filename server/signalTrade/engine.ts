@@ -13,6 +13,7 @@
 import type { SignalTradeState, SignalSettingsSnapshot, KnobSettingSnapshot } from '../types.js';
 import type { RangeLeg } from '../llm/openai.js';
 import { computeExitStop, loadExitImpl } from './exit/index.js';
+import { checkSanity } from './sanity.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
 import { openDb, resolveDbPath, insertSignalTrade } from '../db/store.js';
@@ -679,10 +680,20 @@ export class SignalEngine {
         const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile });
         if (this.state.phase === 'flat' && result.ok) {
+          // ★正規シグナルのゲート(A/B 共通): trade2 の送信直前サニティ(src/ai/sanity.ts)を先取りして
+          //   検証し、trade2 が REJECT する構造の計画は「正規シグナル」として出さない(=紙 ARM もしない・
+          //   currentSignal も更新しない・broadcast もしない)。これで monitor の紙と trade2 の実弾が乖離しない。
+          //   maintainsCurrentSignal に依らず適用(=計画が構造的にトレード可能かの判定・A/B とも通過した計画だけが
+          //   シグナルになる)。anchorPrice=計画時の現在値(NIY=F)。非有限なら checkSanity が NG→抑止(安全)。
+          const sanity = result.plan.direction === 'none' ? null : checkSanity(result.plan, anchorPrice);
           if (result.plan.direction === 'none') {
             // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
             this.planSuppressedAnchor = anchorPrice;
             console.log(`${this.logTag} plan-suppress 見送り→節目まで抑止 anchor=${Math.round(anchorPrice)}`);
+          } else if (sanity && !sanity.ok) {
+            // サニティ不通過=見送り(none)と同じ扱い: アンカーを記録し節目まで抑止する。
+            this.planSuppressedAnchor = anchorPrice;
+            console.log(`${this.logTag} plan-suppress サニティ不通過(${sanity.reason})→ 正規シグナルにしない anchor=${Math.round(anchorPrice)}`);
           } else {
             const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
             if (armed) {
