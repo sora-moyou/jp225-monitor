@@ -1,27 +1,25 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars, getDailyCloses, upsertDailyClose } from '../db/store.js';
-import { computeVolumeProfile } from '../volumeProfile.js';
-import { computeCongestionProfile } from '../congestionProfile.js';
-import { computeTrendLines } from '../trendLines.js';
-import { computeLevels, type LevelsResult } from '../levels.js';
+import { openDb, resolveDbPath } from '../db/store.js';
 import { broadcast } from '../sse/broker.js';
-import { classifySession, inPollWindow } from '../../core/session.js';
-import { getForecastSnapshot } from './forecastLoop.js';
+import { inPollWindow } from '../../core/session.js';
 import { emitAlert } from '../alertHistory.js';
-import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
-import { detectLevelHold } from '../levelHold.js';
-import { extractSwingPivots } from '../swingPivots.js';
-import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
-import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
 import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../crash.js';
-import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
-import type { AlertSignal, SignalType } from '../signals/types.js';
-import { resolveLevelsConfig } from '../configStore.js';
+import type { LevelsResult } from '../levels.js';
+import type { SessionInfo } from '../../core/session.js';
+import {
+  computeLevelAnalytics, runLevelDetectors, createLevelDetectState, DETECT_FRESH_MS,
+} from '../detect/registry.js';
+
+// 検知の配線(解析+検知器)は server/detect/registry.ts に集約(STEP 6)。このループの責務は:
+//   ・ポーリング/DB ハンドル管理、・levels の SSE broadcast(署名 de-dup)、・暴落(crash)検知(inline)、
+//   ・registry の runLevelDetectors(sink=emitAlert)呼び出し、・診断ログ。
+// 検知器の cooldown/dedup と解析キャッシュは `serverLevelState`(この consumer 専用インスタンス)に閉じ込める。
+
+// テスト/監査互換のため registry の共有ヘルパを再 export(alert-audit.mts / levelsLoop.test.ts が参照)。
+export { yenPct, LEVELS_TUNING, persistAndResolveDailyCloses } from '../detect/registry.js';
 
 const SYMBOL = 'NIY=F';
 const POLL_MS = 8_000;   // 当日H/Lをほぼリアルタイム化(従来60s)。NIY=Fのみで軽い。
-// 取得セッション数: 直近高安2(可変) / 20Sフィボ / 長期高安 を賄える数 + 余裕。
-const fetchSessionsFor = (lookback: number, lookback2: number): number => Math.max(lookback, lookback2, 20) + 4;
 
 let db: DatabaseSync | null = null;
 let timer: NodeJS.Timeout | null = null;
@@ -30,152 +28,18 @@ let last: LevelsResult = { current: 0, up: [], down: [], swing: null, reversalSa
 let lastSig = '';
 let tickCount = 0;
 let warnedNoTick = false;
-// ── アラート再設計(v0.6.0): L2 価格系シグナルを signals→aggregate→emit に一本化 ──
-// 直近1分足の取得本数(break/level_sr/pivot 用の窓)。
-const RECENT_BARS_MIN = 90;
-// 水準抜けの方向別クールダウン(階段状連発の抑制)。トレンド中は通り道の固定水準を次々抜けるため、
-// 同方向は最外1本+方向別クールダウンで前置フィルタする(集約前)。逆方向(反転)は許可。
-const BREAK_DIR_COOLDOWN_MS = 20 * 60_000;   // v0.6.2: 10→20。トレンドで主要水準を次々抜ける連発を更に抑制。
-const lastBreakDir = new Map<'up' | 'down', number>();
-// v0.6.2: クールダウンは「価格ゾーン×方向」で共有(種別問わず)。同じ水準帯で support→resistance→break が
-// 立て続けに出る乱発を1本化する。double のみ neck×stage で別管理(別物・低頻度)。
-const ZONE_COOLDOWN_MS = 20 * 60_000;       // ゾーン×方向の共有クールダウン
-const DOUBLE_COOLDOWN_MS = 30 * 60_000;
-const lastEmit = new Map<string, number>();
-// 最新tickがこれ以上古い(収集停止/復帰中)なら、stale な価格で誤発火しないよう検知しない。
-const DETECT_FRESH_MS = 90_000;
 // ── 暴落(crash): セッション高値からの下落率がこれ以上(ユーザー定義)。閾値/計算は crash.ts に集約。
 let crashSessionKey = '';
 let crashSessionHigh = 0;
 let crashFired = false;
-// 確定スイングピボットの戻り閾値。break/level_sr/pivot の基準・形成判定に使う。
-// v0.6.1: 25→60。v0.6.2: 120(固定円)。**v0.7.x: 価格比(%)化**。固定円は日経の水準上昇(≈38,000→≈65,000)で
-// 相対的に小さくなり微小スイング(山135〜155円≈0.2%)を「有効な安値/高値」として拾っていた(ユーザー報告)。
-// 0.3% = 65,000 で ≈195円(38,000 当時の 0.32% を復元)。水準が動いても自動追従する。
-const PIVOT_RECLAIM_PCT = 0.003;
-// 近接水準の統合許容(円)。これ以内の水準は1本にまとめる(クラスタの擦り抜け=乱発を防ぐ)。
-const LEVEL_MERGE_YEN = 40;
-// スイング形成(pivot)通知の最小スイング幅(価格比)。これ未満の小さな転換は通知しない。0.5% = 65,000 で ≈325円。
-const PIVOT_FORMED_MIN_PCT = 0.005;
-let lastPivotT = 0;   // 最後に「形成」を通知したピボットの時刻(新規確定のみ通知)
-// ── ダブル天井/大底(double, 長周期スイング)──
-// 複数セッションをまたぐ大きな W/M 反転。重いDB読取を避け約60秒に1回だけ再計算する。
-const SWING_DOUBLE_CHECK_MS = 60_000;           // 再計算間隔(8秒tick毎ではない)
-const SWING_LOOKBACK_DAYS = 4;                  // ピボット抽出に使う直近の暦日数(セッションまたぎ)
-// 主要スイングのみ確定(micro はピボットにしない)。大ダブル(例: 谷66,950→ネック67,765→谷66,930)向け。
-// 価格比化: 0.8% = 65,000 で ≈520円(旧 固定500円相当・水準追従)。
-const SWING_PIVOT_RECLAIM_PCT = 0.008;
-// ダブル天井/大底は 5分足ベースで検知する(ユーザー指定)。生の1分足だと intraday ノイズで
-// スイング脚/ネックが揺れて W/M が乱れる。5分足に集約してから extractSwingPivots にかける。
-const SWING_DOUBLE_TF_MS = 5 * 60_000;
-const DAY_MS = 86_400_000;
-let lastSwingCheck = 0;
-// ── 反応水準(v0.6.12): 実トレード同様「1時間足/3時間足のスイング」から求める。1分足クラスタは
-// ノイズが多い(微細な反応が並ぶ)ため、上位足にリサンプルしてスイング高安を抽出→クラスタ化して
-// 反応回数を数える。高位足のスイングは session高安/Fib に一致し、意味ある S/R になる。約60秒ごと再計算。
-const REACTION_CHECK_MS = 60_000;
-const REACTION_LOOKBACK_DAYS = 5;
-const REACTION_RECLAIM_1H_PCT = 0.003;   // 1時間足スイングの戻り幅(価格比 0.3% ≈ 65,000で195円)
-const REACTION_RECLAIM_3H_PCT = 0.005;   // 3時間足スイングの戻り幅(価格比 0.5% ≈ 65,000で325円)
-const REACTION_CLUSTER_YEN = 30;    // 同一水準帯に束ねる許容
-const REACTION_MIN = 2;             // 1H/3H 合わせて2回以上スイング点になった帯のみ採用
-let lastReactionCheck = 0;
-let reactionLevels: { price: number; reactions: number }[] = [];
-// ── 価格帯別出来高(v0.6.13): 厚い出来高帯(HVN)/POC を durable な S/R 候補に。出来高は基礎データ(週次)
-// 由来のため過去ぶんのみ。週次更新で十分(HVNは数週間で大きく動かない)。重い集計は30分ごとに1回。
-const VOLUME_CHECK_MS = 30 * 60_000;
-const VOLUME_LOOKBACK_DAYS = 40;   // 基礎データの出来高期間に届く長さ
-const VOLUME_BIN_YEN = 50;
-let lastVolumeCheck = 0;
-let volumeLevels: { price: number; rel: number; isPoc: boolean }[] = [];
-// ── もみ合い帯(v0.6.14): 出来高フィードが無い直近の需給を「時間滞在(在足数)」で近似する次善指標。
-// 直近1営業日のライブ足から往復しつつ停滞した帯を抽出。出来高ループと同じく30分ごとに再計算。
-const CONGESTION_CHECK_MS = 30 * 60_000;
-const CONGESTION_LOOKBACK_MS = 24 * 60 * 60_000;   // 直近1日(ユーザー指定)
-const CONGESTION_BIN_YEN = 50;
-let lastCongestionCheck = 0;
-let congestionLevels: { price: number; rel: number; visits: number }[] = [];
-// ── 有効トレンドライン(v0.6.15): 1H/3H のスイング点から3点以上接触する斜め線を引き、now へ延長した
-// 「今のライン価格」を節目化。ブレイクまで有効(ステートレス再計算)。重い探索は60秒ごとに1回。
-const TREND_CHECK_MS = 60_000;
-const TREND_LOOKBACK_DAYS = 15;   // 反応水準と同程度の期間からスイング点を取る
-const TREND_CONFLUENCE_YEN = 40;  // 合流ゲート: ライン価格が水平の反応水準(2回以上)とこの距離内の線だけ採用
-let lastTrendCheck = 0;
-let trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [];
-// ── 日足バンド(v0.6.17 → v0.6.22 リアルタイム化 → v0.8.6 取引日足化): 取引日足の終値25本の MA25 ±1σ/±2σ の5水準。
-// ★取引日足 = 夜間(17:00)〜翌日中(15:45)を1日とし、終値は「日中セッションの15:45クローズ」(基礎データの取引日日足と同じ定義)。
-// 現値がこの帯を抜け/反発したら dailyband アラートを直接 emit(crash 同様・集約は通さない)。
-// v0.6.22: 最後の日足(進行中の取引日)は確定を待たず現在値を終値とする。確定済み取引日終値(=各日の15:45)の取得/フィルタは
-// セッション境界でしか変わらないため約60秒キャッシュのままだが、現在値の追加とバンド算出は毎ティック実行する
-// (= MA25/σ が現在値に合わせて毎ティック動く)。
-const DAILYBAND_CHECK_MS = 60_000;
-const DAILYBAND_COOLDOWN_MS = 20 * 60_000;   // ゾーン(40円刻み)×方向の発火クールダウン
-// 日足MA線(v0.8.6): MA75 に取引日終値≥75本が要るため、確定終値の保持を ~80本に拡張(75確定+現在値=76)。
-const DAILY_CLOSES_KEEP = 80;
-// getSessionOHLC の取得セッション数。200 → 約115 Day セッション(≥75)を賄う(daily_closes 空の初回フォールバック用)。
-const DAILYBAND_FETCH_SESSIONS = 200;
-let lastDailyBandCheck = 0;
-let confirmedDailyCloses: number[] = [];     // 確定済み取引日終値(=各日の日中15:45クローズ・古い→新しい、直近~80本)。60sキャッシュ。daily_closes 優先。
-let dailyBandLevels: DailyBand[] = [];        // 毎ティック再計算(confirmed24 + 現在値)。MA25±σバンド。
-let dailyMaLevels: DailyMA[] = [];            // 毎ティック再計算(confirmed + 現在値)。日足MA5/20/50/75(線のみ)。
-const lastDailyBandEmit = new Map<string, number>();
-const lastDailyMaEmit = new Map<string, number>();   // MA線はバンドと別ゾーン管理(相互抑制しない)。
+// この consumer(server=levelsLoop)専用の検知状態(解析キャッシュ + 検知器 cooldown/dedup)。
+const serverLevelState = createLevelDetectState();
 
-/** 価格比(%)→円。スイング/節目の閾値を現値に追従させる(固定円のドリフト=水準上昇で相対的に小さくなる問題を解消)。 */
-export function yenPct(price: number, pct: number): number {
-  return Math.max(1, Math.round(price * pct));
-}
-
-/**
- * 確定 Day 終値(進行中の日は含めない)を daily_closes へ永続化し、日足MA/バンド用の終値系列(古い→新しい)を返す。
- * ・upsert: 直近 keep 本を毎cycle upsert。空DB(アップグレード後)でも初回cycleで daily_closes が完全になる(≤80件/60s)。
- * ・source: 「豊富な方」を採用。durable(daily_closes)がまだ疎でも getSessionOHLC 由来 fallback が勝ち、
- *   バンド(MA25±σ・>=24 必要)が従来より痩せて消えることを防ぐ。daily_closes 完全時は durable≥fallback で従来とバイト等価。
- * export はテスト(空DBでもバンドが空にならない回帰)用。副作用(upsert)あり。
- */
-export function persistAndResolveDailyCloses(
-  database: DatabaseSync, symbol: string,
-  confirmed: { sessionDate: string; close: number; openT: number }[], keep: number,
-): number[] {
-  for (const d of confirmed.slice(-keep)) upsertDailyClose(database, symbol, d.sessionDate, d.close, d.openT);
-  const durableCloses = getDailyCloses(database, symbol, keep).map(r => r.close);
-  const fallbackCloses = confirmed.map(s => s.close);
-  return (durableCloses.length >= fallbackCloses.length ? durableCloses : fallbackCloses).slice(-keep);
-}
-
-/** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
-function resampleHL(bars: { t: number; h: number; l: number }[], tfMs: number): { t: number; h: number; l: number }[] {
-  const m = new Map<number, { t: number; h: number; l: number }>();
-  for (const b of bars) {
-    const k = Math.floor(b.t / tfMs) * tfMs;
-    const e = m.get(k);
-    if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; }
-    else m.set(k, { t: k, h: b.h, l: b.l });
-  }
-  return [...m.values()].sort((a, b) => a.t - b.t);
-}
-
-// L2(価格系)検知のチューニング定数を一括 export。発火頻度の事前監査ツール(scripts/alert-audit.mjs)が
-// 同じ値で実データ・リプレイできるようにする(定数のドリフト=乱発バグの再発を防ぐ)。
-export const LEVELS_TUNING = {
-  recentBarsMin: RECENT_BARS_MIN, levelMergeYen: LEVEL_MERGE_YEN,
-  // スイング/節目の閾値は価格比(%)。発火時/監査時に yenPct(price, pct) で円へ解決する。
-  pivotReclaimPct: PIVOT_RECLAIM_PCT, pivotFormedMinPct: PIVOT_FORMED_MIN_PCT, swingPivotReclaimPct: SWING_PIVOT_RECLAIM_PCT,
-  reactionReclaim1hPct: REACTION_RECLAIM_1H_PCT, reactionReclaim3hPct: REACTION_RECLAIM_3H_PCT,
-  swingLookbackDays: SWING_LOOKBACK_DAYS, swingDoubleTfMs: SWING_DOUBLE_TF_MS, zoneCooldownMs: ZONE_COOLDOWN_MS, doubleCooldownMs: DOUBLE_COOLDOWN_MS,
-  breakDirCooldownMs: BREAK_DIR_COOLDOWN_MS,
-} as const;
-// 診断用: 各ステージの所要時間を記録。「価格水準の計算が終わらない」の原因切り分け用。
-// DB取得(getSessionOHLC)が支配的なら索引/データ量が原因、computeLevels が支配的ならロジックが原因。
-
-export function sessionKey(cs: { sessionDate: string; session: string } | null): string {
+export function sessionKey(cs: SessionInfo | null): string {
   return cs ? `${cs.sessionDate}/${cs.session}` : 'none';
 }
 
-/** レベル集合(価格+tier+丸めスコア+swing)の署名。current は UI が price SSE でライブ追従するため除外。
- *  価格が同じでも tier/score(強さ)が変わったら再配信されるよう、各 level の tier と
- *  0.5刻みに丸めた score も署名に含める。price 昇順ソートで決定性を保つ。
- *  これが変わった時だけ SSE 配信し、8秒間隔でも無駄な配信をしない。 */
+/** レベル集合(価格+tier+丸めスコア+swing)の署名。current は UI が price SSE でライブ追従するため除外。 */
 export function levelSignature(r: LevelsResult): string {
   const prices = [...r.up, ...r.down]
     .sort((a, b) => a.price - b.price)
@@ -191,104 +55,15 @@ function tick(): void {
   const tStart = Date.now();
   try {
     const now = Date.now();
-    const latest = getLatestTick(db, SYMBOL);
-    if (!latest) {
+    // 解析(反応水準/出来高/もみ合い/トレンドライン/日足バンド/MA + computeLevels)は registry に集約。
+    const a = computeLevelAnalytics(db, now, serverLevelState);
+    if (!a) {
       // ticks テーブルに NIY=F が無い → 水準は出ない(「蓄積中…」のまま)。一度だけ警告。
       if (!warnedNoTick) { console.warn('[levelsLoop] NIY=F の tick がDBに無いため水準を計算できません(収集デーモン未稼働 or データ未蓄積)'); warnedNoTick = true; }
       return;
     }
     warnedNoTick = false;
-    const tDb = Date.now();
-    const lc = resolveLevelsConfig();
-    const sessions = getSessionOHLC(db, SYMBOL, fetchSessionsFor(lc.lookbackSessions, lc.lookbackSessions2));
-    const dbMs = Date.now() - tDb;
-    const cs = classifySession(now);
-    const fc = getForecastSnapshot();
-    const extra = fc.targets
-      ? [{ price: fc.targets.projHigh, label: 'ADR上限予測' }, { price: fc.targets.projLow, label: 'ADR下限予測' }]
-      : [];
-    // 反応水準を約60秒ごとに再計算してキャッシュ(直近数日のスイングピボットをクラスタ化し反転回数を数える)。
-    if (now - lastReactionCheck >= REACTION_CHECK_MS) {
-      lastReactionCheck = now;
-      try {
-        const rb = getRecentBars(db, SYMBOL, now - REACTION_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        // 1時間足・3時間足にリサンプルしてスイング高安を抽出(実トレードで1H/3Hにラインを引くのと同じ)。
-        const piv = [
-          ...extractSwingPivots(resampleHL(rb, 60 * 60_000), yenPct(latest.price, REACTION_RECLAIM_1H_PCT)),
-          ...extractSwingPivots(resampleHL(rb, 180 * 60_000), yenPct(latest.price, REACTION_RECLAIM_3H_PCT)),
-        ].map(p => p.price).sort((a, b) => a - b);
-        const cl: { price: number; reactions: number }[] = [];
-        for (const p of piv) {
-          const c = cl.find(x => Math.abs(x.price - p) <= REACTION_CLUSTER_YEN);
-          if (c) { c.price = (c.price * c.reactions + p) / (c.reactions + 1); c.reactions++; }
-          else cl.push({ price: p, reactions: 1 });
-        }
-        reactionLevels = cl.filter(c => c.reactions >= REACTION_MIN).map(c => ({ price: Math.round(c.price), reactions: c.reactions }));
-      } catch (err) { console.warn('[levelsLoop] reaction levels failed:', err instanceof Error ? err.message : err); }
-    }
-    // 価格帯別出来高(HVN/POC)を約30分ごとに再計算してキャッシュ(出来高は基礎データ由来=週次更新)。
-    if (now - lastVolumeCheck >= VOLUME_CHECK_MS) {
-      lastVolumeCheck = now;
-      try {
-        const vb = getVolumeBars(db, SYMBOL, now - VOLUME_LOOKBACK_DAYS * DAY_MS);
-        volumeLevels = computeVolumeProfile(vb, VOLUME_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, isPoc: n.isPoc }));
-      } catch (err) { console.warn('[levelsLoop] volume profile failed:', err instanceof Error ? err.message : err); }
-    }
-    // もみ合い帯(直近1日の時間滞在=出来高の次善)を約30分ごとに再計算してキャッシュ。
-    if (now - lastCongestionCheck >= CONGESTION_CHECK_MS) {
-      lastCongestionCheck = now;
-      try {
-        const cb = getRecentBars(db, SYMBOL, now - CONGESTION_LOOKBACK_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        congestionLevels = computeCongestionProfile(cb, CONGESTION_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, visits: n.visits }));
-      } catch (err) { console.warn('[levelsLoop] congestion profile failed:', err instanceof Error ? err.message : err); }
-    }
-    // 有効トレンドライン(3点接触の斜め支持/抵抗線)を約60秒ごとに再計算。1H/3H のスイング点から探索。
-    if (now - lastTrendCheck >= TREND_CHECK_MS) {
-      lastTrendCheck = now;
-      try {
-        const tb = getRecentBars(db, SYMBOL, now - TREND_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        const tpiv = [
-          ...extractSwingPivots(resampleHL(tb, 60 * 60_000), yenPct(latest.price, REACTION_RECLAIM_1H_PCT)),
-          ...extractSwingPivots(resampleHL(tb, 180 * 60_000), yenPct(latest.price, REACTION_RECLAIM_3H_PCT)),
-        ];
-        // 合流ゲート(v0.6.16・バックテスト検証): 単独の3点ラインは乱択並み(+2〜3pt)だが、確定価格が
-        // 水平の反応水準(2回以上反転した実S/R)と重なる線だけは反発率が明確に高い(非合流比 +9〜12pt)。
-        // よって reactionLevels(=スイング点2回以上の集積)と ±TREND_CONFLUENCE_YEN で重なる線のみ採用。
-        trendlineLevels = computeTrendLines(tpiv, latest.price, now)
-          .filter(t => reactionLevels.some(r => Math.abs(r.price - t.priceNow) <= TREND_CONFLUENCE_YEN))
-          .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
-      } catch (err) { console.warn('[levelsLoop] trend lines failed:', err instanceof Error ? err.message : err); }
-    }
-    // 日足バンド(MA25 ±1σ/±2σ)。★取引日足=夜間(17:00)〜翌日中(15:45)、終値=日中セッションの15:45クローズ。
-    // 確定済み取引日終値の取得/フィルタは約60秒キャッシュ(セッション境界でしか変わらない)。
-    // v0.8.6: 進行中の取引日(=日中セッション進行中)は EXCLUDE し、代わりに現在値を「進行中取引日の終値」として扱う。
-    //   ・日中セッション中(cs.session==='Day') → 当日の日中足は未確定(15:45前) → 除外、現在値で代表。
-    //   ・夜間/場外(15:45後) → 当日の15:45は確定済み → 含める。現在値は次の取引日(17:00開始)の進行を代表する。
-    if (now - lastDailyBandCheck >= DAILYBAND_CHECK_MS || confirmedDailyCloses.length === 0) {
-      lastDailyBandCheck = now;
-      try {
-        const days = getSessionOHLC(db, SYMBOL, DAILYBAND_FETCH_SESSIONS)
-          .filter(s => s.session === 'Day')   // ★日中セッション=取引日の終値(15:45)を採る
-          .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));   // 古い→新しい
-        // 今が日中セッション中なら、最新の日中足は「進行中(15:45前=未確定)」なので除外(現在値で代表)。
-        const inDay = cs?.session === 'Day';
-        const confirmed = inDay ? days.slice(0, -1) : days;
-        // ★永続化+終値系列の決定(空DB回帰対策のため純ヘルパに切り出し・テスト対象)。
-        confirmedDailyCloses = persistAndResolveDailyCloses(db, SYMBOL, confirmed, DAILY_CLOSES_KEEP);
-      } catch (err) { console.warn('[levelsLoop] daily bands (confirmed closes) failed:', err instanceof Error ? err.message : err); }
-    }
-    // バンド算出は毎ティック(現在値を進行中取引日の終値として append し MA25/σ を再計算)。
-    // ★バンド(MA25±σ)は従来どおり keep=24(24確定+現在値=25)で不変。confirmed の保持本数が増えても
-    //   dailyCloseSeries が -24 に切るため結果は同一(最後25値が一致)。
-    dailyBandLevels = confirmedDailyCloses.length >= 24
-      ? computeDailyBands(dailyCloseSeries(confirmedDailyCloses, latest.price))
-      : [];
-    // 日足MA線(MA5/20/50/75・線のみ)。MA75 用に keep=75(=75確定+現在値=76)で長い系列を渡す。
-    // 不足期間(例: 確定<50)は computeDailyMAs 側でスキップされる(その線は出さない)。
-    dailyMaLevels = computeDailyMAs(dailyCloseSeries(confirmedDailyCloses, latest.price, 75));
-    const tCompute = Date.now();
-    const result = computeLevels(sessions, latest.price, now, cs, extra, reactionLevels, volumeLevels, congestionLevels, trendlineLevels);
-    const computeMs = Date.now() - tCompute;
+    const { result, latest, sessions, cs } = a;
     last = result;
     const sig = levelSignature(result);
     let sent = false;
@@ -299,9 +74,8 @@ function tick(): void {
     }
     // 最新tickが古い(収集停止/復帰中)なら、stale な価格でダブル/水準抜けを誤発火させない(水準配信は上で継続)。
     if (now - latest.t > DETECT_FRESH_MS) return;
-    // ── 暴落検知: セッション高値から CRASH_DRAWDOWN_PCT 以上の下落でアラート(AIが広いニュース窓で原因分析)──
-    // セッションが変わったらリセット。高値=DB上のセッション高値・ランニング・現値の最大(再起動でも欠けない)。
-    // エッジ発火(暴落入りで1回)+ ヒステリシスで戻したらリセット → 同セッションの再暴落でも再発火。
+    // ── 暴落検知: セッション高値から CRASH_DRAWDOWN_PCT 以上の下落でアラート ──
+    // registry には含めない(collector 側は checkCrash で別実装・二重 emit を避ける)。
     try {
       const csk = sessionKey(cs);
       if (csk !== crashSessionKey) { crashSessionKey = csk; crashSessionHigh = 0; crashFired = false; }
@@ -328,215 +102,17 @@ function tick(): void {
     } catch (err) {
       console.warn('[levelsLoop] crash detect failed:', err instanceof Error ? err.message : err);
     }
-    // ── L2 価格系シグナル(double / level_sr / break / pivot)を生成 → 集約 → emit(v0.6.0)──
-    // 対象水準は「固定水準」のみ: 当日ぶんは確定スイングピボット、それ以外は computeLevels の固定 hl
-    // (前セッション/直近/長期)。現値追従の当日高安は使わない(動く端を基準にすると乱発する)。
-    try {
-      const sinceT = now - RECENT_BARS_MIN * 60_000;
-      const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
-      const rawPivots = extractSwingPivots(recent, yenPct(latest.price, PIVOT_RECLAIM_PCT));
-      // ラベルはトレンド中立(「押し安値/戻り高値」は方向を含み水準抜け文で矛盾するため)。形成イベントは別途方向語を使う。
-      const pivots = rawPivots.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
-      // ③有意性ゲート(v0.6.2): break/level_sr の対象は「意識される水準」のみ。
-      // = computeLevels の tier≥1(当日/前日/長期高安・節目・合流=スコア上位)+ 主要スイング(reclaim120)。
-      // 全マイナー水準に反応すると ~6/h で乱発する(実データ監査)。名前付き水準を優先(明確な文言ⒶⒺ)。
-      const sigNamed = [...result.up, ...result.down]
-        .filter(l => l.tier >= 1)
-        .map(l => ({ price: l.price, label: l.labels[0] ?? '水準' }));
-      const kept: number[] = [];
-      const hlLevels = [...sigNamed, ...pivots]
-        .filter(l => {
-          if (!(l.price > 0) || kept.some(k => Math.abs(k - l.price) <= LEVEL_MERGE_YEN)) return false;
-          kept.push(l.price); return true;
-        });
-
-      const signals: AlertSignal[] = [];
-
-      // 水準抜け(break): 同方向は最外1本+方向別クールダウンで前置フィルタ(トレンドの階段状連発を抑制)。
-      const breaks = detectLevelBreak(hlLevels, recent, latest.price);
-      const outer = new Map<'up' | 'down', BreakSignal>();
-      for (const b of breaks) {
-        const cur = outer.get(b.kind);
-        if (!cur || (b.kind === 'up' ? b.level > cur.level : b.level < cur.level)) outer.set(b.kind, b);
-      }
-      for (const bsig of outer.values()) {
-        if (now - (lastBreakDir.get(bsig.kind) ?? -Infinity) <= BREAK_DIR_COOLDOWN_MS) continue;
-        const lvl = Math.round(bsig.level);
-        const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
-        signals.push({
-          type: 'break', direction: bsig.kind, reference: { kind: 'level', price: lvl }, stage: 'confirmed',
-          score: 1.2, triggeredAt: now,
-          text: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
-        });
-      }
-
-      // 水準サポート/レジスタンス(level_sr): 反発確認後(③)。
-      for (const h of detectLevelHold(hlLevels, recent, latest.price)) {
-        const lvl = Math.round(h.level);
-        const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
-        signals.push({
-          type: 'level_sr', direction: h.kind === 'support' ? 'up' : 'down',
-          reference: { kind: 'level', price: lvl }, stage: 'confirmed', score: 1.1, triggeredAt: now,
-          text: `${lvl.toLocaleString('ja-JP')} ${h.label}が${word}の可能性`,
-        });
-      }
-
-      // スイング転換点の形成(pivot): 新しい確定ピボットが現れたら1回。直前ピボットからの値幅が
-      // pivotFormed(%)以上の「主要な転換」だけ通知(小さな形成は出さない)。方向語(押し安値/戻り高値)許可。
-      const newest = rawPivots[rawPivots.length - 1];
-      const prevPivot = rawPivots[rawPivots.length - 2];
-      if (newest && newest.t > lastPivotT
-          && (!prevPivot || Math.abs(newest.price - prevPivot.price) >= yenPct(latest.price, PIVOT_FORMED_MIN_PCT))) {
-        lastPivotT = newest.t;
-        const lvl = Math.round(newest.price);
-        const word = newest.kind === 'low' ? 'スイング安値' : 'スイング高値';
-        const note = newest.kind === 'low' ? '押し安値の可能性' : '戻り高値の可能性';
-        signals.push({
-          type: 'pivot', direction: newest.kind === 'low' ? 'up' : 'down',
-          reference: { kind: 'swing', price: lvl }, stage: 'confirmed', score: 1.0, triggeredAt: now,
-          text: `${lvl.toLocaleString('ja-JP')} ${word}を形成(${note})`,
-        });
-      }
-
-      // ダブル天井/大底(double, 長周期): 約60秒に1回。谷差は不問、本物のWはネック突出度で判定。forming/confirmed。
-      if (now - lastSwingCheck >= SWING_DOUBLE_CHECK_MS) {
-        lastSwingCheck = now;
-        const longBars = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        const longBars5 = resampleHL(longBars, SWING_DOUBLE_TF_MS);   // 1分足→5分足に集約してからスイング抽出
-        const sd = detectSwingDouble(extractSwingPivots(longBars5, yenPct(latest.price, SWING_PIVOT_RECLAIM_PCT)), latest.price, DEFAULT_SWING_DOUBLE);
-        if (sd) {
-          const neck = Math.round(sd.neck);
-          const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
-          const [g1, g2] = sd.legs;
-          const name = sd.kind === 'bottom' ? 'ダブルボトム' : 'ダブルトップ';
-          const word = sd.kind === 'bottom' ? '上抜け' : '下抜け';
-          const watch = sd.kind === 'bottom' ? '上抜けで上昇期待' : '下抜けで下落警戒';
-          const legLabel = sd.kind === 'bottom' ? '谷' : '山';
-          const text = sd.stage === 'breakout'
-            ? `${name}成立 — ネック${yen(neck)}円を${word}(${legLabel}${yen(g1)}/${yen(g2)})目標≈${yen(sd.target)}`
-            : `${name}形成 — ネック${yen(neck)}円(${legLabel}${yen(g1)}→${yen(g2)})。${watch}`;
-          signals.push({
-            type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: neck },
-            stage: sd.stage === 'breakout' ? 'confirmed' : 'forming',
-            score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text,
-          });
-        }
-      }
-
-      // 集約(同方向・近接基準を1本化しコンフルエンス加点)→ クールダウン → emit。
-      // break/level_sr/pivot は「価格ゾーン×方向」共有クールダウン(同水準帯の S/R/抜け 連発を1本化)。double は別管理。
-      for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
-        const ck = a.type === 'double'
-          ? `double@${Math.round(a.reference.price / 5) * 5}#${a.stage ?? ''}`
-          : `${a.direction}@${Math.round(a.reference.price / LEVEL_MERGE_YEN) * LEVEL_MERGE_YEN}`;
-        const cd = a.type === 'double' ? DOUBLE_COOLDOWN_MS : ZONE_COOLDOWN_MS;
-        if (now - (lastEmit.get(ck) ?? -Infinity) <= cd) continue;
-        lastEmit.set(ck, now);
-        if (a.types.includes('break')) lastBreakDir.set(a.direction, now);   // 階段状連発の方向別抑制を更新
-        console.log(`[levelsLoop] signal ${a.type} ${a.direction} @${Math.round(a.reference.price)} score=${a.score.toFixed(2)}`
-          + `${a.types.length > 1 ? ` conf[${a.types.join(',')}]` : ''}`);
-        emitAlert({
-          symbol: SYMBOL, symbolLabel: '日経225先物',
-          changePercent: 0, windowSeconds: 60, detectionKind: a.type,
-          direction: a.direction, triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
-          level: Math.round(a.reference.price), note: a.text,
-          referenceKind: a.reference.kind, referencePrice: Math.round(a.reference.price),
-        });
-      }
-    } catch (err) {
-      console.warn('[levelsLoop] signal detect failed:', err instanceof Error ? err.message : err);
-    }
-    // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
-    try {
-      if (dailyBandLevels.length > 0) {
-        const sinceT = now - RECENT_BARS_MIN * 60_000;
-        const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        const bandLevelList = dailyBandLevels.map(b => ({ price: b.price, label: 'daily ' + b.label }));
-        const refKindOf = (price: number): DailyBand['refKind'] =>
-          dailyBandLevels.find(b => b.price === price)?.refKind ?? 'ma25';
-        const emitBand = (price: number, direction: 'up' | 'down', refKind: DailyBand['refKind'], note: string): void => {
-          const key = `${direction}@${Math.round(price / 40) * 40}`;
-          if (now - (lastDailyBandEmit.get(key) ?? -Infinity) <= DAILYBAND_COOLDOWN_MS) return;
-          lastDailyBandEmit.set(key, now);
-          console.log(`[levelsLoop] dailyband ${direction} @${Math.round(price)} (${refKind})`);
-          emitAlert({
-            symbol: SYMBOL, symbolLabel: '日経225先物',
-            changePercent: 0, windowSeconds: 60, detectionKind: 'dailyband', direction,
-            triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
-            level: Math.round(price), note,
-            referenceKind: refKind, referencePrice: Math.round(price),
-          });
-        };
-        // 水準抜け(break)
-        for (const bsig of detectLevelBreak(bandLevelList, recent, latest.price)) {
-          const price = Math.round(bsig.level);
-          const refKind = refKindOf(bsig.level);
-          const label = bsig.label.replace(/^daily /, '');
-          const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
-          emitBand(price, bsig.kind, refKind, `日足${label} ${price.toLocaleString('ja-JP')}を${dirWord}`);
-        }
-        // 反発(support/resistance)
-        for (const h of detectLevelHold(bandLevelList, recent, latest.price)) {
-          const price = Math.round(h.level);
-          const refKind = refKindOf(h.level);
-          const label = h.label.replace(/^daily /, '');
-          const direction = h.kind === 'support' ? 'up' : 'down';
-          const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
-          emitBand(price, direction, refKind, `日足${label} ${price.toLocaleString('ja-JP')}が${word}の可能性`);
-        }
-      }
-    } catch (err) {
-      console.warn('[levelsLoop] dailyband detect failed:', err instanceof Error ? err.message : err);
-    }
-    // ── 日足MA線検知(dailyMa): MA5/20/50/75 の各線で水準抜け/反発を評価し直接 emit(バンドと同機構・集約なし)──
-    // detectionKind は 'dailyband' を再利用(履歴の種別表示は「日足バンド」・ノート文の「日足MA5」等で区別)。
-    // クールダウンはバンドと別ゾーン管理(lastDailyMaEmit)にして相互抑制しない。ラベル=日足MA5/20/50/75。
-    try {
-      if (dailyMaLevels.length > 0) {
-        const sinceT = now - RECENT_BARS_MIN * 60_000;
-        const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
-        const maLevelList = dailyMaLevels.map(m => ({ price: m.price, label: m.label }));   // label='MA5' 等
-        const emitMa = (price: number, direction: 'up' | 'down', label: string, note: string): void => {
-          const key = `${direction}@${Math.round(price / 40) * 40}`;
-          if (now - (lastDailyMaEmit.get(key) ?? -Infinity) <= DAILYBAND_COOLDOWN_MS) return;
-          lastDailyMaEmit.set(key, now);
-          console.log(`[levelsLoop] dailyma ${direction} @${Math.round(price)} (${label})`);
-          emitAlert({
-            symbol: SYMBOL, symbolLabel: '日経225先物',
-            changePercent: 0, windowSeconds: 60, detectionKind: 'dailyband', direction,
-            triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
-            level: Math.round(price), note,
-            referenceKind: label.toLowerCase(), referencePrice: Math.round(price),   // 'ma5'/'ma20'/'ma50'/'ma75'
-          });
-        };
-        // 水準抜け(break)
-        for (const bsig of detectLevelBreak(maLevelList, recent, latest.price)) {
-          const price = Math.round(bsig.level);
-          const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
-          emitMa(price, bsig.kind, bsig.label, `日足${bsig.label} ${price.toLocaleString('ja-JP')}を${dirWord}`);
-        }
-        // 反発(support/resistance)
-        for (const h of detectLevelHold(maLevelList, recent, latest.price)) {
-          const price = Math.round(h.level);
-          const direction = h.kind === 'support' ? 'up' : 'down';
-          const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
-          emitMa(price, direction, h.label, `日足${h.label} ${price.toLocaleString('ja-JP')}が${word}の可能性`);
-        }
-      }
-    } catch (err) {
-      console.warn('[levelsLoop] dailyma detect failed:', err instanceof Error ? err.message : err);
-    }
+    // ── L2 価格系(break/level_sr/pivot/double)+ 日足バンド/MA 検知は registry に委譲(sink=emitAlert)──
+    runLevelDetectors(db, a, now, serverLevelState, emitAlert);
     // 診断ログ: 最初の3tick / 遅い時(DB>500ms or compute>150ms) / 水準が空の時 に出す。
-    // 通常は無音。これを見れば「どのステージで詰まるか」「水準が空になっていないか」が分かる。
     const empty = result.up.length === 0 && result.down.length === 0;
-    if (tickCount <= 3 || dbMs > 500 || computeMs > 150 || empty) {
-      console.log(`[levelsLoop] db=${dbMs}ms compute=${computeMs}ms total=${Date.now() - tStart}ms `
+    if (tickCount <= 3 || a.dbMs > 500 || a.computeMs > 150 || empty) {
+      console.log(`[levelsLoop] db=${a.dbMs}ms compute=${a.computeMs}ms total=${Date.now() - tStart}ms `
         + `sessions=${sessions.length} up=${result.up.length} down=${result.down.length} `
         + `${sent ? 'broadcast' : 'unchanged'}${empty ? ' ⚠空(蓄積中表示)' : ''}`
-        + `${dbMs > 500 ? ' ⚠DB遅延' : ''}`);
+        + `${a.dbMs > 500 ? ' ⚠DB遅延' : ''}`);
     }
   } catch (err) {
-    // 原因解明のためスタックトレースまで出す(従来は message のみ)。
     console.warn(`[levelsLoop] tick FAILED (total=${Date.now() - tStart}ms): `
       + (err instanceof Error ? (err.stack ?? err.message) : String(err)));
   }

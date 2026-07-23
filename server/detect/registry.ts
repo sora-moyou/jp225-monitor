@@ -1,0 +1,481 @@
+// 検知ワイヤリングの一元化(STEP 6)。
+//
+// 目的: 検知器(detector)の呼び出し・cooldown/dedup 状態・emit ルーティングを 1 箇所に集約する。
+// 検知器そのもののアルゴリズムは変更しない(levelBreak/levelHold/swingDouble/granville/shock/dailyBand は
+// 従来どおり純関数)。ここが変えるのは「配線」だけ:
+//   ・emit を inline の emitAlert ではなく **注入された AlertSink(コールバック)** に流す。
+//   ・cooldown/dedup 状態を module singleton ではなく **consumer ごとの state bundle** に持たせる
+//     (server=levelsLoop と collector が同一プロセスで走っても相互に発火を抑制し合わない=設計レビュー必須修正)。
+//
+// consumer は 2 つ:
+//   ・server(levelsLoop): runLevelDetectors(sink=emitAlert)。levels の SSE broadcast は levelsLoop 側に残す。
+//   ・collector(alertCollector): runBarDetectors + runLevelDetectors(sink=DB 記録)。従来 collector が
+//     出していなかった break/level_sr/pivot/double/dailyband を **追加で** 記録する(意図した挙動変更)。
+//
+// crash は本モジュールに含めない: server(levelsLoop 内 inline)・collector(checkCrash)ともに独自の
+// セッション高値シード経路を持ち、既に別実装。二重 emit を避けるため crash は各 consumer 側に残す。
+
+import type { DatabaseSync } from 'node:sqlite';
+import {
+  getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars, getDailyCloses, upsertDailyClose,
+  type SessionOHLC, type Tick,
+} from '../db/store.js';
+import { computeVolumeProfile } from '../volumeProfile.js';
+import { computeCongestionProfile } from '../congestionProfile.js';
+import { computeTrendLines } from '../trendLines.js';
+import { computeLevels, type LevelsResult } from '../levels.js';
+import { classifySession, type SessionInfo } from '../../core/session.js';
+import { getForecastSnapshot } from '../loops/forecastLoop.js';
+import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
+import { detectLevelHold } from '../levelHold.js';
+import { extractSwingPivots } from '../swingPivots.js';
+import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
+import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
+import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
+import type { AlertSignal } from '../signals/types.js';
+import { resolveLevelsConfig } from '../configStore.js';
+import { evaluateBarsNiy, createBarDetectState, type BarDetectState, type AlertSink } from '../alertEngine.js';
+import { DEFAULT_PARAMS, type DetectorParams } from '../alertDetector.js';
+import type { InstrumentMeta } from '../types.js';
+import type { Bar } from '../correlation.js';
+
+export type { AlertSink, BarDetectState };
+export { createBarDetectState };
+
+const SYMBOL = 'NIY=F';
+const SYMBOL_LABEL = '日経225先物';
+// 取得セッション数: 直近高安2(可変) / 20Sフィボ / 長期高安 を賄える数 + 余裕。
+const fetchSessionsFor = (lookback: number, lookback2: number): number => Math.max(lookback, lookback2, 20) + 4;
+
+// ── L2(価格系)検知のチューニング定数(旧 levelsLoop から集約・値は不変)──
+const RECENT_BARS_MIN = 90;
+const BREAK_DIR_COOLDOWN_MS = 20 * 60_000;
+const ZONE_COOLDOWN_MS = 20 * 60_000;
+const DOUBLE_COOLDOWN_MS = 30 * 60_000;
+// 最新tickがこれ以上古い(収集停止/復帰中)なら stale な価格で誤発火させない。
+export const DETECT_FRESH_MS = 90_000;
+const PIVOT_RECLAIM_PCT = 0.003;
+const LEVEL_MERGE_YEN = 40;
+const PIVOT_FORMED_MIN_PCT = 0.005;
+const SWING_DOUBLE_CHECK_MS = 60_000;
+const SWING_LOOKBACK_DAYS = 4;
+const SWING_PIVOT_RECLAIM_PCT = 0.008;
+const SWING_DOUBLE_TF_MS = 5 * 60_000;
+const DAY_MS = 86_400_000;
+const REACTION_CHECK_MS = 60_000;
+const REACTION_LOOKBACK_DAYS = 5;
+const REACTION_RECLAIM_1H_PCT = 0.003;
+const REACTION_RECLAIM_3H_PCT = 0.005;
+const REACTION_CLUSTER_YEN = 30;
+const REACTION_MIN = 2;
+const VOLUME_CHECK_MS = 30 * 60_000;
+const VOLUME_LOOKBACK_DAYS = 40;
+const VOLUME_BIN_YEN = 50;
+const CONGESTION_CHECK_MS = 30 * 60_000;
+const CONGESTION_LOOKBACK_MS = 24 * 60 * 60_000;
+const CONGESTION_BIN_YEN = 50;
+const TREND_CHECK_MS = 60_000;
+const TREND_LOOKBACK_DAYS = 15;
+const TREND_CONFLUENCE_YEN = 40;
+const DAILYBAND_CHECK_MS = 60_000;
+const DAILYBAND_COOLDOWN_MS = 20 * 60_000;
+const DAILY_CLOSES_KEEP = 80;
+const DAILYBAND_FETCH_SESSIONS = 200;
+
+/** 価格比(%)→円。スイング/節目の閾値を現値に追従させる。 */
+export function yenPct(price: number, pct: number): number {
+  return Math.max(1, Math.round(price * pct));
+}
+
+// L2(価格系)検知のチューニング定数を一括 export。発火頻度の事前監査ツール(scripts/alert-audit.mts)が
+// 同じ値で実データ・リプレイできるようにする(定数のドリフト=乱発バグの再発を防ぐ)。
+export const LEVELS_TUNING = {
+  recentBarsMin: RECENT_BARS_MIN, levelMergeYen: LEVEL_MERGE_YEN,
+  pivotReclaimPct: PIVOT_RECLAIM_PCT, pivotFormedMinPct: PIVOT_FORMED_MIN_PCT, swingPivotReclaimPct: SWING_PIVOT_RECLAIM_PCT,
+  reactionReclaim1hPct: REACTION_RECLAIM_1H_PCT, reactionReclaim3hPct: REACTION_RECLAIM_3H_PCT,
+  swingLookbackDays: SWING_LOOKBACK_DAYS, swingDoubleTfMs: SWING_DOUBLE_TF_MS, zoneCooldownMs: ZONE_COOLDOWN_MS, doubleCooldownMs: DOUBLE_COOLDOWN_MS,
+  breakDirCooldownMs: BREAK_DIR_COOLDOWN_MS,
+} as const;
+
+/** 1分足を上位足(tfMs)のH/Lにリサンプル。スイング抽出用に {t,h,l} のみ返す。 */
+export function resampleHL(bars: { t: number; h: number; l: number }[], tfMs: number): { t: number; h: number; l: number }[] {
+  const m = new Map<number, { t: number; h: number; l: number }>();
+  for (const b of bars) {
+    const k = Math.floor(b.t / tfMs) * tfMs;
+    const e = m.get(k);
+    if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; }
+    else m.set(k, { t: k, h: b.h, l: b.l });
+  }
+  return [...m.values()].sort((a, b) => a.t - b.t);
+}
+
+/**
+ * 確定 Day 終値(進行中の日は含めない)を daily_closes へ永続化し、日足MA/バンド用の終値系列(古い→新しい)を返す。
+ * export はテスト(空DBでもバンドが空にならない回帰)用。副作用(upsert)あり。
+ */
+export function persistAndResolveDailyCloses(
+  database: DatabaseSync, symbol: string,
+  confirmed: { sessionDate: string; close: number; openT: number }[], keep: number,
+): number[] {
+  for (const d of confirmed.slice(-keep)) upsertDailyClose(database, symbol, d.sessionDate, d.close, d.openT);
+  const durableCloses = getDailyCloses(database, symbol, keep).map(r => r.close);
+  const fallbackCloses = confirmed.map(s => s.close);
+  return (durableCloses.length >= fallbackCloses.length ? durableCloses : fallbackCloses).slice(-keep);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  per-consumer 状態(factory)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/** レベル検知の consumer ごとの状態。**解析キャッシュ**(reaction/volume/congestion/trend/dailyband・重い再計算を
+ *  間引くタイマ付き)と **検知器の cooldown/dedup**(break 方向別/ゾーン共有/pivot/swing/dailyband/dailyMa)を保持。
+ *  server(levelsLoop)と collector が別インスタンスを持ち、互いの発火を抑制し合わない。 */
+export interface LevelDetectState {
+  // 解析キャッシュ(computeLevelAnalytics)
+  lastReactionCheck: number;
+  reactionLevels: { price: number; reactions: number }[];
+  lastVolumeCheck: number;
+  volumeLevels: { price: number; rel: number; isPoc: boolean }[];
+  lastCongestionCheck: number;
+  congestionLevels: { price: number; rel: number; visits: number }[];
+  lastTrendCheck: number;
+  trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[];
+  lastDailyBandCheck: number;
+  confirmedDailyCloses: number[];
+  // 検知器 cooldown/dedup(runLevelDetectors)
+  lastBreakDir: Map<'up' | 'down', number>;
+  lastEmit: Map<string, number>;
+  lastPivotT: number;
+  lastSwingCheck: number;
+  lastDailyBandEmit: Map<string, number>;
+  lastDailyMaEmit: Map<string, number>;
+}
+
+/** consumer ごとの新しいレベル検知状態を生成。 */
+export function createLevelDetectState(): LevelDetectState {
+  return {
+    lastReactionCheck: 0, reactionLevels: [],
+    lastVolumeCheck: 0, volumeLevels: [],
+    lastCongestionCheck: 0, congestionLevels: [],
+    lastTrendCheck: 0, trendlineLevels: [],
+    lastDailyBandCheck: 0, confirmedDailyCloses: [],
+    lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, lastSwingCheck: 0,
+    lastDailyBandEmit: new Map(), lastDailyMaEmit: new Map(),
+  };
+}
+
+/** consumer ごとの全検知状態(bar + level)。 */
+export interface DetectorState { bar: BarDetectState; level: LevelDetectState; }
+export function createDetectorState(): DetectorState {
+  return { bar: createBarDetectState(), level: createLevelDetectState() };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  bar 検知(shock/trend/ma_sr)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/** 確定1分足からの bar 検知(shock/trend/ma_sr)を state を使って実行し sink に流す。
+ *  検知ロジックは alertEngine.evaluateBarsNiy そのまま(WIRING のみ集約)。 */
+export function runBarDetectors(
+  bars: Bar[], meta: InstrumentMeta, now: number, sink: AlertSink,
+  state: BarDetectState, params: DetectorParams = DEFAULT_PARAMS,
+): void {
+  evaluateBarsNiy(bars, meta, params, now, sink, state);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  level 解析(SSE/検知の共通入力)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/** level 検知の入力一式(SSE broadcast 用の result も含む)。 */
+export interface LevelAnalytics {
+  result: LevelsResult;
+  latest: Tick;
+  sessions: SessionOHLC[];
+  cs: SessionInfo | null;
+  dailyBandLevels: DailyBand[];
+  dailyMaLevels: DailyMA[];
+  dbMs: number;
+  computeMs: number;
+}
+
+/** 反応水準・出来高・もみ合い・トレンドライン・日足バンド/MA を(state のキャッシュを使い間引きつつ)算出し、
+ *  computeLevels の result まで返す。levelsLoop / collector が共通で使う重い解析。最新 tick が無ければ null。 */
+export function computeLevelAnalytics(db: DatabaseSync, now: number, state: LevelDetectState): LevelAnalytics | null {
+  const latest = getLatestTick(db, SYMBOL);
+  if (!latest) return null;
+  const tDb = Date.now();
+  const lc = resolveLevelsConfig();
+  const sessions = getSessionOHLC(db, SYMBOL, fetchSessionsFor(lc.lookbackSessions, lc.lookbackSessions2));
+  const dbMs = Date.now() - tDb;
+  const cs = classifySession(now);
+  const fc = getForecastSnapshot();
+  const extra = fc.targets
+    ? [{ price: fc.targets.projHigh, label: 'ADR上限予測' }, { price: fc.targets.projLow, label: 'ADR下限予測' }]
+    : [];
+  // 反応水準を約60秒ごとに再計算してキャッシュ(直近数日のスイングピボットをクラスタ化し反転回数を数える)。
+  if (now - state.lastReactionCheck >= REACTION_CHECK_MS) {
+    state.lastReactionCheck = now;
+    try {
+      const rb = getRecentBars(db, SYMBOL, now - REACTION_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const piv = [
+        ...extractSwingPivots(resampleHL(rb, 60 * 60_000), yenPct(latest.price, REACTION_RECLAIM_1H_PCT)),
+        ...extractSwingPivots(resampleHL(rb, 180 * 60_000), yenPct(latest.price, REACTION_RECLAIM_3H_PCT)),
+      ].map(p => p.price).sort((a, b) => a - b);
+      const cl: { price: number; reactions: number }[] = [];
+      for (const p of piv) {
+        const c = cl.find(x => Math.abs(x.price - p) <= REACTION_CLUSTER_YEN);
+        if (c) { c.price = (c.price * c.reactions + p) / (c.reactions + 1); c.reactions++; }
+        else cl.push({ price: p, reactions: 1 });
+      }
+      state.reactionLevels = cl.filter(c => c.reactions >= REACTION_MIN).map(c => ({ price: Math.round(c.price), reactions: c.reactions }));
+    } catch (err) { console.warn('[detect] reaction levels failed:', err instanceof Error ? err.message : err); }
+  }
+  // 価格帯別出来高(HVN/POC)を約30分ごとに再計算してキャッシュ(出来高は基礎データ由来=週次更新)。
+  if (now - state.lastVolumeCheck >= VOLUME_CHECK_MS) {
+    state.lastVolumeCheck = now;
+    try {
+      const vb = getVolumeBars(db, SYMBOL, now - VOLUME_LOOKBACK_DAYS * DAY_MS);
+      state.volumeLevels = computeVolumeProfile(vb, VOLUME_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, isPoc: n.isPoc }));
+    } catch (err) { console.warn('[detect] volume profile failed:', err instanceof Error ? err.message : err); }
+  }
+  // もみ合い帯(直近1日の時間滞在=出来高の次善)を約30分ごとに再計算してキャッシュ。
+  if (now - state.lastCongestionCheck >= CONGESTION_CHECK_MS) {
+    state.lastCongestionCheck = now;
+    try {
+      const cb = getRecentBars(db, SYMBOL, now - CONGESTION_LOOKBACK_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      state.congestionLevels = computeCongestionProfile(cb, CONGESTION_BIN_YEN).map(n => ({ price: n.price, rel: n.rel, visits: n.visits }));
+    } catch (err) { console.warn('[detect] congestion profile failed:', err instanceof Error ? err.message : err); }
+  }
+  // 有効トレンドライン(3点接触の斜め支持/抵抗線)を約60秒ごとに再計算。1H/3H のスイング点から探索。
+  if (now - state.lastTrendCheck >= TREND_CHECK_MS) {
+    state.lastTrendCheck = now;
+    try {
+      const tb = getRecentBars(db, SYMBOL, now - TREND_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const tpiv = [
+        ...extractSwingPivots(resampleHL(tb, 60 * 60_000), yenPct(latest.price, REACTION_RECLAIM_1H_PCT)),
+        ...extractSwingPivots(resampleHL(tb, 180 * 60_000), yenPct(latest.price, REACTION_RECLAIM_3H_PCT)),
+      ];
+      state.trendlineLevels = computeTrendLines(tpiv, latest.price, now)
+        .filter(t => state.reactionLevels.some(r => Math.abs(r.price - t.priceNow) <= TREND_CONFLUENCE_YEN))
+        .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
+    } catch (err) { console.warn('[detect] trend lines failed:', err instanceof Error ? err.message : err); }
+  }
+  // 日足バンド用の確定終値(進行中の取引日を除外)を約60秒キャッシュ。
+  if (now - state.lastDailyBandCheck >= DAILYBAND_CHECK_MS || state.confirmedDailyCloses.length === 0) {
+    state.lastDailyBandCheck = now;
+    try {
+      const days = getSessionOHLC(db, SYMBOL, DAILYBAND_FETCH_SESSIONS)
+        .filter(s => s.session === 'Day')
+        .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
+      const inDay = cs?.session === 'Day';
+      const confirmed = inDay ? days.slice(0, -1) : days;
+      state.confirmedDailyCloses = persistAndResolveDailyCloses(db, SYMBOL, confirmed, DAILY_CLOSES_KEEP);
+    } catch (err) { console.warn('[detect] daily bands (confirmed closes) failed:', err instanceof Error ? err.message : err); }
+  }
+  // バンド算出は毎ティック(現在値を進行中取引日の終値として append し MA25/σ を再計算)。
+  const dailyBandLevels = state.confirmedDailyCloses.length >= 24
+    ? computeDailyBands(dailyCloseSeries(state.confirmedDailyCloses, latest.price))
+    : [];
+  const dailyMaLevels = computeDailyMAs(dailyCloseSeries(state.confirmedDailyCloses, latest.price, 75));
+  const tCompute = Date.now();
+  const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels);
+  const computeMs = Date.now() - tCompute;
+  return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, dbMs, computeMs };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  level 検知(break/level_sr/pivot/double + dailyband + dailyMa)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/** computeLevelAnalytics の出力から level 系検知器を実行し sink に流す。crash はここに含めない(各 consumer 側)。
+ *  cooldown/dedup は state に閉じ込め、consumer 間で相互抑制しない。 */
+export function runLevelDetectors(
+  db: DatabaseSync, a: LevelAnalytics, now: number, state: LevelDetectState, sink: AlertSink,
+): void {
+  const { result, latest } = a;
+  // ── L2 価格系シグナル(double / level_sr / break / pivot)を生成 → 集約 → emit ──
+  try {
+    const sinceT = now - RECENT_BARS_MIN * 60_000;
+    const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+    const rawPivots = extractSwingPivots(recent, yenPct(latest.price, PIVOT_RECLAIM_PCT));
+    const pivots = rawPivots.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
+    const sigNamed = [...result.up, ...result.down]
+      .filter(l => l.tier >= 1)
+      .map(l => ({ price: l.price, label: l.labels[0] ?? '水準' }));
+    const kept: number[] = [];
+    const hlLevels = [...sigNamed, ...pivots]
+      .filter(l => {
+        if (!(l.price > 0) || kept.some(k => Math.abs(k - l.price) <= LEVEL_MERGE_YEN)) return false;
+        kept.push(l.price); return true;
+      });
+
+    const signals: AlertSignal[] = [];
+
+    // 水準抜け(break): 同方向は最外1本+方向別クールダウンで前置フィルタ。
+    const breaks = detectLevelBreak(hlLevels, recent, latest.price);
+    const outer = new Map<'up' | 'down', BreakSignal>();
+    for (const b of breaks) {
+      const cur = outer.get(b.kind);
+      if (!cur || (b.kind === 'up' ? b.level > cur.level : b.level < cur.level)) outer.set(b.kind, b);
+    }
+    for (const bsig of outer.values()) {
+      if (now - (state.lastBreakDir.get(bsig.kind) ?? -Infinity) <= BREAK_DIR_COOLDOWN_MS) continue;
+      const lvl = Math.round(bsig.level);
+      const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
+      signals.push({
+        type: 'break', direction: bsig.kind, reference: { kind: 'level', price: lvl }, stage: 'confirmed',
+        score: 1.2, triggeredAt: now,
+        text: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
+      });
+    }
+
+    // 水準サポート/レジスタンス(level_sr): 反発確認後。
+    for (const h of detectLevelHold(hlLevels, recent, latest.price)) {
+      const lvl = Math.round(h.level);
+      const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
+      signals.push({
+        type: 'level_sr', direction: h.kind === 'support' ? 'up' : 'down',
+        reference: { kind: 'level', price: lvl }, stage: 'confirmed', score: 1.1, triggeredAt: now,
+        text: `${lvl.toLocaleString('ja-JP')} ${h.label}が${word}の可能性`,
+      });
+    }
+
+    // スイング転換点の形成(pivot): 新しい確定ピボットが現れたら1回。
+    const newest = rawPivots[rawPivots.length - 1];
+    const prevPivot = rawPivots[rawPivots.length - 2];
+    if (newest && newest.t > state.lastPivotT
+        && (!prevPivot || Math.abs(newest.price - prevPivot.price) >= yenPct(latest.price, PIVOT_FORMED_MIN_PCT))) {
+      state.lastPivotT = newest.t;
+      const lvl = Math.round(newest.price);
+      const word = newest.kind === 'low' ? 'スイング安値' : 'スイング高値';
+      const note = newest.kind === 'low' ? '押し安値の可能性' : '戻り高値の可能性';
+      signals.push({
+        type: 'pivot', direction: newest.kind === 'low' ? 'up' : 'down',
+        reference: { kind: 'swing', price: lvl }, stage: 'confirmed', score: 1.0, triggeredAt: now,
+        text: `${lvl.toLocaleString('ja-JP')} ${word}を形成(${note})`,
+      });
+    }
+
+    // ダブル天井/大底(double, 長周期): 約60秒に1回。
+    if (now - state.lastSwingCheck >= SWING_DOUBLE_CHECK_MS) {
+      state.lastSwingCheck = now;
+      const longBars = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const longBars5 = resampleHL(longBars, SWING_DOUBLE_TF_MS);
+      const sd = detectSwingDouble(extractSwingPivots(longBars5, yenPct(latest.price, SWING_PIVOT_RECLAIM_PCT)), latest.price, DEFAULT_SWING_DOUBLE);
+      if (sd) {
+        const neck = Math.round(sd.neck);
+        const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
+        const [g1, g2] = sd.legs;
+        const name = sd.kind === 'bottom' ? 'ダブルボトム' : 'ダブルトップ';
+        const word = sd.kind === 'bottom' ? '上抜け' : '下抜け';
+        const watch = sd.kind === 'bottom' ? '上抜けで上昇期待' : '下抜けで下落警戒';
+        const legLabel = sd.kind === 'bottom' ? '谷' : '山';
+        const text = sd.stage === 'breakout'
+          ? `${name}成立 — ネック${yen(neck)}円を${word}(${legLabel}${yen(g1)}/${yen(g2)})目標≈${yen(sd.target)}`
+          : `${name}形成 — ネック${yen(neck)}円(${legLabel}${yen(g1)}→${yen(g2)})。${watch}`;
+        signals.push({
+          type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: neck },
+          stage: sd.stage === 'breakout' ? 'confirmed' : 'forming',
+          score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text,
+        });
+      }
+    }
+
+    // 集約 → クールダウン → emit。
+    for (const item of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
+      const ck = item.type === 'double'
+        ? `double@${Math.round(item.reference.price / 5) * 5}#${item.stage ?? ''}`
+        : `${item.direction}@${Math.round(item.reference.price / LEVEL_MERGE_YEN) * LEVEL_MERGE_YEN}`;
+      const cd = item.type === 'double' ? DOUBLE_COOLDOWN_MS : ZONE_COOLDOWN_MS;
+      if (now - (state.lastEmit.get(ck) ?? -Infinity) <= cd) continue;
+      state.lastEmit.set(ck, now);
+      if (item.types.includes('break')) state.lastBreakDir.set(item.direction, now);
+      console.log(`[detect] signal ${item.type} ${item.direction} @${Math.round(item.reference.price)} score=${item.score.toFixed(2)}`
+        + `${item.types.length > 1 ? ` conf[${item.types.join(',')}]` : ''}`);
+      sink({
+        symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+        changePercent: 0, windowSeconds: 60, detectionKind: item.type,
+        direction: item.direction, triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+        level: Math.round(item.reference.price), note: item.text,
+        referenceKind: item.reference.kind, referencePrice: Math.round(item.reference.price),
+      });
+    }
+  } catch (err) {
+    console.warn('[detect] signal detect failed:', err instanceof Error ? err.message : err);
+  }
+  // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
+  try {
+    if (a.dailyBandLevels.length > 0) {
+      const sinceT = now - RECENT_BARS_MIN * 60_000;
+      const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const bandLevelList = a.dailyBandLevels.map(b => ({ price: b.price, label: 'daily ' + b.label }));
+      const refKindOf = (price: number): DailyBand['refKind'] =>
+        a.dailyBandLevels.find(b => b.price === price)?.refKind ?? 'ma25';
+      const emitBand = (price: number, direction: 'up' | 'down', refKind: DailyBand['refKind'], note: string): void => {
+        const key = `${direction}@${Math.round(price / 40) * 40}`;
+        if (now - (state.lastDailyBandEmit.get(key) ?? -Infinity) <= DAILYBAND_COOLDOWN_MS) return;
+        state.lastDailyBandEmit.set(key, now);
+        console.log(`[detect] dailyband ${direction} @${Math.round(price)} (${refKind})`);
+        sink({
+          symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+          changePercent: 0, windowSeconds: 60, detectionKind: 'dailyband', direction,
+          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: Math.round(price), note,
+          referenceKind: refKind, referencePrice: Math.round(price),
+        });
+      };
+      for (const bsig of detectLevelBreak(bandLevelList, recent, latest.price)) {
+        const price = Math.round(bsig.level);
+        const refKind = refKindOf(bsig.level);
+        const label = bsig.label.replace(/^daily /, '');
+        const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
+        emitBand(price, bsig.kind, refKind, `日足${label} ${price.toLocaleString('ja-JP')}を${dirWord}`);
+      }
+      for (const h of detectLevelHold(bandLevelList, recent, latest.price)) {
+        const price = Math.round(h.level);
+        const refKind = refKindOf(h.level);
+        const label = h.label.replace(/^daily /, '');
+        const direction = h.kind === 'support' ? 'up' : 'down';
+        const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
+        emitBand(price, direction, refKind, `日足${label} ${price.toLocaleString('ja-JP')}が${word}の可能性`);
+      }
+    }
+  } catch (err) {
+    console.warn('[detect] dailyband detect failed:', err instanceof Error ? err.message : err);
+  }
+  // ── 日足MA線検知(dailyMa): MA5/20/50/75 の各線で水準抜け/反発を評価し直接 emit(バンドと同機構・集約なし)──
+  try {
+    if (a.dailyMaLevels.length > 0) {
+      const sinceT = now - RECENT_BARS_MIN * 60_000;
+      const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+      const maLevelList = a.dailyMaLevels.map(m => ({ price: m.price, label: m.label }));
+      const emitMa = (price: number, direction: 'up' | 'down', label: string, note: string): void => {
+        const key = `${direction}@${Math.round(price / 40) * 40}`;
+        if (now - (state.lastDailyMaEmit.get(key) ?? -Infinity) <= DAILYBAND_COOLDOWN_MS) return;
+        state.lastDailyMaEmit.set(key, now);
+        console.log(`[detect] dailyma ${direction} @${Math.round(price)} (${label})`);
+        sink({
+          symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+          changePercent: 0, windowSeconds: 60, detectionKind: 'dailyband', direction,
+          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: Math.round(price), note,
+          referenceKind: label.toLowerCase(), referencePrice: Math.round(price),
+        });
+      };
+      for (const bsig of detectLevelBreak(maLevelList, recent, latest.price)) {
+        const price = Math.round(bsig.level);
+        const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
+        emitMa(price, bsig.kind, bsig.label, `日足${bsig.label} ${price.toLocaleString('ja-JP')}を${dirWord}`);
+      }
+      for (const h of detectLevelHold(maLevelList, recent, latest.price)) {
+        const price = Math.round(h.level);
+        const direction = h.kind === 'support' ? 'up' : 'down';
+        const word = h.kind === 'support' ? 'サポート' : 'レジスタンス';
+        emitMa(price, direction, h.label, `日足${h.label} ${price.toLocaleString('ja-JP')}が${word}の可能性`);
+      }
+    }
+  } catch (err) {
+    console.warn('[detect] dailyma detect failed:', err instanceof Error ? err.message : err);
+  }
+}

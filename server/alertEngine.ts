@@ -15,26 +15,41 @@ import type { InstrumentMeta, AlertEventPayload } from './types.js';
 
 export type AlertSink = (e: AlertEventPayload) => void;
 
-// 急変専用のバー数クールダウン(直近ラベルの分インデックスから cooldownBars 本超で再発火可)。
-// alertCooldown(共有・時間ベース)とは別系統。プロセスごとに独立。
-const lastShockBar = new Map<string, number>();
-function shockCanFire(symbol: string, bar: number): boolean {
-  const prev = lastShockBar.get(symbol);
+// ── バー検知(shock/trend/ma_sr)の cooldown/dedup 状態。**consumer ごとに独立インスタンス化**する
+//    (server=alertLoop / collector が同一プロセスで走っても相互抑制しないように)。registry.ts の factory が
+//    consumer ごとに 1 つ生成する。以下の module-level `defaultBarState` は後方互換の単一インスタンス
+//    (state 引数を省いた既存の呼び出し=alert-audit / 直接 evaluateBarsNiy 呼び出し / _reset* 系が使う)。 */
+export interface BarDetectState {
+  // 急変専用のバー数クールダウン(直近ラベルの分インデックスから cooldownBars 本超で再発火可)。
+  // alertCooldown(共有・時間ベース)とは別系統。
+  lastShockBar: Map<string, number>;
+  // グランビルのエッジ抑制: 前 tick でも出ていた同一シグナル(同 note)は「過去の転換/継続の再表示」=
+  // エコーなので発火しない。シグナルが一旦消えてから再度現れた時だけ発火する(立ち上がりエッジ)。
+  lastGranvilleNotes: Set<string>;
+  // 25MA抜け(素のMAクロス)のエッジ抑制。前 tick でも同じクロスが出ていたら(同一分内の再評価=エコー)
+  // 発火しない。クロスが一旦消えてから再度現れた時だけ1回発火する。グランビルの note dedup と同系統。
+  lastMaCrossKeys: Set<string>;
+  // v0.6.2: ma_sr/trend の方向別クールダウン(同種・同方向の連発を抑制)。
+  lastL2Emit: Map<string, number>;
+}
+
+/** consumer ごとの新しいバー検知状態を生成(相互抑制の防止)。 */
+export function createBarDetectState(): BarDetectState {
+  return { lastShockBar: new Map(), lastGranvilleNotes: new Set(), lastMaCrossKeys: new Set(), lastL2Emit: new Map() };
+}
+
+// 後方互換の単一インスタンス。state 引数を省いた呼び出し(alert-audit・既存テスト・_reset*)はこれを使う。
+const defaultBarState = createBarDetectState();
+
+function shockCanFire(state: BarDetectState, symbol: string, bar: number): boolean {
+  const prev = state.lastShockBar.get(symbol);
   return prev === undefined || bar - prev > resolveShockCooldownBars();
 }
-function shockMarkFired(symbol: string, bar: number): void { lastShockBar.set(symbol, bar); }
-export function _resetShockCooldown(): void { lastShockBar.clear(); }
-
-// グランビルのエッジ抑制: 前 tick でも出ていた同一シグナル(同 note)は「過去の転換/継続の再表示」=
-// エコーなので発火しない。シグナルが一旦消えてから再度現れた時だけ発火する(立ち上がりエッジ)。
-// クールダウンとは別物(時間で抑えるのでなく「状態変化」で1回化する)。
-let lastGranvilleNotes = new Set<string>();
-export function _resetGranvilleDedup(): void { lastGranvilleNotes = new Set(); }
-
-// 25MA抜け(素のMAクロス)のエッジ抑制。前 tick でも同じクロスが出ていたら(同一分内の再評価=エコー)
-// 発火しない。クロスが一旦消えてから再度現れた時だけ1回発火する。グランビルの note dedup と同系統。
-let lastMaCrossKeys = new Set<string>();
-export function _resetMaCrossDedup(): void { lastMaCrossKeys = new Set(); }
+function shockMarkFired(state: BarDetectState, symbol: string, bar: number): void { state.lastShockBar.set(symbol, bar); }
+export function _resetShockCooldown(): void { defaultBarState.lastShockBar.clear(); }
+export function _resetGranvilleDedup(): void { defaultBarState.lastGranvilleNotes = new Set(); }
+export function _resetMaCrossDedup(): void { defaultBarState.lastMaCrossKeys = new Set(); }
+export function _resetL2Cooldown(): void { defaultBarState.lastL2Emit.clear(); }
 
 // v0.6.2: ma_sr/trend の過剰発火対策(実データ監査で trend 5.4/h・ma_sr 4.7/h、多くが乖離≈0%=MAに触れただけ)。
 // ①乖離ゲート: |乖離| が小さい(MA上をなぞっているだけ/フラットMAのチョップ)ものは出さない。
@@ -42,13 +57,12 @@ export function _resetMaCrossDedup(): void { lastMaCrossKeys = new Set(); }
 // ②方向別クールダウン: 同種・同方向の連発を抑制(グランビルは従来 un-gated だったが監査により導入)。
 const L2_MIN_DEV_PCT = 0.13;   // 0.08→0.13(ユーザー: 頻度が多い→条件を少し強く。0.08-0.12%の弱い乖離を除外)
 const L2_COOLDOWN_MS = 15 * 60_000;
-const lastL2Emit = new Map<string, number>();
-export function _resetL2Cooldown(): void { lastL2Emit.clear(); }
 
 /** Bar-confirmed detection for NIY=F: Granville (reversal/continuation) first, then shock (完成1分足).
- *  Routes events to `sink`. */
+ *  Routes events to `sink`. `state` は consumer ごとの cooldown/dedup(省略時は後方互換の単一インスタンス)。 */
 export function evaluateBarsNiy(
   bars: Bar[], meta: InstrumentMeta, params: DetectorParams, now: number, sink: AlertSink,
+  state: BarDetectState = defaultBarState,
 ): void {
   if (!bars || bars.length < 65) return;
   const sym = 'NIY=F';
@@ -89,7 +103,7 @@ export function evaluateBarsNiy(
   for (const g of byNote.values()) {
     if (Math.abs(g.sig.deviation) < L2_MIN_DEV_PCT) continue;   // 乖離が小さい=MAをなぞる/フラットMAのチョップ→出さない
     currentNotes.add(g.note);
-    if (lastGranvilleNotes.has(g.note)) continue;   // 前tickでも(発火可能で)出ていた→エコー、発火しない
+    if (state.lastGranvilleNotes.has(g.note)) continue;   // 前tickでも(発火可能で)出ていた→エコー、発火しない
     const dir = g.sig.dir;
     const maVal = Math.round(g.sig.ma);
     const yen = maVal.toLocaleString('ja-JP');
@@ -108,14 +122,14 @@ export function evaluateBarsNiy(
       });
     }
   }
-  lastGranvilleNotes = currentNotes;   // 次tickのエッジ判定用に今tickのシグナル集合を記録
+  state.lastGranvilleNotes = currentNotes;   // 次tickのエッジ判定用に今tickのシグナル集合を記録
 
   // 素のMAクロス → trend(トレンド転換)。グランビルが同方向の転換/継続を既に出していれば重複なので抑制。
   const granvilleDirs = new Set([...byNote.values()].map(v => v.sig.dir));
   const maCross = detectMaCross(closes, maMid);
   const maOk = !!maCross && Math.abs(maCross.deviation) >= L2_MIN_DEV_PCT;   // 乖離不足は dedup を汚さない
   const maKey = maOk ? `ma-${maCross!.dir}` : '';
-  if (maOk && maCross && !granvilleDirs.has(maCross.dir) && !lastMaCrossKeys.has(maKey)) {
+  if (maOk && maCross && !granvilleDirs.has(maCross.dir) && !state.lastMaCrossKeys.has(maKey)) {
     const maVal = Math.round(maCross.ma);
     const dirWord = maCross.dir === 'up' ? '上抜け' : '下抜け';
     console.log(`[alertEngine] ${sym} ${maCross.period}MA${dirWord} ma=${maVal} dev=${maCross.deviation.toFixed(2)}%`);
@@ -124,14 +138,14 @@ export function evaluateBarsNiy(
       text: `${maVal.toLocaleString('ja-JP')} ${maCross.period}MA${dirWord}、トレンド転換の可能性`, triggeredAt: tBar,
     });
   }
-  lastMaCrossKeys = maKey ? new Set([maKey]) : new Set();   // クロスが消えるまで同方向を抑制
+  state.lastMaCrossKeys = maKey ? new Set([maKey]) : new Set();   // クロスが消えるまで同方向を抑制
 
   // 集約(同方向・近接基準を1本化)→ 方向別クールダウン(v0.6.2: 監査で過剰発火のため導入)→ emit。
   const tNow = bars[bars.length - 1]!.t;
   for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
     const ck = `${a.type}#${a.direction}`;
-    if (tNow - (lastL2Emit.get(ck) ?? -Infinity) <= L2_COOLDOWN_MS) continue;
-    lastL2Emit.set(ck, tNow);
+    if (tNow - (state.lastL2Emit.get(ck) ?? -Infinity) <= L2_COOLDOWN_MS) continue;
+    state.lastL2Emit.set(ck, tNow);
     sink({
       symbol: sym, symbolLabel: meta.labelJa, changePercent: 0, windowSeconds: 75 * 60,
       detectionKind: a.type, direction: a.direction, triggeredAt: a.triggeredAt,
@@ -149,8 +163,8 @@ export function evaluateBarsNiy(
     const bar = Math.floor(lastCompleted.t / 60_000);    // 「バーインデックス」=分インデックス
     // クールダウンシグナルを出すのは急変のみ。発火時に markFired で共有クールダウンを発生させ、
     // 自身のバー数クールダウンと併せて連続表示を抑制する(テクニカル系は一切関与しない)。
-    if (shockCanFire(sym, bar) && canFire(sym, shock.dir, lastCompleted.close, now)) {
-      shockMarkFired(sym, bar);
+    if (shockCanFire(state, sym, bar) && canFire(sym, shock.dir, lastCompleted.close, now)) {
+      shockMarkFired(state, sym, bar);
       markFired(sym, shock.dir, lastCompleted.close, now);
       const ctx = computeContext(bars);
       const prevClose = completed[completed.length - 2] ?? lastCompleted.close;

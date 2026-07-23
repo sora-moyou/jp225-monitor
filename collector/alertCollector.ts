@@ -1,7 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { feedRealtimePrice, getRealtimeBars } from '../server/feedBars.js';
-import { evaluateBarsNiy, type AlertSink } from '../server/alertEngine.js';
-import { DEFAULT_PARAMS } from '../server/alertDetector.js';
+import { type AlertSink } from '../server/alertEngine.js';
 import { INSTRUMENTS } from '../server/config.js';
 import { getLatestTick, insertAlertIfNew, getSessionOHLC, type AlertInsert } from '../server/db/store.js';
 import { followupTick } from '../server/alertHistory.js';
@@ -9,6 +8,11 @@ import { getCooldownMs } from '../server/alertCooldown.js';
 import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../server/crash.js';
 import { classifySession, isWithinOpenGuard } from '../core/session.js';
 import { resolveOpenGuardBars } from '../server/configStore.js';
+import {
+  runBarDetectors, computeLevelAnalytics, runLevelDetectors,
+  createBarDetectState, createLevelDetectState, DETECT_FRESH_MS,
+  type BarDetectState, type LevelDetectState,
+} from '../server/detect/registry.js';
 import type { Bar } from '../server/correlation.js';
 import type { AlertEventPayload } from '../server/types.js';
 
@@ -30,6 +34,10 @@ export class AlertCollector {
   private crashSessionKey = '';
   private crashSessionHigh = 0;
   private crashFired = false;
+  // この consumer(collector)専用の検知状態。server(levelsLoop/alertLoop)と別インスタンスを持ち、
+  // 同一プロセスで走っても相互に発火を抑制し合わない(registry の per-consumer state)。
+  private readonly barState: BarDetectState = createBarDetectState();
+  private readonly levelState: LevelDetectState = createLevelDetectState();
   constructor(private readonly db: DatabaseSync) {}
 
   /** DB-only sink: persist the alert with a near-duplicate guard. No SSE (collector has no UI). */
@@ -98,12 +106,23 @@ export class AlertCollector {
     }
   }
 
-  /** Run bar-confirmed detection at most once per minute boundary. */
+  /** Run bar-confirmed detection (shock/trend/ma_sr) at most once per minute boundary, then the
+   *  level detectors (break/level_sr/pivot/double + dailyband). Both route through server/detect/registry
+   *  with this collector's OWN per-consumer state. crash stays in checkCrash (independent seeding). */
   onMinute(now: number): void {
     const minute = Math.floor(now / 60_000);
     if (minute === this.lastMinute) return;
     this.lastMinute = minute;
-    evaluateBarsNiy(this.barsForNiy(), META, DEFAULT_PARAMS, now, this.sink);
+    // bar 検知(従来どおり): shock/trend/ma_sr。realtime バッファのみ。
+    runBarDetectors(this.barsForNiy(), META, now, this.sink, this.barState);
+    // level 検知(v0.x STEP6 追加): 従来 collector が出していなかった break/level_sr/pivot/double/dailyband を
+    // registry 経由で同じロジックで記録する。stale 価格では発火しない(levelsLoop と同じ鮮度ゲート)。
+    try {
+      const a = computeLevelAnalytics(this.db, now, this.levelState);
+      if (a && now - a.latest.t <= DETECT_FRESH_MS) runLevelDetectors(this.db, a, now, this.levelState, this.sink);
+    } catch (err) {
+      console.warn('[alertCollector] level detect failed:', err instanceof Error ? err.message : err);
+    }
   }
 
   /** Fill ret5/15/30 for matured alerts (DB-only, idempotent). */
