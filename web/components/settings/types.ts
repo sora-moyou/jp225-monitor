@@ -1,0 +1,148 @@
+// 設定モーダルの型定義。settingsModal.ts から純粋に切り出したもの(構造のみ・挙動不変)。
+
+export type KnobSource = 'manual' | 'ai';
+
+export interface SettingsResponse {
+  geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
+  geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
+  webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
+  scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
+  scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
+  // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
+  scalpLcFloorYen: number;
+  scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
+  scalpCooldownSource: KnobSource; scalpBiasSource: KnobSource; scalpRangeSource: KnobSource;
+  scalpLcHardMaxEnabled: boolean; scalpLcHardMaxYen: number;
+  // ★v0.8.2: System B(紙専用)の設定。raw=保存済み生値(未設定=A追従) / effective=A フォールバック済みの実効値(表示補助)。
+  signalB?: SignalBRaw;
+  signalBEffective?: SignalBEffective;
+  pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
+  providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
+  configFile: string;
+}
+
+// ★v0.8.2: System B の生設定(未設定フィールド=A追従)。
+export interface SignalBRaw {
+  scalpLcCeilingYen?: number; scalpBias?: 'none' | 'long' | 'short'; scalpCooldownSec?: number;
+  scalpRangeEnabled?: boolean; scalpTrendVetoYen?: number; scalpLcFloorYen?: number;
+  scalpLcHardMaxYen?: number; scalpLcHardMaxEnabled?: boolean;
+  scalpLcFloorSource?: KnobSource; scalpLcCeilingSource?: KnobSource; scalpTrendVetoSource?: KnobSource;
+  scalpCooldownSource?: KnobSource; scalpBiasSource?: KnobSource; scalpRangeSource?: KnobSource;
+}
+// ★v0.8.2: B の実効値(A フォールバック済み)。プレースホルダ/初期表示に使う。
+export interface SignalBEffective {
+  scalpLcFloorYen: number; scalpLcCeilingYen: number; scalpTrendVetoYen: number; scalpCooldownSec: number;
+  scalpBias: 'none' | 'long' | 'short'; scalpRangeEnabled: boolean;
+  scalpLcHardMaxYen: number; scalpLcHardMaxEnabled: boolean;
+  scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
+  scalpCooldownSource: KnobSource; scalpBiasSource: KnobSource; scalpRangeSource: KnobSource;
+}
+
+export interface SaveResponse {
+  ok: boolean;
+  portRequiresRestart?: boolean;
+}
+
+export interface BasedataStatus {
+  ok: boolean;
+  published?: boolean;
+  available?: boolean;
+  lastBar?: string | null;
+  count?: number | null;
+  error?: string;
+}
+
+export interface SavePayload {
+  geminiKey?: string | null;
+  groqKey?: string | null;
+  openaiKey?: string | null;
+  webSearchKey?: string | null;
+  webSearchModel?: string | null;
+  webSearchOpenaiModel?: string | null;
+  scalpLcCeilingYen?: number | null;
+  scalpBias?: 'long' | 'short' | 'none' | null;
+  scalpCooldownSec?: number | null;
+  scalpRangeEnabled?: boolean | null;
+  scalpTrendVetoYen?: number | null;
+  // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
+  scalpLcFloorYen?: number | null;
+  scalpLcFloorSource?: KnobSource;
+  scalpLcCeilingSource?: KnobSource;
+  scalpTrendVetoSource?: KnobSource;
+  scalpCooldownSource?: KnobSource;
+  scalpBiasSource?: KnobSource;
+  scalpRangeSource?: KnobSource;
+  scalpLcHardMaxEnabled?: boolean | null;
+  scalpLcHardMaxYen?: number | null;
+  // ★v0.8.2: System B(紙専用)。ネストしたオブジェクトで送る(各フィールドは A と同名・''/null=A追従)。
+  signalB?: Record<string, unknown>;
+}
+
+export interface KeyTestResponse {
+  results?: Array<{ name: string; ok: boolean; notset?: boolean; error?: string }>;
+  error?: string;
+}
+
+export interface SettingsElements {
+  openBtn: HTMLButtonElement;
+  modal: HTMLElement;
+  closeBtn: HTMLButtonElement;
+  saveBtn: HTMLButtonElement;
+  inputGemini: HTMLInputElement;
+  inputGroq: HTMLInputElement;
+  inputOpenai: HTMLInputElement;
+  inputWebSearch: HTMLInputElement;        // Web検索(Gemini グラウンディング)専用キー
+  inputWebSearchModel: HTMLInputElement;   // Web検索用 Gemini モデル
+  inputWebSearchOpenaiModel: HTMLInputElement;  // OpenAI Web検索モデル
+  inputScalpLcCeiling: HTMLInputElement;   // AIエントリー: 最大初期LC(円)
+  selectScalpBias: HTMLSelectElement;      // AIエントリー: バイアス
+  inputScalpCooldown: HTMLInputElement;    // AIエントリー: クールダウン(秒)
+  inputScalpTrendVeto: HTMLInputElement;   // AIエントリー: トレンド veto 閾値(円・0で無効)
+  checkScalpRangeEnabled: HTMLInputElement; // AIエントリー: レンジ両面ストラドル(実験・紙で別枠計測)
+  // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
+  inputScalpLcFloor: HTMLInputElement;
+  selectLcFloorMode: HTMLSelectElement;
+  selectLcCeilingMode: HTMLSelectElement;
+  selectTrendVetoMode: HTMLSelectElement;
+  selectCooldownMode: HTMLSelectElement;
+  selectBiasMode: HTMLSelectElement;
+  selectRangeMode: HTMLSelectElement;
+  checkScalpLcHardMaxEnabled: HTMLInputElement;
+  inputScalpLcHardMax: HTMLInputElement;
+  // ★v0.8.2: System B(紙専用)の設定入力。B の value 系は空欄=A追従 / mode/tri-state は ''=A追従。
+  inputScalpLcCeilingB: HTMLInputElement;
+  selectScalpBiasB: HTMLSelectElement;
+  inputScalpCooldownB: HTMLInputElement;
+  inputScalpTrendVetoB: HTMLInputElement;
+  selectRangeEnabledB: HTMLSelectElement;      // tri-state('' A追従/'true'/'false')
+  inputScalpLcFloorB: HTMLInputElement;
+  selectLcFloorModeB: HTMLSelectElement;
+  selectLcCeilingModeB: HTMLSelectElement;
+  selectTrendVetoModeB: HTMLSelectElement;
+  selectCooldownModeB: HTMLSelectElement;
+  selectBiasModeB: HTMLSelectElement;
+  selectRangeModeB: HTMLSelectElement;
+  selectHardMaxEnabledB: HTMLSelectElement;    // tri-state('' A追従/'true'/'false')
+  inputScalpLcHardMaxB: HTMLInputElement;
+  statusArea: HTMLElement;
+  backdrop: HTMLElement;
+  checkUpdateBtn: HTMLButtonElement;
+  updateResult: HTMLElement;
+  currentVersion: HTMLElement;
+  mergeDbBtn: HTMLButtonElement;
+  mergeResult: HTMLElement;
+  exportDbBtn: HTMLButtonElement;
+  exportResult: HTMLElement;
+  replaceDbBtn: HTMLButtonElement;
+  replaceResult: HTMLElement;
+  testKeysBtn: HTMLButtonElement;
+  testResult: HTMLElement;
+}
+
+// ★v0.8.3: 設定モーダル分割後、🎛️(詳細設定)側からも移設フィールド(Web検索モデル/AIエントリー/データ)を
+//   読み込み/保存できるよう、全入力の load(refresh) と save(doSave) を戻り値として公開する。
+//   入力は id 参照(getElementById)なので DOM がどちらのモーダルにあっても同じハンドラで動く。
+export interface SettingsController {
+  refresh: () => Promise<void>;
+  save: () => Promise<void>;
+}
