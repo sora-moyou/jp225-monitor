@@ -584,6 +584,33 @@ export function lcLegExceeds(w: number, opts: { ceilingYen: number; ceilingMode?
   return overCeiling || overHard;
 }
 
+/** レンジ脚がコード側で落とされた理由(rationale 明記用)。 */
+type RangeDropReason = 'trend' | 'stopSide' | 'lc' | 'bias';
+
+/** 脱落したレンジ脚の位置(上部/下部)・side・理由から、rationale へ追記する注記文を組み立てる。
+ *  例: `※下部(買い指値)はバイアス(売り優先)のため除外` / `※上部(売り指値)はLC上限超のため除外`。
+ *  テキスト整形のみ(取引ロジックには一切関与しない)。 */
+export function rangeDropNote(
+  pos: '上部' | '下部',
+  side: 'buy' | 'sell' | undefined,
+  reason: RangeDropReason,
+  bias?: 'long' | 'short' | 'none',
+): string {
+  const sideLabel = side === 'sell' ? '売り指値' : side === 'buy' ? '買い指値' : '指値';
+  let reasonLabel: string;
+  switch (reason) {
+    case 'trend': reasonLabel = 'トレンド逆行'; break;
+    case 'stopSide': reasonLabel = 'SL向き不正'; break;
+    case 'lc': reasonLabel = 'LC上限超'; break;
+    case 'bias':
+      reasonLabel = bias === 'long' ? 'バイアス(買い優先)'
+        : bias === 'short' ? 'バイアス(売り優先)'
+        : 'バイアス';
+      break;
+  }
+  return `※${pos}(${sideLabel})は${reasonLabel}のため除外`;
+}
+
 /** enforcePlanConstraints と同一の enforce を行い、さらに **トレンド veto が発火したか(vetoFired)** を surface する
  *  (v0.7.54・計測フック)。返る plan は enforcePlanConstraints と byte 単位で同一(挙動不変)。
  *  vetoFired=true は「トレンド veto ステージが 脚を落とした or plan 全体を none に強制した」場合のみ。
@@ -609,35 +636,49 @@ export function enforcePlanConstraintsReport(
   if (plan.direction === 'range') {
     let upper = plan.range?.upper;
     let lower = plan.range?.lower;
+    // ★脚の脱落理由を記録(rationale 明記用)。AI の rationale は両脚を説明するが、以降のコード側 drop で
+    //   片脚だけ表示される場合に「なぜ消えたか」を rationale に追記する。表示ロジック/脚/価格/veto は不変。
+    const upperSide0 = upper?.side;
+    const lowerSide0 = lower?.side;
+    let upperReason: RangeDropReason | null = null;
+    let lowerReason: RangeDropReason | null = null;
     // (0) トレンド veto: トレンドに逆行する side の脚を落とす(bias/LC より先)。存在した脚を落としたら vetoFired。
     let vetoFired = false;
     if (dropSide) {
-      if (upper?.side === dropSide) { upper = undefined; vetoFired = true; }
-      if (lower?.side === dropSide) { lower = undefined; vetoFired = true; }
+      if (upper?.side === dropSide) { upper = undefined; vetoFired = true; upperReason = 'trend'; }
+      if (lower?.side === dropSide) { lower = undefined; vetoFired = true; lowerReason = 'trend'; }
     }
     // (a') 向きの二重防御: 損切りがエントリーの内側/反対側(境界=幅0 含む)のレッグを落とす(parse で落ちている想定=冪等)。
     //      これはトレンド veto ではないので vetoFired には計上しない(veto の効き目だけを計測する)。
-    if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) upper = undefined;
-    if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) lower = undefined;
+    if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) { upper = undefined; upperReason = 'stopSide'; }
+    if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) { lower = undefined; lowerReason = 'stopSide'; }
     // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
     //     ★v0.7.56: manual→ceilingYen 超 / ai→ceiling では落とさない。ただし lcHardMax 有効時は mode 無関係に安全網。
-    if (upper && lcExceeds(Math.abs(upper.entry - upper.stopLoss))) upper = undefined;
-    if (lower && lcExceeds(Math.abs(lower.entry - lower.stopLoss))) lower = undefined;
+    if (upper && lcExceeds(Math.abs(upper.entry - upper.stopLoss))) { upper = undefined; upperReason = 'lc'; }
+    if (lower && lcExceeds(Math.abs(lower.entry - lower.stopLoss))) { lower = undefined; lowerReason = 'lc'; }
     // (b) バイアス veto: long→sell レッグ落とし / short→buy レッグ落とし。
     if (bias === 'long') {
-      if (upper?.side === 'sell') upper = undefined;
-      if (lower?.side === 'sell') lower = undefined;
+      if (upper?.side === 'sell') { upper = undefined; upperReason = 'bias'; }
+      if (lower?.side === 'sell') { lower = undefined; lowerReason = 'bias'; }
     } else if (bias === 'short') {
-      if (upper?.side === 'buy') upper = undefined;
-      if (lower?.side === 'buy') lower = undefined;
+      if (upper?.side === 'buy') { upper = undefined; upperReason = 'bias'; }
+      if (lower?.side === 'buy') { lower = undefined; lowerReason = 'bias'; }
     }
+    // 両脚とも落ちたら none(既存挙動: rationale は元のまま据え置き)。
     if (!upper && !lower) {
       return { plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired };
     }
+    // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
+    const notes: string[] = [];
+    if (upperReason) notes.push(rangeDropNote('上部', upperSide0, upperReason, bias));
+    if (lowerReason) notes.push(rangeDropNote('下部', lowerSide0, lowerReason, bias));
+    const rationale = notes.length
+      ? `${plan.rationale}\n${notes.join('\n')}`
+      : plan.rationale;
     const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
-    return { plan: { direction: 'range', rationale: plan.rationale, refPrice: plan.refPrice, range }, vetoFired };
+    return { plan: { direction: 'range', rationale, refPrice: plan.refPrice, range }, vetoFired };
   }
 
   // ★directional(buy/sell): leg side === direction。逆行(dropSide===direction: 強上昇の sell / 強下降の buy)なら

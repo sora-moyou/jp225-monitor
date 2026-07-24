@@ -926,6 +926,53 @@ describe('enforcePlanConstraints(LC上限・バイアスのハード適用)', ()
   });
 });
 
+// ─── レンジ脚 drop 理由の rationale 明記(表示専用テキスト) ───
+describe('enforcePlanConstraints range 脚 drop 理由を rationale に明記', () => {
+  // REF=38250。upper=売り指値(上)/lower=買い指値(下)。
+  const upper = { side: 'sell' as const, type: 'limit' as const, entry: 38400, stopLoss: 38450 };  // LC=50
+  const lower = { side: 'buy' as const, type: 'limit' as const, entry: 38100, stopLoss: 38050 };    // LC=50
+  const basePlan: AiPlan = {
+    direction: 'range', rationale: '上部に売り指値、下部に買い指値を設定', refPrice: REF,
+    range: { upper: { ...upper }, lower: { ...lower } },
+  };
+
+  it("bias='short' で下部(買い指値)が落ちる→上部だけ残り rationale にバイアス除外を明記", () => {
+    const r = enforcePlanConstraints(basePlan, { ceilingYen: 65, bias: 'short' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper?.side).toBe('sell');   // 上部(売り)残存
+    expect(r.range?.lower).toBeUndefined();       // 下部(買い)脱落
+    // rationale は元文 + 下部(買い指値)+バイアス を含む注記
+    expect(r.rationale).toContain('上部に売り指値、下部に買い指値を設定');
+    expect(r.rationale).toContain('下部');
+    expect(r.rationale).toContain('買い指値');
+    expect(r.rationale).toContain('バイアス');
+    expect(r.rationale).toContain('売り優先');    // short=売り優先
+    // 残った上部については注記しない
+    expect(r.rationale).not.toContain('上部(売り指値)');
+  });
+
+  it('LC上限超で上部(売り指値)が落ちる→rationale に LC上限 を明記', () => {
+    // upper=売り(SLはentry上=正)だが LC=|38400-38550|=150(上限65超)→上部落ち。lower.LC=50 残る。
+    const p: AiPlan = {
+      ...basePlan,
+      range: { upper: { ...upper, entry: 38400, stopLoss: 38550 }, lower: { ...lower } },
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();       // 上部脱落
+    expect(r.range?.lower?.side).toBe('buy');      // 下部残存
+    expect(r.rationale).toContain('上部');
+    expect(r.rationale).toContain('売り指値');
+    expect(r.rationale).toContain('LC上限');
+  });
+
+  it('脚が落ちない正常 range は rationale を改変しない', () => {
+    const r = enforcePlanConstraints(basePlan, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('range');
+    expect(r.rationale).toBe('上部に売り指値、下部に買い指値を設定');
+  });
+});
+
 // ─── レンジ両面ストラドル(range): parse ───
 describe('parseScalpPlan range(レンジ両面ストラドル)', () => {
   // REF=38250。upper.entry は現在値超・lower.entry は現在値未満。
