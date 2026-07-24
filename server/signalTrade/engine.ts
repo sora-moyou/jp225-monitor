@@ -227,8 +227,14 @@ export class SignalEngine {
           //   検証し、trade2 が REJECT する構造の計画は「正規シグナル」として出さない(=紙 ARM もしない・
           //   currentSignal も更新しない・broadcast もしない)。これで monitor の紙と trade2 の実弾が乖離しない。
           //   maintainsCurrentSignal に依らず適用(=計画が構造的にトレード可能かの判定・A/B とも通過した計画だけが
-          //   シグナルになる)。anchorPrice=計画時の現在値(NIY=F)。非有限なら checkSanity が NG→抑止(安全)。
-          const sanity = result.plan.direction === 'none' ? null : checkSanity(result.plan, anchorPrice);
+          //   シグナルになる)。
+          //   ★検証は計画自身の参照価格 plan.refPrice(計画ビルド時に見た NIY=F=各レッグが挟む基準値)に対して行う。
+          //   anchorPrice は「要求時点」の現在値であり、この後の画像生成+LLM 呼び出し(数秒のレイテンシ)を挟むため
+          //   plan.refPrice とは乖離し得る。trade2(追従側)は受信時の自前の鮮度価格(≒refPrice)で checkSanity を
+          //   再検証するので、ここも refPrice を基準にしないと (a) refPrice に対して妥当な計画を古い anchorPrice で
+          //   誤って弾く過剰抑止、(b) monitor が anchor でだけ通し trade2 が refPrice で弾く乖離、が起きる。
+          //   非有限(refPrice 欠落等)なら checkSanity が NG→抑止(安全)。
+          const sanity = result.plan.direction === 'none' ? null : checkSanity(result.plan, result.plan.refPrice);
           if (result.plan.direction === 'none') {
             // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
             this.planSuppressedAnchor = anchorPrice;

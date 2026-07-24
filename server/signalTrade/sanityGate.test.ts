@@ -103,6 +103,46 @@ describe('正規シグナルのゲート(A): サニティ不通過は抑止', ()
   });
 });
 
+describe('正規シグナルのゲート(A): 検証は plan.refPrice 基準(要求時 anchorPrice ではない)', () => {
+  // feed(price) の price が「要求時点の anchorPrice」になる。LLM レイテンシ中に価格がドリフトすると
+  // plan.refPrice(計画ビルド時=各レッグが挟む基準)と anchorPrice が乖離する。ゲートは refPrice で判定すべき。
+
+  it('refPrice を挟む正当な OCO は、古い anchorPrice の逆側でも PASS(過剰抑止しない)', async () => {
+    // 要求時 anchor=38000。LLM 中に下落し refPrice=37600。計画は refPrice を挟む buy OCO(37550/37700)。
+    // 旧実装(anchor 基準)は stopEntry 37700 < 38000 で「逆指値が現値の上にない」と誤判定=抑止していた。
+    // 新実装(refPrice 基準)は 37550<37600<37700 で正当 → ARM。
+    const good: AiPlan = {
+      direction: 'buy', limitEntry: 37550, stopEntry: 37700,
+      stopLossForLimit: 37500, stopLossForStop: 37650, rationale: 'r', refPrice: 37600,
+    };
+    mockRunner.mockResolvedValue({ ok: true, plan: good });
+    const eng = newEngineA();
+    await eng.start();
+    eng.feed(38000, NOW);   // ★anchorPrice=38000(refPrice と乖離)。
+    await settle();
+    expect(eng.getPhase()).toBe('armed');
+    const sig = eng.getCurrentSignal();
+    expect(sig?.direction).toBe('buy');
+    expect(sig?.limitEntry).toBe(37550);
+    expect(sig?.stopEntry).toBe(37700);
+  });
+
+  it('refPrice の逆側にある不正な計画は、anchorPrice では通っても抑止(乖離ガード)', async () => {
+    // anchor=38000 なら buy 指値 37800<38000 かつ距離200 で通ってしまうが、refPrice=37600 の上(37800>37600)ゆえ不正。
+    // 新実装は refPrice 基準で NG=抑止(trade2 も refPrice≒受信時価格で REJECT する構造)。
+    const bad: AiPlan = {
+      direction: 'buy', limitEntry: 37800, stopLossForLimit: 37750, rationale: 'r', refPrice: 37600,
+    };
+    mockRunner.mockResolvedValue({ ok: true, plan: bad });
+    const eng = newEngineA();
+    await eng.start();
+    eng.feed(38000, NOW);   // ★anchorPrice=38000(これだと通ってしまう)。
+    await settle();
+    expect(eng.getPhase()).toBe('flat');
+    expect(eng.getCurrentSignal()).toBeNull();
+  });
+});
+
 describe('正規シグナルのゲート(A): 通過は従来どおり ARM + currentSignal', () => {
   it('サニティ通過の buy OCO → ARM して currentSignal を設定', async () => {
     const good: AiPlan = {
