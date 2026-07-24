@@ -58,6 +58,10 @@ export function initSchema(db: DatabaseSync): void {
       t INTEGER NOT NULL, signal_id INTEGER, opened_at INTEGER NOT NULL,
       direction TEXT NOT NULL, exit_stop REAL NOT NULL, phase TEXT
     );
+    CREATE TABLE IF NOT EXISTS signal_meta (
+      system TEXT PRIMARY KEY,
+      last_signal_id INTEGER NOT NULL
+    );
   `);
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
@@ -361,12 +365,39 @@ export function getSignalTrades(db: DatabaseSync, limit = 500, system?: SignalSy
     .all(...w.params, Math.max(1, Math.min(2000, limit))) as unknown as SignalTradeRow[];
 }
 
-/** 指定系統(未指定=全件)のトレードを削除し、削除件数を返す(設定からの履歴消去用)。 */
+/** 指定系統(未指定=全件)のトレードを削除し、削除件数を返す(設定からの履歴消去用)。
+ *  ★signalId は「履歴消去でのみ」リセットする規約: 履歴を消したら、その系統の永続 signalId カウンタも
+ *    0 に戻す(次の ARM は 1 から)。再起動では消えず、ここでだけ 0 化する(検証の結合キーの安定性)。 */
 export function clearSignalTrades(db: DatabaseSync, system?: SignalSystemFilter): number {
   const w = systemWhere(system);
   const before = (db.prepare(`SELECT COUNT(*) AS n FROM signal_trades${w.clause}`).get(...w.params) as { n: number }).n;
   db.prepare(`DELETE FROM signal_trades${w.clause}`).run(...w.params);
+  resetSignalIdCounter(db, system);   // ★履歴消去に合わせて永続 signalId カウンタも 0 化(この経路だけ)。
   return before;
+}
+
+// ─── トレードシグナルの signalId 永続カウンタ(検証の結合キーを再起動で安定化) ───
+// signalId は ARM ごとに単調増加で採番する結合キー(monitor⇔trade2)。従来は in-memory のみで
+// プロセス再起動ごとに 1 へ戻り、trade2 が追従する signalId と乖離していた。これを DB に永続し、
+// 起動時にシード(=再起動を跨いで継続)、履歴消去でのみ 0 へ戻す。system 別(A=実売買 / B=紙専用)。
+// last_signal_id は「最後に採番した signalId」= 次の採番は +1(未設定/リセット後は 0 → 次は 1)。
+
+/** 指定系統の最後に採番した signalId を返す(未設定は 0)。起動時のシードに使う。 */
+export function getSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter): number {
+  const row = db.prepare('SELECT last_signal_id FROM signal_meta WHERE system = ?').get(system) as { last_signal_id: number } | undefined;
+  return row?.last_signal_id ?? 0;
+}
+
+/** 指定系統の最後に採番した signalId を永続する(ARM で採番するたびに更新)。 */
+export function setSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter, value: number): void {
+  db.prepare('INSERT INTO signal_meta(system, last_signal_id) VALUES(?, ?) ON CONFLICT(system) DO UPDATE SET last_signal_id = excluded.last_signal_id')
+    .run(system, value);
+}
+
+/** signalId 永続カウンタを 0 へリセットする(履歴消去時のみ)。未指定=全系統をリセット。 */
+export function resetSignalIdCounter(db: DatabaseSync, system?: SignalSystemFilter): void {
+  if (system) db.prepare('INSERT INTO signal_meta(system, last_signal_id) VALUES(?, 0) ON CONFLICT(system) DO UPDATE SET last_signal_id = 0').run(system);
+  else db.exec('UPDATE signal_meta SET last_signal_id = 0');
 }
 
 // ─── トレードシグナルの決済逆指値(exit-stop)遷移履歴(検証用・RECORD-ONLY) ───

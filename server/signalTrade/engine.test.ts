@@ -18,7 +18,9 @@ import {
   getSignalTradeState, getSignalTradeStateB,
   getCurrentSignal, getSignalHold, getSignalPhase,
   _resetSignalEngine, _resetSignalEngineB,
+  SignalEngine, resetSignalEngineIdCounter,
 } from './engine.js';
+import { openDb, resolveDbPath, setSignalIdCounter, getSignalIdCounter } from '../db/store.js';
 import { resetConfigCache, type KnobDirective } from '../configStore.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 import { _setExitImpl } from './exit/index.js';
@@ -1070,5 +1072,64 @@ describe('directional は range 変更の影響を受けない(byte 互換)', ()
     const hold = computeHold({ phase: 'filled', position: pos }, sig)!;
     expect(hold).toEqual({ signalId: 9, direction: 'buy', entryPrice: 37950, exitStop: 37900, at: 7 });
     expect('rangeTp' in hold).toBe(false);
+  });
+});
+
+// ★signalId 永続シード: 再起動を跨いで継続(1 に戻らない)/ reset() は 0 化するが start() が永続から復元 /
+//   履歴消去(resetSignalEngineIdCounter)でのみ 0 化。APPDATA を temp に向けて実 DB(signal_meta)で検証する。
+describe('SignalEngine signalId 永続シード(再起動継続・履歴消去でのみリセット)', () => {
+  let dir: string;
+  let origAppData: string | undefined;
+  const cfgA = { profile: 'A' as const, systemTag: null, broadcastType: 'signalTrade' as const, maintainsCurrentSignal: true };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-sigid-'));
+    origAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;   // resolveDbPath は APPDATA を最優先 → temp DB を使う
+  });
+  afterEach(() => {
+    if (origAppData !== undefined) process.env.APPDATA = origAppData; else delete process.env.APPDATA;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('(a) 永続カウンタからシードして継続(seed=last・次の ARM は last+1・1 に戻らない)', async () => {
+    const db = openDb(resolveDbPath());
+    setSignalIdCounter(db, 'A', 5);   // 直前プロセスで 5 回 ARM した状態を永続。
+    db.close();
+    const eng = new SignalEngine(cfgA);
+    await eng.start();   // 起動=永続からシード。
+    expect(eng._peekSignalIdCounter()).toBe(5);   // 1 ではなく 5 → 次の採番は 6。
+    eng.stop();
+  });
+
+  it('reset()(テスト用)は in-memory を 0 化するが、start() は永続から復元する', async () => {
+    const db = openDb(resolveDbPath());
+    setSignalIdCounter(db, 'A', 9);
+    db.close();
+    const eng = new SignalEngine(cfgA);
+    eng.reset();
+    expect(eng._peekSignalIdCounter()).toBe(0);   // in-memory 初期化
+    await eng.start();
+    expect(eng._peekSignalIdCounter()).toBe(9);   // 起動で永続値を復元(0 のままにしない)
+    eng.stop();
+  });
+
+  it('起動でシードした in-memory を resetSignalIdCounter が 0 化する(履歴消去=次の ARM は 1 から)', async () => {
+    const db = openDb(resolveDbPath());
+    setSignalIdCounter(db, 'A', 4);
+    db.close();
+    const eng = new SignalEngine(cfgA);
+    await eng.start();
+    expect(eng._peekSignalIdCounter()).toBe(4);   // 永続からシード
+    eng.resetSignalIdCounter();                    // 履歴消去に対応する in-memory 0 化
+    expect(eng._peekSignalIdCounter()).toBe(0);    // 次の ARM は 1 から
+    eng.stop();
+    // 永続側は resetSignalIdCounter(in-memory)では変えない(clearSignalTrades が 0 化を担う)。
+    const db2 = openDb(resolveDbPath());
+    expect(getSignalIdCounter(db2, 'A')).toBe(4);
+    db2.close();
+    // module-level ラッパも例外なく呼べる(A singleton の in-memory を触るだけ)。
+    resetSignalEngineIdCounter('A');
+    resetSignalEngineIdCounter();
   });
 });

@@ -17,7 +17,7 @@ import { loadExitImpl } from './exit/index.js';
 import { checkSanity } from './sanity.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
-import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop } from '../db/store.js';
+import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, getSignalIdCounter, setSignalIdCounter } from '../db/store.js';
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
@@ -81,6 +81,8 @@ export class SignalEngine {
   private state: EngineState = { phase: 'flat' };
   // 現在シグナル(trade2 追従用・A のみ)。ARM ごとに signalId を単調増加で採番して更新し、
   // 擬似約定(filled)後も保持する(見送り none では更新しない)。null = まだ一度も ARM していない。
+  // ★signalId は「最後に採番した値」を DB(signal_meta)に永続する。start() で永続値からシードして再起動を
+  //   跨いで継続し(1 へ戻らない)、リセットは履歴消去(clearSignalTrades)のときだけ 0 に戻す。
   private signalIdCounter = 0;
   private currentSignal: CurrentSignal | null = null;
   private running = false;
@@ -105,6 +107,37 @@ export class SignalEngine {
   /** ログ接頭辞(A=[signalTrade] で従来ログと byte 一致 / B=[signalTradeB])。 */
   private get logTag(): string { return this.cfg.profile === 'B' ? '[signalTradeB]' : '[signalTrade]'; }
 
+  /** signalId 永続カウンタの system キー(A は systemTag=null → 'A' / B は 'B')。系統別に独立。 */
+  private get counterKey(): 'A' | 'B' { return this.cfg.systemTag === 'B' ? 'B' : 'A'; }
+
+  /** 起動時: 永続値(最後に採番した signalId)から signalIdCounter をシードする(再起動を跨いで継続)。
+   *  失敗しても致命的にしない(表示専用ゆえ 0 のまま=最悪でも従来挙動へ劣化)。 */
+  private loadSignalIdCounter(): void {
+    try {
+      const db = openDb(resolveDbPath());
+      try { this.signalIdCounter = getSignalIdCounter(db, this.counterKey); } finally { db.close(); }
+    } catch (e) {
+      console.warn(`${this.logTag} signalId seed failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** ARM で採番するたびに、最後に採番した signalId を永続する(再起動後のシード元)。失敗は握りつぶす。 */
+  private persistSignalIdCounter(): void {
+    try {
+      const db = openDb(resolveDbPath());
+      try { setSignalIdCounter(db, this.counterKey, this.signalIdCounter); } finally { db.close(); }
+    } catch (e) {
+      console.warn(`${this.logTag} signalId persist failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** 履歴消去に合わせて in-memory の signalId カウンタを 0 に戻す(永続側は clearSignalTrades が 0 化)。
+   *  次の ARM は 1 から採番される。テスト/リセットの reset() と違い、この経路だけが実運用のリセット。 */
+  resetSignalIdCounter(): void { this.signalIdCounter = 0; }
+
+  /** テスト用: 現在の signalId カウンタ(=最後に採番した signalId)を覗く。 */
+  _peekSignalIdCounter(): number { return this.signalIdCounter; }
+
   /** SSE/hold に載せる現在シグナル。A は currentSignal / B は常に null(currentSignal を露出しない)。 */
   private signalForState(): CurrentSignal | null {
     return this.cfg.maintainsCurrentSignal ? this.currentSignal : null;
@@ -116,8 +149,11 @@ export class SignalEngine {
     if (!engineEnabled()) { console.log(`${this.logTag} disabled (SIGNAL_TRADE=0)`); return; }
     if (this.cfg.profile === 'B' && !engineBEnabled()) { console.log('[signalTradeB] disabled (SIGNAL_TRADE_B=0)'); return; }
     const kind = await loadExitImpl();
+    // ★signalId を永続値からシード(再起動を跨いで継続=1 へ戻らない)。reset() は in-memory 0 化だが
+    //   実運用の起動はここで必ず永続から復元する(履歴消去でのみ 0 になった値を尊重)。
+    this.loadSignalIdCounter();
     this.running = true;
-    console.log(`${this.logTag} engine started (exit=${kind}, planInterval=${Math.round(this.planIntervalMs / 1000)}s)`);
+    console.log(`${this.logTag} engine started (exit=${kind}, planInterval=${Math.round(this.planIntervalMs / 1000)}s, signalId=${this.signalIdCounter})`);
   }
 
   stop(): void { this.running = false; }
@@ -257,6 +293,7 @@ export class SignalEngine {
               if (this.cfg.maintainsCurrentSignal) {
                 // ARM ごとに signalId を単調増加で採番し、現在シグナルを更新(A のみ・filled 後も保持・none では更新しない)。
                 this.signalIdCounter += 1;
+                this.persistSignalIdCounter();   // ★採番のたびに永続(再起動後もこの値+1 から継続=決して再利用しない)。
                 this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
               }
               this.broadcastSignalState(Date.now());    // ARM 時に即 broadcast(A は trade2 が即追従できるよう)。
@@ -365,6 +402,14 @@ export function getSignalHold(): SignalHold | null { return engineA.getHold(); }
 export function feedSignalEngine(price: number, now: number): void {
   engineA.feed(price, now);
   engineB.feed(price, now);
+}
+
+/** ★履歴消去に合わせて live エンジンの in-memory signalId カウンタを 0 に戻す(次の ARM は 1 から)。
+ *  永続側(signal_meta)は clearSignalTrades が 0 化する。route(履歴消去)から両方を協調して呼ぶ。
+ *  system: 'A'|'B' で対象系統のみ(未指定=両系統)。B は採番しないので実質 no-op だが対称性のため揃える。 */
+export function resetSignalEngineIdCounter(system?: 'A' | 'B'): void {
+  if (!system || system === 'A') engineA.resetSignalIdCounter();
+  if (!system || system === 'B') engineB.resetSignalIdCounter();
 }
 
 /** テスト/リセット用: A エンジン内部状態を初期化する(従来と同一=A の回帰テスト互換)。 */

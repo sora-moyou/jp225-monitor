@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { openDb, resolveDbPath, getSignalTrades, clearSignalTrades, type SignalSystemFilter } from '../db/store.js';
-import { equitySeries } from '../signalTrade/engine.js';
+import { equitySeries, resetSignalEngineIdCounter } from '../signalTrade/engine.js';
 
 // トレードシグナル(表示専用・紙トラッキング)の履歴 + 収益曲線。発注系は持たない(表示/管理専用)。
 // ★v0.8.2: 系統 A(実売買)/ B(紙専用)を ?system= で切り替える。既定は A(後方互換=既存クライアントは A を見る)。
@@ -32,7 +32,10 @@ export function signalTradesClearHandler(req: Request, res: Response): void {
   try {
     const db = openDb(resolveDbPath());
     try {
+      // 履歴消去=この系統の signalId をリセットする唯一の契機。永続カウンタ(signal_meta)は
+      // clearSignalTrades が 0 化し、live エンジンの in-memory カウンタもここで 0 に戻す(次 ARM は 1 から)。
       const cleared = clearSignalTrades(db, system);
+      resetSignalEngineIdCounter(system);
       res.json({ ok: true, system, cleared });
     } finally { db.close(); }
   } catch (err) {
