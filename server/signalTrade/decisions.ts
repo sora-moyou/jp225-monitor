@@ -349,9 +349,12 @@ export function advance(
 }
 
 /** エンジン状態 + 現在値 + now から SSE state を組み立てる純関数。
- *  signal(現在シグナル・trade2 追従用)は在れば付与する。既存フィールドは不変=パネル表示互換。 */
+ *  signal(現在シグナル・trade2 追従用)は在れば付与する。既存フィールドは不変=パネル表示互換。
+ *  ★lastExitedSignalId(RECORD/ADD-ONLY): 直近に決済(filled→flat)したシグナルの signalId。
+ *   在るときだけ露出する(初回決済まで undefined=既存 JSON 不変=broadcast dedupe を壊さない)。 */
 export function toSignalTradeState(
   st: EngineState, price: number | null, now: number, signal?: CurrentSignal | null,
+  lastExitedSignalId?: number,
 ): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
@@ -411,6 +414,8 @@ export function toSignalTradeState(
     // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
     if (signal.settings) s.signal.settings = signal.settings;
   }
+  // ★直近決済シグナルID(ADD-ONLY): 在るときだけ露出(初回決済まで欠落=既存 JSON 不変)。
+  if (lastExitedSignalId != null) s.lastExitedSignalId = lastExitedSignalId;
   return s;
 }
 

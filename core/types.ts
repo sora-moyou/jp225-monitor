@@ -158,6 +158,11 @@ export interface SignalTradeState {
     rangeTp?: number;      // 反対側レンジ節目(TP目標の生値)。
     tpTrigger?: number;    // 成行TPの発火価格(buy=rangeTp−5 / sell=rangeTp+5)。
   };
+  // ★直近に「決済(filled→flat)した」シグナルの signalId(trade2 の即時再同期用・A のみ)。
+  //   紙エンジンが約定中の建玉を決済した瞬間に、そのエントリーの ARM 采番(currentSignal.signalId)を載せ、
+  //   次の決済まで保持する(late-join の追従側も読める)。ADD-ONLY: 一度も決済していない state では欠落=
+  //   既存 SSE JSON は不変(lastBroadcastJson の dedupe と既定挙動を保つ)。決済ロジック/紙損益には無影響。
+  lastExitedSignalId?: number;
   updatedAt: number;
 }
 

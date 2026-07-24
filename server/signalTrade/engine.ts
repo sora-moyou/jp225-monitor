@@ -89,6 +89,9 @@ export class SignalEngine {
   private lastBroadcastJson = '';
   // 決済(filled→flat)時刻。この後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。null=まだ決済無し。
   private lastSignalExitAt: number | null = null;
+  // ★直近に決済(filled→flat)したシグナルの signalId(trade2 の即時再同期用・A のみ)。決済時に currentSignal.signalId を
+  //   捕捉し、次の決済まで保持する。undefined=まだ一度も決済していない(=SSE に載せない=既存 JSON 不変=dedupe 保持)。
+  private lastExitedSignalId: number | undefined = undefined;
   // cooldown ログの多重抑止(毎tick出さない)。決済ごとに false へ戻し、cooldown 中に一度だけ出す。
   private cooldownLogged = false;
   private readonly planIntervalMs = resolvePlanIntervalMs();
@@ -122,7 +125,7 @@ export class SignalEngine {
   /** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
   getState(now = Date.now()): SignalTradeState {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-    return toSignalTradeState(this.state, price, now, this.signalForState());
+    return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId);
   }
 
   /** 現在シグナル(trade2 追従用)。A のみ。B は常に null(=露出しない)。 */
@@ -145,6 +148,7 @@ export class SignalEngine {
     this.lastSignalExitAt = null;
     this.cooldownLogged = false;
     this.exitStopTracker = { openedAt: null, value: null };
+    this.lastExitedSignalId = undefined;
   }
 
   // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。系統タグ(A=null/B='B')を付与する。
@@ -270,7 +274,7 @@ export class SignalEngine {
   // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-    const s = toSignalTradeState(this.state, price, now, this.signalForState());
+    const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId);
     const json = JSON.stringify(s);
     if (json !== this.lastBroadcastJson) {
       this.lastBroadcastJson = json;
@@ -295,6 +299,10 @@ export class SignalEngine {
         // 決済(filled→flat)= 全建玉クローズ。クールダウン起点を記録し、ログ抑止を解除(次tickで一度出す)。
         this.lastSignalExitAt = now;
         this.cooldownLogged = false;
+        // ★決済したシグナルの signalId を捕捉(A のみ・trade2 の即時再同期用)。filled 中は currentSignal が
+        //   そのエントリーの ARM 采番を保持している=この時点で読めば「今抜けた建玉の signalId」。次の決済まで保持。
+        //   B は currentSignal を持たない(null)ので変化なし=B の SSE JSON は不変(dedupe 維持)。
+        if (this.currentSignal) this.lastExitedSignalId = this.currentSignal.signalId;
       }
       // ★検証用(RECORD-ONLY): 決済逆指値が変化していれば signal_exit_stops へ1行記録(変化時のみ・A のみ)。
       //   state 更新後・broadcast 前に評価。決済ロジック/SSE には影響しない(追加の DB 書込のみ)。

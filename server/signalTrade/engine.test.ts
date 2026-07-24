@@ -651,6 +651,28 @@ describe('toSignalTradeState signal', () => {
   });
 });
 
+// ─── lastExitedSignalId(trade2 の即時再同期用・ADD-ONLY) ───
+describe('toSignalTradeState lastExitedSignalId', () => {
+  const sig: CurrentSignal = { signalId: 7, at: 5, direction: 'buy', rationale: 'r', limitEntry: 37950, stopLossForLimit: 37900 };
+  it('未指定(=まだ決済無し)では欠落=既存 JSON 不変', () => {
+    const flat = toSignalTradeState({ phase: 'flat' }, 38000, 9, sig);
+    expect('lastExitedSignalId' in flat).toBe(false);
+    // ★dedupe 不変性: lastExitedSignalId を渡さなければ JSON はこの変更前と完全一致(既存フィールドのみ)。
+    const before = toSignalTradeState({ phase: 'flat', lastExit: { exitPrice: 38200, pnl: 200, at: 3 } }, 38200, 9);
+    expect(before.lastExitedSignalId).toBeUndefined();
+    expect(JSON.stringify(before)).not.toContain('lastExitedSignalId');
+  });
+  it('決済したシグナルの signalId を渡すと SSE state に載る(次の決済まで保持)', () => {
+    const s = toSignalTradeState({ phase: 'flat', lastExit: { exitPrice: 37950, pnl: -50, at: 3 } }, 37950, 9, sig, 7);
+    expect(s.lastExitedSignalId).toBe(7);
+  });
+  it('flat/armed/filled いずれでも露出できる(phase 非依存)', () => {
+    expect(toSignalTradeState({ phase: 'flat' }, 38000, 9, sig, 3).lastExitedSignalId).toBe(3);
+    const armed: EngineState = { phase: 'armed', armed: { direction: 'buy', limitEntry: 1, stopLossForLimit: 1, rationale: 'r', at: 0 } };
+    expect(toSignalTradeState(armed, 38000, 9, sig, 4).lastExitedSignalId).toBe(4);
+  });
+});
+
 // ─── v0.7.56: 設定スナップショット(委任モード+値)の生成/持ち回り/露出/記録 ───
 describe('knobSnapshot(1 knob 分の整形)', () => {
   it('manual は value を載せる', () => {
