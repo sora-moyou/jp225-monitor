@@ -57,12 +57,6 @@
           <input type="password" id="key-groq" autocomplete="off" />
         </div>
 
-        <div class="setting-row">
-          <label>
-            <span id="key-kimi-status" class="key-status" title="キー状態"></span>Kimi <a href="https://platform.moonshot.ai/console/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
-          </label>
-          <input type="password" id="key-kimi" autocomplete="off" />
-        </div>
         <div class="exit-hint">まずは無料キーだけで動きます。おすすめは Gemini（画像対応・無料枠が広い）。Groq はテキスト専用で高速な予備。</div>
       </fieldset>
 
@@ -78,12 +72,20 @@
 
         <div class="setting-row">
           <label>
+            <span id="key-kimi-status" class="key-status" title="キー状態"></span>Kimi <a href="https://platform.moonshot.ai/console/api-keys" target="_blank" rel="noopener">キー取得 ↗</a>
+            <span class="badge-paid">有料 (従量・OpenAIより安い / テキスト専用)</span>
+          </label>
+          <input type="password" id="key-kimi" autocomplete="off" />
+        </div>
+
+        <div class="setting-row">
+          <label>
             <span id="key-websearch-status" class="key-status" title="キー状態"></span>Gemini (チャットの Web 検索用) <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">キー取得 ↗</a>
             <span class="badge-paid">有料</span>
           </label>
           <input type="password" id="key-websearch" autocomplete="off" placeholder="空欄なら Gemini キーを使用" />
         </div>
-        <div class="exit-hint">OpenAI は画像対応で安定運用の要（少額課金）。Web検索キーは<strong>任意</strong>: チャットの Web 検索で使う専用キーで、空欄なら上の Gemini キーを流用します（課金 Gemini グラウンディング用）。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます。</strong></div>
+        <div class="exit-hint">OpenAI は画像対応で安定運用の要（少額課金）。Kimi はテキスト専用の安い従量課金で、無料枠が枯渇/失敗したとき OpenAI より先に使われる予備（画像は非対応）。Web検索キーは<strong>任意</strong>: チャットの Web 検索で使う専用キーで、空欄なら上の Gemini キーを流用します（課金 Gemini グラウンディング用）。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます。</strong></div>
       </fieldset>
 
 <div class="setting-row">
