@@ -73,25 +73,28 @@ export async function basedataImportHandler(_req: Request, res: Response): Promi
   }
 }
 
-// ワンボタン公開の多重起動防止(module-level・finally でリセット)。
+// ワンボタン公開/自動公開スケジューラで共有する多重起動防止(module-level・finally でリセット)。
+//   手動ボタンとスケジューラの tick が重ならないよう、共有フラグ + isPublishInFlight() を公開する。
 let publishInFlight = false;
+export function isPublishInFlight(): boolean { return publishInFlight; }
 
-/** POST /api/basedata/publish — monitor2 専用のワンボタン公開。
- *  225labo ログイン→xlsx DL→パース→gz/meta→gh 公開→このPCへ即取込。
- *  公開(gh)成功後にのみローカル取込を行う(部分失敗の不整合を避ける)。creds はログに出さない。 */
-export async function basedataPublishHandler(_req: Request, res: Response): Promise<void> {
-  if (publishInFlight) { res.status(409).json({ ok: false, error: '実行中です' }); return; }
+export interface BasedataPublishResult {
+  count: number; firstDate: string; lastDate: string; generatedAt: string; saveDir: string; savedXlsx: string;
+}
+
+/** 基礎データ公開の実処理(HTTP 非依存・再利用可能)。手動ボタンと自動スケジューラの両方から呼ぶ。
+ *  225labo ログイン→DL→ZIP展開→保存→パース→gz/meta→公開(PAT or gh)→ローカル取込。
+ *  資格情報未設定/各失敗はすべて throw する(呼び出し側が JP 文言/ステータスへ変換)。creds/token はログに出さない。
+ *  共有 publishInFlight を立てる(多重起動は 409 側で弾く前提だが、直呼びでも二重実行しないよう here でも保護)。 */
+export async function runBasedataPublish(): Promise<BasedataPublishResult> {
   const { user, pass } = resolveBasedataCreds();
-  if (!user || !pass) {
-    res.status(400).json({ ok: false, error: '225labo のユーザー名/パスワードが未設定' });
-    return;
-  }
+  if (!user || !pass) throw new Error('225labo のユーザー名/パスワードが未設定');
   publishInFlight = true;
   try {
-    // ① ログイン → ② DL(失敗は 502)。225labo の配布は xlsx を内包した ZIP。
+    // ① ログイン → ② DL。225labo の配布は xlsx を内包した ZIP。
     const cookie = await login(user, pass);
     const downloaded = await downloadXlsx(cookie);
-    // ③ ZIP から内側の xlsx を取り出す → パース(未来バー混入で throw=422)。④ gz/meta。
+    // ③ ZIP から内側の xlsx を取り出す → パース(未来バー混入で throw)。④ gz/meta。
     const xlsx = extractXlsxFromZip(downloaded);
     // 取り出した最新ソース xlsx と gz/meta を「保存先フォルダ」へ固定名で上書き保存する(既定 Downloads=
     //   gh 未認証の別PCへコピーしやすい)。★固定ファイル名は意図的: writeFileSync/writeGzMeta は常に上書き
@@ -103,7 +106,7 @@ export async function basedataPublishHandler(_req: Request, res: Response): Prom
     const bars = xlsxBufferToBars(xlsx);
     const { gz, meta } = barsToGzMeta(bars, new Date().toISOString());
     const { gzPath, metaPath } = writeGzMeta(gz, meta, saveDir);
-    // ⑤ 公開: PAT があれば REST API(gh 不要)/無ければ gh CLI にフォールバック。失敗は 502。⑥ 公開成功後のみ取込。
+    // ⑤ 公開: PAT があれば REST API(gh 不要)/無ければ gh CLI にフォールバック。⑥ 公開成功後のみ取込。
     const token = resolveGithubToken();
     if (token) {
       await apiPublish(token, [
@@ -118,12 +121,34 @@ export async function basedataPublishHandler(_req: Request, res: Response): Prom
       importBars(db, bars);
       setMeta(db, META_KEY, meta.generatedAt);
     } finally { db.close(); }
-    res.json({
-      ok: true, count: meta.count,
+    return {
+      count: meta.count,
       firstDate: fmtDate(meta.firstBar), lastDate: fmtDate(meta.lastBar),
       generatedAt: meta.generatedAt,
-      savedXlsx: savedXlsxPath,   // ローカル控えの保存先(固定・上書き)。creds は含めない。
-      saveDir,                    // 保存先フォルダ(xlsx/gz/meta の3点)。
+      savedXlsx: savedXlsxPath, saveDir,
+    };
+  } finally {
+    publishInFlight = false;
+  }
+}
+
+/** POST /api/basedata/publish — monitor2 専用のワンボタン公開。runBasedataPublish の薄いラッパ。
+ *  in-flight 409 / creds 400 / JP エラーステータス変換のみを担う。 */
+export async function basedataPublishHandler(_req: Request, res: Response): Promise<void> {
+  if (publishInFlight) { res.status(409).json({ ok: false, error: '実行中です' }); return; }
+  const { user, pass } = resolveBasedataCreds();
+  if (!user || !pass) {
+    res.status(400).json({ ok: false, error: '225labo のユーザー名/パスワードが未設定' });
+    return;
+  }
+  try {
+    const r = await runBasedataPublish();
+    res.json({
+      ok: true, count: r.count,
+      firstDate: r.firstDate, lastDate: r.lastDate,
+      generatedAt: r.generatedAt,
+      savedXlsx: r.savedXlsx,   // ローカル控えの保存先(固定・上書き)。creds は含めない。
+      saveDir: r.saveDir,       // 保存先フォルダ(xlsx/gz/meta の3点)。
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -136,7 +161,5 @@ export async function basedataPublishHandler(_req: Request, res: Response): Prom
       ? 'GitHub 公開に失敗(gh の認証を確認)'
       : msg;
     res.status(status).json({ ok: false, error });
-  } finally {
-    publishInFlight = false;
   }
 }

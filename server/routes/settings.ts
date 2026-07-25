@@ -9,6 +9,7 @@ import {
   type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig,
 } from '../configStore.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
+import { openDb, resolveDbPath, getMeta } from '../db/store.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
 import { restartNewsLoop } from '../loops/newsLoop.js';
 import { setCooldownMs } from '../alertCooldown.js';
@@ -57,6 +58,14 @@ function applyBoolField(existing: boolean | undefined, incoming: unknown): boole
   return existing;
 }
 
+// 自動公開の直近結果サマリ(meta)。DB 未整備/例外時は '' を返す(設定画面を落とさない)。
+function readAutoLastRun(): string {
+  try {
+    const db = openDb(resolveDbPath());
+    try { return getMeta(db, 'basedata_auto_last_result') ?? ''; } finally { db.close(); }
+  } catch { return ''; }
+}
+
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
   res.json({
@@ -73,6 +82,8 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     basedataPassSet: !!config.basedataPass,   // ★基礎データ公開(225labo)パスワード 設定済み(真偽のみ・秘密)
     basedataSaveDir: config.basedataSaveDir ?? '',   // ★保存先フォルダ(可視・空欄=既定 Downloads)。生の保存値を返す。
     githubTokenSet: !!config.githubToken,     // ★GitHub PAT 設定済み(真偽のみ・秘密)
+    basedataAutoPublish: !!config.basedataAutoPublish,   // ★自動公開(平日8:00以降の初回)有効/無効
+    basedataAutoLastRun: readAutoLastRun(),   // ★自動公開の直近結果サマリ(meta・無ければ '')
     webSearchModel: config.webSearchModel ?? '',
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
@@ -137,6 +148,7 @@ interface SettingsBody {
   basedataPass?: string | null;      // ★基礎データ公開(225labo)パスワード(秘密・空欄=変更なし)
   basedataSaveDir?: string | null;   // ★保存先フォルダ(可視・空欄=既定 Downloads に戻す)
   githubToken?: string | null;       // ★GitHub PAT(秘密・空欄=変更なし)
+  basedataAutoPublish?: boolean | null;   // ★自動公開 有効/無効(null=無効=未設定で保存)
   webSearchModel?: string | null;    // Web検索用 Gemini モデル
   webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
@@ -265,6 +277,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const rangeEnabledValue = applyBoolField(existing.scalpRangeEnabled, bodyRec.scalpRangeEnabled);
   // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
+  // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
+  const autoPublishValue = applyBoolField(existing.basedataAutoPublish, bodyRec.basedataAutoPublish);
   // ★v0.8.2: System B(紙専用)の設定を組み立てる(未指定=変更なし・数値/bias 検証込み)。
   const signalBValue = buildSignalB(existing.signalB, body.signalB, errors);
   if (errors.length > 0) {
@@ -283,6 +297,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
     basedataPass: applyStringField(existing.basedataPass, body.basedataPass),   // ★秘密: 空欄=変更なし
     basedataSaveDir: applyVisibleField(existing.basedataSaveDir, body.basedataSaveDir),   // ★可視: 空欄=既定に戻す
     githubToken: applyStringField(existing.githubToken, body.githubToken),      // ★秘密: 空欄=変更なし
+    basedataAutoPublish: autoPublishValue,   // ★自動公開 有効/無効
+
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)

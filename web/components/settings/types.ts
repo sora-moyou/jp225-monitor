@@ -9,6 +9,8 @@ export interface SettingsResponse {
   basedataUserSet?: boolean; basedataPassSet?: boolean;   // ★基礎データ公開(225labo)認証 設定済み(真偽のみ)
   basedataSaveDir?: string;   // ★保存先フォルダ(可視・生の保存値・空欄=既定 Downloads)
   githubTokenSet?: boolean;   // ★GitHub PAT 設定済み(真偽のみ・秘密)
+  basedataAutoPublish?: boolean;   // ★自動公開 有効/無効
+  basedataAutoLastRun?: string;    // ★自動公開の直近結果サマリ(無ければ '')
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
@@ -67,6 +69,7 @@ export interface SavePayload {
   basedataPass?: string | null;   // ★基礎データ公開(225labo)パスワード(秘密・空欄=送らない)
   basedataSaveDir?: string | null;   // ★保存先フォルダ(可視・常に送る・空欄=既定に戻す)
   githubToken?: string | null;    // ★GitHub PAT(秘密・空欄=送らない)
+  basedataAutoPublish?: boolean | null;   // ★自動公開 有効/無効(常に送る)
   scalpLcCeilingYen?: number | null;
   scalpBias?: 'long' | 'short' | 'none' | null;
   scalpCooldownSec?: number | null;
@@ -143,6 +146,8 @@ export interface SettingsElements {
   inputLaboPass: HTMLInputElement;
   inputBasedataSaveDir: HTMLInputElement;   // 保存先フォルダ(可視)
   inputGithubToken: HTMLInputElement;       // GitHub PAT(秘密)
+  checkBasedataAutoPublish: HTMLInputElement;   // 自動公開 有効/無効
+  basedataAutoStatus: HTMLElement;          // 自動公開の直近結果サマリ表示
   basedataPublishBtn: HTMLButtonElement;
   basedataPublishResult: HTMLElement;
   mergeDbBtn: HTMLButtonElement;

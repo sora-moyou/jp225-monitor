@@ -122,6 +122,12 @@
           <label>GitHub トークン(任意・gh 不要)</label>
           <input type="password" id="github-token" autocomplete="off" />
         </div>
+        <label class="exit-check" style="margin-top:8px">
+          <input type="checkbox" id="basedata-auto-publish" />
+          毎朝8:00以降の初回に自動更新(月-金)
+        </label>
+        <div id="basedata-auto-status" class="exit-hint"></div>
+        <div class="exit-hint">アプリ起動中のみ動作。8:00に開いていなくても、その日アプリを開けば1回実行します。資格情報と(GitHubトークンまたはgh)が必要。</div>
         <div class="version-row" style="margin-top:8px">
           <button type="button" id="basedata-publish-btn" class="btn-secondary">基礎データを更新</button>
         </div>

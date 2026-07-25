@@ -41,6 +41,7 @@ import { isLLMEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults, resolveCooldownMin } from './configStore.js';
 import { setCooldownMs } from './alertCooldown.js';
 import { resolveVariant } from './variant.js';
+import { startBasedataAutoScheduler } from './basedata/autoPublish.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
@@ -131,6 +132,8 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startForecastLoop();
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
+  // ★基礎データ自動公開スケジューラは monitor2(full)専用。lite では絶対に起動しない(ハードゲート)。
+  if (resolveVariant() === 'full') startBasedataAutoScheduler();
 
   // 起動時に一度だけチャットショット(~/Desktop/jp225-chart-shot.png)を撮って確認用画像を更新する。
   // 撮影パイプライン(Chrome ヘッドレス→/chart-shot)が起動直後に動く証拠にもなる。ベストエフォート:

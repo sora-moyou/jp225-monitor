@@ -21,6 +21,7 @@ export interface UserConfig {
   basedataPass?: string;  // ★基礎データ公開(225labo)ログインのパスワード。秘密扱い。
   basedataSaveDir?: string;  // ★基礎データ公開の保存先フォルダ(xlsx/gz/meta)。可視。未設定は Downloads。
   githubToken?: string;   // ★基礎データ公開を gh CLI 無しで行う GitHub PAT。秘密扱い。未設定は gh CLI にフォールバック。
+  basedataAutoPublish?: boolean;  // ★平日8:00以降の初回に自動公開(monitor2専用)。未設定/false は無効。
   pricePollMs?: number;
   newsPollMs?: number;
   port?: number;

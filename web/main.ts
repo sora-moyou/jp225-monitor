@@ -194,6 +194,8 @@ const settingsCtl = initSettingsModal({
   inputLaboPass:  document.getElementById('labo-pass') as HTMLInputElement,
   inputBasedataSaveDir: document.getElementById('basedata-save-dir') as HTMLInputElement,
   inputGithubToken:     document.getElementById('github-token') as HTMLInputElement,
+  checkBasedataAutoPublish: document.getElementById('basedata-auto-publish') as HTMLInputElement,
+  basedataAutoStatus:   document.getElementById('basedata-auto-status') as HTMLElement,
   basedataPublishBtn:    document.getElementById('basedata-publish-btn') as HTMLButtonElement,
   basedataPublishResult: document.getElementById('basedata-publish-result') as HTMLElement,
   mergeDbBtn:     document.getElementById('settings-merge-db') as HTMLButtonElement,
