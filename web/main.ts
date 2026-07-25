@@ -190,6 +190,10 @@ const settingsCtl = initSettingsModal({
   checkUpdateBtn: document.getElementById('settings-check-update') as HTMLButtonElement,
   updateResult:   document.getElementById('settings-update-result') as HTMLElement,
   currentVersion: document.getElementById('settings-current-version') as HTMLElement,
+  inputLaboUser:  document.getElementById('labo-user') as HTMLInputElement,
+  inputLaboPass:  document.getElementById('labo-pass') as HTMLInputElement,
+  basedataPublishBtn:    document.getElementById('basedata-publish-btn') as HTMLButtonElement,
+  basedataPublishResult: document.getElementById('basedata-publish-result') as HTMLElement,
   mergeDbBtn:     document.getElementById('settings-merge-db') as HTMLButtonElement,
   mergeResult:    document.getElementById('settings-merge-result') as HTMLElement,
   exportDbBtn:    document.getElementById('settings-export-db') as HTMLButtonElement,
@@ -382,6 +386,8 @@ fetch(apiUrl('/api/version'))
       // ★lite 追加(ユーザー指示): Web検索モデル設定 と データ(DB管理)fieldset も隠す。API キーは表示のまま。
       webSearchModelFieldset: document.getElementById('websearch-model-fieldset'),
       dataFieldset: document.getElementById('data-fieldset'),
+      // ★基礎データ公開(225labo)は monitor2 メンテナ専用=lite で非表示。
+      basedataPublishFieldset: document.getElementById('basedata-publish-fieldset'),
     });
   })
   .catch(() => { if (versionEl) versionEl.textContent = 'v?'; });

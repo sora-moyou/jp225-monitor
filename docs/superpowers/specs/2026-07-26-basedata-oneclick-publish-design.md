@@ -24,8 +24,8 @@
 
 1. config から `basedataUser` / `basedataPass` を読む(未設定→400)。
 2. **225labo ログイン**(`server/basedata/labo225.ts`): GET `user.php`(PHPSESSID 取得)→ POST `user.php`(`op=login`, `xoops_redirect=/`, `uname`, `pass`)→ 認証セッション cookie 取得。ログイン失敗を検知(下記§6)。
-3. **xlsx ダウンロード**: cookie 付きで GET `https://225labo.com/modules/downloads_data/index.php?page=visit&cid=3&lid=160`。XOOPS downloads の `page=visit` は通常ファイルURLへ 302 → 追従してバイナリ取得。HTML(=未ログイン/ログインページ)が返ったら失敗として扱う(Content-Type/マジックバイトで判定)。
-4. **パース**(共有コア `xlsxBufferToBars`): '1min' シート → `rowToBar` → ソート → 未来バーガード(throw)。
+3. **ダウンロード**: cookie 付きで GET `https://225labo.com/modules/downloads_data/index.php?page=visit&cid=3&lid=160`。XOOPS downloads の `page=visit` は通常ファイルURLへ 302 → 追従してバイナリ取得。**取得物は ZIP アーカイブ**(例 `N225minif_2026 (11).zip`)で、中に xlsx が入っている。HTML(=未ログイン/ログインページ)が返ったら失敗として扱う。
+4. **解凍→パース**: `extractXlsxFromZip(buf)` で ZIP から `.xlsx` エントリを取り出す(xlsx 自体も ZIP=`PK` マジックが同じなので、エントリ名/中身で判別: `.xlsx` エントリがあれば wrapper zip→内側を返す/`xl/workbook.xml` を含めば既に xlsx→そのまま)。次に `xlsxBufferToBars(innerXlsx)`: '1min' シート → `rowToBar` → ソート → 未来バーガード(throw)。ZIP 解凍は軽量依存(既存になければ `fflate`)。
 5. **gz+meta**(`barsToGzMeta`): `dist/basedata-1min.ndjson.gz` + `dist/basedata-1min.meta.json`。
 6. **公開**(`ghPublish`): `gh release view/create/upload ... --repo sora-moyou/jp225-monitor --clobber`(現行スクリプトと同一コマンド)。
 7. **ローカル即取込**: パース済み bars を既存 `importBars` でこのPCの DB に upsert し、`basedata_generatedAt` メタを新 `generatedAt` に更新(公開直後にこのPCも最新化)。
@@ -43,7 +43,8 @@
   - `ghPublish(gzPath, metaPath): void` — `gh` へアップロード(repo/release ハードコード維持)。
 - `server/basedata/labo225.ts`(新規・server専用):
   - `buildLoginBody(uname, pass): string` — `op=login&xoops_redirect=%2F&uname=...&pass=...`(純関数=テスト対象)。
-  - `classifyDownload(contentType, firstBytes): 'xlsx' | 'html' | 'unknown'` — 応答分類(純関数=テスト対象)。
+  - `classifyDownload(contentType, firstBytes): 'zip' | 'xlsx' | 'html' | 'unknown'` — 応答分類(純関数=テスト対象)。ZIP と xlsx は同じ `PK` マジックのため、`PK` は zip コンテナ扱いにしてエントリで判別。
+  - `extractXlsxFromZip(buf): Buffer` — ZIP から `.xlsx` を取り出す(wrapper zip なら内側を返す/既に xlsx ならそのまま/`.xlsx` 無しは throw)。純関数=テスト対象。
   - `login(uname, pass): Promise<string /*cookie*/>` / `downloadXlsx(cookie): Promise<Buffer>`(ネット・非単体テスト)。
 - `scripts/basedata-publish.mts` — 上記コアを呼ぶ**薄い CLI ラッパ**に置換(`--dry` 挙動と出力は現状維持=リグレッションなし)。
 - `server/routes/basedata.ts` — `basedataPublishHandler`(`POST /api/basedata/publish`)追加。in-flight フラグで多重起動防止。fetch は AbortController でタイムアウト。
@@ -63,7 +64,7 @@
 
 - creds 未設定 → 400「225labo のユーザー名/パスワードが未設定」。
 - ログイン失敗 → POST 応答が再度ログインフォーム/認証 cookie 未取得/ダウンロードが HTML を返す、のいずれかで検知 →「ログイン失敗(認証情報を確認してください)」。
-- ダウンロード失敗(非xlsx=HTML) →「基礎データの取得に失敗(未ログインの可能性)」。
+- ダウンロード失敗(非xlsx=HTML) →「基礎データの取得に失敗(未ログインの可能性)」。ZIP 内に xlsx が無い →「アーカイブに xlsx が見つかりません」。
 - 未来バー混入 → 中止「未来日時のバーを検出(日付マッピング/ソースを確認)」(既存ガードの文言に整合)。
 - `gh` 未検出/未認証 → 「GitHub 公開に失敗(gh の認証を確認)」。
 - 多重起動 → 409「実行中です」。

@@ -27,6 +27,8 @@ export interface VariantElements {
   // ★v0.8.2(ユーザー指示): lite は Web検索モデル設定 と データ(DB管理) fieldset も隠す(API キーは表示のまま)。
   webSearchModelFieldset?: ToggleableEl | null; // 設定「Web検索モデル」fieldset(#websearch-model-fieldset)
   dataFieldset?: ToggleableEl | null;           // 設定「データ」fieldset(#data-fieldset)
+  // ★基礎データ公開(225labo)fieldset は monitor2 メンテナ専用=lite で非表示(#basedata-publish-fieldset)。
+  basedataPublishFieldset?: ToggleableEl | null;
 }
 
 // variant に応じて表示/非表示を切り替える純関数。
@@ -38,6 +40,7 @@ export function applyVariantVisibility(variant: Variant, els: VariantElements): 
     els.alertsHistoryBtn, els.openLogsBtn, els.paramsBtn, els.scalpFieldset,
     els.signalTradesSystem,   // 履歴の A/B セレクタを lite で非表示。
     els.webSearchModelFieldset, els.dataFieldset,   // ★v0.8.2(ユーザー指示): モデル設定 と データ を lite で非表示。
+    els.basedataPublishFieldset,   // ★基礎データ公開(225labo)は monitor2 メンテナ専用=lite で非表示。
   ];
   for (const el of targets) {
     if (!el) continue;

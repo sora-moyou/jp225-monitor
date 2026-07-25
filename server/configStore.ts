@@ -17,6 +17,8 @@ export interface UserConfig {
   webSearchModel?: string; // web_search 用の Gemini モデル(chatModel と別)。未設定は既定 gemini-flash-latest。
   webSearchOpenaiModel?: string; // Gemini キーが無い/枠切れ時に OpenAI で Web 検索するモデル。未設定は既定 gpt-4o-mini-search-preview。
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
+  basedataUser?: string;  // ★基礎データ公開(225labo)ログインのユーザー名。秘密扱い(既存 API キーと同モデル)。
+  basedataPass?: string;  // ★基礎データ公開(225labo)ログインのパスワード。秘密扱い。
   pricePollMs?: number;
   newsPollMs?: number;
   port?: number;
@@ -169,6 +171,14 @@ export function resolveApiKey(provider: ProviderName): string | undefined {
   : provider === 'groq'   ? 'GROQ_API_KEY'
   : 'OPENAI_API_KEY';
   return process.env[envName]?.trim();
+}
+
+// 基礎データ公開(225labo)の資格情報を解決。config.json 優先 → env LABO225_USER/LABO225_PASS フォールバック。
+export function resolveBasedataCreds(): { user?: string; pass?: string } {
+  const cfg = loadConfig();
+  const user = (cfg.basedataUser && cfg.basedataUser.trim()) || process.env.LABO225_USER?.trim();
+  const pass = (cfg.basedataPass && cfg.basedataPass.trim()) || process.env.LABO225_PASS?.trim();
+  return { user: user || undefined, pass: pass || undefined };
 }
 
 // チャットの web_search(Gemini グラウンディング)キー解決。

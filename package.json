@@ -1,6 +1,6 @@
 {
   "name": "finance-monitor",
-  "version": "0.9.12",
+  "version": "0.9.13",
   "private": true,
   "type": "module",
   "scripts": {
@@ -42,6 +42,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "cheerio": "^1.0.0",
     "express": "^4.19.0",
+    "fflate": "^0.8.3",
     "openai": "^4.50.0",
     "rss-parser": "^3.13.0",
     "socket.io-client": "^4.8.3",

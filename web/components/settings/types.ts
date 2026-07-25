@@ -6,6 +6,7 @@ export interface SettingsResponse {
   kimiSet: boolean; geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   kimiFromEnv: boolean; geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
+  basedataUserSet?: boolean; basedataPassSet?: boolean;   // ★基礎データ公開(225labo)認証 設定済み(真偽のみ)
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
@@ -60,6 +61,8 @@ export interface SavePayload {
   webSearchKey?: string | null;
   webSearchModel?: string | null;
   webSearchOpenaiModel?: string | null;
+  basedataUser?: string | null;   // ★基礎データ公開(225labo)ユーザー名(秘密・空欄=送らない)
+  basedataPass?: string | null;   // ★基礎データ公開(225labo)パスワード(秘密・空欄=送らない)
   scalpLcCeilingYen?: number | null;
   scalpBias?: 'long' | 'short' | 'none' | null;
   scalpCooldownSec?: number | null;
@@ -131,6 +134,11 @@ export interface SettingsElements {
   checkUpdateBtn: HTMLButtonElement;
   updateResult: HTMLElement;
   currentVersion: HTMLElement;
+  // ★基礎データ公開(225labo)。monitor2 専用。
+  inputLaboUser: HTMLInputElement;
+  inputLaboPass: HTMLInputElement;
+  basedataPublishBtn: HTMLButtonElement;
+  basedataPublishResult: HTMLElement;
   mergeDbBtn: HTMLButtonElement;
   mergeResult: HTMLElement;
   exportDbBtn: HTMLButtonElement;

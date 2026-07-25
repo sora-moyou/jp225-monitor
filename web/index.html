@@ -104,6 +104,23 @@
         <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
       </fieldset>
 
+      <fieldset class="settings-section" id="basedata-publish-fieldset">
+        <legend>基礎データ(225labo)</legend>
+        <div class="setting-row">
+          <label>225labo ユーザー名</label>
+          <input type="text" id="labo-user" autocomplete="off" />
+        </div>
+        <div class="setting-row">
+          <label>225labo パスワード</label>
+          <input type="password" id="labo-pass" autocomplete="off" />
+        </div>
+        <div class="version-row" style="margin-top:8px">
+          <button type="button" id="basedata-publish-btn" class="btn-secondary">基礎データを更新</button>
+        </div>
+        <div id="basedata-publish-result" class="update-result"></div>
+        <div class="exit-hint">225labo にログインして N225 mini 1分足 xlsx を取得し、パース→GitHub リリース(basedata-latest)へ公開＋このPCへ即取込します。<strong>monitor2 専用</strong>(メンテナ運用)。認証情報はローカルにのみ保存されます。</div>
+      </fieldset>
+
       <fieldset class="settings-section">
         <legend>終了</legend>
         <label class="exit-check">

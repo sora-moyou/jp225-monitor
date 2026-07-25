@@ -22,6 +22,9 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.inputWebSearch.placeholder = current?.webSearchKeySet
     ? '設定済み (上書きする場合のみ入力)'
     : '空欄なら Gemini キーを使用 (AIza... / 課金キー可)';
+  // ★基礎データ公開(225labo)認証: 秘密フィールド(空欄=変更なし)。
+  el.inputLaboUser.placeholder = current?.basedataUserSet ? '設定済み (上書きする場合のみ入力)' : '225labo ログイン ID';
+  el.inputLaboPass.placeholder = current?.basedataPassSet ? '設定済み (上書きする場合のみ入力)' : '225labo パスワード';
   el.inputWebSearchModel.value = current?.webSearchModel ?? '';
   el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
   el.inputWebSearchOpenaiModel.value = current?.webSearchOpenaiModel ?? '';
@@ -143,6 +146,11 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   if (kv) body.kimiKey = kv;
   if (ov) body.openaiKey = ov;
   if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
+  // ★基礎データ公開(225labo)認証: 秘密フィールド。空欄は送らない(=変更なし)。
+  const laboUser = el.inputLaboUser.value.trim();
+  const laboPass = el.inputLaboPass.value.trim();
+  if (laboUser) body.basedataUser = laboUser;
+  if (laboPass) body.basedataPass = laboPass;
   // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)
   body.webSearchModel = el.inputWebSearchModel.value.trim();
   // OpenAI Web検索モデルも可視フィールド(空欄='' → サーバで既定 gpt-4o-mini-search-preview に戻る)
