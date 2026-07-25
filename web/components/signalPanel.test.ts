@@ -15,9 +15,26 @@ describe('buildSignalView(シグナル枠)', () => {
     };
     const v = buildSignalView(s);
     expect(v.cls).toBe('armed');
+    expect(v.bias).toBe('買い目線');
     expect(v.main).toContain('買い 65,395 指値 (LC 65,345)');
     expect(v.main).toContain('買い 65,520 逆指値 (LC 65,470)');
     expect(v.rationale).toBe('押し目買い');
+  });
+
+  it('★目線行: 買い→買い目線 / 売り→売り目線 / range→レンジ / 待機は目線なし', () => {
+    const sell: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'sell', limitEntry: 66000, stopLossForLimit: 66050, at: 1 },
+    };
+    expect(buildSignalView(sell).bias).toBe('売り目線');
+    const range: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', mode: 'range', at: 1,
+        range: { upper: { side: 'sell', type: 'limit', entry: 66000, stopLoss: 66050 },
+                 lower: { side: 'buy', type: 'limit', entry: 65600, stopLoss: 65550 } } },
+    };
+    expect(buildSignalView(range).bias).toBe('レンジ');
+    expect(buildSignalView(null).bias).toBeUndefined();   // 待機は目線なし
   });
 
   it('★保有中(filled + position)でも signal がある限りシグナルを描き続ける(消えない)', () => {

@@ -94,6 +94,7 @@ const clearTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 export interface PanelView {
   cls: 'flat' | 'armed' | 'filled' | 'exit';
+  bias?: string;     // 目線行 (買い目線/売り目線/レンジ)。シグナルがある時だけ。メイン行と同サイズ・同色・左詰め。
   main: string;      // メイン行 (安全な固定文言のみ・価格/数値)
   rationale: string; // AI生成文字列 (呼び出し側で textContent 描画)
 }
@@ -120,7 +121,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
     if (sig.range.upper) parts.push(legStr(sig.range.upper, '上'));
     if (sig.range.lower) parts.push(legStr(sig.range.lower, '下'));
     if (parts.length === 0) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
-    return { cls: 'armed', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: sig.rationale ?? '' };
+    return { cls: 'armed', bias: 'レンジ', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: sig.rationale ?? '' };
   }
 
   const lcTag = (lc?: number): string => (lc != null ? ` (LC ${fmtPrice(lc)})` : '');
@@ -128,7 +129,8 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   if (sig.limitEntry != null) legs.push(`${dirJa(sig.direction)} ${fmtPrice(sig.limitEntry)} 指値${lcTag(sig.stopLossForLimit)}`);
   if (sig.stopEntry != null) legs.push(`${dirJa(sig.direction)} ${fmtPrice(sig.stopEntry)} 逆指値${lcTag(sig.stopLossForStop)}`);
   if (legs.length === 0) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
-  return { cls: 'armed', main: `🎯 シグナル：${legs.join(' / ')}`, rationale: sig.rationale ?? '' };
+  const bias = sig.direction === 'buy' ? '買い目線' : '売り目線';
+  return { cls: 'armed', bias, main: `🎯 シグナル：${legs.join(' / ')}`, rationale: sig.rationale ?? '' };
 }
 
 /** 純関数: 保有枠の表示モデル。保有中は建値+含み、直近決済は一時表示、それ以外は「保有なし」。
@@ -151,10 +153,19 @@ export function buildPositionView(s: SignalTradeState | null, now: number = Date
 
 function paintPanel(el: HTMLElement, view: PanelView, extraCls = ''): void {
   el.className = `signal-panel signal-${view.cls}${extraCls ? ' ' + extraCls : ''}`;
+  const nodes: HTMLElement[] = [];
+  // ★目線行(買い目線/売り目線/レンジ)。シグナルがある時だけメイン行の上に出す(同サイズ・同色・左詰め)。
+  if (view.bias) {
+    const biasEl = document.createElement('div');
+    biasEl.className = 'signal-bias';
+    biasEl.textContent = view.bias;
+    nodes.push(biasEl);
+  }
   const mainEl = document.createElement('div');
   mainEl.className = 'signal-main';
   mainEl.textContent = view.main;
-  el.replaceChildren(mainEl);
+  nodes.push(mainEl);
+  el.replaceChildren(...nodes);
   if (view.rationale) {
     const r = document.createElement('div');
     r.className = 'signal-rationale';

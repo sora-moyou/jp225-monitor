@@ -136,15 +136,17 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .signal-panel .signal-main { font-size: 18px; font-weight: 600; line-height: 1.4; }
+/* ★目線行: メイン行(シグナル：…)と同サイズ・同色・左詰め。色は下の per-cls 指定を共有する。 */
+.signal-panel .signal-bias { font-size: 18px; font-weight: 600; line-height: 1.4; text-align: left; }
 .signal-panel .signal-rationale { font-size: 13px; color: #fff; margin-top: 4px; line-height: 1.35; overflow-wrap: anywhere; }
 .signal-flat { border-color: var(--border); }
-.signal-flat .signal-main { color: var(--muted); font-weight: 500; }
+.signal-flat .signal-main, .signal-flat .signal-bias { color: var(--muted); font-weight: 500; }
 .signal-armed { border-color: #f0c674; box-shadow: 0 0 0 1px rgba(240, 198, 116, 0.35) inset; }
-.signal-armed .signal-main { color: #f0c674; }
+.signal-armed .signal-main, .signal-armed .signal-bias { color: #f0c674; }
 .signal-filled { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.35) inset; }
-.signal-filled .signal-main { color: #58a6ff; }
+.signal-filled .signal-main, .signal-filled .signal-bias { color: #58a6ff; }
 .signal-exit { border-color: var(--up); }
-.signal-exit .signal-main { color: var(--up); }
+.signal-exit .signal-main, .signal-exit .signal-bias { color: var(--up); }
 
 /* 保有枠。シグナル枠の直下に少し間隔を空けて置く(別枠)。 */
 .position-panel { margin-top: 6px; }
