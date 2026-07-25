@@ -22,7 +22,7 @@ import { correlationHandler } from './routes/correlation.js';
 import { forecastHandler } from './routes/forecast.js';
 import { alertsHistoryHandler } from './routes/alerts.js';
 import { levelsHandler } from './routes/levels.js';
-import { basedataImportHandler, basedataStatusHandler, basedataPublishHandler } from './routes/basedata.js';
+import { basedataImportHandler, basedataStatusHandler, basedataPublishHandler, autoImportBasedataOnStart } from './routes/basedata.js';
 import { mergeHandler } from './routes/merge.js';
 import { exportHandler } from './routes/export.js';
 import { replaceHandler } from './routes/replace.js';
@@ -134,6 +134,11 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
   // ★基礎データ自動公開スケジューラは monitor2(full)専用。lite では絶対に起動しない(ハードゲート)。
   if (resolveVariant() === 'full') startBasedataAutoScheduler();
+
+  // ★基礎データ自動取り込み(consume)は両 variant 共通・variant ゲートしない。
+  // 公開版が新しければ起動直後に一度だけ取り込む。fire-and-forget・非ブロッキング・throw しない。
+  // ルートが温まるよう少し遅延。上の自動公開(full 専用)とは別物。
+  setTimeout(() => { void autoImportBasedataOnStart(); }, 3000);
 
   // 起動時に一度だけチャットショット(~/Desktop/jp225-chart-shot.png)を撮って確認用画像を更新する。
   // 撮影パイプライン(Chrome ヘッドレス→/chart-shot)が起動直後に動く証拠にもなる。ベストエフォート:

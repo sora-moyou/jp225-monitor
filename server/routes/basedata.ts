@@ -46,30 +46,86 @@ export async function basedataStatusHandler(_req: Request, res: Response): Promi
   }
 }
 
-/** POST /api/basedata/import — gz を取得→gunzip→upsert 取り込み。取り込み版(generatedAt)を記録。 */
+/** 取り込み結果(HTTP 非依存)。basedataImportHandler が JSON へ返すのと同じ形。 */
+export interface BasedataImportResult {
+  applied: number; skipped: number; total: number;
+  from: string | null; to: string | null; generatedAt: string | null;
+}
+
+/** DL 失敗を区別するための内部エラー(handler が 502 へマップする)。 */
+class BasedataDownloadError extends Error {
+  constructor(readonly status: number) { super(`download failed: HTTP ${status}`); }
+}
+
+/** 基礎データ取り込みの実処理(HTTP 非依存・SSOT)。手動 import ボタンと起動時自動取り込みの両方から呼ぶ。
+ *  gz を取得→gunzip→parse→upsert(importBars・非破壊)→取り込み版(generatedAt)を記録。
+ *  - DL 失敗は BasedataDownloadError を throw(handler が 502)。
+ *  - 有効行 0 は null を返す(handler が 422)。 */
+export async function importBasedataFromRelease(): Promise<BasedataImportResult | null> {
+  const meta = await fetchMeta();   // 取り込み版マーカー用(無くても取り込みは実行)
+  const resp = await fetch(GZ_URL, { redirect: 'follow' });
+  if (!resp.ok) throw new BasedataDownloadError(resp.status);
+  const gz = Buffer.from(await resp.arrayBuffer());
+  const text = gunzipSync(gz).toString('utf-8');
+  const bars: BaseBar[] = [];
+  for (const line of text.split('\n')) {
+    const b = parseNdjsonLine(line);
+    if (b) bars.push(b);
+  }
+  if (bars.length === 0) return null;   // no valid rows
+  const db = openDb(resolveDbPath());
+  try {
+    const r = importBars(db, bars);
+    if (meta?.generatedAt) setMeta(db, META_KEY, meta.generatedAt);
+    return {
+      applied: r.inserted, skipped: r.skipped, total: r.total,
+      from: r.from ? fmtDate(r.from) : null, to: r.to ? fmtDate(r.to) : null,
+      generatedAt: meta?.generatedAt ?? null,
+    };
+  } finally { db.close(); }
+}
+
+/** POST /api/basedata/import — importBasedataFromRelease の薄いラッパ(ステータス変換のみ)。 */
 export async function basedataImportHandler(_req: Request, res: Response): Promise<void> {
   try {
-    const meta = await fetchMeta();   // 取り込み版マーカー用(無くても取り込みは実行)
-    const resp = await fetch(GZ_URL, { redirect: 'follow' });
-    if (!resp.ok) { res.status(502).json({ ok: false, error: `download failed: HTTP ${resp.status}` }); return; }
-    const gz = Buffer.from(await resp.arrayBuffer());
-    const text = gunzipSync(gz).toString('utf-8');
-    const bars: BaseBar[] = [];
-    for (const line of text.split('\n')) {
-      const b = parseNdjsonLine(line);
-      if (b) bars.push(b);
-    }
-    if (bars.length === 0) { res.status(422).json({ ok: false, error: 'no valid rows' }); return; }
-    const db = openDb(resolveDbPath());
-    try {
-      const r = importBars(db, bars);
-      if (meta?.generatedAt) setMeta(db, META_KEY, meta.generatedAt);
-      res.json({ ok: true, applied: r.inserted, skipped: r.skipped, total: r.total,
-        from: r.from ? fmtDate(r.from) : null, to: r.to ? fmtDate(r.to) : null,
-        generatedAt: meta?.generatedAt ?? null });
-    } finally { db.close(); }
+    const r = await importBasedataFromRelease();
+    if (!r) { res.status(422).json({ ok: false, error: 'no valid rows' }); return; }
+    res.json({ ok: true, applied: r.applied, skipped: r.skipped, total: r.total,
+      from: r.from, to: r.to, generatedAt: r.generatedAt });
   } catch (err) {
+    if (err instanceof BasedataDownloadError) {
+      res.status(502).json({ ok: false, error: err.message });
+      return;
+    }
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'import failed' });
+  }
+}
+
+/** 起動時自動取り込みの判定(純関数・SSOT)。公開版があり かつ 取り込み済み版と異なるときのみ true。
+ *  published が null(オフライン/リリース無し)や、両者一致(最新)なら false。 */
+export function shouldAutoImport(current: string | null, publishedGeneratedAt: string | null): boolean {
+  if (!publishedGeneratedAt) return false;
+  return current !== publishedGeneratedAt;
+}
+
+/** 起動時に一度だけ実行する自動取り込み。公開版が新しければ取り込む。両 variant(lite/full)共通。
+ *  起動を絶対にブロック/throw しない(全て try/catch で握りつぶす)。 */
+export async function autoImportBasedataOnStart(): Promise<void> {
+  try {
+    const meta = await fetchMeta();
+    if (!meta) { console.log('[basedata] 起動時: 公開メタ取得不可(オフライン/リリース無し)。スキップ'); return; }
+    const db = openDb(resolveDbPath());
+    let current: string | null;
+    try { current = getMeta(db, META_KEY); } finally { db.close(); }
+    if (!shouldAutoImport(current, meta.generatedAt)) {
+      console.log(`[basedata] 起動時: 最新(取り込み済み ${current})`);
+      return;
+    }
+    const r = await importBasedataFromRelease();
+    if (!r) { console.warn('[basedata] 起動時の自動取り込みに失敗/スキップ'); return; }
+    console.log(`[basedata] 起動時に自動取り込み: ${r.applied}件反映 (〜${r.to} / ${r.generatedAt})`);
+  } catch (err) {
+    console.warn('[basedata] 起動時の自動取り込みに失敗/スキップ:', err instanceof Error ? err.message : String(err));
   }
 }
 

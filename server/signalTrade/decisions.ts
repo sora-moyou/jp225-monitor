@@ -111,16 +111,21 @@ function stopOnCorrectSide(side: 'buy' | 'sell', entry: number, stopLoss: number
   return side === 'buy' ? stopLoss < entry : stopLoss > entry;
 }
 
+/** 指値(LIMIT)の約定は「節目をちょうどタッチ」ではなく、指値を LIMIT_FILL_MARGIN_YEN 円 “行き過ぎ” て
+ *  はじめて成立とみなす保守モデル。現実の指値は主要水準ちょうどでは約定しづらいため。逆指値(STOP)は成行転換
+ *  なのでタッチ約定のまま。trade2 も概念的に同値を共有できるよう export する。記録建値は指値価格のまま(=トリガ条件のみ厳格化)。 */
+export const LIMIT_FILL_MARGIN_YEN = 5;
+
 /** ブラケットのどちらのレッグが約定したか。両レッグが同 tick で満たす場合は指値を優先。無ければ null。 */
 export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'stop'; entryPrice: number; initialStop: number } | null {
   const buy = a.direction === 'buy';
   if (a.limitEntry != null && a.stopLossForLimit != null) {
-    // 指値: buy は現値が指値以下へ下落 / sell は指値以上へ上昇で約定。
-    const hit = buy ? price <= a.limitEntry : price >= a.limitEntry;
+    // 指値: buy は指値より 5円 下 / sell は指値より 5円 上まで行き過ぎて約定(保守モデル)。記録建値は指値のまま。
+    const hit = buy ? price <= a.limitEntry - LIMIT_FILL_MARGIN_YEN : price >= a.limitEntry + LIMIT_FILL_MARGIN_YEN;
     if (hit) return { leg: 'limit', entryPrice: a.limitEntry, initialStop: a.stopLossForLimit };
   }
   if (a.stopEntry != null && a.stopLossForStop != null) {
-    // 逆指値: buy は現値が逆指値以上へ上昇 / sell は逆指値以下へ下落で約定。
+    // 逆指値: buy は現値が逆指値以上へ上昇 / sell は逆指値以下へ下落で約定(成行転換=タッチ約定のまま)。
     const hit = buy ? price >= a.stopEntry : price <= a.stopEntry;
     if (hit) return { leg: 'stop', entryPrice: a.stopEntry, initialStop: a.stopLossForStop };
   }
@@ -134,12 +139,13 @@ export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'st
 export function detectRangeFill(
   a: ArmedBracket, price: number,
 ): { side: 'buy' | 'sell'; entryPrice: number; initialStop: number } | null {
+  // レンジ両面は逆張り指値(LIMIT)なので detectFill と同じ保守マージンを課す(節目を 5円 行き過ぎて約定)。記録建値は据置。
   const upper = a.range?.upper;
   const lower = a.range?.lower;
-  if (upper && price >= upper.entry) {
+  if (upper && price >= upper.entry + LIMIT_FILL_MARGIN_YEN) {
     return { side: upper.side, entryPrice: upper.entry, initialStop: upper.stopLoss };
   }
-  if (lower && price <= lower.entry) {
+  if (lower && price <= lower.entry - LIMIT_FILL_MARGIN_YEN) {
     return { side: lower.side, entryPrice: lower.entry, initialStop: lower.stopLoss };
   }
   return null;
