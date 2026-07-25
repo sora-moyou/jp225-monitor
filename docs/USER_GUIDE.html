@@ -961,23 +961,29 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
 <section class="section" id="settings">
   <div class="section-head">
     <span class="section-eyebrow">設定 — API キー</span>
-    <h2>キーは 1 つで動きます</h2>
-    <p>⚙️「設定」から。無料キーだけで十分に使えます。複数登録するとレート制限時に自動でフォールバック。</p>
+    <h2>ＡＰＩキーは 1 つで動きます</h2>
+    <p>⚙️「設定」から。無料キーだけで十分に使えます。複数登録しておくと、レート制限や障害のときに<strong>自動で次のキーへフォールバック</strong>します(優先順: Gemini → Groq → Kimi → OpenAI)。</p>
   </div>
 
   <div class="flow" style="margin-bottom:32px;">
     <figure class="flow-img">
       <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/settings-keys.png" alt="設定モーダル — API キー">
-      <figcaption>設定モーダル — API キー欄(無料: Gemini / Groq、有料: OpenAI / Web 検索)。「キーを検証」で各キーの有効性を確認できます。</figcaption>
+      <figcaption>設定モーダル — API キー欄(無料: Gemini / Groq、有料: OpenAI / Kimi / Web 検索)。「キーを検証」で各キーの有効性を確認できます。</figcaption>
     </figure>
     <div class="flow-steps">
       <div>
         <strong>無料キーから設定</strong>
-        <p><strong>Gemini</strong>(画像対応・日次 1500 回・おすすめ)/ <strong>Groq</strong>(テキスト専用・高速・日次 14400 回)。どちらも無料。</p>
+        <p><strong>Gemini</strong>(画像対応・日次 1500 回・おすすめ)/ <strong>Groq</strong>(テキスト専用・高速・日次 14400 回)。どちらも無料で、この 2 つだけで一日中動かせます。</p>
       </div>
       <div>
-        <strong>安定運用には OpenAI(任意・有料)</strong>
-        <p>画像対応で、Gemini が枠切れ(429)のときの<strong>最後の砦</strong>。少額の課金で長く使えます。もう 1 つの Gemini キーはチャットの Web 検索用に使えます。</p>
+        <strong>無料枠が切れたとき(429)の動き</strong>
+        <p>各キーは独立した「一時停止(サーキットブレーカー)」で管理され、レート制限(429)を受けると<strong>そのキーだけを一定時間休ませ、自動で次のキーへ回します</strong>(Gemini → Groq → Kimi → OpenAI)。休止中のキーは枠が回復すると自動で優先順に復帰。<strong>すべての無料キーが同時に枠切れ</strong>になると、有料キーが未設定なら AI 応答はその間だけ待機になります(検知・アラート・価格表示は無料キーに依存せず動き続けます)。</p>
+      </div>
+      <div>
+        <strong>有料キーを足すメリット</strong>
+        <p><strong>OpenAI</strong>(画像対応・最後の砦): 無料枠が枯れても<strong>チャート画像を見る AI(トレードシグナル)が止まらない</strong>=画像判断が常に通り運用が安定。少額課金で長く使えます。<br>
+        <strong>Kimi(Moonshot・従量・OpenAI より安い)</strong>: テキスト専用の<strong>安い予備</strong>。無料枠が切れたとき、高い OpenAI に落ちる前にまず Kimi が使われる=コストを抑えつつ空白を埋めます(チャット/説明/テキストのシグナル文言など)。画像は非対応なのでチャート画像判断は Gemini/OpenAI が担当。<br>
+        もう 1 つの Gemini キーはチャットの Web 検索用に使えます。</p>
       </div>
       <div>
         <strong>「キーを検証」で確認</strong>
@@ -991,6 +997,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
       <button class="setup-tab active" data-tab="gemini">Gemini <span class="pill">無料 推奨</span></button>
       <button class="setup-tab" data-tab="groq">Groq <span class="pill">無料</span></button>
       <button class="setup-tab" data-tab="openai">OpenAI <span class="pill paid">有料</span></button>
+      <button class="setup-tab" data-tab="kimi">Kimi <span class="pill paid">有料</span></button>
     </div>
     <div class="setup-panel active" data-panel="gemini">
       <h4>Gemini — 画像対応・日次 1500 回・おすすめ</h4>
@@ -1017,6 +1024,15 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         <li><code>sk-...</code> をコピー → 設定画面に貼り付け</li>
       </ol>
       <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">画像対応 + 最後の砦。有効にしておくと画像判断が常に通り、運用が安定します。</p>
+    </div>
+    <div class="setup-panel" data-panel="kimi">
+      <h4>Kimi(Moonshot) — テキスト専用・従量課金・OpenAI より安い予備</h4>
+      <ol>
+        <li><a href="https://platform.moonshot.ai/console/api-keys">platform.moonshot.ai/console/api-keys</a> を開く</li>
+        <li>アカウント作成 → 少額チャージ → <strong>「Create API Key」</strong></li>
+        <li><code>sk-...</code> をコピー → 設定の「Kimi」欄(有料セクション)に貼り付け</li>
+      </ol>
+      <p style="color:var(--text-muted);font-size:13px;margin-top:12px;">無料枠が切れたとき、高い OpenAI に落ちる前に使われる安い予備。テキスト専用のためチャート画像を見る AI では使われません(画像は Gemini/OpenAI が担当)。</p>
     </div>
   </div>
 
