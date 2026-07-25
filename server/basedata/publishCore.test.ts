@@ -1,8 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { gunzipSync } from 'node:zlib';
+import { writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { zipSync } from 'fflate';
 import XLSX from 'xlsx';
-import { xlsxBufferToBars, barsToGzMeta, extractXlsxFromZip } from './publishCore.js';
+import { xlsxBufferToBars, barsToGzMeta, extractXlsxFromZip, apiPublish } from './publishCore.js';
 import { parseNdjsonLine } from '../basedata.js';
 
 const toSerial = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400_000) + 25569;
@@ -99,5 +102,79 @@ describe('barsToGzMeta', () => {
     expect(gunzipSync(gz).toString('utf-8')).toBe(ndjson);
     const parsed = ndjson.trim().split('\n').map(parseNdjsonLine);
     expect(parsed).toEqual(bars);
+  });
+});
+
+describe('apiPublish (GitHub REST・fetch モック)', () => {
+  interface Call { url: string; method: string; auth?: string; contentType?: string; }
+
+  it('リリース取得→同名アセットDELETE→uploads.github.com へトークン付き POST', async () => {
+    const gzPath = join(tmpdir(), 'jp225-apipub-test.gz');
+    const metaPath = join(tmpdir(), 'jp225-apipub-test.meta.json');
+    writeFileSync(gzPath, Buffer.from('gzbytes'));
+    writeFileSync(metaPath, Buffer.from('{}'));
+
+    const calls: Call[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      calls.push({ url, method, auth: headers.Authorization, contentType: headers['Content-Type'] });
+      if (method === 'GET' && url.includes('/releases/tags/basedata-latest')) {
+        // gz は既存アセットあり(=DELETE 対象) / meta は存在しない。
+        return { ok: true, status: 200, json: async () => ({ id: 42, assets: [{ id: 7, name: 'basedata-1min.ndjson.gz' }] }) } as Response;
+      }
+      if (method === 'DELETE') return { ok: true, status: 204 } as Response;
+      if (method === 'POST' && url.startsWith('https://uploads.github.com')) return { ok: true, status: 201, json: async () => ({}) } as Response;
+      return { ok: false, status: 500, json: async () => ({}) } as Response;
+    });
+    const orig = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      await apiPublish('SECRET_TOKEN', [
+        { path: gzPath, name: 'basedata-1min.ndjson.gz', contentType: 'application/gzip' },
+        { path: metaPath, name: 'basedata-1min.meta.json', contentType: 'application/json' },
+      ]);
+    } finally {
+      globalThis.fetch = orig;
+      rmSync(gzPath, { force: true });
+      rmSync(metaPath, { force: true });
+    }
+
+    // (a) タグでリリース取得。
+    const getCall = calls.find(c => c.method === 'GET');
+    expect(getCall?.url).toBe('https://api.github.com/repos/sora-moyou/jp225-monitor/releases/tags/basedata-latest');
+    expect(getCall?.auth).toBe('Bearer SECRET_TOKEN');
+    // (b) 既存同名アセット(id 7)を DELETE(meta は重複なし=DELETE は1回だけ)。
+    const dels = calls.filter(c => c.method === 'DELETE');
+    expect(dels.length).toBe(1);
+    expect(dels[0]!.url).toBe('https://api.github.com/repos/sora-moyou/jp225-monitor/releases/assets/7');
+    // (c) uploads.github.com へ ?name= 付きで POST(トークン + contentType)。release id 42。
+    const gzUp = calls.find(c => c.method === 'POST' && c.url.includes('uploads.github.com') && c.url.includes('name=basedata-1min.ndjson.gz'));
+    expect(gzUp).toBeTruthy();
+    expect(gzUp!.url).toContain('/releases/42/assets');
+    expect(gzUp!.auth).toBe('Bearer SECRET_TOKEN');
+    expect(gzUp!.contentType).toBe('application/gzip');
+    const metaUp = calls.find(c => c.method === 'POST' && c.url.includes('uploads.github.com') && c.url.includes('name=basedata-1min.meta.json'));
+    expect(metaUp).toBeTruthy();
+    expect(metaUp!.contentType).toBe('application/json');
+  });
+
+  it('アップロード失敗時は "GitHub API" を含む Error を throw', async () => {
+    const p = join(tmpdir(), 'jp225-apipub-fail.gz');
+    writeFileSync(p, Buffer.from('x'));
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET') return { ok: true, status: 200, json: async () => ({ id: 1, assets: [] }) } as Response;
+      return { ok: false, status: 403, json: async () => ({}) } as Response;   // upload 403
+    });
+    const orig = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      await expect(apiPublish('T', [{ path: p, name: 'basedata-1min.ndjson.gz', contentType: 'application/gzip' }]))
+        .rejects.toThrow(/GitHub API/);
+    } finally {
+      globalThis.fetch = orig;
+      rmSync(p, { force: true });
+    }
   });
 });

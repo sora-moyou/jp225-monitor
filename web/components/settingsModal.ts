@@ -95,6 +95,7 @@ export function initSettingsModal(el: SettingsElements): SettingsController {
     el.inputWebSearch.value = '';
     el.inputLaboUser.value = '';   // ★基礎データ公開(225labo)認証は秘密=閉じるでクリア。
     el.inputLaboPass.value = '';
+    el.inputGithubToken.value = '';   // ★GitHub PAT も秘密=閉じるでクリア(保存先フォルダは可視なので保持)。
     // ★Web検索モデル欄は🎛️(詳細設定)へ移設済み=⚙️の閉じるでクリアしない(閉じる度に空になり
     //   保存で既定へ戻る事故を防ぐ。ライフサイクルは🎛️の open→refresh が管理)。
   }

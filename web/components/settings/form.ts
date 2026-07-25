@@ -25,6 +25,11 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   // ★基礎データ公開(225labo)認証: 秘密フィールド(空欄=変更なし)。
   el.inputLaboUser.placeholder = current?.basedataUserSet ? '設定済み (上書きする場合のみ入力)' : '225labo ログイン ID';
   el.inputLaboPass.placeholder = current?.basedataPassSet ? '設定済み (上書きする場合のみ入力)' : '225labo パスワード';
+  // ★保存先フォルダ: 可視フィールド(生の保存値を反映・空欄=既定 Downloads)。
+  el.inputBasedataSaveDir.value = current?.basedataSaveDir ?? '';
+  el.inputBasedataSaveDir.placeholder = '空欄で Downloads に保存';
+  // ★GitHub PAT: 秘密フィールド(空欄=変更なし)。
+  el.inputGithubToken.placeholder = current?.githubTokenSet ? '設定済み (上書きする場合のみ入力)' : 'ghp_... / github_pat_...(空欄=gh CLI 使用)';
   el.inputWebSearchModel.value = current?.webSearchModel ?? '';
   el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
   el.inputWebSearchOpenaiModel.value = current?.webSearchOpenaiModel ?? '';
@@ -151,6 +156,11 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   const laboPass = el.inputLaboPass.value.trim();
   if (laboUser) body.basedataUser = laboUser;
   if (laboPass) body.basedataPass = laboPass;
+  // ★保存先フォルダ: 可視フィールド。常に送る(空欄='' → サーバで既定 Downloads に戻る)。
+  body.basedataSaveDir = el.inputBasedataSaveDir.value.trim();
+  // ★GitHub PAT: 秘密フィールド。空欄は送らない(=変更なし)。
+  const ghTok = el.inputGithubToken.value.trim();
+  if (ghTok) body.githubToken = ghTok;
   // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)
   body.webSearchModel = el.inputWebSearchModel.value.trim();
   // OpenAI Web検索モデルも可視フィールド(空欄='' → サーバで既定 gpt-4o-mini-search-preview に戻る)

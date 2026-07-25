@@ -1,13 +1,11 @@
 import type { Request, Response } from 'express';
 import { gunzipSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { openDb, resolveDbPath, getMeta, setMeta } from '../db/store.js';
 import { parseNdjsonLine, importBars, type BaseBar } from '../basedata.js';
-import { resolveBasedataCreds } from '../configStore.js';
+import { resolveBasedataCreds, resolveBasedataSaveDir, resolveGithubToken } from '../configStore.js';
 import { login, downloadXlsx } from '../basedata/labo225.js';
-import { xlsxBufferToBars, barsToGzMeta, writeGzMeta, ghPublish, extractXlsxFromZip } from '../basedata/publishCore.js';
+import { xlsxBufferToBars, barsToGzMeta, writeGzMeta, ghPublish, apiPublish, extractXlsxFromZip } from '../basedata/publishCore.js';
 
 const BASE = 'https://github.com/sora-moyou/jp225-monitor/releases/download/basedata-latest';
 const GZ_URL = `${BASE}/basedata-1min.ndjson.gz`;
@@ -95,20 +93,26 @@ export async function basedataPublishHandler(_req: Request, res: Response): Prom
     const downloaded = await downloadXlsx(cookie);
     // ③ ZIP から内側の xlsx を取り出す → パース(未来バー混入で throw=422)。④ gz/meta。
     const xlsx = extractXlsxFromZip(downloaded);
-    // 取り出した最新ソース xlsx を固定パスへ「上書き保存」する(config.json と同じ ~/.jp225-monitor 配下)。
-    //   ★固定ファイル名は意図的: writeFileSync は常に上書きなので、ブラウザDL式の "(11)" 連番重複が溜まらない。
-    //   これはあくまでローカル控え。公開/取込は上のメモリ内バッファを使う(ディスクから読み戻さない)。
-    const appDataDir = join(homedir(), '.jp225-monitor');
-    mkdirSync(appDataDir, { recursive: true });
-    const savedXlsxPath = join(appDataDir, 'basedata-latest.xlsx');
+    // 取り出した最新ソース xlsx と gz/meta を「保存先フォルダ」へ固定名で上書き保存する(既定 Downloads=
+    //   gh 未認証の別PCへコピーしやすい)。★固定ファイル名は意図的: writeFileSync/writeGzMeta は常に上書き
+    //   なので、ブラウザDL式の "(11)" 連番重複が溜まらない。これはローカル控えで、公開/取込はメモリ内バッファを使う。
+    const saveDir = resolveBasedataSaveDir();
+    mkdirSync(saveDir, { recursive: true });
+    const savedXlsxPath = `${saveDir}/basedata-latest.xlsx`;
     writeFileSync(savedXlsxPath, xlsx);
     const bars = xlsxBufferToBars(xlsx);
     const { gz, meta } = barsToGzMeta(bars, new Date().toISOString());
-    // gz/meta もアプリデータ dir(絶対パス)へ。パッケージ版サーバは cwd が書込可とは限らないため
-    //   相対 'dist/' は使わない(CLI は既定 'dist' のまま=従来挙動)。
-    const { gzPath, metaPath } = writeGzMeta(gz, meta, appDataDir);
-    // ⑤ 公開(gh 失敗=502)。⑥ 公開成功後にのみローカル取込。
-    ghPublish(gzPath, metaPath);
+    const { gzPath, metaPath } = writeGzMeta(gz, meta, saveDir);
+    // ⑤ 公開: PAT があれば REST API(gh 不要)/無ければ gh CLI にフォールバック。失敗は 502。⑥ 公開成功後のみ取込。
+    const token = resolveGithubToken();
+    if (token) {
+      await apiPublish(token, [
+        { path: gzPath, name: 'basedata-1min.ndjson.gz', contentType: 'application/gzip' },
+        { path: metaPath, name: 'basedata-1min.meta.json', contentType: 'application/json' },
+      ]);
+    } else {
+      ghPublish(gzPath, metaPath);
+    }
     const db = openDb(resolveDbPath());
     try {
       importBars(db, bars);
@@ -119,12 +123,16 @@ export async function basedataPublishHandler(_req: Request, res: Response): Prom
       firstDate: fmtDate(meta.firstBar), lastDate: fmtDate(meta.lastBar),
       generatedAt: meta.generatedAt,
       savedXlsx: savedXlsxPath,   // ローカル控えの保存先(固定・上書き)。creds は含めない。
+      saveDir,                    // 保存先フォルダ(xlsx/gz/meta の3点)。
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // 文言でステータスを分ける。未来バー=422 / 認証・取得失敗=502 / gh=502 / その他=502。
+    // 文言でステータスを分ける。未来バー=422 / 認証・取得失敗=502 / 公開失敗=502 / その他=502。
     const status = msg.includes('未来日時のバー') ? 422 : 502;
-    const error = /gh release|release (upload|create|view)|gh:? not found|gh auth/i.test(msg)
+    // 公開失敗は経路で JP を分ける: PAT(REST)=トークン/権限 / gh CLI=gh 認証。
+    const error = msg.includes('GitHub API')
+      ? 'GitHub 公開に失敗(トークン/権限を確認)'
+      : /gh release|release (upload|create|view)|gh:? not found|gh auth/i.test(msg)
       ? 'GitHub 公開に失敗(gh の認証を確認)'
       : msg;
     res.status(status).json({ ok: false, error });

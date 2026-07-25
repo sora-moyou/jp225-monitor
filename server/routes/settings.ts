@@ -71,6 +71,8 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     webSearchKeySet: !!config.webSearchKey,   // Web検索専用キー(空欄なら共通 geminiKey に従う)
     basedataUserSet: !!config.basedataUser,   // ★基礎データ公開(225labo)ユーザー名 設定済み(真偽のみ・秘密)
     basedataPassSet: !!config.basedataPass,   // ★基礎データ公開(225labo)パスワード 設定済み(真偽のみ・秘密)
+    basedataSaveDir: config.basedataSaveDir ?? '',   // ★保存先フォルダ(可視・空欄=既定 Downloads)。生の保存値を返す。
+    githubTokenSet: !!config.githubToken,     // ★GitHub PAT 設定済み(真偽のみ・秘密)
     webSearchModel: config.webSearchModel ?? '',
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
@@ -133,6 +135,8 @@ interface SettingsBody {
   webSearchKey?: string | null;      // Web検索(Gemini グラウンディング)専用キー
   basedataUser?: string | null;      // ★基礎データ公開(225labo)ユーザー名(秘密・空欄=変更なし)
   basedataPass?: string | null;      // ★基礎データ公開(225labo)パスワード(秘密・空欄=変更なし)
+  basedataSaveDir?: string | null;   // ★保存先フォルダ(可視・空欄=既定 Downloads に戻す)
+  githubToken?: string | null;       // ★GitHub PAT(秘密・空欄=変更なし)
   webSearchModel?: string | null;    // Web検索用 Gemini モデル
   webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
@@ -277,6 +281,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
     webSearchKey: applyStringField(existing.webSearchKey, body.webSearchKey),   // 秘密: 空欄=変更なし
     basedataUser: applyStringField(existing.basedataUser, body.basedataUser),   // ★秘密: 空欄=変更なし
     basedataPass: applyStringField(existing.basedataPass, body.basedataPass),   // ★秘密: 空欄=変更なし
+    basedataSaveDir: applyVisibleField(existing.basedataSaveDir, body.basedataSaveDir),   // ★可視: 空欄=既定に戻す
+    githubToken: applyStringField(existing.githubToken, body.githubToken),      // ★秘密: 空欄=変更なし
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)

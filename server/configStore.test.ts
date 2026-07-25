@@ -6,6 +6,7 @@ import {
   resolvePricePollMs, resolveNewsPollMs, resolvePort,
   validateParam, resetConfigCache, resolveApiKey,
   resolveWebSearchOpenaiModel, DEFAULT_WEB_SEARCH_OPENAI_MODEL,
+  resolveBasedataSaveDir,
 } from './configStore.js';
 import { LLM_PROVIDERS } from './config.js';
 
@@ -63,6 +64,15 @@ describe('configStore resolvers', () => {
 
     writeFileConfig({ port: 5000 });
     expect(resolvePort()).toBe(5000);
+  });
+
+  it('resolveBasedataSaveDir defaults to ~/Downloads when unset', () => {
+    expect(resolveBasedataSaveDir()).toBe(join(tmpHome, 'Downloads'));
+  });
+
+  it('resolveBasedataSaveDir uses config value when set', () => {
+    writeFileConfig({ basedataSaveDir: 'D:/synced/basedata' });
+    expect(resolveBasedataSaveDir()).toBe('D:/synced/basedata');
   });
 
   it('validateParam returns null for valid range', () => {

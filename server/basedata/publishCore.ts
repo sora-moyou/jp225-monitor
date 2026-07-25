@@ -1,7 +1,7 @@
 // 基礎データ publish の共有コア。scripts/basedata-publish.mts(CLI)と
 // server/routes/basedata.ts(ワンボタン公開)が同一実装を共有する(SSOT)。
 // 日付変換は server/basedataDate.ts:rowToBar が唯一の正準実装(取り込み側と共有)。
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { execSync } from 'node:child_process';
 import { unzipSync } from 'fflate';
@@ -94,4 +94,57 @@ export function ghPublish(gzPath: string, metaPath: string): void {
   try { execSync(`gh release view basedata-latest --repo ${BASEDATA_REPO}`, { stdio: 'ignore' }); }
   catch { execSync(`gh release create basedata-latest --repo ${BASEDATA_REPO} --title "Base data (N225 mini 1min)" --notes "Auto-published base data. Updated weekly."`, { stdio: 'inherit' }); }
   execSync(`gh release upload basedata-latest ${gzPath} ${metaPath} --repo ${BASEDATA_REPO} --clobber`, { stdio: 'inherit' });
+}
+
+const GH_TAG = 'basedata-latest';
+const GH_API = `https://api.github.com/repos/${BASEDATA_REPO}`;
+const GH_UPLOADS = `https://uploads.github.com/repos/${BASEDATA_REPO}`;
+
+interface GhAsset { id: number; name: string; }
+interface GhRelease { id: number; assets?: GhAsset[]; }
+
+/** GitHub REST API(PAT)で basedata-latest リリースへアップロード。gh CLI が無い PC でも動く。
+ *  ①タグでリリース取得(404 なら作成)②同名アセットを DELETE(=--clobber)③uploads へ POST。
+ *  token はログに出さない。失敗時は 'GitHub API' を含む Error を throw(ルータ側で JP 文言へ)。 */
+export async function apiPublish(
+  token: string,
+  files: { path: string; name: string; contentType: string }[],
+): Promise<void> {
+  const authHeaders = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'jp225-monitor',
+  };
+  // ① タグからリリース取得。無ければ(404)作成。
+  let release: GhRelease;
+  const getRes = await fetch(`${GH_API}/releases/tags/${GH_TAG}`, { headers: authHeaders });
+  if (getRes.status === 404) {
+    const createRes = await fetch(`${GH_API}/releases`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag_name: GH_TAG, name: 'Base data (N225 mini 1min)', body: 'Auto-published base data.' }),
+    });
+    if (!createRes.ok) throw new Error(`GitHub API: リリース作成に失敗(HTTP ${createRes.status})`);
+    release = await createRes.json() as GhRelease;
+  } else if (getRes.ok) {
+    release = await getRes.json() as GhRelease;
+  } else {
+    throw new Error(`GitHub API: リリース取得に失敗(HTTP ${getRes.status})`);
+  }
+  const existing = release.assets ?? [];
+  for (const f of files) {
+    // ② 同名アセットがあれば削除(= --clobber 相当)。
+    const dup = existing.find(a => a.name === f.name);
+    if (dup) {
+      const delRes = await fetch(`${GH_API}/releases/assets/${dup.id}`, { method: 'DELETE', headers: authHeaders });
+      if (!delRes.ok && delRes.status !== 404) throw new Error(`GitHub API: 既存アセット削除に失敗(HTTP ${delRes.status})`);
+    }
+    // ③ アップロード(uploads.github.com)。
+    const upRes = await fetch(`${GH_UPLOADS}/releases/${release.id}/assets?name=${encodeURIComponent(f.name)}`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': f.contentType },
+      body: readFileSync(f.path),
+    });
+    if (!upRes.ok) throw new Error(`GitHub API: アセットのアップロードに失敗(${f.name} / HTTP ${upRes.status})`);
+  }
 }

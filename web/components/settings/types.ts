@@ -7,6 +7,8 @@ export interface SettingsResponse {
   kimiFromEnv: boolean; geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
   basedataUserSet?: boolean; basedataPassSet?: boolean;   // ★基礎データ公開(225labo)認証 設定済み(真偽のみ)
+  basedataSaveDir?: string;   // ★保存先フォルダ(可視・生の保存値・空欄=既定 Downloads)
+  githubTokenSet?: boolean;   // ★GitHub PAT 設定済み(真偽のみ・秘密)
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
@@ -63,6 +65,8 @@ export interface SavePayload {
   webSearchOpenaiModel?: string | null;
   basedataUser?: string | null;   // ★基礎データ公開(225labo)ユーザー名(秘密・空欄=送らない)
   basedataPass?: string | null;   // ★基礎データ公開(225labo)パスワード(秘密・空欄=送らない)
+  basedataSaveDir?: string | null;   // ★保存先フォルダ(可視・常に送る・空欄=既定に戻す)
+  githubToken?: string | null;    // ★GitHub PAT(秘密・空欄=送らない)
   scalpLcCeilingYen?: number | null;
   scalpBias?: 'long' | 'short' | 'none' | null;
   scalpCooldownSec?: number | null;
@@ -137,6 +141,8 @@ export interface SettingsElements {
   // ★基礎データ公開(225labo)。monitor2 専用。
   inputLaboUser: HTMLInputElement;
   inputLaboPass: HTMLInputElement;
+  inputBasedataSaveDir: HTMLInputElement;   // 保存先フォルダ(可視)
+  inputGithubToken: HTMLInputElement;       // GitHub PAT(秘密)
   basedataPublishBtn: HTMLButtonElement;
   basedataPublishResult: HTMLElement;
   mergeDbBtn: HTMLButtonElement;

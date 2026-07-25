@@ -19,6 +19,8 @@ export interface UserConfig {
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
   basedataUser?: string;  // ★基礎データ公開(225labo)ログインのユーザー名。秘密扱い(既存 API キーと同モデル)。
   basedataPass?: string;  // ★基礎データ公開(225labo)ログインのパスワード。秘密扱い。
+  basedataSaveDir?: string;  // ★基礎データ公開の保存先フォルダ(xlsx/gz/meta)。可視。未設定は Downloads。
+  githubToken?: string;   // ★基礎データ公開を gh CLI 無しで行う GitHub PAT。秘密扱い。未設定は gh CLI にフォールバック。
   pricePollMs?: number;
   newsPollMs?: number;
   port?: number;
@@ -179,6 +181,19 @@ export function resolveBasedataCreds(): { user?: string; pass?: string } {
   const user = (cfg.basedataUser && cfg.basedataUser.trim()) || process.env.LABO225_USER?.trim();
   const pass = (cfg.basedataPass && cfg.basedataPass.trim()) || process.env.LABO225_PASS?.trim();
   return { user: user || undefined, pass: pass || undefined };
+}
+
+// 基礎データ公開の保存先フォルダを解決。config 値(trim)優先 → 未設定は ~/Downloads(gh PC へコピーしやすい)。
+export function resolveBasedataSaveDir(): string {
+  const d = loadConfig().basedataSaveDir;
+  return (d && d.trim()) || join(homedir(), 'Downloads');
+}
+
+// GitHub PAT を解決(gh CLI 無しで REST 公開する用)。config 優先 → env GITHUB_TOKEN / GH_TOKEN。
+export function resolveGithubToken(): string | undefined {
+  const t = loadConfig().githubToken;
+  if (t && t.trim()) return t.trim();
+  return process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
 }
 
 // チャットの web_search(Gemini グラウンディング)キー解決。

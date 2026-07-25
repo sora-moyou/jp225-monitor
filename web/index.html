@@ -114,11 +114,19 @@
           <label>225labo パスワード</label>
           <input type="password" id="labo-pass" autocomplete="off" />
         </div>
+        <div class="setting-row">
+          <label>保存先フォルダ(空欄=Downloads)</label>
+          <input type="text" id="basedata-save-dir" autocomplete="off" placeholder="空欄で Downloads に保存" />
+        </div>
+        <div class="setting-row">
+          <label>GitHub トークン(任意・gh 不要)</label>
+          <input type="password" id="github-token" autocomplete="off" />
+        </div>
         <div class="version-row" style="margin-top:8px">
           <button type="button" id="basedata-publish-btn" class="btn-secondary">基礎データを更新</button>
         </div>
         <div id="basedata-publish-result" class="update-result"></div>
-        <div class="exit-hint">225labo にログインして N225 mini 1分足 xlsx を取得し、パース→GitHub リリース(basedata-latest)へ公開＋このPCへ即取込します。<strong>monitor2 専用</strong>(メンテナ運用)。認証情報はローカルにのみ保存されます。</div>
+        <div class="exit-hint">225labo にログインして N225 mini 1分足 xlsx を取得し、パース→GitHub リリース(basedata-latest)へ公開＋このPCへ即取込します。<strong>monitor2 専用</strong>(メンテナ運用)。認証情報はローカルにのみ保存されます。xlsx/gz/meta の3点は保存先フォルダ(既定=Downloads)へ固定名で上書き保存されます(gh 未認証の別PCへコピーしやすい)。<strong>GitHub トークン</strong>を設定すると gh CLI 無しで公開できます(fine-grained PAT で jp225-monitor の Contents: Read and write、または classic PAT の <code>public_repo</code> スコープ)。</div>
       </fieldset>
 
       <fieldset class="settings-section">
