@@ -60,9 +60,11 @@ function applyBoolField(existing: boolean | undefined, incoming: unknown): boole
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
   res.json({
+    kimiSet: !!config.kimiKey,
     geminiSet: !!config.geminiKey,
     groqSet: !!config.groqKey,
     openaiSet: !!config.openaiKey,
+    kimiFromEnv: !config.kimiKey && !!process.env.KIMI_API_KEY?.trim(),
     geminiFromEnv: !config.geminiKey && !!process.env.GEMINI_API_KEY?.trim(),
     groqFromEnv: !config.groqKey && !!process.env.GROQ_API_KEY?.trim(),
     openaiFromEnv: !config.openaiKey && !!process.env.OPENAI_API_KEY?.trim(),
@@ -122,6 +124,7 @@ export async function testSettingsHandler(_req: Request, res: Response): Promise
 }
 
 interface SettingsBody {
+  kimiKey?: string | null;
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
@@ -263,6 +266,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
 
   // 文字列フィールドを先に埋め、数値フィールドはループで代入
   const next: UserConfig = {
+    kimiKey: applyStringField(existing.kimiKey, body.kimiKey),
     geminiKey: applyStringField(existing.geminiKey, body.geminiKey),
     groqKey: applyStringField(existing.groqKey, body.groqKey),
     openaiKey: applyStringField(existing.openaiKey, body.openaiKey),

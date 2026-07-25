@@ -32,7 +32,7 @@ export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient
 }
 
 function buildProvider(config: LLMProvider): ProviderState {
-  const name = config.name as 'gemini' | 'groq' | 'openai';
+  const name = config.name as 'gemini' | 'groq' | 'openai' | 'kimi';
   const key = resolveApiKey(name);
   const isPlaceholder = !key || key.includes('your-key');
   return {

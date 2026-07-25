@@ -3,8 +3,8 @@
 export type KnobSource = 'manual' | 'ai';
 
 export interface SettingsResponse {
-  geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
-  geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
+  kimiSet: boolean; geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
+  kimiFromEnv: boolean; geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
   scalpLcCeilingYen: number; scalpBias: 'long' | 'short' | 'none'; scalpCooldownSec: number;
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
@@ -53,6 +53,7 @@ export interface BasedataStatus {
 }
 
 export interface SavePayload {
+  kimiKey?: string | null;
   geminiKey?: string | null;
   groqKey?: string | null;
   openaiKey?: string | null;
@@ -90,6 +91,7 @@ export interface SettingsElements {
   saveBtn: HTMLButtonElement;
   inputGemini: HTMLInputElement;
   inputGroq: HTMLInputElement;
+  inputKimi: HTMLInputElement;
   inputOpenai: HTMLInputElement;
   inputWebSearch: HTMLInputElement;        // Web検索(Gemini グラウンディング)専用キー
   inputWebSearchModel: HTMLInputElement;   // Web検索用 Gemini モデル

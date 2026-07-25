@@ -223,7 +223,16 @@ export const LLM_PROVIDERS: LLMProvider[] = [
     model: 'llama-3.3-70b-versatile',
     chatModel: 'llama-3.3-70b-versatile',
   },
-  // 3. OpenAI (有料、最後の砦)
+  // 3. Kimi (Moonshot・安価で高性能・256kコンテキスト・テキスト専用)。無料枠(gemini/groq)の次・
+  //    OpenAIより安い従量課金。ビジョン非対応なのでチャート画像入力は gemini/openai へ回る(VISION_PROVIDERS 参照)。
+  {
+    name: 'kimi',
+    envVar: 'KIMI_API_KEY',
+    baseURL: 'https://api.moonshot.ai/v1',
+    model: 'kimi-k2-0905-preview',
+    chatModel: 'kimi-k2-0905-preview',
+  },
+  // 4. OpenAI (有料、最後の砦)
   {
     name: 'openai',
     envVar: 'OPENAI_API_KEY',

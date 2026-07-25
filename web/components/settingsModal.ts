@@ -48,6 +48,7 @@ export function initSettingsModal(el: SettingsElements): SettingsController {
     el.modal.classList.add('hidden');
     el.inputGemini.value = '';
     el.inputGroq.value = '';
+    el.inputKimi.value = '';
     el.inputOpenai.value = '';
     el.inputWebSearch.value = '';
     // ★Web検索モデル欄は🎛️(詳細設定)へ移設済み=⚙️の閉じるでクリアしない(閉じる度に空になり

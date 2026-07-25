@@ -13,6 +13,9 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.inputGroq.placeholder = current?.groqSet
     ? '設定済み (上書きする場合のみ入力)'
     : current?.groqFromEnv ? '環境変数から読込中' : 'gsk_...';
+  el.inputKimi.placeholder = current?.kimiSet
+    ? '設定済み (上書きする場合のみ入力)'
+    : current?.kimiFromEnv ? '環境変数から読込中' : 'sk-...';
   el.inputOpenai.placeholder = current?.openaiSet
     ? '設定済み (上書きする場合のみ入力)'
     : current?.openaiFromEnv ? '環境変数から読込中' : 'sk-...';
@@ -25,7 +28,7 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.inputWebSearchOpenaiModel.placeholder = 'gpt-4o-mini-search-preview (既定)';
   // 各キー行の個別マーク(🟢/🟡/⚪)。LLM 3種は providers から、Web検索は解決可否から。
   const byName = (n: string) => current?.providers.find(p => p.name === n);
-  for (const n of ['gemini', 'groq', 'openai'] as const) {
+  for (const n of ['gemini', 'groq', 'openai', 'kimi'] as const) {
     const m = providerMark(byName(n));
     setKeyStatus(`key-${n}-status`, m.mark, m.title);
   }
@@ -132,10 +135,12 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   const body: SavePayload = {};
   const gv = el.inputGemini.value.trim();
   const grv = el.inputGroq.value.trim();
+  const kv = el.inputKimi.value.trim();
   const ov = el.inputOpenai.value.trim();
   const wsk = el.inputWebSearch.value.trim();
   if (gv) body.geminiKey = gv;
   if (grv) body.groqKey = grv;
+  if (kv) body.kimiKey = kv;
   if (ov) body.openaiKey = ov;
   if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
   // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)

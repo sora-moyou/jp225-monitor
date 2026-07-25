@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   resolvePricePollMs, resolveNewsPollMs, resolvePort,
-  validateParam, resetConfigCache,
+  validateParam, resetConfigCache, resolveApiKey,
   resolveWebSearchOpenaiModel, DEFAULT_WEB_SEARCH_OPENAI_MODEL,
 } from './configStore.js';
+import { LLM_PROVIDERS } from './config.js';
 
 // configStore は homedir() を内部で呼ぶ。HOME / USERPROFILE を一時 dir に差し替えてテストする
 const ORIG_HOME = process.env.HOME;
@@ -75,6 +76,34 @@ describe('configStore resolvers', () => {
     expect(validateParam('pricePollMs', 999999)).toMatch(/pricePollMs/);
     expect(validateParam('port', 100)).toMatch(/port/);
     expect(validateParam('port', 99999)).toMatch(/port/);
+  });
+
+  it('kimi is placed after the free tiers (gemini/groq) and before paid openai', () => {
+    const names = LLM_PROVIDERS.map(p => p.name);
+    const iGemini = names.indexOf('gemini');
+    const iGroq = names.indexOf('groq');
+    const iKimi = names.indexOf('kimi');
+    const iOpenai = names.indexOf('openai');
+    expect(iKimi).toBeGreaterThan(iGemini);
+    expect(iKimi).toBeGreaterThan(iGroq);
+    expect(iKimi).toBeLessThan(iOpenai);
+  });
+
+  it("resolveApiKey('kimi') reads config.kimiKey, then falls back to env KIMI_API_KEY", () => {
+    const ORIG = process.env.KIMI_API_KEY;
+    try {
+      // config.json 優先
+      writeFileConfig({ kimiKey: '  sk-from-config  ' });
+      expect(resolveApiKey('kimi')).toBe('sk-from-config');
+      // config 無し → env fallback
+      delete process.env.KIMI_API_KEY;
+      writeFileConfig({});
+      process.env.KIMI_API_KEY = '  sk-from-env  ';
+      resetConfigCache();
+      expect(resolveApiKey('kimi')).toBe('sk-from-env');
+    } finally {
+      if (ORIG !== undefined) process.env.KIMI_API_KEY = ORIG; else delete process.env.KIMI_API_KEY;
+    }
   });
 
   it('resolveWebSearchOpenaiModel returns default when unset', () => {

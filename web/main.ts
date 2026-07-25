@@ -150,6 +150,7 @@ const settingsCtl = initSettingsModal({
   saveBtn:        document.getElementById('settings-save') as HTMLButtonElement,
   inputGemini:    document.getElementById('key-gemini') as HTMLInputElement,
   inputGroq:      document.getElementById('key-groq') as HTMLInputElement,
+  inputKimi:      document.getElementById('key-kimi') as HTMLInputElement,
   inputOpenai:    document.getElementById('key-openai') as HTMLInputElement,
   inputWebSearch:      document.getElementById('key-websearch') as HTMLInputElement,
   inputWebSearchModel: document.getElementById('key-websearch-model') as HTMLInputElement,

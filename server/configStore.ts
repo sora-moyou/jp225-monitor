@@ -9,6 +9,7 @@ const CONFIG_DIR = () => join(homedir(), '.jp225-monitor');
 const CONFIG_FILE = () => join(CONFIG_DIR(), 'config.json');
 
 export interface UserConfig {
+  kimiKey?: string;
   geminiKey?: string;
   groqKey?: string;
   openaiKey?: string;
@@ -90,7 +91,7 @@ export type ScalpBias = 'long' | 'short' | 'none';
 // ★v0.7.56: 委任可能な knob の source。'manual'=数値/enum を強制 / 'ai'=AI に委任(該当制約を課さない)。
 export type KnobSource = 'manual' | 'ai';
 
-type ProviderName = 'gemini' | 'groq' | 'openai';
+type ProviderName = 'gemini' | 'groq' | 'openai' | 'kimi';
 
 // 各パラメータの範囲とデフォルト
 export const PARAM_BOUNDS = {
@@ -157,12 +158,14 @@ export function saveConfig(config: UserConfig): void {
 export function resolveApiKey(provider: ProviderName): string | undefined {
   const config = loadConfig();
   const fromConfig =
-    provider === 'gemini' ? config.geminiKey
+    provider === 'kimi'   ? config.kimiKey
+  : provider === 'gemini' ? config.geminiKey
   : provider === 'groq'   ? config.groqKey
   : config.openaiKey;
   if (fromConfig && fromConfig.trim()) return fromConfig.trim();
   const envName =
-    provider === 'gemini' ? 'GEMINI_API_KEY'
+    provider === 'kimi'   ? 'KIMI_API_KEY'
+  : provider === 'gemini' ? 'GEMINI_API_KEY'
   : provider === 'groq'   ? 'GROQ_API_KEY'
   : 'OPENAI_API_KEY';
   return process.env[envName]?.trim();
