@@ -21,12 +21,15 @@ import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, getSign
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
-import { resolveScalpCooldownDirective, type SignalProfile } from '../configStore.js';
+import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, type SignalProfile } from '../configStore.js';
 import {
   advance, toSignalTradeState, computeHold, planToArmed, armedToCurrentSignal,
   inCooldown, realizedLcFromArmed, ARMED_TIMEOUT_MS,
+  opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   type SignalPhase, type EngineState, type CurrentSignal, type SignalHold, type RecordedTrade,
+  type OpenPosition, type HeldIdentity,
 } from './decisions.js';
+import type { ScalpPlanResult } from '../llm/openai.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
 
 // 純粋な決定コア(型/純関数)と永続化ビルダーは従来どおり engine.js から公開する(import 元を変えない)。
@@ -97,6 +100,9 @@ export class SignalEngine {
   // cooldown ログの多重抑止(毎tick出さない)。決済ごとに false へ戻し、cooldown 中に一度だけ出す。
   private cooldownLogged = false;
   private readonly planIntervalMs = resolvePlanIntervalMs();
+  // ★ドテン(保有中の反転評価=held-eval)の最終要求時刻。flat-plan 間隔以上の長間隔でクールダウンする(held は spend が倍化しやすい)。
+  private lastHeldEvalAt = 0;
+  private readonly heldEvalIntervalMs = 2 * this.planIntervalMs;
   // 見送り(direction:'none')後の再計画抑止アンカー。null = 抑止していない。
   private planSuppressedAnchor: number | null = null;
   // ★検証用(RECORD-ONLY): 決済逆指値(hold.exitStop)の「前回記録値」。変化時のみ signal_exit_stops へ1行記録するための dedupe 用。
@@ -179,6 +185,7 @@ export class SignalEngine {
     this.currentSignal = null;
     this.planning = false;
     this.lastPlanAt = 0;
+    this.lastHeldEvalAt = 0;
     this.lastBroadcastJson = '';
     this.planSuppressedAnchor = null;
     this.lastSignalExitAt = null;
@@ -308,6 +315,93 @@ export class SignalEngine {
     })();
   }
 
+  // ★ドテン(保有中の反転評価=held-eval)。state.phase==='filled' かつ dotenEnabled のとき、AI に「反転すべきか」を
+  //   都度要求する。in-flight(planning)を flat-plan と共有し(同時に AI を叩かない)、inPollWindow でゲートし、
+  //   flat-plan 間隔以上のクールダウンで抑制する。★async 同一性再チェック: 要求時に建玉識別(at+direction+signalId)を
+  //   控え、AI 応答解決時に「まだ filled かつ同一建玉」でなければ破棄する(幽霊を反転させない)。
+  //   ★A のみ(maintainsCurrentSignal): B は currentSignal を持たない=ドテンできない=held-eval も走らせない(byte 不変)。
+  private maybeRequestHeldEval(price: number, now: number): void {
+    if (!this.cfg.maintainsCurrentSignal) return;   // B は絶対にドテンしない。
+    const dotenEnabled = resolveScalpDotenEnabled(this.cfg.profile);
+    if (!shouldRequestHeldEval({
+      dotenEnabled, planning: this.planning, phase: this.state.phase,
+      inWindow: inPollWindow(now), now, lastHeldEvalAt: this.lastHeldEvalAt, intervalMs: this.heldEvalIntervalMs,
+    })) return;
+    const pos = this.state.position;
+    if (!pos) return;
+    // ★評価対象の建玉識別を控える(解決時の同一性再チェック用)。
+    const identity: HeldIdentity = { at: pos.at, direction: pos.direction, signalId: this.currentSignal?.signalId };
+    const heldDir = pos.direction;
+    const heldEntry = pos.entryPrice;
+    this.planning = true;   // flat-plan と共有(以降 flat-plan も held-eval も新規要求しない)。
+    this.lastHeldEvalAt = now;
+    void (async () => {
+      try {
+        const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
+        // held-context(§3.2)を注入して反転可否を AI に問う(profile で A/B の設定を解決)。
+        const result = await runScalpPlanWithChart({ profile: this.cfg.profile, heldPosition: { dir: heldDir, entry: heldEntry } });
+        const nowR = Date.now();
+        const priceR = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? price;
+        this.applyHeldEvalResult(result, identity, nowR, priceR);
+      } catch (e) {
+        console.warn(`${this.logTag} held-eval request failed:`, e instanceof Error ? e.message : String(e));
+      } finally {
+        this.planning = false;
+      }
+    })();
+  }
+
+  /** ★ドテン反映(held-eval 応答の解決)。同一性再チェック→ opposite ガード(第一級・checkSanity とは別)→ 反対ブラケットの
+   *  checkSanity → reverseToDoten(P を成行決済して反対ブラケットを arm・doten:true)→ 新 signalId を1回だけ採番して
+   *  currentSignal を更新し broadcast。戻り値は 'doten'(反転した)/'stale'(別建玉/決済済みで破棄)/'reject'(反転しない)。
+   *  ★純ロジックは decisions.ts(reverseToDoten/opposite/sameHeldPosition)。ここは engine 状態の更新と記録・採番・broadcast のみ。
+   *  ★_ 接頭辞: async 経路から呼ぶ内部メソッドだが、単体テストからも直接叩けるよう公開する(_peekSignalIdCounter と同方針)。 */
+  applyHeldEvalResult(result: ScalpPlanResult, identity: HeldIdentity, now: number, price: number): 'doten' | 'stale' | 'reject' {
+    // ★async 同一性再チェック: まだ filled かつ同一建玉(at+direction)かつ同一 signalId(currentSignal)でなければ破棄。
+    if (!sameHeldPosition(this.state, identity)) return 'stale';
+    if (this.currentSignal?.signalId !== identity.signalId) return 'stale';
+    if (!result.ok) return 'reject';
+    const plan = result.plan;
+    const heldDir = this.state.position!.direction;
+    // 第一級 opposite ガード(checkSanity とは別): 保有と反対方向の actionable プランのときだけドテン候補。
+    if (plan.direction !== opposite(heldDir)) return 'reject';
+    // 反対ブラケットのサニティ(trade2 と同一・新反対ブラケットの妥当性)。不通過なら反転しない(保有継続)。
+    const sanity = checkSanity(plan, plan.refPrice);
+    if (!sanity.ok) return 'reject';
+    const rev = reverseToDoten(this.state, plan, price, now, { vetoFired: result.vetoFired });
+    if (!rev) return 'reject';
+    // ① 現保有 P を決済(pnl を signal_trades に記録)。この時点の currentSignal は P の ARM 采番=P の signalId で結合。
+    this.persistTrade(rev.recorded);
+    this.lastSignalExitAt = now;
+    this.cooldownLogged = false;
+    if (this.currentSignal) this.lastExitedSignalId = this.currentSignal.signalId;
+    // ② 反対ブラケットを arm(実効設定スナップショットを確定)。★新 signalId を1回だけ採番して currentSignal を更新する。
+    rev.armed.settings = buildSettingsSnapshot(realizedLcFromArmed(rev.armed), this.cfg.profile);
+    this.state = rev.next;
+    this.planSuppressedAnchor = null;
+    this.signalIdCounter += 1;
+    this.persistSignalIdCounter();
+    this.currentSignal = armedToCurrentSignal(rev.armed, this.signalIdCounter);
+    // ③ 反対建玉は以降 detectFill の交差で filled になる(paper と live が同じタイミング/価格で約定)。
+    this.recordExitStopChange(now);
+    this.broadcastSignalState(now);
+    console.log(`${this.logTag} doten 反転 ${heldDir}→${plan.direction} newSignalId=${this.signalIdCounter} `
+      + `P決済pnl=${Math.round(rev.recorded.pnl)}`);
+    return 'doten';
+  }
+
+  /** テスト用: filled 状態(建玉+現在シグナル)を直接セットする(ドテン反映の単体テスト用)。
+   *  実運用の ARM 後と同じく signalIdCounter を現在シグナルの signalId に揃える(次の採番=signalId+1)。 */
+  _setFilledForTest(position: OpenPosition, signal: CurrentSignal): void {
+    this.state = { phase: 'filled', position };
+    this.currentSignal = signal;
+    this.signalIdCounter = signal.signalId;
+  }
+
+  /** テスト用: held-eval の要求ゲートを叩き、in-flight(planning)になったか(=要求したか)を返す。
+   *  OFF/非filled/時間外/間隔未達 なら false(planning は変わらない)。 */
+  _peekRequestedHeldEval(): boolean { return this.planning; }
+
   // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
@@ -345,6 +439,7 @@ export class SignalEngine {
       //   state 更新後・broadcast 前に評価。決済ロジック/SSE には影響しない(追加の DB 書込のみ)。
       this.recordExitStopChange(now);
       this.maybeRequestPlan(price, now);
+      this.maybeRequestHeldEval(price, now);   // ★ドテン: filled かつ dotenEnabled のとき保有中の反転評価を要求(既定OFF=no-op)。
       this.heartbeat(now);   // ★診断: 定期にエンジン状態を1行ログ(固着の早期発見)。
       this.broadcastSignalState(now);
     } catch (e) {

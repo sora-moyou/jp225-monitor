@@ -25,6 +25,8 @@ export interface SignalSettingsSnapshot {
   cooldown: KnobSettingSnapshot;
   bias: KnobSettingSnapshot;
   range: KnobSettingSnapshot;
+  // ★ドテン(反転)許可の委任状態(ADD-ONLY): 許可 ON の時だけ true を載せる。OFF(既定)では欠落=既存 meta JSON 不変。
+  dotenEnabled?: true;
 }
 
 export type Symbol =
@@ -143,6 +145,9 @@ export interface SignalTradeState {
     // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。trade2 が entry_meta に記録する。
     //   既存フィールドは不変=在るときだけ付与(パネル表示互換)。
     settings?: SignalSettingsSnapshot;
+    // ★ドテン(反転)シグナル(ADD-ONLY): 実 doten の時だけ true。反転指示=保有と反対方向・limit/stop/SL は新規反対建玉・
+    //   signalId は新規採番。trade2 は「doten:true + 新 signalId + FILLED」を専用トリガーにする。非 doten では欠落=既存 JSON 不変。
+    doten?: true;
   };
   // 保有中の意図(trade2 追従用)。filled の間だけ付与し、決済逆指値(computeExitStop の絶対価格)を
   // 毎tick公開する。signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。

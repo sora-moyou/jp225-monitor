@@ -160,6 +160,7 @@ const settingsCtl = initSettingsModal({
   inputScalpCooldown:  document.getElementById('scalp-cooldown') as HTMLInputElement,
   inputScalpTrendVeto: document.getElementById('scalp-trend-veto') as HTMLInputElement,
   checkScalpRangeEnabled: document.getElementById('scalp-range-enabled') as HTMLInputElement,
+  checkScalpDotenEnabled: document.getElementById('scalp-doten-enabled') as HTMLInputElement,
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor:   document.getElementById('scalp-lc-floor') as HTMLInputElement,
   selectLcFloorMode:   document.getElementById('scalp-lc-floor-mode') as HTMLSelectElement,

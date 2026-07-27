@@ -11,6 +11,7 @@ import {
   resolveScalpCooldownDirective,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
+  resolveScalpDotenEnabled,
   type KnobDirective, type SignalProfile,
 } from '../configStore.js';
 import type { SignalTradeInsert, SignalExitStopInsert } from '../db/store.js';
@@ -42,7 +43,7 @@ export function knobSnapshot<T>(d: KnobDirective<T>, realizedLcYen?: number): Kn
  *  ★v0.8.2: profile を渡すと B(signalB→A フォールバック)の実効設定を反映。省略/'A'=グローバル(現行と byte 一致)。 */
 export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalProfile): SignalSettingsSnapshot {
   const hardMax = resolveScalpLcHardMax(profile);
-  return {
+  const snap: SignalSettingsSnapshot = {
     lcFloor: knobSnapshot(resolveScalpLcFloorDirective(profile), realizedLcYen),
     lcCeiling: knobSnapshot(resolveScalpLcCeilingDirective(profile), realizedLcYen),
     lcHardMax: { enabled: hardMax.enabled, value: hardMax.value },
@@ -51,6 +52,9 @@ export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalPr
     bias: knobSnapshot(resolveScalpBiasDirective(profile)),
     range: knobSnapshot(resolveScalpRangeDirective(profile)),
   };
+  // ★ドテン(反転)許可の委任状態(ADD-ONLY): 許可 ON の時だけ載せる。OFF(既定)では欠落=既存 meta JSON と byte 一致。
+  if (resolveScalpDotenEnabled(profile)) snap.dotenEnabled = true;
+  return snap;
 }
 
 /** ★v0.8.2: RecordedTrade + 系統タグ(A=null/B='B')から DB 挿入行を組み立てる純関数(テスト可能)。

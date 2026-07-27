@@ -6,7 +6,7 @@
 // DB / LLM / broadcast / configStore は呼ばない(それらは engine.ts / persist.ts が担う)。
 
 import type { SignalTradeState, SignalSettingsSnapshot } from '../types.js';
-import type { RangeLeg } from '../llm/openai.js';
+import type { RangeLeg, AiPlan } from '../llm/openai.js';
 import { computeExitStop } from './exit/index.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
@@ -38,6 +38,9 @@ export interface ArmedBracket {
   planMeta?: PlanMeta;
   // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。約定→決済→meta/SSE へ持ち回る。
   settings?: SignalSettingsSnapshot;
+  // ★ドテン(反転): このブラケットが保有中の反転評価で armed された「反対方向の反転建て」であることを示す。
+  //   在るときだけ true(add-only)=非ドテンの armed は従来と byte 一致。armedToCurrentSignal / position / recorded へ持ち回る。
+  doten?: true;
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -56,6 +59,9 @@ export interface CurrentSignal {
   range?: { upper?: RangeLeg; lower?: RangeLeg };
   // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。trade2 が SSE/GET で受け取り記録する。
   settings?: SignalSettingsSnapshot;
+  // ★ドテン(反転)シグナル。在るときだけ true(add-only)。反転指示=保有と反対方向・limit/stop/SL は新規反対建玉のもの・
+  //   signalId は新規採番。trade2 は「doten:true + 新 signalId + FILLED」を専用トリガーにする。
+  doten?: true;
 }
 
 export interface OpenPosition {
@@ -70,6 +76,7 @@ export interface OpenPosition {
   rangeTp?: number;  // レンジ建玉のTP目標(反対側レンジ節目・利益側にある場合のみ設定)。設定時は損側=固定initialStop・利側=節目手前で成行決済(phase-exit を使わない)。
   planMeta?: PlanMeta;   // v0.7.54: AI 自己レジーム/確信度 + veto 発火(決済 meta へ引き継ぐ)。
   settings?: SignalSettingsSnapshot;   // ★v0.7.56: 実効設定スナップショット(決済 meta へ引き継ぐ)。
+  doten?: true;          // ★ドテン(反転)で建てた建玉(add-only)。決済記録(RecordedTrade)まで持ち回る。
 }
 
 export interface EngineState {
@@ -99,6 +106,7 @@ export interface RecordedTrade {
   mode?: 'range';   // レンジ由来の紙トレード(別枠集計タグ)。directional は付与しない=既存記録と互換。
   planMeta?: PlanMeta;   // v0.7.54: 決済時に signal_trades.meta へ JSON 保存する自己レジーム/確信度/veto。
   settings?: SignalSettingsSnapshot;   // ★v0.7.56: 決済時に signal_trades.meta へ保存する実効設定スナップショット。
+  doten?: true;   // ★ドテン(反転)関連トレード(add-only)。P の反転決済 or 反転建玉の決済。meta.doten に残す。
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -306,6 +314,7 @@ export function advance(
     };
     if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
     if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
+    if (st.armed.doten) position.doten = true;   // ★ドテン建玉フラグを約定後の建玉へ持ち回る(add-only)。
     return { next: { phase: 'filled', position, lastExit: st.lastExit } };
   }
 
@@ -363,6 +372,7 @@ export function advance(
     if (pos.mode === 'range') recorded.mode = 'range';
     if (pos.planMeta) recorded.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
     if (pos.settings) recorded.settings = pos.settings;   // ★v0.7.56: 実効設定を決済記録へ。
+    if (pos.doten) recorded.doten = true;   // ★ドテン建玉の決済記録にフラグ(add-only)。
     return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded };
   }
 
@@ -434,6 +444,8 @@ export function toSignalTradeState(
     }
     // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
     if (signal.settings) s.signal.settings = signal.settings;
+    // ★ドテン(反転)フラグ(ADD-ONLY): 実 doten の時だけ付与。非 doten の JSON は不変=dedupe/OFF byte 一致。
+    if (signal.doten) s.signal.doten = true;
   }
   // ★直近決済シグナルID(ADD-ONLY): 在るときだけ露出(初回決済まで欠落=既存 JSON 不変)。
   if (lastExitedSignalId != null) s.lastExitedSignalId = lastExitedSignalId;
@@ -514,7 +526,69 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
   }
   // ★v0.7.56: 実効設定スナップショットを引き継ぐ(在るときだけ)。
   if (a.settings) s.settings = a.settings;
+  // ★ドテン(反転)フラグを引き継ぐ(在るときだけ=add-only)。
+  if (a.doten) s.doten = true;
   return s;
+}
+
+/** 保有方向の反対(buy↔sell)。ドテン(反転)の第一級ガードで使う純関数。 */
+export function opposite(dir: 'buy' | 'sell'): 'buy' | 'sell' {
+  return dir === 'buy' ? 'sell' : 'buy';
+}
+
+/** ★ドテン評価用の建玉識別(async 同一性再チェック)。要求時に控え、AI 応答解決時に「まだ filled かつ同一建玉」かを照合する。 */
+export interface HeldIdentity { at: number; direction: 'buy' | 'sell'; signalId?: number; }
+
+/** 現在の state が identity と同一建玉(まだ filled・同じ約定時刻・同じ方向)か。純関数。
+ *  signalId の照合は currentSignal を持つ engine 側で別途行う(state には signalId が無いため)。 */
+export function sameHeldPosition(st: EngineState, id: HeldIdentity): boolean {
+  return st.phase === 'filled' && !!st.position
+    && st.position.at === id.at && st.position.direction === id.direction;
+}
+
+/** 保有中に held-eval(ドテン評価)を AI へ要求すべきか(純関数・ゲート判定のみ)。
+ *  ドテン許可 OFF / in-flight(planning)/ 非 filled / 取引時間外 / 間隔未達 のいずれかなら false。
+ *  ★間隔は flat-plan 間隔以上(held は spend が倍化しやすいので長め)を呼び出し側が渡す。 */
+export function shouldRequestHeldEval(a: {
+  dotenEnabled: boolean; planning: boolean; phase: SignalPhase;
+  inWindow: boolean; now: number; lastHeldEvalAt: number; intervalMs: number;
+}): boolean {
+  if (!a.dotenEnabled) return false;
+  if (a.planning) return false;              // flat-plan と in-flight を共有(同時に AI を叩かない)。
+  if (a.phase !== 'filled') return false;
+  if (!a.inWindow) return false;
+  if (a.now - a.lastHeldEvalAt < a.intervalMs) return false;
+  return true;
+}
+
+/** ★ドテン(反転)の反映(純関数・肝)。filled の保有 P を「現在値で成行決済」し、AI の反対プランを
+ *  反対ブラケット(doten:true)として armed に据える。engine は返る recorded を記録し、armed から新 signalId を
+ *  1回だけ採番して currentSignal を更新し broadcast する。
+ *  ★monitor 紙は即時約定しない: ここでは反対ブラケットを arm するだけ。反対建玉は以降 detectFill の交差で filled になる
+ *   (=trade2 と同じタイミング/価格ソースで約定)。
+ *  前提: 呼び出し側が「plan.direction === opposite(保有方向)」と checkSanity 通過を既に確認済み(第一級ガードは engine)。
+ *  filled でない / planToArmed が null / range になった 場合は null(ドテンしない=保有継続)。 */
+export function reverseToDoten(
+  st: EngineState, plan: AiPlan, price: number, now: number, extra?: { vetoFired?: boolean },
+): { next: EngineState; recorded: RecordedTrade; armed: ArmedBracket } | null {
+  if (st.phase !== 'filled' || !st.position) return null;
+  if (!Number.isFinite(price)) return null;
+  const armed = planToArmed(plan, now, extra);
+  if (!armed || armed.mode === 'range') return null;   // ドテンは directional の反対建てのみ。
+  armed.doten = true;
+  const p = st.position;
+  // P を成行決済(不利方向 1tick): ロング決済は安く / ショート決済は高く約定。決済トリガは現在値(即時 close)。
+  const exitFill = p.direction === 'buy' ? price - SLIPPAGE_YEN : price + SLIPPAGE_YEN;
+  const pnl = realizedPnl(p.direction, p.entryPrice, exitFill, p.qty);
+  const recorded: RecordedTrade = {
+    entryT: p.at, entryPrice: p.entryPrice, dir: p.direction,
+    exitT: now, exitPrice: exitFill, pnl, qty: p.qty, rationale: p.rationale, doten: true,
+  };
+  if (p.mode === 'range') recorded.mode = 'range';
+  if (p.planMeta) recorded.planMeta = p.planMeta;
+  if (p.settings) recorded.settings = p.settings;
+  const next: EngineState = { phase: 'armed', armed, lastExit: { exitPrice: exitFill, pnl, at: now } };
+  return { next, recorded, armed };
 }
 
 /** ★v0.7.56: armed ブラケットの代表レッグの初期LC幅 |entry−SL| を返す純関数(実測値=AI委任 LC の value 用)。

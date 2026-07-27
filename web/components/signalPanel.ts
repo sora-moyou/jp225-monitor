@@ -24,6 +24,8 @@ export interface SignalCurrent {
   at?: number;
   mode?: 'range';
   range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
+  // ★ドテン(反転)シグナル。true のとき「決済+反対新規」の反転指示=パネルに明示表示する。
+  doten?: boolean;
 }
 
 export interface SignalTradeState {
@@ -129,7 +131,9 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   if (sig.limitEntry != null) legs.push(`${dirJa(sig.direction)} ${fmtPrice(sig.limitEntry)} 指値${lcTag(sig.stopLossForLimit)}`);
   if (sig.stopEntry != null) legs.push(`${dirJa(sig.direction)} ${fmtPrice(sig.stopEntry)} 逆指値${lcTag(sig.stopLossForStop)}`);
   if (legs.length === 0) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
-  const bias = sig.direction === 'buy' ? '買い目線' : '売り目線';
+  // ★ドテン(反転)シグナルは目線行に明示(通常の決済→別の新規と区別できるように)。
+  const dirBias = sig.direction === 'buy' ? '買い目線' : '売り目線';
+  const bias = sig.doten ? `🔃 ドテン(反転)・${dirBias}` : dirBias;
   return { cls: 'armed', bias, main: `🎯 シグナル：${legs.join(' / ')}`, rationale: sig.rationale ?? '' };
 }
 

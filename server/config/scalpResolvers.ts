@@ -35,6 +35,13 @@ export function resolveScalpRangeEnabled(profile?: SignalProfile): boolean {
 // ★v0.7.56: AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(45)。プロンプトにのみ反映。
 export function resolveScalpLcFloorYen(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpLcFloorYen'); }
 
+// ★ドテン(反転)許可。ON=「AIが保有中に反転を判断してよい」(=AI判断)。OFF(既定)=ドテンを出さない=既定で挙動不変。
+//   未設定/非boolean は false(既定OFF)。monitor2(full)専用の設定 UI でのみ切り替える(engine は値を読むだけ)。
+export function resolveScalpDotenEnabled(profile?: SignalProfile): boolean {
+  const v = readKnobRaw(profile, 'dotenEnabled');
+  return typeof v === 'boolean' ? v : false;
+}
+
 // ─── v0.7.56: 委任 directive リゾルバ({mode,value}) ───────────────────────
 // 各 knob を「手動(数値/enum を強制)」か「AI委任(該当制約を課さない)」で返す。
 // source が 'ai' のときだけ ai。それ以外(未設定/'manual'/不正値)は寛容に manual(=既定で現状の挙動)。

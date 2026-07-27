@@ -21,6 +21,22 @@ describe('buildSignalView(シグナル枠)', () => {
     expect(v.rationale).toBe('押し目買い');
   });
 
+  it('★ドテン(反転)シグナルは目線行に「🔃 ドテン(反転)」を明示・非dotenは従来どおり', () => {
+    const doten: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'sell', limitEntry: 66000, stopLossForLimit: 66050, at: 1, doten: true },
+    };
+    const v = buildSignalView(doten);
+    expect(v.bias).toBe('🔃 ドテン(反転)・売り目線');
+    expect(v.main).toContain('売り 66,000 指値 (LC 66,050)');
+    // 非 doten は従来の目線行のまま(マーカーなし)。
+    const normal: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'sell', limitEntry: 66000, stopLossForLimit: 66050, at: 1 },
+    };
+    expect(buildSignalView(normal).bias).toBe('売り目線');
+  });
+
   it('★目線行: 買い→買い目線 / 売り→売り目線 / range→レンジ / 待機は目線なし', () => {
     const sell: SignalTradeState = {
       phase: 'armed', updatedAt: 0,

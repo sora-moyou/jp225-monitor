@@ -62,6 +62,9 @@ export interface RunScalpPlanOverrides {
   /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル(実売買A・現行と byte 一致) / 'B'=System B(紙専用・signalB 設定)。
    *  trend veto 閾値・LC/バイアス・自系統の紙成績文脈が profile で切り替わる。 */
   profile?: SignalProfile;
+  /** ★ドテン(保有中の反転評価=held-eval)。渡すとプロンプトに保有中の建玉(方向・建値)を注入し、反転可否を AI に問う。
+   *  未指定(flat-plan)は従来どおり注入なし=byte 一致。 */
+  heldPosition?: { dir: 'buy' | 'sell'; entry: number };
 }
 
 /** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
@@ -131,5 +134,6 @@ export async function runScalpPlanWithChart(
     lcCeilingYen: overrides.lcCeilingYen,
     trend,
     profile: overrides.profile,   // ★v0.8.2: A(既定)は byte 一致 / B は signalB 設定で解決。
+    heldPosition: overrides.heldPosition,   // ★ドテン: 保有中の反転評価はプロンプトに held-context を注入(flat-plan は未指定=不変)。
   });
 }

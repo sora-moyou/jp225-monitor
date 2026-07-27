@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
-  resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, PARAM_BOUNDS,
+  resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpDotenEnabled, PARAM_BOUNDS,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource,
@@ -88,6 +88,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
     scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(★実験終了=未設定は false=OFF)。
+    dotenEnabled: resolveScalpDotenEnabled(),   // ★ドテン(反転)許可(既定OFF)。monitor2 専用UIで切替。
     // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
     scalpLcFloorSource: resolveScalpLcFloorDirective().mode,
     scalpLcCeilingSource: resolveScalpLcCeilingDirective().mode,
@@ -153,6 +154,7 @@ interface SettingsBody {
   webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
+  dotenEnabled?: boolean | null;       // ★ドテン(反転)許可(true=ON / false/null=OFF=既定)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
   scalpLcFloorSource?: string | null;
@@ -275,6 +277,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   if (biasResult.error) errors.push(biasResult.error);
   // AIエントリー レンジ両面(boolean)を適用(検証エラーなし=非boolean は変更なし)。
   const rangeEnabledValue = applyBoolField(existing.scalpRangeEnabled, bodyRec.scalpRangeEnabled);
+  // ★ドテン(反転)許可(boolean・既定 false)。null/false=OFF(未設定で保存)。
+  const dotenEnabledValue = applyBoolField(existing.dotenEnabled, bodyRec.dotenEnabled);
   // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
   // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
@@ -303,6 +307,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
+    dotenEnabled: dotenEnabledValue,   // ★ドテン(反転)許可(既定OFFは未設定で保存)
     // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。
     scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
     scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),

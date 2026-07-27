@@ -500,6 +500,9 @@ export interface ScalpPlanInput {
   /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル設定(=現行挙動と byte 一致・実売買A) /
    *  'B'=System B の独立設定(signalB 優先→未設定はグローバルへフォールバック)。各 knob の解決だけが切り替わる。 */
   profile?: SignalProfile;
+  /** ★ドテン(保有中の反転評価=held-eval)。渡すとプロンプトに保有中の建玉を注入し「反転が妥当な場面だけ反対 direction を返してよい」
+   *  と促す。未指定(flat-plan)は注入なし=systemPrompt は従来と byte 一致。dotenEnabled=false は engine が呼ばないので常に未指定。 */
+  heldPosition?: { dir: 'buy' | 'sell'; entry: number };
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -801,10 +804,17 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     hardMax,
     exitDesc: describeExitLogic(),
   });
+  // ★ドテン(保有中の反転評価=held-eval): heldPosition が渡された時だけ注入する。flat-plan(未指定)では '' = 従来と byte 一致。
+  const heldNote = input.heldPosition
+    ? `\n\n【保有中(ドテン評価)】現在 ${input.heldPosition.dir === 'buy' ? 'long(買い)' : 'short(売り)'}@${Math.round(input.heldPosition.entry)} を保有中です。`
+      + `ドテン(反転=決済して同時に反対方向へ新規)が許可されています。決済が妥当かつ反対方向へ強く動く場面だと判断したときだけ、`
+      + `direction を保有と反対(${input.heldPosition.dir === 'buy' ? 'sell' : 'buy'})にした反転プランを返してよい(常にではなく、その場面だけ)。`
+      + `反転が不要なら direction:"none" で保有継続とすること。`
+    : '';
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${strategySpec}${delegationNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${strategySpec}${delegationNote}${heldNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +

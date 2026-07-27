@@ -7,7 +7,9 @@ import {
   advance, ARMED_TIMEOUT_MS, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   rangeTpTrigger, RANGE_TP_OFFSET_YEN, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN,
   computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed,
+  opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal, type RecordedTrade,
+  type HeldIdentity,
 } from './decisions.js';
 import {
   buildTradeMetaJson, buildSettingsSnapshot, knobSnapshot, buildSignalTradeInsert,
@@ -1181,5 +1183,243 @@ describe('SignalEngine signalId 永続シード(再起動継続・履歴消去�
     // module-level ラッパも例外なく呼べる(A singleton の in-memory を触るだけ)。
     resetSignalEngineIdCounter('A');
     resetSignalEngineIdCounter();
+  });
+});
+
+// ═══ ドテン(反転): AI駆動の保有中反転 ═══════════════════════════════════════
+
+describe('opposite(保有方向の反対)', () => {
+  it('buy↔sell', () => {
+    expect(opposite('buy')).toBe('sell');
+    expect(opposite('sell')).toBe('buy');
+  });
+});
+
+describe('shouldRequestHeldEval(held-eval 要求ゲート)', () => {
+  const base = { dotenEnabled: true, planning: false, phase: 'filled' as const, inWindow: true, now: 100_000, lastHeldEvalAt: 0, intervalMs: 60_000 };
+  it('全条件成立で true', () => { expect(shouldRequestHeldEval(base)).toBe(true); });
+  it('dotenEnabled=false(既定OFF)は false=held-eval を走らせない', () => {
+    expect(shouldRequestHeldEval({ ...base, dotenEnabled: false })).toBe(false);
+  });
+  it('planning(in-flight)は false=flat-plan と同時に AI を叩かない', () => {
+    expect(shouldRequestHeldEval({ ...base, planning: true })).toBe(false);
+  });
+  it('非 filled は false', () => {
+    expect(shouldRequestHeldEval({ ...base, phase: 'flat' })).toBe(false);
+    expect(shouldRequestHeldEval({ ...base, phase: 'armed' })).toBe(false);
+  });
+  it('取引時間外(inWindow=false)は false', () => {
+    expect(shouldRequestHeldEval({ ...base, inWindow: false })).toBe(false);
+  });
+  it('間隔未達は false・境界(=intervalMs)で true', () => {
+    expect(shouldRequestHeldEval({ ...base, lastHeldEvalAt: 100_000 - 59_999 })).toBe(false);
+    expect(shouldRequestHeldEval({ ...base, lastHeldEvalAt: 100_000 - 60_000 })).toBe(true);
+  });
+});
+
+describe('sameHeldPosition(async 同一性再チェック)', () => {
+  const id: HeldIdentity = { at: 500, direction: 'buy', signalId: 3 };
+  it('まだ filled かつ同一(at+direction)なら true', () => {
+    const st: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r', at: 500 } };
+    expect(sameHeldPosition(st, id)).toBe(true);
+  });
+  it('flat/armed(=もう保有していない)は false=幽霊を反転させない', () => {
+    expect(sameHeldPosition({ phase: 'flat' }, id)).toBe(false);
+    expect(sameHeldPosition({ phase: 'armed', armed: { direction: 'buy', limitEntry: 1, stopLossForLimit: 1, rationale: 'r', at: 0 } }, id)).toBe(false);
+  });
+  it('別建玉(at 変化 / direction 変化)は false', () => {
+    const diffAt: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r', at: 900 } };
+    expect(sameHeldPosition(diffAt, id)).toBe(false);
+    const diffDir: EngineState = { phase: 'filled', position: { direction: 'sell', entryPrice: 38000, qty: 1, initialStop: 38050, peakProfit: 0, rationale: 'r', at: 500 } };
+    expect(sameHeldPosition(diffDir, id)).toBe(false);
+  });
+});
+
+describe('reverseToDoten(P を成行決済して反対ブラケットを arm・純関数)', () => {
+  const heldBuy: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'orig', at: 500 } };
+  const sellPlan = { direction: 'sell' as const, limitEntry: 38050, stopLossForLimit: 38100, rationale: '反転売り', refPrice: 38000 };
+
+  it('buy保有 + sellプラン: P を現在値で成行決済(不利1tick)・反対ブラケット(doten)を armed に据える', () => {
+    const rev = reverseToDoten(heldBuy, sellPlan, 38000, 2000, { vetoFired: false });
+    expect(rev).not.toBeNull();
+    // ① P の決済記録(doten:true・dir=buy・成行−5=37995・pnl=37995−38000=−5)。
+    expect(rev!.recorded).toMatchObject({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37995, pnl: -5, doten: true });
+    // ② 反対ブラケット(doten:true・direction=sell)を armed に。
+    expect(rev!.next.phase).toBe('armed');
+    expect(rev!.armed).toMatchObject({ direction: 'sell', limitEntry: 38050, stopLossForLimit: 38100, doten: true });
+    expect(rev!.next.armed?.doten).toBe(true);
+    expect(rev!.next.lastExit).toEqual({ exitPrice: 37995, pnl: -5, at: 2000 });
+  });
+
+  it('sell保有 + buyプラン: ショート決済は不利+1tick', () => {
+    const heldSell: EngineState = { phase: 'filled', position: { direction: 'sell', entryPrice: 38000, qty: 1, initialStop: 38050, peakProfit: 0, rationale: 'o', at: 1 } };
+    const buyPlan = { direction: 'buy' as const, limitEntry: 37950, stopLossForLimit: 37900, rationale: '反転買い', refPrice: 38000 };
+    const rev = reverseToDoten(heldSell, buyPlan, 38000, 2)!;
+    expect(rev.recorded).toMatchObject({ dir: 'sell', exitPrice: 38005, pnl: -5, doten: true });
+    expect(rev.armed).toMatchObject({ direction: 'buy', doten: true });
+  });
+
+  it('planMeta/settings/mode を P の決済記録に引き継ぐ', () => {
+    const held: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'o', at: 1, mode: 'range', planMeta: { regime: 'trend_up' } } };
+    const rev = reverseToDoten(held, sellPlan, 38000, 2)!;
+    expect(rev.recorded.mode).toBe('range');
+    expect(rev.recorded.planMeta).toEqual({ regime: 'trend_up' });
+  });
+
+  it('filled でない / plan が none・range になる 場合は null(ドテンしない)', () => {
+    expect(reverseToDoten({ phase: 'flat' }, sellPlan, 38000, 1)).toBeNull();
+    expect(reverseToDoten(heldBuy, { direction: 'none', rationale: 'x', refPrice: 38000 } as any, 38000, 1)).toBeNull();
+    expect(reverseToDoten(heldBuy, { direction: 'range', rationale: 'x', refPrice: 38000, range: { upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 } } } as any, 38000, 1)).toBeNull();
+  });
+
+  it('約定→決済で doten が反対建玉の決済記録まで運ばれる(advance の持ち回り)', () => {
+    const rev = reverseToDoten(heldBuy, sellPlan, 38000, 2000)!;
+    // 反対ブラケット(sell 指値38050)が 5円上抜けで約定 → doten position。
+    const filled = advance(rev.next, 38055, 3000);
+    expect(filled.next.position?.doten).toBe(true);
+    // 決済(初期LC 38100 ヒット)。RecordedTrade にも doten が乗る。
+    const exited = advance(filled.next, 38100, 4000);
+    expect(exited.recorded?.doten).toBe(true);
+    expect(exited.recorded?.dir).toBe('sell');
+  });
+});
+
+describe('toSignalTradeState doten(ADD-ONLY)', () => {
+  it('signal.doten=true のとき s.signal.doten を露出', () => {
+    const sig: CurrentSignal = { signalId: 3, at: 1, direction: 'sell', rationale: 'r', limitEntry: 38050, stopLossForLimit: 38100, doten: true };
+    const s = toSignalTradeState({ phase: 'armed', armed: { direction: 'sell', limitEntry: 38050, stopLossForLimit: 38100, rationale: 'r', at: 1, doten: true } }, 38000, 5, sig);
+    expect(s.signal?.doten).toBe(true);
+  });
+  it('非 doten では s.signal.doten は欠落=既存 JSON 不変(dedupe/OFF byte 一致)', () => {
+    const sig: CurrentSignal = { signalId: 3, at: 1, direction: 'sell', rationale: 'r', limitEntry: 38050, stopLossForLimit: 38100 };
+    const s = toSignalTradeState({ phase: 'flat' }, 38000, 5, sig);
+    expect('doten' in (s.signal ?? {})).toBe(false);
+    expect(JSON.stringify(s)).not.toContain('doten');
+  });
+});
+
+describe('armedToCurrentSignal doten(引き継ぎ)', () => {
+  it('armed.doten を currentSignal.doten へ引き継ぐ / 無しは付与しない', () => {
+    const a: ArmedBracket = { direction: 'sell', limitEntry: 38050, stopLossForLimit: 38100, rationale: 'r', at: 1, doten: true };
+    expect(armedToCurrentSignal(a, 2).doten).toBe(true);
+    const b: ArmedBracket = { direction: 'sell', limitEntry: 38050, stopLossForLimit: 38100, rationale: 'r', at: 1 };
+    expect('doten' in armedToCurrentSignal(b, 2)).toBe(false);
+  });
+});
+
+// ─── SignalEngine.applyHeldEvalResult(ドテン反映の統合) ───
+describe('SignalEngine ドテン反映(applyHeldEvalResult)', () => {
+  let dir: string;
+  let origAppData: string | undefined;
+  const cfgA = { profile: 'A' as const, systemTag: null, broadcastType: 'signalTrade' as const, maintainsCurrentSignal: true };
+  const heldBuySig: CurrentSignal = { signalId: 1, at: 500, direction: 'buy', rationale: 'orig', limitEntry: 37950, stopLossForLimit: 37900 };
+  const heldBuyPos: OpenPosition = { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'orig', at: 500 };
+  const id: HeldIdentity = { at: 500, direction: 'buy', signalId: 1 };
+  const sellResult = { ok: true as const, plan: { direction: 'sell' as const, limitEntry: 38050, stopLossForLimit: 38100, rationale: '反転', refPrice: 38000 } };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-doten-'));
+    origAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;   // persistTrade/persistSignalIdCounter を temp DB へ隔離。
+  });
+  afterEach(() => {
+    if (origAppData !== undefined) process.env.APPDATA = origAppData; else delete process.env.APPDATA;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('opposite 有効プラン → 紙は P を決済し反対ブラケット(doten:true・反対dir・新signalId)を arm', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setFilledForTest(heldBuyPos, heldBuySig);
+    const r = eng.applyHeldEvalResult(sellResult, id, 2000, 38000);
+    expect(r).toBe('doten');
+    expect(eng.getPhase()).toBe('armed');
+    const sig = eng.getCurrentSignal()!;
+    expect(sig.direction).toBe('sell');       // 反対方向
+    expect(sig.doten).toBe(true);             // doten フラグ
+    expect(sig.signalId).toBe(2);             // 新 signalId(P=1 → 2)を1回だけ採番
+    expect(sig.limitEntry).toBe(38050);
+    // SSE state: 反対ブラケット(entry)+ P の決済(lastExit)+ doten シグナル。
+    const s = eng.getState(2100);
+    expect(s.signal?.doten).toBe(true);
+    expect(s.lastExit).toEqual({ exitPrice: 37995, pnl: -5, at: 2000 });
+    expect(s.lastExitedSignalId).toBe(1);     // P の signalId を露出
+  });
+
+  it('同方向プランは反転しない(reject・保有継続)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setFilledForTest(heldBuyPos, heldBuySig);
+    const buyResult = { ok: true as const, plan: { direction: 'buy' as const, limitEntry: 37950, stopLossForLimit: 37900, rationale: 'x', refPrice: 38000 } };
+    expect(eng.applyHeldEvalResult(buyResult, id, 2000, 38000)).toBe('reject');
+    expect(eng.getPhase()).toBe('filled');
+    expect(eng.getCurrentSignal()?.signalId).toBe(1);   // 不変
+  });
+
+  it('direction:none は反転しない(reject)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setFilledForTest(heldBuyPos, heldBuySig);
+    const noneResult = { ok: true as const, plan: { direction: 'none' as const, rationale: '見送り', refPrice: 38000 } };
+    expect(eng.applyHeldEvalResult(noneResult, id, 2000, 38000)).toBe('reject');
+    expect(eng.getPhase()).toBe('filled');
+  });
+
+  it('反対だがサニティ不通過(逆置き)は反転しない(reject)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setFilledForTest(heldBuyPos, heldBuySig);
+    // sell 指値が現在値の下(38000未満)=即約定=サニティNG。
+    const badResult = { ok: true as const, plan: { direction: 'sell' as const, limitEntry: 37900, stopLossForLimit: 37950, rationale: 'x', refPrice: 38000 } };
+    expect(eng.applyHeldEvalResult(badResult, id, 2000, 38000)).toBe('reject');
+    expect(eng.getPhase()).toBe('filled');
+  });
+
+  it('★async 同一性再チェック: 解決までに別建玉/決済済みなら破棄(stale)=幽霊を反転させない', () => {
+    const eng = new SignalEngine(cfgA);
+    // 解決時に flat(=もう保有していない)。
+    const r1 = eng.applyHeldEvalResult(sellResult, id, 2000, 38000);
+    expect(r1).toBe('stale');
+    // 別建玉(at 変化)。
+    eng._setFilledForTest({ ...heldBuyPos, at: 999 }, { ...heldBuySig, signalId: 5 });
+    expect(eng.applyHeldEvalResult(sellResult, id, 2000, 38000)).toBe('stale');
+    // signalId 不一致(currentSignal が入れ替わった)。
+    eng._setFilledForTest(heldBuyPos, { ...heldBuySig, signalId: 9 });
+    expect(eng.applyHeldEvalResult(sellResult, id, 2000, 38000)).toBe('stale');
+  });
+
+  it('result.ok=false(LLM失敗)は反転しない(reject)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setFilledForTest(heldBuyPos, heldBuySig);
+    expect(eng.applyHeldEvalResult({ ok: false as const, error: 'x' }, id, 2000, 38000)).toBe('reject');
+    expect(eng.getPhase()).toBe('filled');
+  });
+});
+
+// ─── buildSettingsSnapshot: dotenEnabled(ADD-ONLY) ───
+describe('buildSettingsSnapshot dotenEnabled(委任状態・ADD-ONLY)', () => {
+  let dir: string;
+  let origHome: string | undefined;
+  let origUserProfile: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-doten-snap-'));
+    origHome = process.env.HOME; origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = dir; process.env.USERPROFILE = dir;
+    resetConfigCache();
+  });
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
+    if (origUserProfile !== undefined) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    resetConfigCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  function writeConfig(obj: Record<string, unknown>): void {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'), JSON.stringify(obj), 'utf-8');
+    resetConfigCache();
+  }
+  it('既定(OFF)は dotenEnabled 欠落=既存 snapshot JSON と byte 一致', () => {
+    const s = buildSettingsSnapshot();
+    expect('dotenEnabled' in s).toBe(false);
+  });
+  it('dotenEnabled=true のとき snapshot に true を載せる', () => {
+    writeConfig({ dotenEnabled: true });
+    expect(buildSettingsSnapshot().dotenEnabled).toBe(true);
   });
 });

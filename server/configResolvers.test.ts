@@ -9,7 +9,7 @@ import {
   parseKnobSource,
   resolveScalpLcFloorYen, resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective,
   resolveScalpTrendVetoDirective, resolveScalpCooldownDirective, resolveScalpBiasDirective,
-  resolveScalpRangeDirective, resolveScalpLcHardMax,
+  resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpDotenEnabled,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
@@ -127,6 +127,17 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
   it('scalpRangeEnabled が非boolean(不正)は既定 false にフォールバック', () => {
     writeConfig({ scalpRangeEnabled: 'yes' });
     expect(resolveScalpRangeEnabled()).toBe(false);
+  });
+
+  it('dotenEnabled 未設定は既定 false(ドテン許可OFF=挙動不変)', () => {
+    expect(resolveScalpDotenEnabled()).toBe(false);
+  });
+
+  it('dotenEnabled=true を反映 / 非boolean は false', () => {
+    writeConfig({ dotenEnabled: true });
+    expect(resolveScalpDotenEnabled()).toBe(true);
+    writeConfig({ dotenEnabled: 'on' });
+    expect(resolveScalpDotenEnabled()).toBe(false);
   });
 
   it('scalpTrendVetoYen 未設定は既定 100', () => {
