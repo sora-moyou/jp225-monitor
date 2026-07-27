@@ -603,7 +603,11 @@ body {
   column-count: 2;
   column-gap: 18px;
 }
-.ai-entry-cols > .setting-row { break-inside: avoid; }
+.ai-entry-cols > .setting-row { break-inside: avoid; margin: 8px 0 12px; }
+/* ★2列だと A/B 横並びは窮屈なので、各行内は A を上・B を下に縦積みしてコンパクトに(区切り線は外す)。 */
+.ai-entry-cols .ab-row { display: flex; flex-direction: column; gap: 4px; }
+.ai-entry-cols .ab-col { flex-wrap: nowrap; }
+.ai-entry-cols .ab-col-b { border-left: none; padding-left: 0; margin-left: 0; }
 /* 狭い画面では1カラムに戻す(横スクロール防止)。 */
 @media (max-width: 780px) {
   .settings-cols, .ai-entry-cols { column-count: 1; }
