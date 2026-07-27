@@ -415,9 +415,21 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
     if (!reason) reason = e instanceof Error ? e.message : String(e);
     buffer = null;
   } finally {
-    // 後始末(失敗は無視)。ws → chrome kill → user-data-dir 掃除。
+    // 後始末(失敗は無視)。ws → chrome プロセスツリー kill → user-data-dir 掃除。
     try { cdp?.close(); } catch { /* ignore */ }
-    try { child?.kill('SIGKILL'); } catch { /* ignore */ }
+    // ★重要(ws-error 根治): child.kill() は Windows では spawn した親しか殺さず、Chrome が切り離す
+    //   子プロセス(レンダラ/GPU/utility/crashpad)が生き残ってリーク蓄積→資源枯渇→次回撮影でレンダラ
+    //   クラッシュ(=ws-error)を誘発する。この Chrome インスタンスの **PID ツリーだけ** を taskkill /T で
+    //   落とす(/PID 指定なのでユーザーの Chrome は無傷)。非 Windows は従来どおり SIGKILL。
+    try {
+      if (child?.pid != null) {
+        if (process.platform === 'win32') {
+          execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', timeout: 5000 });
+        } else {
+          child.kill('SIGKILL');
+        }
+      }
+    } catch { /* 既に終了/権限等は無視 */ }
     try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 2 }); } catch { /* ignore */ }
   }
 
