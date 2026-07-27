@@ -591,17 +591,17 @@ body {
 #settings-modal, #params-modal { align-items: flex-start; }
 #settings-modal .modal-content,
 #params-modal .modal-content { width: min(960px, 95vw); margin-top: 6vh; max-height: 86vh; }
-.settings-cols, .ai-entry-cols { display: flex; gap: 20px; align-items: flex-start; }
-.settings-cols > .scol, .ai-entry-cols > .scol { flex: 1 1 0; min-width: 0; }
+.settings-cols { display: flex; gap: 20px; align-items: flex-start; }
+.settings-cols > .scol { flex: 1 1 0; min-width: 0; }
 .settings-cols .settings-section { margin: 0 0 14px; }
-/* AIエントリー行は 2列だと A/B 横並びが窮屈なので、各行内は A を上・B を下に縦積みでコンパクトに(区切り線は外す)。 */
-.ai-entry-cols .ab-row { display: flex; flex-direction: column; gap: 4px; }
-.ai-entry-cols .ab-col { flex-wrap: nowrap; }
-.ai-entry-cols .ab-col-b { border-left: none; padding-left: 0; margin-left: 0; }
-.ai-entry-cols .setting-row { margin: 8px 0 12px; }
+/* params は2カラムで列幅が狭いので、AIエントリー各行は A を上・B を下に縦積みでコンパクトに(区切り線は外す)。 */
+#params-modal #ai-entry-fieldset .ab-row { display: flex; flex-direction: column; gap: 4px; }
+#params-modal #ai-entry-fieldset .ab-col { flex-wrap: nowrap; }
+#params-modal #ai-entry-fieldset .ab-col-b { border-left: none; padding-left: 0; margin-left: 0; }
+#params-modal #ai-entry-fieldset .setting-row { margin: 8px 0 12px; }
 /* 狭い画面では1カラムに戻す(横スクロール防止)。 */
 @media (max-width: 780px) {
-  .settings-cols, .ai-entry-cols { flex-direction: column; gap: 0; }
+  .settings-cols { flex-direction: column; gap: 0; }
   #settings-modal .modal-content,
   #params-modal .modal-content { width: min(560px, 92vw); }
 }
