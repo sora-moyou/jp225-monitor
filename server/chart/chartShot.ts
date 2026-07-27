@@ -442,3 +442,35 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
 
   return { buffer, chromePath, chromeVersion: ver, reason: buffer ? null : reason };
 }
+
+// ─── A/B(+連続サイクル)でチャート撮影を共有するキャッシュ ───────────────────────
+// A系・B系エンジンは各々 runScalpPlanWithChart→captureChartPng を呼ぶため、素だと毎サイクル
+// **2つの Chrome を同時起動**して重い TradingView を二重描画=資源逼迫で ws-error/クラッシュを誘発する。
+// ここで「成功画像を短時間キャッシュ」+「進行中の撮影に相乗り(二重起動しない)」して起動数を半減する。
+const CHART_CACHE_TTL_MS = 60_000;   // 成功画像を最大60秒 共有(plan間隔180sなのでA/B同時要求を吸収しつつ毎サイクルは再撮影)。
+let chartCache: { at: number; result: CaptureResult } | null = null;
+let chartInFlight: Promise<CaptureResult> | null = null;
+
+/** ★共有版: 新鮮な成功キャッシュがあれば即返す / 撮影中なら相乗り / どちらも無ければ1回だけ実撮影。
+ *  失敗はキャッシュしない(呼び出し側のリトライ/縮退が効くように)。now/capture はテスト注入用。 */
+export async function captureChartPngCached(
+  port: number,
+  capture: (p: number) => Promise<CaptureResult> = captureChartPng,
+  now: () => number = Date.now,
+): Promise<CaptureResult> {
+  if (chartCache && chartCache.result.buffer && now() - chartCache.at < CHART_CACHE_TTL_MS) {
+    return chartCache.result;   // 新鮮な成功画像を A/B/連続要求で共有(Chrome を起動しない)。
+  }
+  if (chartInFlight) return chartInFlight;   // 進行中の撮影に相乗り(同時2起動を防ぐ)。
+  chartInFlight = (async () => {
+    try {
+      const r = await capture(port);
+      if (r.buffer) chartCache = { at: now(), result: r };   // 成功のみキャッシュ(失敗は都度再試行)。
+      return r;
+    } finally { chartInFlight = null; }
+  })();
+  return chartInFlight;
+}
+
+/** テスト用: キャッシュ/進行中状態をリセット。 */
+export function resetChartCache(): void { chartCache = null; chartInFlight = null; }

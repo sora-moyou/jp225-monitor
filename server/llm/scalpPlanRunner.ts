@@ -1,7 +1,7 @@
 import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } from './openai.js';
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
-import { captureChartPng } from '../chart/chartShot.js';
+import { captureChartPngCached } from '../chart/chartShot.js';
 import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, type SignalProfile } from '../configStore.js';
 import { barsFor } from '../loops/alertLoop.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
@@ -94,11 +94,11 @@ export async function runScalpPlanWithChart(
   const visionOn = chartVisionEnabled();
   const vision = visionOn ? firstAvailableVisionProvider() : null;
   if (visionOn && vision) {
-    // ② 画像生成(オンデマンド新規撮影)。ws-error 等の一過性に備え、失敗したら1回だけ即リトライ(vision 回復狙い)。
-    let shot = await captureChartPng(resolvePort());
+    // ② 画像生成(A/B共有キャッシュ+進行中相乗り=同時2起動を防ぐ)。ws-error 等の一過性に備え失敗時は1回リトライ。
+    let shot = await captureChartPngCached(resolvePort());
     if (!shot.buffer) {
       console.warn(`[scalp-plan] vision: 画像生成失敗 → 1回リトライ reason=${shot.reason ?? 'unknown'}`);
-      shot = await captureChartPng(resolvePort());
+      shot = await captureChartPngCached(resolvePort());
     }
     // ③ 2回とも失敗: 設定に応じて「テキストのみで継続(縮退運転=全停止を防ぐ)」or 従来どおり「見送り」。
     if (!shot.buffer) {

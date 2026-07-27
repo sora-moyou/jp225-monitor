@@ -38,7 +38,7 @@ vi.mock('../loops/alertLoop.js', () => ({
 
 const captureMock = vi.fn<[number], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();
 vi.mock('../chart/chartShot.js', () => ({
-  captureChartPng: (port: number) => captureMock(port),
+  captureChartPngCached: (port: number) => captureMock(port),
 }));
 
 import { scalpPlanHandler } from './scalpPlan.js';

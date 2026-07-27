@@ -10,7 +10,7 @@ vi.mock('../configStore.js', () => ({ loadConfig: () => loadConfigReturn }));
 
 let loadConfigReturn: Record<string, unknown> = {};
 
-import { resolveChromePath, buildChromeArgs, captureChartPng, chromeVersion } from './chartShot.js';
+import { resolveChromePath, buildChromeArgs, captureChartPng, chromeVersion, captureChartPngCached, resetChartCache } from './chartShot.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -152,5 +152,49 @@ describe('chromeVersion (no GUI launch)', () => {
     // win32 実機ではレジストリ(実インストール済み Chrome)から拾い得るため許容。
     const r = chromeVersion(chromePath);
     expect(r === null || r.includes('Google Chrome')).toBe(true);
+  });
+});
+
+describe('captureChartPngCached (A/B共有キャッシュ+相乗り)', () => {
+  const ok = (tag: string) => ({ buffer: Buffer.from(tag), reason: null, chromePath: 'c', chromeVersion: 'v' });
+  const fail = { buffer: null, reason: 'ws-error', chromePath: 'c', chromeVersion: 'v' } as const;
+  beforeEach(() => resetChartCache());
+
+  it('新鮮な成功はキャッシュ共有(2回目は撮影しない)', async () => {
+    let now = 1000;
+    const cap = vi.fn(async () => ok('a'));
+    const r1 = await captureChartPngCached(3000, cap, () => now);
+    now += 30_000;                                   // TTL(60s)内
+    const r2 = await captureChartPngCached(3000, cap, () => now);
+    expect(cap).toHaveBeenCalledTimes(1);            // ★1回だけ撮影=A/Bで共有
+    expect(r2.buffer).toBe(r1.buffer);
+  });
+
+  it('TTL超過で再撮影する', async () => {
+    let now = 1000;
+    const cap = vi.fn(async () => ok('a'));
+    await captureChartPngCached(3000, cap, () => now);
+    now += 61_000;                                   // TTL超過
+    await captureChartPngCached(3000, cap, () => now);
+    expect(cap).toHaveBeenCalledTimes(2);
+  });
+
+  it('同時要求は進行中に相乗り(2重起動しない)', async () => {
+    let resolveCap!: (v: ReturnType<typeof ok>) => void;
+    const cap = vi.fn(() => new Promise<ReturnType<typeof ok>>((res) => { resolveCap = res; }));
+    const p1 = captureChartPngCached(3000, cap, () => 1000);
+    const p2 = captureChartPngCached(3000, cap, () => 1000);   // 進行中に相乗り
+    resolveCap(ok('a'));
+    await Promise.all([p1, p2]);
+    expect(cap).toHaveBeenCalledTimes(1);            // ★A/B同時でも撮影は1回
+  });
+
+  it('失敗はキャッシュしない(次回は再撮影)', async () => {
+    let now = 1000;
+    const cap = vi.fn(async () => fail);
+    await captureChartPngCached(3000, cap, () => now);
+    now += 1000;
+    await captureChartPngCached(3000, cap, () => now);
+    expect(cap).toHaveBeenCalledTimes(2);            // ★失敗はキャッシュされず都度撮影(リトライ/縮退が効く)
   });
 });

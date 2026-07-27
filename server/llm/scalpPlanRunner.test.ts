@@ -41,7 +41,7 @@ vi.mock('../loops/alertLoop.js', () => ({
 
 const captureMock = vi.fn<[number], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();
 vi.mock('../chart/chartShot.js', () => ({
-  captureChartPng: (port: number) => captureMock(port),
+  captureChartPngCached: (port: number) => captureMock(port),
 }));
 
 // v0.7.54: 構造化データ(rich context)の DB 読みは本テストの対象外。DB/levels/scalpContext をモックして
