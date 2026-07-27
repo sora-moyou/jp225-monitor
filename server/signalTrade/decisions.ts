@@ -591,6 +591,70 @@ export function reverseToDoten(
   return { next, recorded, armed };
 }
 
+// ═══ レンジ両指値が平均以上未約定 → ブレイク(両逆指値)再評価 ══════════════════════
+//   doten held-eval と同型の armed 再評価。ARMED かつ mode='range' かつ両レッグ limit(fade)が
+//   「ARM→約定の移動平均 × REEVAL_FACTOR」を超えて未約定なら、AI に両逆指値(breakout)への切替を問う。
+
+/** 再評価トリガの倍率(移動平均のこの倍を超えて未約定なら発火)。 */
+export const REEVAL_FACTOR = 1.5;
+/** ARM→約定所要の移動平均に使う直近サンプル数(これを超えたら古い方から捨てる)。 */
+export const AVG_FILL_SAMPLES = 20;
+/** 移動平均を信頼する最小サンプル数(未満はフォールバック既定を使う)。 */
+export const MIN_SAMPLES = 5;
+/** サンプル不足時のフォールバック平均約定所要[ms](3分)。 */
+export const DEFAULT_AVG_FILL_MS = 180_000;
+/** 発火閾値の上限[ms](12分・ARMED_TIMEOUT_MS 15分より手前でクランプ=暴走防止)。 */
+export const REEVAL_CAP_MS = 720_000;
+
+/** ARM→約定所要[ms]の配列から移動平均を返す純関数。サンプルが min 未満なら def(フォールバック既定)。
+ *  呼び出し側が直近 AVG_FILL_SAMPLES 件だけを保持している前提(この関数は与えられた全件の平均を取る)。 */
+export function computeAvgFillMs(samples: number[], opts: { min: number; def: number }): number {
+  if (samples.length < opts.min) return opts.def;
+  const sum = samples.reduce((a, b) => a + b, 0);
+  return sum / samples.length;
+}
+
+/** range ブラケットが「両レッグとも limit(fade ストラドル)」か。片レッグ/欠落/どちらかが stop なら false。純関数。 */
+export function bothRangeLegsLimit(a: ArmedBracket): boolean {
+  if (a.mode !== 'range' || !a.range) return false;
+  const { upper, lower } = a.range;
+  return !!upper && !!lower && upper.type === 'limit' && lower.type === 'limit';
+}
+
+/** レンジ両指値の再評価を AI へ要求すべきか(純関数・ゲート判定のみ)。
+ *  対象= enabled かつ phase==='armed' かつ mode==='range' かつ両レッグ limit(fade)。
+ *  発火= now − armed.at > min(avgFillMs × factor, capMs)。上記いずれか外れたら false(単一レッグ/directional/
+ *  既に breakout(stop)/OFF/閾値未達 は対象外)。planning/inPollWindow/クールダウンは呼び出し側(engine)が別途ゲート。 */
+export function shouldRangeReeval(a: {
+  enabled: boolean; phase: SignalPhase; mode?: 'range'; bothLegsLimit: boolean;
+  armedAtMs: number; nowMs: number; avgFillMs: number; factor: number; capMs: number;
+}): boolean {
+  if (!a.enabled) return false;
+  if (a.phase !== 'armed') return false;
+  if (a.mode !== 'range') return false;
+  if (!a.bothLegsLimit) return false;
+  const threshold = Math.min(a.avgFillMs * a.factor, a.capMs);
+  return a.nowMs - a.armedAtMs > threshold;
+}
+
+/** ★レンジ再評価用の armed 識別(async 同一性再チェック)。要求時に控え、AI 応答解決時に「まだ同じ未約定 armed」かを照合する。 */
+export interface ArmedIdentity { armedAt: number; signalId?: number; mode?: 'range'; }
+
+/** 現在の state が identity と同一 armed(まだ armed・同じ武装時刻・同じ mode)か。純関数。
+ *  signalId の照合は currentSignal を持つ engine 側で別途行う(state には signalId が無いため)。 */
+export function sameArmedBracket(st: EngineState, id: ArmedIdentity): boolean {
+  return st.phase === 'armed' && !!st.armed && st.armed.at === id.armedAt && st.armed.mode === id.mode;
+}
+
+/** 2つの armed ブラケットが「実質同一形」か(direction/mode/各レッグ entry・SL・range が一致)。純関数。
+ *  再評価で AI が同じ fade を返した(=維持)ときに差替えを起こさないための判定。at/settings/planMeta は無視する。 */
+export function sameBracketShape(a: ArmedBracket, b: ArmedBracket): boolean {
+  return a.direction === b.direction && a.mode === b.mode
+    && a.limitEntry === b.limitEntry && a.stopEntry === b.stopEntry
+    && a.stopLossForLimit === b.stopLossForLimit && a.stopLossForStop === b.stopLossForStop
+    && JSON.stringify(a.range ?? null) === JSON.stringify(b.range ?? null);
+}
+
 /** ★v0.7.56: armed ブラケットの代表レッグの初期LC幅 |entry−SL| を返す純関数(実測値=AI委任 LC の value 用)。
  *  directional は指値レッグ優先(無ければ逆指値)/ range は upper 優先(無ければ lower)。測れなければ undefined。 */
 export function realizedLcFromArmed(a: ArmedBracket): number | undefined {

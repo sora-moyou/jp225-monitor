@@ -42,6 +42,13 @@ export function resolveScalpDotenEnabled(profile?: SignalProfile): boolean {
   return typeof v === 'boolean' ? v : false;
 }
 
+// ★レンジ両指値が平均以上未約定 → ブレイク再評価の許可。既定 ON(レンジ有効時のみ実効=レンジ自体は既定OFF)。
+//   未設定/非boolean は true(既定ON)。個別に false で無効化できる(=本経路を完全に不活性=挙動不変)。
+export function resolveScalpRangeReevalEnabled(profile?: SignalProfile): boolean {
+  const v = readKnobRaw(profile, 'rangeReevalEnabled');
+  return typeof v === 'boolean' ? v : true;
+}
+
 // ─── v0.7.56: 委任 directive リゾルバ({mode,value}) ───────────────────────
 // 各 knob を「手動(数値/enum を強制)」か「AI委任(該当制約を課さない)」で返す。
 // source が 'ai' のときだけ ai。それ以外(未設定/'manual'/不正値)は寛容に manual(=既定で現状の挙動)。

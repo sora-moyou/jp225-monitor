@@ -27,6 +27,8 @@ export interface SignalSettingsSnapshot {
   range: KnobSettingSnapshot;
   // ★ドテン(反転)許可の委任状態(ADD-ONLY): 許可 ON の時だけ true を載せる。OFF(既定)では欠落=既存 meta JSON 不変。
   dotenEnabled?: true;
+  // ★レンジ再評価(未約定→ブレイク)の許可状態(ADD-ONLY): レンジ使用時のみ載せる(レンジOFF=既定では欠落=既存 meta JSON 不変)。
+  rangeReevalEnabled?: boolean;
 }
 
 export type Symbol =

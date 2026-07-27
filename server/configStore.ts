@@ -52,6 +52,7 @@ export interface UserConfig {
   scalpTrendVetoYen?: number;        // AIエントリー: 直近10分でこの円以上動いたらトレンドと見なし逆行フェード新規を禁止。未設定は 100。0で無効。
   scalpLcFloorYen?: number;          // ★v0.7.56: AIエントリー 初期LC幅の下限[円](プロンプトにのみ反映)。未設定は 45。
   dotenEnabled?: boolean;            // ★ドテン(反転)許可。ON=AIが保有中に反転を判断してよい / 未設定/false=OFF(既定・挙動不変)。monitor2 専用UIで設定。
+  rangeReevalEnabled?: boolean;      // ★レンジ両指値が平均以上未約定→ブレイク(両逆指値)再評価。未設定/true=ON(既定・ただしレンジ自体が既定OFFなのでレンジ使用時のみ実効) / false=OFF。monitor2 専用UIで設定。
   // ★v0.7.56: 委任可能な各 knob の source。'ai'=AIに委任(該当制約を課さない) / それ以外/未設定='manual'(現状の強制)。
   //   既定は全て 'manual'=現状の挙動を一切変えない。ユーザーが1つずつ AI へ倒す枠組み。
   scalpLcFloorSource?: KnobSource;     // 初期LC下限: manual→プロンプトに下限 / ai→下限を課さない
@@ -340,7 +341,7 @@ export function resetConfigCache(): void {
 export {
   resolveScalpLcCeiling, resolveScalpCooldownSec, resolveScalpTrendVetoYen,
   resolveScalpBias, resolveScalpRangeEnabled, resolveScalpLcFloorYen,
-  resolveScalpDotenEnabled,
+  resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled,
   parseKnobSource,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,

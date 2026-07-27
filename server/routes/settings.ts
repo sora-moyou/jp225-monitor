@@ -2,7 +2,8 @@ import type { Request, Response } from 'express';
 import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
-  resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpDotenEnabled, PARAM_BOUNDS,
+  resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpDotenEnabled,
+  resolveScalpRangeReevalEnabled, PARAM_BOUNDS,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource,
@@ -89,6 +90,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
     scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(★実験終了=未設定は false=OFF)。
     dotenEnabled: resolveScalpDotenEnabled(),   // ★ドテン(反転)許可(既定OFF)。monitor2 専用UIで切替。
+    rangeReevalEnabled: resolveScalpRangeReevalEnabled(),   // ★レンジ再評価(未約定→ブレイク)許可(既定ON・レンジ使用時のみ実効)。monitor2 専用UIで切替。
     // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
     scalpLcFloorSource: resolveScalpLcFloorDirective().mode,
     scalpLcCeilingSource: resolveScalpLcCeilingDirective().mode,
@@ -155,6 +157,7 @@ interface SettingsBody {
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
   dotenEnabled?: boolean | null;       // ★ドテン(反転)許可(true=ON / false/null=OFF=既定)
+  rangeReevalEnabled?: boolean | null; // ★レンジ再評価(未約定→ブレイク)許可(true/null=ON=既定 / false=OFF)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
   scalpLcFloorSource?: string | null;
@@ -279,6 +282,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const rangeEnabledValue = applyBoolField(existing.scalpRangeEnabled, bodyRec.scalpRangeEnabled);
   // ★ドテン(反転)許可(boolean・既定 false)。null/false=OFF(未設定で保存)。
   const dotenEnabledValue = applyBoolField(existing.dotenEnabled, bodyRec.dotenEnabled);
+  // ★レンジ再評価(未約定→ブレイク)許可(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
+  const rangeReevalEnabledValue = applyBoolField(existing.rangeReevalEnabled, bodyRec.rangeReevalEnabled);
   // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
   // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
@@ -308,6 +313,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
     dotenEnabled: dotenEnabledValue,   // ★ドテン(反転)許可(既定OFFは未設定で保存)
+    rangeReevalEnabled: rangeReevalEnabledValue,   // ★レンジ再評価(未約定→ブレイク)許可(既定ONに戻すときは null→未設定で保存)
     // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。
     scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
     scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),

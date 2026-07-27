@@ -503,6 +503,10 @@ export interface ScalpPlanInput {
   /** ★ドテン(保有中の反転評価=held-eval)。渡すとプロンプトに保有中の建玉を注入し「反転が妥当な場面だけ反対 direction を返してよい」
    *  と促す。未指定(flat-plan)は注入なし=systemPrompt は従来と byte 一致。dotenEnabled=false は engine が呼ばないので常に未指定。 */
   heldPosition?: { dir: 'buy' | 'sell'; entry: number };
+  /** ★レンジ再評価(未約定→ブレイク)。ARMED のレンジ両指値(fade)が平均約定所要を超えて未約定のとき、engine が渡す。
+   *  渡すとプロンプトに「両逆指値(ブレイク追随)へ切替えてよい/現状維持/direction:none」の判断を促す。
+   *  未指定(通常)は注入なし=systemPrompt は従来と byte 一致。rangeReevalEnabled=false は engine が渡さないので常に未指定。 */
+  armedContext?: { mode: 'range-fade'; ageMs: number; avgMs: number };
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -811,10 +815,16 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       + `direction を保有と反対(${input.heldPosition.dir === 'buy' ? 'sell' : 'buy'})にした反転プランを返してよい(常にではなく、その場面だけ)。`
       + `反転が不要なら direction:"none" で保有継続とすること。`
     : '';
+  // ★レンジ再評価(未約定→ブレイク): armedContext が渡された時だけ注入する。未指定(通常)では '' = 従来と byte 一致。
+  const armedNote = input.armedContext
+    ? `\n\n【レンジ未約定(ブレイク再評価)】現在レンジ両指値を ARM後 ${Math.round(input.armedContext.ageMs / 60_000)}分 未約定`
+      + `(平均 ${Math.round(input.armedContext.avgMs / 60_000)}分 を超過)。レンジが反発せず抜けそうなら両逆指値(ブレイク追随・range 各レッグ type:stop)へ`
+      + `切替えたプランを返してよい。反発継続が見込めるなら現状維持(同じ両指値)。場面が崩れたなら direction:none。`
+    : '';
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${strategySpec}${delegationNote}${heldNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${strategySpec}${delegationNote}${heldNote}${armedNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +

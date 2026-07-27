@@ -148,6 +148,24 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(arg.lcCeilingYen).toBe(90);
   });
 
+  it('armedContext override → passed through to buildScalpPlan(レンジ再評価)', async () => {
+    firstVisionMock.mockReturnValue(null);
+
+    await runScalpPlanWithChart({ armedContext: { mode: 'range-fade', ageMs: 600_000, avgMs: 180_000 } });
+
+    const arg = buildScalpPlanMock.mock.calls[0][0] as { armedContext?: { mode: string; ageMs: number; avgMs: number } };
+    expect(arg.armedContext).toEqual({ mode: 'range-fade', ageMs: 600_000, avgMs: 180_000 });
+  });
+
+  it('armedContext 未指定 → buildScalpPlan に armedContext を渡さない(byte 一致)', async () => {
+    firstVisionMock.mockReturnValue(null);
+
+    await runScalpPlanWithChart();
+
+    const arg = buildScalpPlanMock.mock.calls[0][0] as { armedContext?: unknown };
+    expect(arg.armedContext).toBeUndefined();
+  });
+
   it('勢い注入 + trend スレッド: 強上昇の足で buildScalpPlan に trend{dir:up,strong} と勢い文が渡る', async () => {
     firstVisionMock.mockReturnValue(null);   // ゲート対象外
     const now = Date.now();

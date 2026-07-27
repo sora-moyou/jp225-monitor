@@ -11,7 +11,7 @@ import {
   resolveScalpCooldownDirective,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
-  resolveScalpDotenEnabled,
+  resolveScalpDotenEnabled, resolveScalpRangeEnabled, resolveScalpRangeReevalEnabled,
   type KnobDirective, type SignalProfile,
 } from '../configStore.js';
 import type { SignalTradeInsert, SignalExitStopInsert } from '../db/store.js';
@@ -54,6 +54,8 @@ export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalPr
   };
   // ★ドテン(反転)許可の委任状態(ADD-ONLY): 許可 ON の時だけ載せる。OFF(既定)では欠落=既存 meta JSON と byte 一致。
   if (resolveScalpDotenEnabled(profile)) snap.dotenEnabled = true;
+  // ★レンジ再評価(未約定→ブレイク)の許可状態(ADD-ONLY): レンジ使用時のみ載せる。レンジOFF(既定)では欠落=既存 meta JSON と byte 一致。
+  if (resolveScalpRangeEnabled(profile)) snap.rangeReevalEnabled = resolveScalpRangeReevalEnabled(profile);
   return snap;
 }
 

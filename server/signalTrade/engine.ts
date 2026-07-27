@@ -21,13 +21,15 @@ import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, getSign
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
-import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, type SignalProfile } from '../configStore.js';
+import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, type SignalProfile } from '../configStore.js';
 import {
   advance, toSignalTradeState, computeHold, planToArmed, armedToCurrentSignal,
   inCooldown, realizedLcFromArmed, ARMED_TIMEOUT_MS,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
+  computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
+  AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_FACTOR, REEVAL_CAP_MS,
   type SignalPhase, type EngineState, type CurrentSignal, type SignalHold, type RecordedTrade,
-  type OpenPosition, type HeldIdentity,
+  type OpenPosition, type HeldIdentity, type ArmedBracket, type ArmedIdentity,
 } from './decisions.js';
 import type { ScalpPlanResult } from '../llm/openai.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
@@ -107,6 +109,11 @@ export class SignalEngine {
   private planSuppressedAnchor: number | null = null;
   // ★検証用(RECORD-ONLY): 決済逆指値(hold.exitStop)の「前回記録値」。変化時のみ signal_exit_stops へ1行記録するための dedupe 用。
   private exitStopTracker: ExitStopTracker = { openedAt: null, value: null };
+  // ★レンジ再評価(未約定→ブレイク): ARM→約定所要[ms]の直近サンプル(移動平均用)。in-memory(再起動でリセット=許容)。
+  //   約定(armed→filled)ごとに position.at−armed.at を push し、AVG_FILL_SAMPLES を超えたら古い方から捨てる。
+  private fillDurations: number[] = [];
+  // ★レンジ再評価の最終要求時刻(過度な差替えを抑えるクールダウン。held-eval と同じ長間隔を共有)。
+  private lastRangeReevalAt = 0;
 
   constructor(private readonly cfg: EngineConfig) {}
 
@@ -192,6 +199,8 @@ export class SignalEngine {
     this.cooldownLogged = false;
     this.exitStopTracker = { openedAt: null, value: null };
     this.lastExitedSignalId = undefined;
+    this.fillDurations = [];
+    this.lastRangeReevalAt = 0;
   }
 
   // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。系統タグ(A=null/B='B')を付与する。
@@ -402,6 +411,116 @@ export class SignalEngine {
    *  OFF/非filled/時間外/間隔未達 なら false(planning は変わらない)。 */
   _peekRequestedHeldEval(): boolean { return this.planning; }
 
+  // ─── レンジ再評価(未約定→ブレイク): 移動平均約定所要 + armed 再評価 ────────────
+
+  /** 約定(armed→filled)所要[ms]を移動平均サンプルへ記録(直近 AVG_FILL_SAMPLES 件を保持・古い方から捨てる)。
+   *  非有限/非正は無視(壊れた計測を平均に混ぜない)。in-memory のみ(SSE/DB は不変=byte 一致)。 */
+  private recordFillDuration(ms: number): void {
+    if (!Number.isFinite(ms) || ms <= 0) return;
+    this.fillDurations.push(ms);
+    if (this.fillDurations.length > AVG_FILL_SAMPLES) this.fillDurations.shift();
+  }
+
+  /** 現在の移動平均約定所要[ms]。サンプルが MIN_SAMPLES 未満は DEFAULT_AVG_FILL_MS(フォールバック既定)。 */
+  private avgFillMs(): number {
+    return computeAvgFillMs(this.fillDurations, { min: MIN_SAMPLES, def: DEFAULT_AVG_FILL_MS });
+  }
+
+  /** テスト用: 現在の移動平均約定所要[ms]を覗く。 */
+  _peekAvgFillMs(): number { return this.avgFillMs(); }
+
+  /** テスト用: armed 状態(+現在シグナル)を直接セットする(レンジ再評価の単体テスト用)。 */
+  _setArmedForTest(armed: ArmedBracket, signal?: CurrentSignal): void {
+    this.state = { phase: 'armed', armed };
+    if (signal) { this.currentSignal = signal; this.signalIdCounter = signal.signalId; }
+  }
+
+  // 非公開: ARMED のレンジ両指値(fade)が平均約定所要を超えて未約定なら、AI に「両逆指値(ブレイク)へ切替えるか」を問う。
+  //   in-flight(planning)を flat-plan / held-eval と共有し(同時に AI を叩かない)、inPollWindow でゲートし、
+  //   held-eval と同じ長間隔でクールダウンする。★async 同一性再チェック: 要求時に armed 識別(at+signalId+mode)を控え、
+  //   AI 応答解決時に「まだ同じ未約定 armed」でなければ破棄する(約定/取消/差替え済みなら幽霊差替えしない)。
+  //   ★A のみ(maintainsCurrentSignal): B は currentSignal を持たない=差替え(新 signalId 采番)ができない=走らせない(byte 不変)。
+  private maybeRequestRangeReeval(price: number, now: number): void {
+    if (!this.cfg.maintainsCurrentSignal) return;   // B は差替えしない(currentSignal を持たない)。
+    if (this.planning) return;                       // flat-plan / held-eval と in-flight を共有。
+    if (!inPollWindow(now)) return;                  // 取引時間外は要求しない。
+    if (now - this.lastRangeReevalAt < this.heldEvalIntervalMs) return;   // クールダウン(過度な差替え抑制)。
+    if (this.state.phase !== 'armed' || !this.state.armed) return;
+    const armed = this.state.armed;
+    const enabled = resolveScalpRangeReevalEnabled(this.cfg.profile);
+    const avgMs = this.avgFillMs();
+    if (!shouldRangeReeval({
+      enabled, phase: this.state.phase, mode: armed.mode, bothLegsLimit: bothRangeLegsLimit(armed),
+      armedAtMs: armed.at, nowMs: now, avgFillMs: avgMs, factor: REEVAL_FACTOR, capMs: REEVAL_CAP_MS,
+    })) return;
+    // ★評価対象の armed 識別を控える(解決時の同一性再チェック用)。
+    const identity: ArmedIdentity = { armedAt: armed.at, signalId: this.currentSignal?.signalId, mode: armed.mode };
+    const ageMs = now - armed.at;
+    this.planning = true;   // flat-plan / held-eval と共有(以降 新規要求しない)。
+    this.lastRangeReevalAt = now;
+    void (async () => {
+      try {
+        const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
+        // armed-context(§3)を注入して「ブレイク切替 / 現状維持 / none」を AI に問う(profile で A/B の設定を解決)。
+        const result = await runScalpPlanWithChart({ profile: this.cfg.profile, armedContext: { mode: 'range-fade', ageMs, avgMs } });
+        const nowR = Date.now();
+        const priceR = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? price;
+        this.applyRangeReevalResult(result, identity, nowR, priceR);
+      } catch (e) {
+        console.warn(`${this.logTag} range-reeval request failed:`, e instanceof Error ? e.message : String(e));
+      } finally {
+        this.planning = false;
+      }
+    })();
+  }
+
+  /** ★レンジ再評価の反映(AI 応答の解決)。同一性再チェック → checkSanity → 差替え/取消/維持 を判定する。
+   *  - stale: 解決までに約定/取消/差替え済み(同一 armed でない・signalId 不一致)なら破棄。
+   *  - reject: LLM 失敗 / サニティ不通過 / plan→armed 不能 → 現状維持(何もしない)。
+   *  - cancel: direction:none → armed を取消して FLAT(armed-timeout と同型・currentSignal は保持し trade2 の stale 追従に委ねる)。
+   *  - keep: AI が実質同じ fade を返した → 何もしない(維持)。
+   *  - swap: 妥当かつ現行と異なる新ブラケット(ブレイク両逆指値 等)→ 新 signalId を1回采番して armed を差替え・currentSignal 更新・broadcast。
+   *  ★_ 接頭辞: async 経路から呼ぶ内部メソッドだが、単体テストからも直接叩けるよう公開する(applyHeldEvalResult と同方針)。 */
+  applyRangeReevalResult(result: ScalpPlanResult, identity: ArmedIdentity, now: number, price: number): 'swap' | 'cancel' | 'keep' | 'stale' | 'reject' {
+    if (!sameArmedBracket(this.state, identity)) return 'stale';
+    if (this.currentSignal?.signalId !== identity.signalId) return 'stale';
+    if (!result.ok) return 'reject';
+    const plan = result.plan;
+    const cur = this.state.armed!;
+    const ageMin = Math.round((now - identity.armedAt) / 60_000);
+    const avgMin = Math.round(this.avgFillMs() / 60_000);
+    if (plan.direction === 'none') {
+      // 場面崩れ → 未約定レンジを取消して FLAT。
+      // ★lastExitedSignalId を立てる(armed-timeout 経路と同型)。これが無いと trade2 の resync トリガー
+      //   (lastExitedSignalId===S / currentSignal.signalId>tracked)がどちらも成立せず、旧両指値が取り消されず
+      //   レンジ抜け時に stale 指値が誤約定する(エバリュ HIGH 指摘)。currentSignal は保持し trade2 に取消追従させる。
+      this.lastExitedSignalId = identity.signalId;
+      this.state = { phase: 'flat', lastExit: this.state.lastExit };
+      this.planSuppressedAnchor = null;
+      this.broadcastSignalState(now);
+      console.log(`${this.logTag} range-reeval cancel(none) oldSignalId=${identity.signalId} age=${ageMin}m avg=${avgMin}m`);
+      return 'cancel';
+    }
+    // 妥当性(trade2 と同一の checkSanity/checkRangeSanity)。不通過は現状維持(差替えない)。
+    const sanity = checkSanity(plan, plan.refPrice);
+    if (!sanity.ok) return 'reject';
+    const armed = planToArmed(plan, now, { vetoFired: result.vetoFired });
+    if (!armed) return 'reject';
+    if (sameBracketShape(cur, armed)) return 'keep';   // 実質同じ fade(=反発継続の維持)→ 何もしない。
+    // 差替え: 実効設定スナップショットを確定 → armed 差替え → 新 signalId を1回采番 → currentSignal 更新 → broadcast。
+    armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+    this.state = { phase: 'armed', armed, lastExit: this.state.lastExit };
+    this.planSuppressedAnchor = null;
+    const oldSignalId = identity.signalId;
+    this.signalIdCounter += 1;
+    this.persistSignalIdCounter();
+    this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
+    this.broadcastSignalState(now);
+    console.log(`${this.logTag} range-reeval swap oldSignalId=${oldSignalId} newSignalId=${this.signalIdCounter} `
+      + `age=${ageMin}m avg=${avgMin}m mode=${armed.mode ?? 'directional'}`);
+    return 'swap';
+  }
+
   // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
@@ -418,8 +537,15 @@ export class SignalEngine {
   feed(price: number, now: number): void {
     if (!this.running) return;
     try {
+      // ★レンジ再評価: 約定(armed→filled)所要を測るため、遷移前の armed 武装時刻を控える(advance は不変=純関数)。
+      const prevPhase = this.state.phase;
+      const prevArmedAt = this.state.armed?.at;
       const { next, recorded, armedTimedOut } = advance(this.state, price, now);
       this.state = next;
+      // ★fill latency: armed→filled に遷移したら position.at−armed.at を移動平均サンプルへ記録(平均約定所要=再評価閾値の元)。
+      if (prevPhase === 'armed' && next.phase === 'filled' && next.position && prevArmedAt != null) {
+        this.recordFillDuration(next.position.at - prevArmedAt);
+      }
       if (armedTimedOut) {
         // ★未約定ブラケットの取消。以降 phase=flat で maybeRequestPlan が再計画できる(固着解除)。
         console.log(`${this.logTag} armed-timeout 未約定ブラケットを取消→FLAT`
@@ -440,6 +566,7 @@ export class SignalEngine {
       this.recordExitStopChange(now);
       this.maybeRequestPlan(price, now);
       this.maybeRequestHeldEval(price, now);   // ★ドテン: filled かつ dotenEnabled のとき保有中の反転評価を要求(既定OFF=no-op)。
+      this.maybeRequestRangeReeval(price, now);   // ★レンジ再評価: armed かつ レンジ両指値が平均超過未約定のとき ブレイク切替評価を要求(非レンジ/既定OFF=no-op)。
       this.heartbeat(now);   // ★診断: 定期にエンジン状態を1行ログ(固着の早期発見)。
       this.broadcastSignalState(now);
     } catch (e) {

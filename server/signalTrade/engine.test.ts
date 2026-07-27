@@ -8,8 +8,10 @@ import {
   rangeTpTrigger, RANGE_TP_OFFSET_YEN, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN,
   computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
+  computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
+  REEVAL_FACTOR, AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_CAP_MS,
   type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal, type RecordedTrade,
-  type HeldIdentity,
+  type HeldIdentity, type ArmedIdentity,
 } from './decisions.js';
 import {
   buildTradeMetaJson, buildSettingsSnapshot, knobSnapshot, buildSignalTradeInsert,
@@ -1421,5 +1423,266 @@ describe('buildSettingsSnapshot dotenEnabled(委任状態・ADD-ONLY)', () => {
   it('dotenEnabled=true のとき snapshot に true を載せる', () => {
     writeConfig({ dotenEnabled: true });
     expect(buildSettingsSnapshot().dotenEnabled).toBe(true);
+  });
+});
+
+// ═══ レンジ両指値が平均以上未約定 → ブレイク(両逆指値)再評価 ═══════════════════════
+
+describe('レンジ再評価 定数', () => {
+  it('既定値(factor/samples/min/default/cap)', () => {
+    expect(REEVAL_FACTOR).toBe(1.5);
+    expect(AVG_FILL_SAMPLES).toBe(20);
+    expect(MIN_SAMPLES).toBe(5);
+    expect(DEFAULT_AVG_FILL_MS).toBe(180_000);
+    expect(REEVAL_CAP_MS).toBe(720_000);
+  });
+});
+
+describe('computeAvgFillMs(移動平均約定所要)', () => {
+  it('サンプルが min 未満はフォールバック既定', () => {
+    expect(computeAvgFillMs([], { min: 5, def: 180_000 })).toBe(180_000);
+    expect(computeAvgFillMs([100, 200, 300, 400], { min: 5, def: 180_000 })).toBe(180_000);   // 4<5
+  });
+  it('min 以上は与えられた全件の平均', () => {
+    expect(computeAvgFillMs([100, 200, 300, 400, 500], { min: 5, def: 180_000 })).toBe(300);
+    expect(computeAvgFillMs([120_000, 120_000, 120_000, 120_000, 120_000], { min: 5, def: 180_000 })).toBe(120_000);
+  });
+  it('境界(=min)で平均を使う', () => {
+    expect(computeAvgFillMs([10, 20, 30, 40, 50], { min: 5, def: 999 })).toBe(30);
+  });
+});
+
+describe('bothRangeLegsLimit(fade ストラドル判定)', () => {
+  const leg = (side: 'buy' | 'sell', type: 'limit' | 'stop', entry: number, stopLoss: number) => ({ side, type, entry, stopLoss });
+  it('両レッグ limit=true', () => {
+    const a: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper: leg('sell', 'limit', 38400, 38450), lower: leg('buy', 'limit', 38100, 38050) } };
+    expect(bothRangeLegsLimit(a)).toBe(true);
+  });
+  it('片レッグ欠落は false', () => {
+    const a: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { lower: leg('buy', 'limit', 38100, 38050) } };
+    expect(bothRangeLegsLimit(a)).toBe(false);
+  });
+  it('どちらかが stop(breakout)は false', () => {
+    const a: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper: leg('buy', 'stop', 38400, 38350), lower: leg('sell', 'stop', 38100, 38150) } };
+    expect(bothRangeLegsLimit(a)).toBe(false);
+  });
+  it('directional(mode 無し)は false', () => {
+    const a: ArmedBracket = { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at: 0 };
+    expect(bothRangeLegsLimit(a)).toBe(false);
+  });
+});
+
+describe('shouldRangeReeval(再評価トリガ純関数)', () => {
+  // avgFillMs=120s・factor=1.5 → 閾値=180s(cap 720s 未満)。armed後 181s で発火。
+  const base = { enabled: true, phase: 'armed' as const, mode: 'range' as const, bothLegsLimit: true,
+    armedAtMs: 0, nowMs: 181_000, avgFillMs: 120_000, factor: REEVAL_FACTOR, capMs: REEVAL_CAP_MS };
+  it('fade + 閾値超過 → true', () => { expect(shouldRangeReeval(base)).toBe(true); });
+  it('閾値未達(=境界ちょうど)→ false', () => {
+    expect(shouldRangeReeval({ ...base, nowMs: 180_000 })).toBe(false);   // 180s ちょうどは超過でない
+    expect(shouldRangeReeval({ ...base, nowMs: 179_000 })).toBe(false);
+  });
+  it('OFF は false', () => { expect(shouldRangeReeval({ ...base, enabled: false })).toBe(false); });
+  it('非 armed は false', () => {
+    expect(shouldRangeReeval({ ...base, phase: 'flat' })).toBe(false);
+    expect(shouldRangeReeval({ ...base, phase: 'filled' })).toBe(false);
+  });
+  it('非 range(directional)は false', () => { expect(shouldRangeReeval({ ...base, mode: undefined })).toBe(false); });
+  it('両レッグ limit でない(単一/breakout)は false', () => { expect(shouldRangeReeval({ ...base, bothLegsLimit: false })).toBe(false); });
+  it('cap でクランプ: avg が大きくても cap 超過で発火する', () => {
+    // avg=10分・factor1.5=15分だが cap=12分 → 閾値=12分。armed後 13分で発火(avg×factor では未発火のはず)。
+    expect(shouldRangeReeval({ ...base, avgFillMs: 600_000, nowMs: 13 * 60_000 })).toBe(true);
+    // cap 直下(12分ちょうど)は超過でない=false。
+    expect(shouldRangeReeval({ ...base, avgFillMs: 600_000, nowMs: 12 * 60_000 })).toBe(false);
+  });
+});
+
+describe('sameArmedBracket(async 同一性再チェック)', () => {
+  const id: ArmedIdentity = { armedAt: 500, signalId: 3, mode: 'range' };
+  const armed: ArmedBracket = { direction: 'buy', rationale: 'r', at: 500, mode: 'range', range: { lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } } };
+  it('まだ armed かつ同一(at+mode)なら true', () => {
+    expect(sameArmedBracket({ phase: 'armed', armed }, id)).toBe(true);
+  });
+  it('flat/filled(=もう未約定 armed でない)は false', () => {
+    expect(sameArmedBracket({ phase: 'flat' }, id)).toBe(false);
+    expect(sameArmedBracket({ phase: 'filled', position: { direction: 'buy', entryPrice: 1, qty: 1, initialStop: 1, peakProfit: 0, rationale: 'r', at: 500 } }, id)).toBe(false);
+  });
+  it('別 armed(at 変化 / mode 変化)は false', () => {
+    expect(sameArmedBracket({ phase: 'armed', armed: { ...armed, at: 900 } }, id)).toBe(false);
+    expect(sameArmedBracket({ phase: 'armed', armed: { direction: 'buy', limitEntry: 1, stopLossForLimit: 1, rationale: 'r', at: 500 } }, id)).toBe(false);   // mode 無し ≠ 'range'
+  });
+});
+
+describe('sameBracketShape(実質同一形の判定)', () => {
+  const fade = (): ArmedBracket => ({ direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+    upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+    lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } } });
+  it('同一形は true(at/settings は無視)', () => {
+    expect(sameBracketShape(fade(), { ...fade(), at: 9999 })).toBe(true);
+  });
+  it('レッグ種別が変わる(fade→breakout)は false', () => {
+    const bo: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: {
+      upper: { side: 'buy', type: 'stop', entry: 38400, stopLoss: 38350 },
+      lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 } } };
+    expect(sameBracketShape(fade(), bo)).toBe(false);
+  });
+  it('directional vs range は false', () => {
+    const dir: ArmedBracket = { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at: 0 };
+    expect(sameBracketShape(fade(), dir)).toBe(false);
+  });
+});
+
+// ─── SignalEngine: 平均約定所要が約定ごとに更新される(feed の armed→filled) ───
+describe('SignalEngine 平均約定所要(feed の fill で更新)', () => {
+  let dir: string;
+  let origAppData: string | undefined;
+  const cfgA = { profile: 'A' as const, systemTag: null, broadcastType: 'signalTrade' as const, maintainsCurrentSignal: true };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-avgfill-'));
+    origAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;
+  });
+  afterEach(() => {
+    if (origAppData !== undefined) process.env.APPDATA = origAppData; else delete process.env.APPDATA;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  it('サンプル<5 は DEFAULT・約定を重ねると実測平均になる', async () => {
+    const eng = new SignalEngine(cfgA);
+    await eng.start();
+    expect(eng._peekAvgFillMs()).toBe(DEFAULT_AVG_FILL_MS);   // サンプル0<5=フォールバック
+    for (let i = 0; i < 5; i++) {
+      const at = i * 1_000_000;
+      eng._setArmedForTest({ direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', at });
+      eng.feed(37945, at + 120_000);   // 指値約定=armed→filled・所要120s を記録
+      expect(eng.getPhase()).toBe('filled');
+    }
+    expect(eng._peekAvgFillMs()).toBe(120_000);   // 5件そろって実測平均
+    eng.stop();
+  });
+});
+
+// ─── SignalEngine.applyRangeReevalResult(再評価反映の統合) ───
+describe('SignalEngine レンジ再評価反映(applyRangeReevalResult)', () => {
+  let dir: string;
+  let origAppData: string | undefined;
+  const cfgA = { profile: 'A' as const, systemTag: null, broadcastType: 'signalTrade' as const, maintainsCurrentSignal: true };
+  // 現行 = レンジ両指値(fade)。上=売り指値38400 / 下=買い指値38100。現在値38250。signalId=1。
+  const fadeArmed = (): ArmedBracket => ({ direction: 'buy', rationale: 'range-fade', at: 500, mode: 'range', range: {
+    upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+    lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } } });
+  const fadeSignal = (): CurrentSignal => armedToCurrentSignal(fadeArmed(), 1);
+  const id: ArmedIdentity = { armedAt: 500, signalId: 1, mode: 'range' };
+  // ブレイク両逆指値(breakout): 上=買い逆指値38400 / 下=売り逆指値38100。checkRangeSanity 通過。
+  const breakoutResult = { ok: true as const, plan: { direction: 'range' as const, rationale: 'breakout', refPrice: 38250, range: {
+    upper: { side: 'buy' as const, type: 'stop' as const, entry: 38400, stopLoss: 38350 },
+    lower: { side: 'sell' as const, type: 'stop' as const, entry: 38100, stopLoss: 38150 } } } };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-reeval-'));
+    origAppData = process.env.APPDATA;
+    process.env.APPDATA = dir;
+  });
+  afterEach(() => {
+    if (origAppData !== undefined) process.env.APPDATA = origAppData; else delete process.env.APPDATA;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('妥当なブレイク(fade と異なる)→ armed を差替え(新 signalId・両レッグ type:stop)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setArmedForTest(fadeArmed(), fadeSignal());
+    const r = eng.applyRangeReevalResult(breakoutResult, id, 800_000, 38250);
+    expect(r).toBe('swap');
+    expect(eng.getPhase()).toBe('armed');
+    const sig = eng.getCurrentSignal()!;
+    expect(sig.signalId).toBe(2);               // 新 signalId(1→2)を1回采番
+    expect(sig.mode).toBe('range');
+    expect(sig.range?.upper?.type).toBe('stop'); // fade(limit)→breakout(stop)
+    expect(sig.range?.lower?.type).toBe('stop');
+    // SSE state に新シグナル(両逆指値)が載る。
+    const s = eng.getState(800_100);
+    expect(s.signal?.signalId).toBe(2);
+    expect(s.signal?.range?.upper?.type).toBe('stop');
+  });
+
+  it('direction:none → 未約定レンジを取消して FLAT(cancel)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setArmedForTest(fadeArmed(), fadeSignal());
+    const noneResult = { ok: true as const, plan: { direction: 'none' as const, rationale: '崩れ', refPrice: 38250 } };
+    expect(eng.applyRangeReevalResult(noneResult, id, 800_000, 38250)).toBe('cancel');
+    expect(eng.getPhase()).toBe('flat');
+    // ★取消でも lastExitedSignalId=旧signalId を露出する(trade2 が stale 両指値を取消追従できる・エバリュ HIGH 修正)。
+    expect(eng.getState(800_100).lastExitedSignalId).toBe(1);
+  });
+
+  it('実質同じ fade を返す → 差替えない(keep・signalId 不変)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setArmedForTest(fadeArmed(), fadeSignal());
+    const sameResult = { ok: true as const, plan: { direction: 'range' as const, rationale: '維持', refPrice: 38250, range: {
+      upper: { side: 'sell' as const, type: 'limit' as const, entry: 38400, stopLoss: 38450 },
+      lower: { side: 'buy' as const, type: 'limit' as const, entry: 38100, stopLoss: 38050 } } } };
+    expect(eng.applyRangeReevalResult(sameResult, id, 800_000, 38250)).toBe('keep');
+    expect(eng.getPhase()).toBe('armed');
+    expect(eng.getCurrentSignal()?.signalId).toBe(1);   // 不変
+  });
+
+  it('★async 同一性再チェック: 差替え/約定済み(別 armed・signalId 不一致・非armed)なら破棄(stale)', () => {
+    const eng = new SignalEngine(cfgA);
+    // 解決時に flat(=もう未約定 armed でない)。
+    expect(eng.applyRangeReevalResult(breakoutResult, id, 800_000, 38250)).toBe('stale');
+    // 別 armed(at 変化)。
+    eng._setArmedForTest({ ...fadeArmed(), at: 9999 }, { ...fadeSignal(), signalId: 5 });
+    expect(eng.applyRangeReevalResult(breakoutResult, id, 800_000, 38250)).toBe('stale');
+    // signalId 不一致(currentSignal が入れ替わった)。
+    eng._setArmedForTest(fadeArmed(), { ...fadeSignal(), signalId: 9 });
+    expect(eng.applyRangeReevalResult(breakoutResult, id, 800_000, 38250)).toBe('stale');
+  });
+
+  it('LLM 失敗 / サニティ不通過 は差替えない(reject・維持)', () => {
+    const eng = new SignalEngine(cfgA);
+    eng._setArmedForTest(fadeArmed(), fadeSignal());
+    expect(eng.applyRangeReevalResult({ ok: false as const, error: 'x' }, id, 800_000, 38250)).toBe('reject');
+    expect(eng.getPhase()).toBe('armed');
+    expect(eng.getCurrentSignal()?.signalId).toBe(1);
+    // サニティ不通過: upper 逆指値が現在値の下(即約定)=checkRangeSanity NG。
+    const bad = { ok: true as const, plan: { direction: 'range' as const, rationale: 'bad', refPrice: 38250, range: {
+      upper: { side: 'buy' as const, type: 'stop' as const, entry: 38100, stopLoss: 38050 } } } };
+    expect(eng.applyRangeReevalResult(bad, id, 800_000, 38250)).toBe('reject');
+    expect(eng.getPhase()).toBe('armed');
+    expect(eng.getCurrentSignal()?.signalId).toBe(1);
+  });
+});
+
+// ─── buildSettingsSnapshot: rangeReevalEnabled(レンジ使用時のみ・ADD-ONLY) ───
+describe('buildSettingsSnapshot rangeReevalEnabled(ADD-ONLY・レンジ使用時のみ)', () => {
+  let dir: string;
+  let origHome: string | undefined;
+  let origUserProfile: string | undefined;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-reeval-snap-'));
+    origHome = process.env.HOME; origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = dir; process.env.USERPROFILE = dir;
+    resetConfigCache();
+  });
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
+    if (origUserProfile !== undefined) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    resetConfigCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  function writeConfig(obj: Record<string, unknown>): void {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'), JSON.stringify(obj), 'utf-8');
+    resetConfigCache();
+  }
+  it('既定(レンジOFF)は rangeReevalEnabled 欠落=既存 snapshot JSON と byte 一致', () => {
+    const s = buildSettingsSnapshot();
+    expect('rangeReevalEnabled' in s).toBe(false);
+  });
+  it('レンジON のとき rangeReevalEnabled を載せる(既定=true)', () => {
+    writeConfig({ scalpRangeEnabled: true });
+    expect(buildSettingsSnapshot().rangeReevalEnabled).toBe(true);
+  });
+  it('レンジON かつ rangeReevalEnabled=false のとき false を載せる', () => {
+    writeConfig({ scalpRangeEnabled: true, rangeReevalEnabled: false });
+    expect(buildSettingsSnapshot().rangeReevalEnabled).toBe(false);
   });
 });
