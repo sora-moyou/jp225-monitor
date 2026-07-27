@@ -116,6 +116,9 @@ function stopOnCorrectSide(side: 'buy' | 'sell', entry: number, stopLoss: number
  *  なのでタッチ約定のまま。trade2 も概念的に同値を共有できるよう export する。記録建値は指値価格のまま(=トリガ条件のみ厳格化)。 */
 export const LIMIT_FILL_MARGIN_YEN = 5;
 
+// 1tick(N225刻み)= trade2 の slippageTicks*TICK と一致。逆指値約定/決済(成行)に不利方向で加える。
+export const SLIPPAGE_YEN = 5;
+
 /** ブラケットのどちらのレッグが約定したか。両レッグが同 tick で満たす場合は指値を優先。無ければ null。 */
 export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'stop'; entryPrice: number; initialStop: number } | null {
   const buy = a.direction === 'buy';
@@ -126,8 +129,9 @@ export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'st
   }
   if (a.stopEntry != null && a.stopLossForStop != null) {
     // 逆指値: buy は現値が逆指値以上へ上昇 / sell は逆指値以下へ下落で約定(成行転換=タッチ約定のまま)。
+    // ★成行なので不利方向へ 1tick(SLIPPAGE_YEN)スリップ: buy は高く / sell は安く約定(trade2 の matchingEngine と一致)。
     const hit = buy ? price >= a.stopEntry : price <= a.stopEntry;
-    if (hit) return { leg: 'stop', entryPrice: a.stopEntry, initialStop: a.stopLossForStop };
+    if (hit) return { leg: 'stop', entryPrice: a.stopEntry + (buy ? SLIPPAGE_YEN : -SLIPPAGE_YEN), initialStop: a.stopLossForStop };
   }
   return null;
 }
@@ -139,14 +143,18 @@ export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'st
 export function detectRangeFill(
   a: ArmedBracket, price: number,
 ): { side: 'buy' | 'sell'; entryPrice: number; initialStop: number } | null {
-  // レンジ両面は逆張り指値(LIMIT)なので detectFill と同じ保守マージンを課す(節目を 5円 行き過ぎて約定)。記録建値は据置。
+  // レンジ両面は逆張り指値(LIMIT)なので detectFill と同じ保守マージンを課す(節目を 5円 行き過ぎて約定)。
+  // ★約定建値: type==='stop'(breakout=成行)レッグのみ不利方向へ 1tick スリップ(buy は高く/sell は安く)。
+  //   type==='limit'(fade)は指値ちょうどで約定=スリップ無し(trade2 と一致)。type 欠落は limit 扱い(スリップ無し)。
+  const legEntry = (leg: RangeLeg): number =>
+    leg.type === 'stop' ? leg.entry + (leg.side === 'buy' ? SLIPPAGE_YEN : -SLIPPAGE_YEN) : leg.entry;
   const upper = a.range?.upper;
   const lower = a.range?.lower;
   if (upper && price >= upper.entry + LIMIT_FILL_MARGIN_YEN) {
-    return { side: upper.side, entryPrice: upper.entry, initialStop: upper.stopLoss };
+    return { side: upper.side, entryPrice: legEntry(upper), initialStop: upper.stopLoss };
   }
   if (lower && price <= lower.entry - LIMIT_FILL_MARGIN_YEN) {
-    return { side: lower.side, entryPrice: lower.entry, initialStop: lower.stopLoss };
+    return { side: lower.side, entryPrice: legEntry(lower), initialStop: lower.stopLoss };
   }
   return null;
 }
@@ -303,6 +311,10 @@ export function advance(
 
   if (st.phase === 'filled' && st.position) {
     const pos = st.position;
+    // ★決済は必ず成行(逆指値ヒット→成行 or 成行クローズ)なので、記録する約定価格に不利方向 1tick を加える:
+    //   ロング決済(dir='buy')は安く約定 raw-SLIPPAGE / ショート決済(dir='sell')は高く約定 raw+SLIPPAGE。
+    //   決済トリガ(detectExit / rangeTpTrigger / stop 水準)は不変=記録する fill 価格と pnl だけを補正(trade2 と一致)。
+    const withExitSlip = (raw: number, dir: 'buy' | 'sell'): number => raw + (dir === 'buy' ? -SLIPPAGE_YEN : SLIPPAGE_YEN);
     // ★レンジ建玉(rangeTp 設定済)= 損側は固定初期LC(ラチェットしない)/ 利側は反対側節目手前で成行決済(phase-exit を使わない)。
     //   directional / rangeTp 無しの建玉はこの分岐に入らず、既存の phase-exit(下)へ落ちる=byte 不変。
     if (pos.mode === 'range' && pos.rangeTp != null) {
@@ -319,15 +331,17 @@ export function advance(
       // 損側: 固定初期LC(ラチェットせず)。到達したらその逆指値で決済。両側が同 tick で満たす場合は損側優先(安全)。
       const stopHit = detectExit(pos, price, pos.initialStop);
       if (stopHit != null) {
-        const pnl = realizedPnl(pos.direction, pos.entryPrice, stopHit, pos.qty);
-        return { next: { phase: 'flat', lastExit: { exitPrice: stopHit, pnl, at: now } }, recorded: mkRecorded(stopHit, pnl) };
+        const exitFill = withExitSlip(stopHit, pos.direction);   // 成行決済=不利1tick
+        const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
+        return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl) };
       }
       // 利側: 反対側レンジ節目の手前(RANGE_TP_OFFSET_YEN 内側)に達したら成行(=現在値)で決済。
       const trigger = rangeTpTrigger(pos.direction, pos.rangeTp);
       const tpHit = pos.direction === 'buy' ? price >= trigger : price <= trigger;
       if (tpHit) {
-        const pnl = realizedPnl(pos.direction, pos.entryPrice, price, pos.qty);
-        return { next: { phase: 'flat', lastExit: { exitPrice: price, pnl, at: now } }, recorded: mkRecorded(price, pnl) };
+        const exitFill = withExitSlip(price, pos.direction);   // 成行決済=不利1tick
+        const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
+        return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl) };
       }
       // どちらも未到達 → 保有継続(peak 更新は range 決済に不要)。
       return { next: { phase: 'filled', position: pos, lastExit: st.lastExit } };
@@ -339,16 +353,17 @@ export function advance(
     if (exit == null) {
       return { next: { phase: 'filled', position: updated, lastExit: st.lastExit } };
     }
-    const pnl = realizedPnl(pos.direction, pos.entryPrice, exit, pos.qty);
+    const exitFill = withExitSlip(exit, pos.direction);   // 成行決済=不利1tick
+    const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
     const recorded: RecordedTrade = {
       entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
-      exitT: now, exitPrice: exit, pnl, qty: pos.qty, rationale: pos.rationale,
+      exitT: now, exitPrice: exitFill, pnl, qty: pos.qty, rationale: pos.rationale,
     };
     // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
     if (pos.mode === 'range') recorded.mode = 'range';
     if (pos.planMeta) recorded.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
     if (pos.settings) recorded.settings = pos.settings;   // ★v0.7.56: 実効設定を決済記録へ。
-    return { next: { phase: 'flat', lastExit: { exitPrice: exit, pnl, at: now } }, recorded };
+    return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded };
   }
 
   return { next: st };

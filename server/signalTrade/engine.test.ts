@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, ARMED_TIMEOUT_MS, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
-  rangeTpTrigger, RANGE_TP_OFFSET_YEN, LIMIT_FILL_MARGIN_YEN,
+  rangeTpTrigger, RANGE_TP_OFFSET_YEN, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN,
   computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed,
   type ArmedBracket, type OpenPosition, type EngineState, type CurrentSignal, type RecordedTrade,
 } from './decisions.js';
@@ -34,6 +34,12 @@ describe('LIMIT_FILL_MARGIN_YEN', () => {
   });
 });
 
+describe('SLIPPAGE_YEN', () => {
+  it('成行スリッページは 1tick=5円(trade2 の slippageTicks*TICK と一致)', () => {
+    expect(SLIPPAGE_YEN).toBe(5);
+  });
+});
+
 describe('detectFill', () => {
   const buy: ArmedBracket = {
     direction: 'buy', limitEntry: 37950, stopEntry: 38100,
@@ -45,8 +51,9 @@ describe('detectFill', () => {
     expect(detectFill(buy, 37945)).toEqual({ leg: 'limit', entryPrice: 37950, initialStop: 37900 });   // 5円下=約定
     expect(detectFill(buy, 37800)).toEqual({ leg: 'limit', entryPrice: 37950, initialStop: 37900 });
   });
-  it('buy 逆指値: 現値が逆指値以上へ上昇でタッチ約定(STOPは不変)', () => {
-    expect(detectFill(buy, 38100)).toEqual({ leg: 'stop', entryPrice: 38100, initialStop: 38050 });   // ★タッチ約定のまま
+  it('buy 逆指値: 現値が逆指値以上へ上昇でタッチ約定・建値は成行スリップで+5円', () => {
+    // トリガはタッチ(≥38100)のまま。成行約定なので記録建値は不利方向 +5円(38105)。
+    expect(detectFill(buy, 38100)).toEqual({ leg: 'stop', entryPrice: 38105, initialStop: 38050 });
   });
   it('両entryの間では未約定', () => {
     expect(detectFill(buy, 38000)).toBeNull();
@@ -59,8 +66,8 @@ describe('detectFill', () => {
     const sell: ArmedBracket = { direction: 'sell', limitEntry: 38100, stopEntry: 37900, stopLossForLimit: 38150, stopLossForStop: 37850, rationale: 'x', at: 0 };
     expect(detectFill(sell, 38100)).toBeNull();          // ★タッチのみ=不約定
     expect(detectFill(sell, 38104)).toBeNull();          // ★4円手前=不約定
-    expect(detectFill(sell, 38105)?.leg).toBe('limit');  // 5円上=約定
-    expect(detectFill(sell, 37900)?.leg).toBe('stop');   // 逆指値はタッチ約定(不変)
+    expect(detectFill(sell, 38105)).toEqual({ leg: 'limit', entryPrice: 38100, initialStop: 38150 });  // 5円上=約定・指値は建値ちょうど(スリップ無し)
+    expect(detectFill(sell, 37900)).toEqual({ leg: 'stop', entryPrice: 37895, initialStop: 37850 });   // 逆指値はタッチ約定・建値は成行スリップで−5円
     expect(detectFill(sell, 38000)).toBeNull();
   });
   it('片レッグ(指値のみ)のブラケットは逆指値では約定しない', () => {
@@ -167,8 +174,9 @@ describe('advance', () => {
     };
     const { next, recorded } = advance(st, 37950, 2000);
     expect(next.phase).toBe('flat');
-    expect(next.lastExit).toEqual({ exitPrice: 37950, pnl: -50, at: 2000 });
-    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37950, pnl: -50, qty: 1, rationale: 'r' });
+    // 逆指値トリガ=37950 だが成行決済で不利−5円=37945 で約定・pnl=37945−38000=−55(ロング決済スリップ)。
+    expect(next.lastExit).toEqual({ exitPrice: 37945, pnl: -55, at: 2000 });
+    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37945, pnl: -55, qty: 1, rationale: 'r' });
   });
 
   it('filled → 含み益が乗るだけでは決済せず peakProfit を更新', () => {
@@ -193,7 +201,9 @@ describe('advance', () => {
     expect(st.phase).toBe('filled');
     const { next, recorded } = advance(st, 38030, 2);  // 押し戻りで床ヒット
     expect(next.phase).toBe('flat');
-    expect(recorded?.pnl).toBe(30);                  // 建値+30 で利益ロック決済
+    // 床=建値+30(38030)だが成行決済で不利−5円=38025 約定・pnl=38025−38000=25。
+    expect(recorded?.pnl).toBe(25);
+    expect(recorded?.exitPrice).toBe(38025);
   });
 
   it('一巡: flat の armed→fill→exit を通しで回す', () => {
@@ -201,11 +211,13 @@ describe('advance', () => {
       phase: 'armed',
       armed: { direction: 'sell', limitEntry: 38100, stopLossForLimit: 38150, rationale: 'r', at: 0 },
     };
-    st = advance(st, 38105, 1).next;   // sell 指値38100を5円上抜けで約定
+    st = advance(st, 38105, 1).next;   // sell 指値38100を5円上抜けで約定(建値=38100・指値スリップ無し)
     expect(st.phase).toBe('filled');
     const r = advance(st, 38150, 2);   // 初期LC(38150)ヒット
     expect(r.next.phase).toBe('flat');
-    expect(r.recorded?.pnl).toBe(-50);
+    // ショート決済は成行で不利+5円=38155 約定・pnl=38100−38155=−55。
+    expect(r.recorded?.pnl).toBe(-55);
+    expect(r.recorded?.exitPrice).toBe(38155);
   });
 });
 
@@ -508,6 +520,17 @@ describe('detectRangeFill', () => {
     expect(detectRangeFill(only, 38100)).toBeNull();          // ★タッチのみ=不約定
     expect(detectRangeFill(only, 38095)?.side).toBe('buy');   // 5円下=約定
   });
+  it('type=stop(breakout)レッグは約定建値が成行スリップ: 上=買い逆指値+5 / 下=売り逆指値−5(fade指値はスリップ無し)', () => {
+    const bo: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range',
+      range: {
+        upper: { side: 'buy', type: 'stop', entry: 38400, stopLoss: 38350 },
+        lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 },
+      } };
+    // 上=買い逆指値(breakout上抜け): トリガ38405、成行建値は不利+5=38405。
+    expect(detectRangeFill(bo, 38405)).toEqual({ side: 'buy', entryPrice: 38405, initialStop: 38350 });
+    // 下=売り逆指値(breakout下抜け): トリガ38095、成行建値は不利−5=38095。
+    expect(detectRangeFill(bo, 38095)).toEqual({ side: 'sell', entryPrice: 38095, initialStop: 38150 });
+  });
 });
 
 describe('advance range→filled→exit', () => {
@@ -558,7 +581,9 @@ describe('advance range→filled→exit', () => {
     expect(st.phase).toBe('filled');
     const r = advance(st, 38050, 2);   // 初期LC(38050)ヒット
     expect(r.next.phase).toBe('flat');
-    expect(r.recorded?.pnl).toBe(-50);
+    // 建値38100(fade指値=スリップ無し)・LC=38050 だが成行決済で−5円=38045・pnl=38045−38100=−55。
+    expect(r.recorded?.pnl).toBe(-55);
+    expect(r.recorded?.exitPrice).toBe(38045);
     expect(r.recorded?.dir).toBe('buy');
     expect(r.recorded?.mode).toBe('range');   // 別枠集計タグ
   });
@@ -975,17 +1000,19 @@ describe('advance: レンジ建玉のTP/固定LC決済(fade ストラドル)', (
     const filled = advance({ phase: 'armed', armed: fadeStraddle }, 64995, 1000).next;
     const r = advance(filled, 65995, 1200);
     expect(r.next.phase).toBe('flat');
-    expect(r.recorded?.exitPrice).toBe(65995);
-    expect(r.recorded?.pnl).toBe(995);        // 65995−65000
+    // TP は成行(現在値65995)だが不利−5円=65990 約定・pnl=65990−65000=990(ロング決済スリップ)。
+    expect(r.recorded?.exitPrice).toBe(65990);
+    expect(r.recorded?.pnl).toBe(990);
     expect(r.recorded?.mode).toBe('range');
-    expect(r.next.lastExit).toEqual({ exitPrice: 65995, pnl: 995, at: 1200 });
+    expect(r.next.lastExit).toEqual({ exitPrice: 65990, pnl: 990, at: 1200 });
   });
 
   it('LONG: TPトリガーより上に飛んでも成行=現在値で決済(66020)', () => {
     const filled = advance({ phase: 'armed', armed: fadeStraddle }, 64995, 1000).next;
     const r = advance(filled, 66020, 1300);
-    expect(r.recorded?.exitPrice).toBe(66020);
-    expect(r.recorded?.pnl).toBe(1020);
+    // 成行(現在値66020)から不利−5円=66015 約定・pnl=66015−65000=1015。
+    expect(r.recorded?.exitPrice).toBe(66015);
+    expect(r.recorded?.pnl).toBe(1015);
   });
 
   it('LONG: 固定初期LC(64900)到達で損切り(ラチェットせず・exit=LC価格)', () => {
@@ -994,8 +1021,9 @@ describe('advance: レンジ建玉のTP/固定LC決済(fade ストラドル)', (
     const filled = advance({ phase: 'armed', armed: fadeStraddle }, 64995, 1000).next;
     const r = advance(filled, 64900, 1400);
     expect(r.next.phase).toBe('flat');
-    expect(r.recorded?.exitPrice).toBe(64900);   // 固定 initialStop(phase-exit の 64950 ではない)
-    expect(r.recorded?.pnl).toBe(-100);
+    // 固定 initialStop=64900(phase-exit の 64950 ではない)だが成行決済で不利−5円=64895 約定・pnl=64895−65000=−105。
+    expect(r.recorded?.exitPrice).toBe(64895);
+    expect(r.recorded?.pnl).toBe(-105);
     expect(r.recorded?.mode).toBe('range');
   });
 
@@ -1005,8 +1033,9 @@ describe('advance: レンジ建玉のTP/固定LC決済(fade ストラドル)', (
     expect(filled.position).toMatchObject({ direction: 'sell', entryPrice: 66000, initialStop: 66100, mode: 'range', rangeTp: 65000 });
     const hold = advance(filled, 65005, 2100);
     expect(hold.next.phase).toBe('flat');
-    expect(hold.recorded?.exitPrice).toBe(65005);
-    expect(hold.recorded?.pnl).toBe(995);        // 66000−65005
+    // ショート決済は成行(現在値65005)から不利+5円=65010 約定・pnl=66000−65010=990。
+    expect(hold.recorded?.exitPrice).toBe(65010);
+    expect(hold.recorded?.pnl).toBe(990);
   });
 });
 
@@ -1022,11 +1051,13 @@ describe('advance: breakout ストラドルは反対節目=損側 → rangeTp �
   it('LONG(上抜け約定): rangeTp は据えない → 既存 phase-exit(下)へ落ちる', () => {
     const { next } = advance({ phase: 'armed', armed: breakoutStraddle }, 66005, 1000);   // ★range 約定は 5円 行き過ぎ(detectRangeFill 一律マージン)
     expect(next.phase).toBe('filled');
+    // ★breakout(逆指値=stop)レッグは成行約定=建値も不利+5円(66000→66005)。
+    expect(next.position?.entryPrice).toBe(66005);
     expect(next.position?.rangeTp).toBeUndefined();
-    // phase-exit(簡易=初期LC 65900)で損切りされる=range TP 経路に入らない。
+    // phase-exit(簡易=初期LC 65900)で損切り=range TP 経路に入らない。成行決済で不利−5円=65895 約定。
     const r = advance(next, 65900, 1100);
     expect(r.next.phase).toBe('flat');
-    expect(r.recorded?.exitPrice).toBe(65900);
+    expect(r.recorded?.exitPrice).toBe(65895);
     expect(r.recorded?.mode).toBe('range');   // タグは range 由来のまま
   });
 });
@@ -1041,7 +1072,9 @@ describe('advance: 片レッグ range(反対レッグ無し)は rangeTp を据�
     expect(next.position?.rangeTp).toBeUndefined();
     const r = advance(next, 64900, 1100);   // 初期LC=phase-exit(簡易)で決済
     expect(r.next.phase).toBe('flat');
-    expect(r.recorded?.pnl).toBe(-100);
+    // fade指値=建値65000(スリップ無し)・LC64900 だが成行決済で不利−5円=64895・pnl=64895−65000=−105。
+    expect(r.recorded?.exitPrice).toBe(64895);
+    expect(r.recorded?.pnl).toBe(-105);
   });
 });
 
@@ -1079,8 +1112,9 @@ describe('directional は range 変更の影響を受けない(byte 互換)', ()
     const st: EngineState = { phase: 'filled', position: { direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r', at: 500 } };
     const { next, recorded } = advance(st, 37950, 2000);
     expect(next.phase).toBe('flat');
-    expect(next.lastExit).toEqual({ exitPrice: 37950, pnl: -50, at: 2000 });
-    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37950, pnl: -50, qty: 1, rationale: 'r' });
+    // 逆指値トリガ=37950・成行決済で不利−5円=37945 約定・pnl=37945−38000=−55(mode/rangeTp は付かない)。
+    expect(next.lastExit).toEqual({ exitPrice: 37945, pnl: -55, at: 2000 });
+    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37945, pnl: -55, qty: 1, rationale: 'r' });
     expect(recorded?.mode).toBeUndefined();
   });
   it('computeHold は従来どおり(exitStop=restingStopOf・rangeTp/tpTrigger 無し)', () => {
