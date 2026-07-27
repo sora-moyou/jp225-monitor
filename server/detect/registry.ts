@@ -49,6 +49,9 @@ const fetchSessionsFor = (lookback: number, lookback2: number): number => Math.m
 
 // ── L2(価格系)検知のチューニング定数(旧 levelsLoop から集約・値は不変)──
 const RECENT_BARS_MIN = 90;
+// ★スイング形成(pivot)の鮮度上限: 極値が今から この時間より前 のピボットは「今 形成」ではないので出さない
+//   (90分窓の古い端に残る確定ピボットが再起動等で誤発火するのを防ぐ・seed と二重の保険)。
+const PIVOT_FRESH_MS = 40 * 60_000;
 const BREAK_DIR_COOLDOWN_MS = 20 * 60_000;
 const ZONE_COOLDOWN_MS = 20 * 60_000;
 const DOUBLE_COOLDOWN_MS = 30 * 60_000;
@@ -146,6 +149,7 @@ export interface LevelDetectState {
   lastBreakDir: Map<'up' | 'down', number>;
   lastEmit: Map<string, number>;
   lastPivotT: number;
+  pivotSeeded: boolean;   // ★起動時に既存の確定ピボットを「既知」化したか(再起動で古いピボットが『形成』と誤発火するのを防ぐ)。
   lastSwingCheck: number;
   lastDailyBandEmit: Map<string, number>;
   lastDailyMaEmit: Map<string, number>;
@@ -159,7 +163,7 @@ export function createLevelDetectState(): LevelDetectState {
     lastCongestionCheck: 0, congestionLevels: [],
     lastTrendCheck: 0, trendlineLevels: [],
     lastDailyBandCheck: 0, confirmedDailyCloses: [],
-    lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, lastSwingCheck: 0,
+    lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, pivotSeeded: false, lastSwingCheck: 0,
     lastDailyBandEmit: new Map(), lastDailyMaEmit: new Map(),
   };
 }
@@ -341,10 +345,17 @@ export function runLevelDetectors(
       });
     }
 
-    // スイング転換点の形成(pivot): 新しい確定ピボットが現れたら1回。
+    // スイング転換点の形成(pivot): 起動後に新しく確定したピボットが現れたら1回。
     const newest = rawPivots[rawPivots.length - 1];
     const prevPivot = rawPivots[rawPivots.length - 2];
-    if (newest && newest.t > state.lastPivotT
+    // ★起動直後(未seed)は、その時点で既に存在する確定ピボットを『既知』として基準化し発火しない。
+    //   これが無いと再起動で lastPivotT=0 にリセットされ、90分窓に残る古い確定ピボット(生きた押し安値でない
+    //   かなり前の極値)が『形成』として誤発火する(実バグ: 現値64,060付近なのに文中に 63,575 等の古い価格)。
+    if (!state.pivotSeeded) {
+      state.pivotSeeded = true;
+      state.lastPivotT = newest ? newest.t : 0;
+    } else if (newest && newest.t > state.lastPivotT
+        && now - newest.t < PIVOT_FRESH_MS   // ★鮮度: 極値が古いピボットは「今 形成」ではないので出さない(保険)。
         && (!prevPivot || Math.abs(newest.price - prevPivot.price) >= yenPct(latest.price, PIVOT_FORMED_MIN_PCT))) {
       state.lastPivotT = newest.t;
       const lvl = Math.round(newest.price);

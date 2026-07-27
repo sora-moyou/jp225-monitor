@@ -92,6 +92,30 @@ describe('runLevelDetectors — break を sink に流し、cooldown/dedup は co
     expect(calls.some(e => e.detectionKind === 'break' && e.direction === 'down')).toBe(true);
   });
 
+  it('★起動直後(未seed)は既存の確定ピボットを「形成」として発火しない(再起動での古い価格の誤発火防止)', () => {
+    // downBreakBars は窓内にスイング安値99/高値115の確定ピボットを含む。seed が無いと lastPivotT=0 のため
+    // これらが起動時に『形成』誤発火する(実バグ: 現値と乖離した古い価格が文中に出る)。seed で発火しないことを担保。
+    const st = createLevelDetectState();
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, analytics(), now, st, e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'pivot')).toBe(false);   // 既存ピボットは seed 済=発火しない
+    expect(st.pivotSeeded).toBe(true);
+  });
+
+  it('★seed 後に起動後 新しく確定したピボットは発火する(鮮度内)', () => {
+    const st = createLevelDetectState();
+    runLevelDetectors(db, analytics(), now, st, () => {});   // ①seed(既存ピボットを既知化)
+    // ②起動後: より新しい確定ピボット(安値96→高値120の戻し)を作る足を追加し再実行。
+    const t1 = t0 + 5 * 60_000;
+    insertBar(db, t1 + 0 * 60_000, 97, 95, 95);     // 新しい安値(95)
+    insertBar(db, t1 + 1 * 60_000, 130, 120, 128);  // 大きく戻して安値95を確定(reclaim)
+    const now2 = t1 + 2 * 60_000;
+    const a2: LevelAnalytics = { ...analytics(), latest: { symbol: NIY, t: now2, price: 128 } };
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, a2, now2, st, e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'pivot')).toBe(true);   // 起動後の新規ピボットは出る
+  });
+
   it('同一 state を同時刻に再実行 → クールダウンで抑制。別 state は独立に発火(cross-suppress しない)', () => {
     const a = createLevelDetectState();
     const first: AlertEventPayload[] = [];
