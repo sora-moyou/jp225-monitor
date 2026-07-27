@@ -1,7 +1,7 @@
 // ユーザー設定の永続化: ~/.jp225-monitor/config.json
 // .env よりも優先。配布版でも .env なしで動かせる。
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, renameSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -135,30 +135,62 @@ export const PARAM_BOUNDS = {
 let cached: UserConfig | null = null;
 let cachedMtime = -1;
 
+// ★設定を絶対に失わないためのバックアップ。saveConfig で config.json.bak に複製し、
+//   config.json が欠落/破損したとき復元する(更新時のプロセス kill 中の書き込み中断対策)。
+const BAK_FILE = () => join(CONFIG_DIR(), 'config.json.bak');
+
+// 指定ファイルを JSON として読み、UserConfig を返す(読めない/壊れていれば null)。
+function tryReadConfig(path: string): UserConfig | null {
+  try {
+    if (!existsSync(path)) return null;
+    return JSON.parse(readFileSync(path, 'utf-8')) as UserConfig;
+  } catch { return null; }
+}
+
 export function loadConfig(): UserConfig {
   const file = CONFIG_FILE();
-  if (!existsSync(file)) { if (!cached) cached = {}; return cached; }
+  if (!existsSync(file)) {
+    // 主ファイル欠落 → バックアップから復元(あれば)。
+    const bak = tryReadConfig(BAK_FILE());
+    if (bak) {
+      try { copyFileSync(BAK_FILE(), file); } catch { /* ignore */ }
+      console.warn('[configStore] config.json 欠落 → バックアップから復元しました');
+      cached = bak; cachedMtime = -1; return cached;
+    }
+    if (!cached) cached = {}; return cached;
+  }
   let mtime = -1;
   try { mtime = statSync(file).mtimeMs; } catch { /* ignore */ }
   if (cached && mtime === cachedMtime) return cached;
-  try {
-    cached = JSON.parse(readFileSync(file, 'utf-8')) as UserConfig;
-    cachedMtime = mtime;
-    return cached;
-  } catch (err) {
-    console.error('[configStore] load failed:', err);
-    if (!cached) cached = {};
+  const main = tryReadConfig(file);
+  if (main) { cached = main; cachedMtime = mtime; return cached; }
+  // 主ファイル破損 → バックアップから復元(あれば)。設定を失わない。
+  const bak = tryReadConfig(BAK_FILE());
+  if (bak) {
+    try { copyFileSync(BAK_FILE(), file); } catch { /* ignore */ }
+    console.warn('[configStore] config.json 破損 → バックアップから復元しました');
+    cached = bak;
+    try { cachedMtime = statSync(file).mtimeMs; } catch { cachedMtime = -1; }
     return cached;
   }
+  console.error('[configStore] config.json 破損・バックアップも無し → 空設定で継続');
+  if (!cached) cached = {};
+  return cached;
 }
 
 export function saveConfig(config: UserConfig): void {
   const file = CONFIG_FILE();
   mkdirSync(CONFIG_DIR(), { recursive: true });
-  writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
+  const json = JSON.stringify(config, null, 2);
+  // ★原子的書き込み(tmp→rename): 書き込み中断で config.json が空/半端になるのを防ぐ。
+  const tmp = file + '.tmp';
+  writeFileSync(tmp, json, 'utf-8');
+  renameSync(tmp, file);
+  // ★直近の正常値をバックアップ(復元用)。失敗しても致命的にしない。
+  try { writeFileSync(BAK_FILE(), json, 'utf-8'); } catch { /* ignore */ }
   cached = config;
   try { cachedMtime = statSync(file).mtimeMs; } catch { cachedMtime = -1; }
-  console.log(`[configStore] saved to ${file}`);
+  console.log(`[configStore] saved to ${file} (+bak)`);
 }
 
 // APIキー解決: config.json 優先 → 環境変数 fallback

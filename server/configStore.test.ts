@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { readFileSync, existsSync } from 'node:fs';
 import {
   resolvePricePollMs, resolveNewsPollMs, resolvePort,
   validateParam, resetConfigCache, resolveApiKey,
   resolveWebSearchOpenaiModel, DEFAULT_WEB_SEARCH_OPENAI_MODEL,
-  resolveBasedataSaveDir,
+  resolveBasedataSaveDir, loadConfig, saveConfig,
 } from './configStore.js';
 import { LLM_PROVIDERS } from './config.js';
 
@@ -64,6 +65,28 @@ describe('configStore resolvers', () => {
 
     writeFileConfig({ port: 5000 });
     expect(resolvePort()).toBe(5000);
+  });
+
+  it('saveConfig はバックアップ(config.json.bak)も書く', () => {
+    saveConfig({ geminiKey: 'k1', dotenEnabled: true });
+    const bak = join(tmpHome, '.jp225-monitor', 'config.json.bak');
+    expect(existsSync(bak)).toBe(true);
+    expect(JSON.parse(readFileSync(bak, 'utf-8'))).toMatchObject({ geminiKey: 'k1', dotenEnabled: true });
+  });
+
+  it('config.json が破損しても .bak から復元して設定を失わない', () => {
+    saveConfig({ geminiKey: 'good', scalpBias: 'long' });
+    // 主ファイルを壊す(空/半端書き込みを模擬)。
+    writeFileSync(join(tmpHome, '.jp225-monitor', 'config.json'), '{ broken', 'utf-8');
+    resetConfigCache();
+    expect(loadConfig()).toMatchObject({ geminiKey: 'good', scalpBias: 'long' });
+  });
+
+  it('config.json が欠落しても .bak から復元する', () => {
+    saveConfig({ openaiKey: 'ok' });
+    rmSync(join(tmpHome, '.jp225-monitor', 'config.json'), { force: true });
+    resetConfigCache();
+    expect(loadConfig()).toMatchObject({ openaiKey: 'ok' });
   });
 
   it('resolveBasedataSaveDir defaults to ~/Downloads when unset', () => {

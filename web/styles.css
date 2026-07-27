@@ -584,34 +584,29 @@ body {
 .modal-hint code { background: var(--bg); padding: 1px 6px; border-radius: 3px; font-size: 11px; }
 
 /* ── 設定の2モーダル(設定 / 詳細設定)だけ 横広+2カラム(縦長解消)。他モーダル(履歴/ログ等)は不変。 ── */
+/* ★列は「1段目(左列)を上から埋めてから次の段(右列)へ」= multi-column(column-major)。
+   sticky な上部バーを壊さないよう、multicol は中身のラッパ(.settings-cols / .ai-entry-cols)にだけ掛ける。 */
 #settings-modal .modal-content,
 #params-modal .modal-content { width: min(960px, 95vw); }
-/* 設定モーダル: fieldset を2カラムに。上部バー/説明/ステータス/キー検証行/末尾ヒントは全幅(1段)。 */
-#settings-modal .modal-content {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.settings-cols {
+  column-count: 2;
   column-gap: 20px;
-  align-items: start;
 }
-#settings-modal .modal-content > .modal-topbar,
-#settings-modal .modal-content > .modal-hint,
-#settings-modal .modal-content > #settings-status-area,
-#settings-modal .modal-content > .setting-row { grid-column: 1 / -1; }
-#settings-modal .settings-section { break-inside: avoid; min-width: 0; }
-/* 詳細設定モーダル: 縦長の主因「AIエントリー」fieldset の各行を2カラムに(legend/説明は全幅)。 */
-#params-modal #ai-entry-fieldset {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.settings-cols > .settings-section,
+.settings-cols > .setting-row {
+  break-inside: avoid;          /* fieldset/行がカラムをまたいで割れないように */
+  margin-top: 0;
+}
+.settings-cols > .settings-section { margin-bottom: 14px; }
+/* 詳細設定「AIエントリー」の各行を列充填(legend/説明は上に全幅で残す)。 */
+.ai-entry-cols {
+  column-count: 2;
   column-gap: 18px;
-  align-items: start;
 }
-#params-modal #ai-entry-fieldset > legend,
-#params-modal #ai-entry-fieldset > .exit-hint { grid-column: 1 / -1; }
-#params-modal #ai-entry-fieldset > .setting-row { min-width: 0; }
+.ai-entry-cols > .setting-row { break-inside: avoid; }
 /* 狭い画面では1カラムに戻す(横スクロール防止)。 */
 @media (max-width: 780px) {
-  #settings-modal .modal-content,
-  #params-modal #ai-entry-fieldset { grid-template-columns: 1fr; }
+  .settings-cols, .ai-entry-cols { column-count: 1; }
   #settings-modal .modal-content,
   #params-modal .modal-content { width: min(560px, 92vw); }
 }
