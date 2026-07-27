@@ -1,9 +1,32 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { installLogCapture, getLogs, resetLogBuffer, BUFFER_SIZE } from './logBuffer.js';
+import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { installLogCapture, getLogs, resetLogBuffer, BUFFER_SIZE, setLogFile } from './logBuffer.js';
 
 describe('logBuffer', () => {
   beforeEach(() => {
     resetLogBuffer();
+  });
+
+  it('setLogFile を設定するとファイルへも追記する(未設定なら書かない)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jp225-log-'));
+    const file = join(dir, 'server.log');
+    try {
+      installLogCapture();
+      console.log('before-sink');          // setLogFile 前=ファイルに出ない
+      expect(existsSync(file)).toBe(false);
+      setLogFile(file);
+      console.log('sink-line-abc');
+      console.warn('warn-xyz');
+      const txt = readFileSync(file, 'utf-8');
+      expect(txt).toContain('[log] sink-line-abc');
+      expect(txt).toContain('[warn] warn-xyz');
+      expect(txt).not.toContain('before-sink');
+    } finally {
+      resetLogBuffer();                    // logFilePath を null に戻す
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('captures console.log into buffer', () => {
