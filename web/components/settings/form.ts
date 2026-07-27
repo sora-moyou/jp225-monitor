@@ -60,6 +60,7 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.checkScalpRangeEnabled.checked = current ? current.scalpRangeEnabled : false;   // ★実験終了=既定OFF
   el.checkScalpDotenEnabled.checked = current ? !!current.dotenEnabled : false;   // ★ドテン(反転)許可=既定OFF
   el.checkScalpRangeReeval.checked = current ? current.rangeReevalEnabled !== false : true;   // ★レンジ再評価=既定ON(未設定/true=チェック)
+  el.checkScalpChartFallback.checked = current ? current.scalpChartFallbackText !== false : true;   // ★チャート撮影失敗テキスト縮退=既定ON
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限を反映し、AI委任の項目は数値/enum入力を無効化(灰色)。
   el.inputScalpLcFloor.value = current ? String(current.scalpLcFloorYen) : '';
   el.selectLcFloorMode.value = current?.scalpLcFloorSource ?? 'manual';
@@ -189,6 +190,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.dotenEnabled = el.checkScalpDotenEnabled.checked;
   // ★レンジ再評価(未約定→ブレイク)許可: チェックボックス(常に値あり)。true/false を送る。
   body.rangeReevalEnabled = el.checkScalpRangeReeval.checked;
+  body.scalpChartFallbackText = el.checkScalpChartFallback.checked;
   // ★v0.7.56: 委任 source(手動/AI)。select は常に値あり('manual'|'ai')。
   body.scalpLcFloorSource = el.selectLcFloorMode.value as KnobSource;
   body.scalpLcCeilingSource = el.selectLcCeilingMode.value as KnobSource;

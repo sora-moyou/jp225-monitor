@@ -26,9 +26,11 @@ vi.mock('../chatContext.js', () => ({
 }));
 
 const trendVetoYenMock = vi.fn<[], number>(() => 100);
+const chartFallbackMock = vi.fn<[], boolean>();
 vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => trendVetoYenMock(),
+  resolveScalpChartFallbackText: () => chartFallbackMock(),
 }));
 
 // barsFor(リアルタイム足 {t,close})をテストで差し替え。既定は空(=regime flat)。
@@ -71,6 +73,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     captureMock.mockReset();
     barsForMock.mockReset().mockReturnValue([]);
     trendVetoYenMock.mockReset().mockReturnValue(100);
+    chartFallbackMock.mockReset().mockReturnValue(true);   // 既定=テキスト縮退ON
     delete process.env.SCALP_CHART_VISION;
   });
   afterEach(() => {
@@ -91,13 +94,27 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(result).toEqual(GOOD_PLAN);
   });
 
-  it('vision applies + capture fails (buffer=null) → chart-not-generated, AI NOT called (見送り)', async () => {
+  it('★fallback ON(既定): capture 2回失敗 → リトライ後テキストのみで AI 継続(画像なし)', async () => {
     firstVisionMock.mockReturnValue({ name: 'gemini' });
     captureMock.mockResolvedValue({ buffer: null, reason: 'chart-ready-timeout', chromePath: 'c', chromeVersion: 'v1' });
 
     const result = await runScalpPlanWithChart();
 
-    expect(captureMock).toHaveBeenCalledTimes(1);
+    expect(captureMock).toHaveBeenCalledTimes(2);   // ★1回リトライ
+    expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);   // ★テキストのみでも呼ぶ
+    const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
+    expect(arg.chartImageDataUrl == null).toBe(true);
+    expect(result).toEqual(GOOD_PLAN);
+  });
+
+  it('★fallback OFF: capture 2回失敗 → 見送り(chart-not-generated・AI呼ばない)', async () => {
+    chartFallbackMock.mockReturnValue(false);
+    firstVisionMock.mockReturnValue({ name: 'gemini' });
+    captureMock.mockResolvedValue({ buffer: null, reason: 'chart-ready-timeout', chromePath: 'c', chromeVersion: 'v1' });
+
+    const result = await runScalpPlanWithChart();
+
+    expect(captureMock).toHaveBeenCalledTimes(2);
     expect(buildScalpPlanMock).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: false, error: 'chart-not-generated' });
   });

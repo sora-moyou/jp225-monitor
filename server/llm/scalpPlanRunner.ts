@@ -2,7 +2,7 @@ import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } fr
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPng } from '../chart/chartShot.js';
-import { resolvePort, resolveScalpTrendVetoYen, type SignalProfile } from '../configStore.js';
+import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, type SignalProfile } from '../configStore.js';
 import { barsFor } from '../loops/alertLoop.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
 import { openDb, resolveDbPath, getRecentBars, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
@@ -94,17 +94,27 @@ export async function runScalpPlanWithChart(
   const visionOn = chartVisionEnabled();
   const vision = visionOn ? firstAvailableVisionProvider() : null;
   if (visionOn && vision) {
-    // ② 画像生成(オンデマンド新規撮影)。
-    const shot = await captureChartPng(resolvePort());
-    // ③ 画像生成確認。生成できなければ AI を一切呼ばず見送る(戦略を作らせない)。
+    // ② 画像生成(オンデマンド新規撮影)。ws-error 等の一過性に備え、失敗したら1回だけ即リトライ(vision 回復狙い)。
+    let shot = await captureChartPng(resolvePort());
     if (!shot.buffer) {
-      console.log('[scalp-plan] vision: 画像生成できず → 見送り(AI呼ばない) reason=' + (shot.reason ?? 'unknown'));
-      return { ok: false, error: 'chart-not-generated' };
+      console.warn(`[scalp-plan] vision: 画像生成失敗 → 1回リトライ reason=${shot.reason ?? 'unknown'}`);
+      shot = await captureChartPng(resolvePort());
     }
-    // 画像あり → 添付して④戦略作成へ。
-    chartImageDataUrl = `data:image/png;base64,${shot.buffer.toString('base64')}`;
-    console.log(`[scalp-plan] vision: 画像生成OK (${(shot.buffer.length / 1024).toFixed(0)}kB) → 戦略作成 `
-      + `provider=${vision.name}`);
+    // ③ 2回とも失敗: 設定に応じて「テキストのみで継続(縮退運転=全停止を防ぐ)」or 従来どおり「見送り」。
+    if (!shot.buffer) {
+      if (resolveScalpChartFallbackText()) {
+        console.warn(`[scalp-plan] vision: 2回失敗 → テキストのみで AI 継続(縮退運転) reason=${shot.reason ?? 'unknown'}`);
+        // chartImageDataUrl は null のまま=画像なしで戦略作成へ(取引を止めない)。
+      } else {
+        console.log('[scalp-plan] vision: 画像生成できず → 見送り(AI呼ばない) reason=' + (shot.reason ?? 'unknown'));
+        return { ok: false, error: 'chart-not-generated' };
+      }
+    } else {
+      // 画像あり → 添付して④戦略作成へ。
+      chartImageDataUrl = `data:image/png;base64,${shot.buffer.toString('base64')}`;
+      console.log(`[scalp-plan] vision: 画像生成OK (${(shot.buffer.length / 1024).toFixed(0)}kB) → 戦略作成 `
+        + `provider=${vision.name}`);
+    }
   } else if (!visionOn) {
     console.log('[scalp-plan] vision: disabled (SCALP_CHART_VISION=0) → text-only');
   } else {

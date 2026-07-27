@@ -15,6 +15,7 @@ export interface SettingsResponse {
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
   dotenEnabled?: boolean;   // ★ドテン(反転)許可(既定OFF)。monitor2(full)専用UI。
   rangeReevalEnabled?: boolean;   // ★レンジ再評価(未約定→ブレイク)許可(既定ON)。monitor2(full)専用UI。
+  scalpChartFallbackText?: boolean;   // ★チャート撮影失敗でもテキストで継続(既定ON)。
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
   scalpLcFloorYen: number;
   scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
@@ -78,6 +79,7 @@ export interface SavePayload {
   scalpRangeEnabled?: boolean | null;
   dotenEnabled?: boolean | null;   // ★ドテン(反転)許可
   rangeReevalEnabled?: boolean | null;   // ★レンジ再評価(未約定→ブレイク)許可
+  scalpChartFallbackText?: boolean | null;   // ★チャート撮影失敗でもテキストで継続
   scalpTrendVetoYen?: number | null;
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
   scalpLcFloorYen?: number | null;
@@ -117,6 +119,7 @@ export interface SettingsElements {
   checkScalpRangeEnabled: HTMLInputElement; // AIエントリー: レンジ両面ストラドル(実験・紙で別枠計測)
   checkScalpDotenEnabled: HTMLInputElement; // ★ドテン(反転)許可(monitor2 専用・変異gateで lite 非表示)
   checkScalpRangeReeval: HTMLInputElement;  // ★レンジ再評価(未約定→ブレイク)許可(monitor2 専用・変異gateで lite 非表示)
+  checkScalpChartFallback: HTMLInputElement; // ★チャート撮影失敗でもテキストで継続(既定ON)
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor: HTMLInputElement;
   selectLcFloorMode: HTMLSelectElement;

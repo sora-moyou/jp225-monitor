@@ -5,7 +5,7 @@
 // ★v0.8.2: 各リゾルバは SignalProfile 対応。profile 省略/'A'=グローバル(既存挙動一致) /
 //   'B'=signalB 優先→未設定はグローバルへフォールバック(読み取りは readKnobRaw / resolveNumericProfile が担う)。
 
-import { readKnobRaw, resolveNumericProfile } from '../configStore.js';
+import { readKnobRaw, resolveNumericProfile, loadConfig } from '../configStore.js';
 import type { ScalpBias, KnobSource, SignalProfile } from '../configStore.js';
 
 // AIエントリー: 最大初期LC(円)。未設定は PARAM_BOUNDS 既定(65)。buildScalpPlan の LC 上限既定に使う。
@@ -46,6 +46,14 @@ export function resolveScalpDotenEnabled(profile?: SignalProfile): boolean {
 //   未設定/非boolean は true(既定ON)。個別に false で無効化できる(=本経路を完全に不活性=挙動不変)。
 export function resolveScalpRangeReevalEnabled(profile?: SignalProfile): boolean {
   const v = readKnobRaw(profile, 'rangeReevalEnabled');
+  return typeof v === 'boolean' ? v : true;
+}
+
+// ★チャート撮影失敗(ws-error 等)時の縮退運転。既定 ON=撮影が2回失敗しても「テキストのみ」で AI を継続し
+//   取引を止めない(2026-07-27 のチャートws-error+429で全停止した事故対策)。false=ストリクト vision
+//   (撮影不可なら見送り=従来挙動)。チャートは A/B 共有なのでグローバル設定(profile 非依存)。
+export function resolveScalpChartFallbackText(): boolean {
+  const v = loadConfig().scalpChartFallbackText;
   return typeof v === 'boolean' ? v : true;
 }
 
