@@ -587,8 +587,10 @@ body {
 /* ★「左列(scol1=DOM順で前半)を上から埋めてから、右列(scol2=後半)へ」= 明示2カラム(flex)。
    均等配分(multicolのbalance)ではなく前半/後半を明示的に振り分けるので、項目が列をまたいで割れない。
    sticky な上部バーを壊さないよう、列化は中身のラッパ(.settings-cols / .ai-entry-cols)にだけ掛ける。 */
+/* トップ位置を少し下げる(中央寄せ→上寄せ+上マージン)。 */
+#settings-modal, #params-modal { align-items: flex-start; }
 #settings-modal .modal-content,
-#params-modal .modal-content { width: min(960px, 95vw); }
+#params-modal .modal-content { width: min(960px, 95vw); margin-top: 6vh; max-height: 86vh; }
 .settings-cols, .ai-entry-cols { display: flex; gap: 20px; align-items: flex-start; }
 .settings-cols > .scol, .ai-entry-cols > .scol { flex: 1 1 0; min-width: 0; }
 .settings-cols .settings-section { margin: 0 0 14px; }
