@@ -584,33 +584,22 @@ body {
 .modal-hint code { background: var(--bg); padding: 1px 6px; border-radius: 3px; font-size: 11px; }
 
 /* ── 設定の2モーダル(設定 / 詳細設定)だけ 横広+2カラム(縦長解消)。他モーダル(履歴/ログ等)は不変。 ── */
-/* ★列は「1段目(左列)を上から埋めてから次の段(右列)へ」= multi-column(column-major)。
-   sticky な上部バーを壊さないよう、multicol は中身のラッパ(.settings-cols / .ai-entry-cols)にだけ掛ける。 */
+/* ★「左列(scol1=DOM順で前半)を上から埋めてから、右列(scol2=後半)へ」= 明示2カラム(flex)。
+   均等配分(multicolのbalance)ではなく前半/後半を明示的に振り分けるので、項目が列をまたいで割れない。
+   sticky な上部バーを壊さないよう、列化は中身のラッパ(.settings-cols / .ai-entry-cols)にだけ掛ける。 */
 #settings-modal .modal-content,
 #params-modal .modal-content { width: min(960px, 95vw); }
-.settings-cols {
-  column-count: 2;
-  column-gap: 20px;
-}
-.settings-cols > .settings-section,
-.settings-cols > .setting-row {
-  break-inside: avoid;          /* fieldset/行がカラムをまたいで割れないように */
-  margin-top: 0;
-}
-.settings-cols > .settings-section { margin-bottom: 14px; }
-/* 詳細設定「AIエントリー」の各行を列充填(legend/説明は上に全幅で残す)。 */
-.ai-entry-cols {
-  column-count: 2;
-  column-gap: 18px;
-}
-.ai-entry-cols > .setting-row { break-inside: avoid; margin: 8px 0 12px; }
-/* ★2列だと A/B 横並びは窮屈なので、各行内は A を上・B を下に縦積みしてコンパクトに(区切り線は外す)。 */
+.settings-cols, .ai-entry-cols { display: flex; gap: 20px; align-items: flex-start; }
+.settings-cols > .scol, .ai-entry-cols > .scol { flex: 1 1 0; min-width: 0; }
+.settings-cols .settings-section { margin: 0 0 14px; }
+/* AIエントリー行は 2列だと A/B 横並びが窮屈なので、各行内は A を上・B を下に縦積みでコンパクトに(区切り線は外す)。 */
 .ai-entry-cols .ab-row { display: flex; flex-direction: column; gap: 4px; }
 .ai-entry-cols .ab-col { flex-wrap: nowrap; }
 .ai-entry-cols .ab-col-b { border-left: none; padding-left: 0; margin-left: 0; }
+.ai-entry-cols .setting-row { margin: 8px 0 12px; }
 /* 狭い画面では1カラムに戻す(横スクロール防止)。 */
 @media (max-width: 780px) {
-  .settings-cols, .ai-entry-cols { column-count: 1; }
+  .settings-cols, .ai-entry-cols { flex-direction: column; gap: 0; }
   #settings-modal .modal-content,
   #params-modal .modal-content { width: min(560px, 92vw); }
 }
