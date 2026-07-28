@@ -30,10 +30,10 @@ import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
 import { detectLevelHold } from '../levelHold.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
-import { aggregateSignals, DEFAULT_AGGREGATE } from '../signals/aggregate.js';
+import { aggregateSignals, DEFAULT_AGGREGATE, recentMomentumDir } from '../signals/aggregate.js';
 import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
 import type { AlertSignal } from '../signals/types.js';
-import { resolveLevelsConfig } from '../configStore.js';
+import { resolveLevelsConfig, resolveBreakScore, resolveDoubleFormingEnabled, resolveSlopeConfluenceBonus } from '../configStore.js';
 import { evaluateBarsNiy, createBarDetectState, type BarDetectState, type AlertSink } from '../alertEngine.js';
 import { DEFAULT_PARAMS, type DetectorParams } from '../alertDetector.js';
 import type { InstrumentMeta } from '../types.js';
@@ -301,7 +301,8 @@ export function runLevelDetectors(
   // ── L2 価格系シグナル(double / level_sr / break / pivot)を生成 → 集約 → emit ──
   try {
     const sinceT = now - RECENT_BARS_MIN * 60_000;
-    const recent = getRecentBars(db, SYMBOL, sinceT).map(b => ({ t: b.t, h: b.h, l: b.l }));
+    const recentBars = getRecentBars(db, SYMBOL, sinceT);
+    const recent = recentBars.map(b => ({ t: b.t, h: b.h, l: b.l }));
     const rawPivots = extractSwingPivots(recent, yenPct(latest.price, PIVOT_RECLAIM_PCT));
     const pivots = rawPivots.map(p => ({ price: p.price, label: p.kind === 'low' ? 'スイング安値' : 'スイング高値' }));
     const sigNamed = [...result.up, ...result.down]
@@ -328,8 +329,10 @@ export function runLevelDetectors(
       const lvl = Math.round(bsig.level);
       const dirWord = bsig.kind === 'up' ? '上抜け' : '下抜け';
       signals.push({
+        // ★40日ライブ: break 継続方向のアルファ≈0pt。単独スコアを 1.2→0.9(既定・config化)に下げ、
+        //   minScore=1 未満=単独では出さず、コンフルエンス(別種+0.5 で1.4)時のみ生かす。
         type: 'break', direction: bsig.kind, reference: { kind: 'level', price: lvl }, stage: 'confirmed',
-        score: 1.2, triggeredAt: now,
+        score: resolveBreakScore(), triggeredAt: now,
         text: `${lvl.toLocaleString('ja-JP')} ${bsig.label}を${dirWord}(水準抜けの可能性あり)`,
       });
     }
@@ -385,16 +388,24 @@ export function runLevelDetectors(
         const text = sd.stage === 'breakout'
           ? `${name}成立 — ネック${yen(neck)}円を${word}(${legLabel}${yen(g1)}/${yen(g2)})目標≈${yen(sd.target)}`
           : `${name}形成 — ネック${yen(neck)}円(${legLabel}${yen(g1)}→${yen(g2)})。${watch}`;
-        signals.push({
-          type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: neck },
-          stage: sd.stage === 'breakout' ? 'confirmed' : 'forming',
-          score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text,
-        });
+        // ★40日ライブ: double は反転が効かない(形成通知の方向的中が低い)。
+        //   既定は breakout(成立)のみ出す(forming は doubleFormingEnabled=true のときだけ)。
+        //   breakout のスコアも 1.5→1.0 に減点(単独では他の 1.0 系と同格に扱う)。
+        if (sd.stage === 'breakout' || resolveDoubleFormingEnabled()) {
+          signals.push({
+            type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: neck },
+            stage: sd.stage === 'breakout' ? 'confirmed' : 'forming',
+            score: 1.0, triggeredAt: now, text,
+          });
+        }
       }
     }
 
     // 集約 → クールダウン → emit。
-    for (const item of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
+    // ★slope 方向一致ボーナス: 直近1分足のモメンタム向きを求め、同方向のクラスタへ加点(40日ライブ: slope +52pt)。
+    const momentumDir = recentMomentumDir(recentBars.map(b => ({ t: b.t, c: b.c })));
+    const aggParams = { ...DEFAULT_AGGREGATE, slopeConfluenceBonus: resolveSlopeConfluenceBonus() };
+    for (const item of aggregateSignals(signals, aggParams, momentumDir)) {
       const ck = item.type === 'double'
         ? `double@${Math.round(item.reference.price / 5) * 5}#${item.stage ?? ''}`
         : `${item.direction}@${Math.round(item.reference.price / LEVEL_MERGE_YEN) * LEVEL_MERGE_YEN}`;

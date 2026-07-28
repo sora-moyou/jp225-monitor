@@ -30,7 +30,13 @@ const PARAMS: ParamSpec[] = [
   { key: 'levelTestBonus',       inputId: 'params-level-testbonus' },
   { key: 'levelLookbackSessions',  inputId: 'params-level-lookback' },
   { key: 'levelLookbackSessions2', inputId: 'params-level-lookback2' },
+  // ★検知チューニング(40日ライブ分析: break継続0pt / slope+52pt)。
+  { key: 'breakScore',           inputId: 'params-break-score' },
+  { key: 'slopeConfluenceBonus', inputId: 'params-slope-bonus' },
 ];
+
+// ★検知チューニング: double 形成通知(boolean・既定OFF)。数値と別扱いのチェックボックス。
+const DOUBLE_FORMING_ID = 'params-double-forming';
 
 export interface ParamsElements {
   openBtn: HTMLButtonElement;
@@ -64,6 +70,9 @@ export function initParamsModal(el: ParamsElements): void {
         const input = inputOf(p.inputId);
         if (input && typeof s[p.key] === 'number') input.value = String(s[p.key]);
       }
+      // ★double 形成通知(boolean)をチェックボックスへ反映。
+      const cb = inputOf(DOUBLE_FORMING_ID);
+      if (cb) cb.checked = (s as Record<string, unknown>).doubleFormingEnabled === true;
     } catch {
       el.status.textContent = '取得失敗';
     }
@@ -92,12 +101,17 @@ export function initParamsModal(el: ParamsElements): void {
       // ★v0.8.3: 先に移設フィールド(Web検索モデル/AIエントリー/データ操作は id 参照)を
       //   設定コントローラ経由で保存(⚙️ 保存と同じ /api/settings/keys・同じ項目)。
       await el.onSave?.();
-      const body: Record<string, number> = {};
+      const body: Record<string, number | boolean> = {};
       for (const p of PARAMS) {
         const input = inputOf(p.inputId);
         if (!input) continue;
         const v = Number(input.value);
         if (current && v !== current[p.key]) body[p.key] = v;
+      }
+      // ★double 形成通知(boolean)。変更時のみ送る(true/false を明示送信)。
+      const cb = inputOf(DOUBLE_FORMING_ID);
+      if (cb && current && cb.checked !== ((current as Record<string, unknown>).doubleFormingEnabled === true)) {
+        body.doubleFormingEnabled = cb.checked;
       }
       const res = await fetch(apiUrl('/api/settings/keys'), {
         method: 'POST',

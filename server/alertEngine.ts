@@ -142,7 +142,8 @@ export function evaluateBarsNiy(
 
   // 集約(同方向・近接基準を1本化)→ 方向別クールダウン(v0.6.2: 監査で過剰発火のため導入)→ emit。
   const tNow = bars[bars.length - 1]!.t;
-  for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE)) {
+  // ここ(granville/bar 系)は slope 方向一致ボーナスの対象外 → momentumDir=null(挙動不変)。
+  for (const a of aggregateSignals(signals, DEFAULT_AGGREGATE, null)) {
     const ck = `${a.type}#${a.direction}`;
     if (tNow - (state.lastL2Emit.get(ck) ?? -Infinity) <= L2_COOLDOWN_MS) continue;
     state.lastL2Emit.set(ck, tNow);

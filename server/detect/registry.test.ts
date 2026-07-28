@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { initSchema } from '../db/store.js';
+import { resetConfigCache } from '../configStore.js';
 import { _reset as resetCooldown } from '../alertCooldown.js';
 import {
   createBarDetectState, createLevelDetectState, createDetectorState,
@@ -75,6 +79,16 @@ describe('runLevelDetectors — break を sink に流し、cooldown/dedup は co
   const t0 = 1_700_000_000_000;
   const now = t0 + 5 * 60_000;
 
+  // ★config 隔離(resolveBreakScore 等は ~/.jp225-monitor/config.json を読む)。実ユーザー設定を読まないよう HOME を差し替える。
+  let cfgDir: string;
+  let origHome: string | undefined;
+  let origUserProfile: string | undefined;
+  const writeConfig = (obj: Record<string, unknown>): void => {
+    mkdirSync(join(cfgDir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(cfgDir, '.jp225-monitor', 'config.json'), JSON.stringify(obj), 'utf-8');
+    resetConfigCache();
+  };
+
   const analytics = (): LevelAnalytics => ({
     result: { current: 96, up: [], down: [lvl(100, 1, 'テスト水準')], swing: null, reversalSatisfied: false, asOf: now } as LevelsResult,
     latest: { symbol: NIY, t: now, price: 96 },
@@ -84,12 +98,30 @@ describe('runLevelDetectors — break を sink に流し、cooldown/dedup は co
   beforeEach(() => {
     db = memDb();
     for (const b of downBreakBars(t0)) insertBar(db, b.t, b.h, b.l, b.l);   // close は本検知で未使用(h/l のみ)
+    cfgDir = mkdtempSync(join(tmpdir(), 'jp225-reg-'));
+    origHome = process.env.HOME; origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = cfgDir; process.env.USERPROFILE = cfgDir;
+    // 既定は breakScore=1.2(単独 break を出す)にして、以下のプラミング検証(sink/クールダウン独立)を成立させる。
+    writeConfig({ breakScore: 1.2 });
+  });
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
+    if (origUserProfile !== undefined) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    resetConfigCache();
+    rmSync(cfgDir, { recursive: true, force: true });
   });
 
   it('tier≥1 水準の下抜けを break として sink に流す', () => {
     const calls: AlertEventPayload[] = [];
     runLevelDetectors(db, analytics(), now, createLevelDetectState(), e => calls.push(e));
     expect(calls.some(e => e.detectionKind === 'break' && e.direction === 'down')).toBe(true);
+  });
+
+  it('★40日ライブ: 単独 break は既定 0.9<minScore1 で除外(コンフルエンス無しは出さない)', () => {
+    writeConfig({});   // breakScore 未設定=既定 0.9。momentum も無い(recent は5分のみ)ので slope 加点も付かない。
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, analytics(), now, createLevelDetectState(), e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'break')).toBe(false);
   });
 
   it('★起動直後(未seed)は既存の確定ピボットを「形成」として発火しない(再起動での古い価格の誤発火防止)', () => {
@@ -142,6 +174,83 @@ describe('runLevelDetectors — break を sink に流し、cooldown/dedup は co
     };
     runLevelDetectors(db, a, now, createLevelDetectState(), e => calls.push(e));
     expect(calls.some(e => e.detectionKind === 'dailyband' && e.direction === 'down')).toBe(true);
+  });
+});
+
+describe('runLevelDetectors — double(スイングW)の形成抑制 / breakout 発火(40日ライブ)', () => {
+  // ★double は反転が効かない → 既定は breakout のみ・forming は doubleFormingEnabled=true 時のみ。
+  //   スイングバーは 90分の recent 窓の外(=break/pivot/level_sr のノイズを避ける)に置き、4日窓の double だけを評価させる。
+  let db: DatabaseSync;
+  let cfgDir: string;
+  let origHome: string | undefined;
+  let origUserProfile: string | undefined;
+  const t0 = 1_700_000_000_000;
+  const B = 300_000;                       // 5分足
+  const now = t0 + 200 * 60_000;           // 最終バー(t0+25分)より十分後 → recent(90分)窓は空。
+
+  const writeConfig = (obj: Record<string, unknown>): void => {
+    mkdirSync(join(cfgDir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(cfgDir, '.jp225-monitor', 'config.json'), JSON.stringify(obj), 'utf-8');
+    resetConfigCache();
+  };
+
+  // ダブルボトム W: 谷64,000 → ネック(山)65,200 → 谷64,050。finalHigh で forming/breakout を切替。
+  //   breakout: finalHigh=65,300(現値>ネック+5) / forming: finalHigh=64,650(谷2確定に足りる戻りだが現値≤ネック+5)。
+  function swingBars(finalHigh: number): { t: number; h: number; l: number }[] {
+    return [
+      { t: t0 + 0 * B, h: 64100, l: 64000 },   // 谷1(64,000)
+      { t: t0 + 1 * B, h: 64720, l: 64200 },   // 戻り→谷1確定(reclaim≈522)
+      { t: t0 + 2 * B, h: 65200, l: 64800 },   // ネック(山65,200)
+      { t: t0 + 3 * B, h: 64900, l: 64600 },   // 押し→ネック確定
+      { t: t0 + 4 * B, h: 64300, l: 64050 },   // 谷2(64,050)
+      { t: t0 + 5 * B, h: finalHigh, l: 64200 },   // 戻り→谷2確定 + 現値
+    ];
+  }
+  const analyticsFor = (price: number): LevelAnalytics => ({
+    result: { current: price, up: [], down: [], swing: null, reversalSatisfied: false, asOf: now } as LevelsResult,
+    latest: { symbol: NIY, t: now, price },
+    sessions: [], cs: null, dailyBandLevels: [], dailyMaLevels: [], dbMs: 0, computeMs: 0,
+  });
+  const seed = (bars: { t: number; h: number; l: number }[]): void => {
+    db = memDb();
+    for (const b of bars) insertBar(db, b.t, b.h, b.l, Math.round((b.h + b.l) / 2));
+  };
+
+  beforeEach(() => {
+    cfgDir = mkdtempSync(join(tmpdir(), 'jp225-reg2-'));
+    origHome = process.env.HOME; origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = cfgDir; process.env.USERPROFILE = cfgDir;
+    writeConfig({});   // 既定(doubleFormingEnabled 未設定=false / breakScore 0.9)。
+  });
+  afterEach(() => {
+    if (origHome !== undefined) process.env.HOME = origHome; else delete process.env.HOME;
+    if (origUserProfile !== undefined) process.env.USERPROFILE = origUserProfile; else delete process.env.USERPROFILE;
+    resetConfigCache();
+    rmSync(cfgDir, { recursive: true, force: true });
+  });
+
+  it('breakout(成立)は既定で double として発火し score=1.0', () => {
+    seed(swingBars(65300));
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, analyticsFor(65300), now, createLevelDetectState(), e => calls.push(e));
+    const d = calls.find(e => e.detectionKind === 'double');
+    expect(d).toBeTruthy();
+    expect(d!.direction).toBe('up');   // ダブルボトム → 上
+  });
+
+  it('forming(形成)は既定OFF=double を発火しない', () => {
+    seed(swingBars(64650));
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, analyticsFor(64650), now, createLevelDetectState(), e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'double')).toBe(false);
+  });
+
+  it('doubleFormingEnabled=true なら forming も double として発火', () => {
+    writeConfig({ doubleFormingEnabled: true });
+    seed(swingBars(64650));
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, analyticsFor(64650), now, createLevelDetectState(), e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'double')).toBe(true);
   });
 });
 

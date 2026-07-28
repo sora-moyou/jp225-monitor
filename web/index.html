@@ -479,6 +479,21 @@
           <input type="number" id="params-level-lookback2" min="2" max="120" step="1" />
         </label>
       </fieldset>
+      <fieldset class="settings-section">
+        <legend>検知チューニング (40日ライブ分析・リビルド不要・即反映)</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="params-double-forming" />
+          二重パターンの形成中も出す(既定OFF)
+        </label>
+        <label>
+          ブレイク単独スコア (既定0.9・1未満で単独ブレイクは出さない)
+          <input type="number" id="params-break-score" min="0" max="3" step="0.1" />
+        </label>
+        <label>
+          slope方向一致ボーナス (既定0.5)
+          <input type="number" id="params-slope-bonus" min="0" max="2" step="0.1" />
+        </label>
+      </fieldset>
       </div>
       </div>
       <div id="params-status" class="settings-status"></div>

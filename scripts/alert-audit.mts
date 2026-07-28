@@ -19,7 +19,7 @@ import { extractSwingPivots } from '../server/swingPivots.js';
 import { detectLevelBreak, type BreakSignal } from '../server/levelBreak.js';
 import { detectLevelHold } from '../server/levelHold.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../server/swingDouble.js';
-import { aggregateSignals, DEFAULT_AGGREGATE } from '../server/signals/aggregate.js';
+import { aggregateSignals, DEFAULT_AGGREGATE, recentMomentumDir } from '../server/signals/aggregate.js';
 import { computeLevels } from '../server/levels.js';
 import { getSessionOHLC } from '../server/db/store.js';
 import { computeDailyBands, dailyCloseSeries } from '../server/dailyBand.js';
@@ -80,11 +80,14 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   const sig: AlertSignal[] = [];
   const breaks = detectLevelBreak(hl, recent, price); const outer = new Map<'up' | 'down', BreakSignal>();
   for (const b of breaks) { const c = outer.get(b.kind); if (!c || (b.kind === 'up' ? b.level > c.level : b.level < c.level)) outer.set(b.kind, b); }
-  for (const b of outer.values()) { if (now - (lastBreakDir[b.kind] ?? -1e15) <= T.breakDirCooldownMs) continue; sig.push({ type: 'break', direction: b.kind, reference: { kind: 'level', price: b.level }, stage: 'confirmed', score: 1.2, triggeredAt: now, text: `${Math.round(b.level)} ${b.label}抜け` }); }
+  // ★本番ミラー(40日ライブ): break 単独スコア 1.2→0.9(minScore1未満で単独は出さずコンフルエンスのみ)。
+  for (const b of outer.values()) { if (now - (lastBreakDir[b.kind] ?? -1e15) <= T.breakDirCooldownMs) continue; sig.push({ type: 'break', direction: b.kind, reference: { kind: 'level', price: b.level }, stage: 'confirmed', score: 0.9, triggeredAt: now, text: `${Math.round(b.level)} ${b.label}抜け` }); }
   for (const h of detectLevelHold(hl, recent, price)) sig.push({ type: 'level_sr', direction: h.kind === 'support' ? 'up' : 'down', reference: { kind: 'level', price: h.level }, stage: 'confirmed', score: 1.1, triggeredAt: now, text: `${Math.round(h.level)} ${h.label}${h.kind === 'support' ? 'サポート' : 'レジ'}` });
   const nw = raw[raw.length - 1], pv = raw[raw.length - 2];
   if (nw && nw.t > lastPivotT && (!pv || Math.abs(nw.price - pv.price) >= yenPct(price, T.pivotFormedMinPct))) { lastPivotT = nw.t; sig.push({ type: 'pivot', direction: nw.kind === 'low' ? 'up' : 'down', reference: { kind: 'swing', price: nw.price }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${Math.round(nw.price)} 形成` }); }
-  if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const tf = T.swingDoubleTfMs; const lm = new Map<number, { t: number; h: number; l: number }>(); for (const b of lb) { const k = Math.floor(b.t / tf) * tf; const e = lm.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else lm.set(k, { t: k, h: b.h, l: b.l }); } const lb5 = [...lm.values()].sort((a, b) => a.t - b.t); const sd = detectSwingDouble(extractSwingPivots(lb5, yenPct(price, T.swingPivotReclaimPct)), price, DEFAULT_SWING_DOUBLE); if (sd) sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: sd.stage === 'breakout' ? 'confirmed' : 'forming', score: sd.stage === 'breakout' ? 1.5 : 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
+  if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const tf = T.swingDoubleTfMs; const lm = new Map<number, { t: number; h: number; l: number }>(); for (const b of lb) { const k = Math.floor(b.t / tf) * tf; const e = lm.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else lm.set(k, { t: k, h: b.h, l: b.l }); } const lb5 = [...lm.values()].sort((a, b) => a.t - b.t); const sd = detectSwingDouble(extractSwingPivots(lb5, yenPct(price, T.swingPivotReclaimPct)), price, DEFAULT_SWING_DOUBLE);
+    // ★本番ミラー(40日ライブ): double は形成(forming)を出さず breakout のみ・スコア 1.0(旧 breakout1.5)。
+    if (sd && sd.stage === 'breakout') sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
   // 日足バンド(dailyband): v0.6.22 リアルタイム化。確定済み夜間終値は60秒キャッシュ(進行中夜間足は除外)。
   // 現在値を進行中日足の終値として append し、バンドは毎ティック再計算 → break/hold を直接 bump(集約なし)。
   if (now - bandCacheT >= 60000 || confirmedCloses.length === 0) {
@@ -105,7 +108,10 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
     for (const b of detectLevelBreak(bandLevels, recent, price)) emitBand(Math.round(b.level), b.kind, `${b.label.replace(/^daily /, '')}${b.kind === 'up' ? '上抜け' : '下抜け'}`);
     for (const h of detectLevelHold(bandLevels, recent, price)) emitBand(Math.round(h.level), h.kind === 'support' ? 'up' : 'down', `${h.label.replace(/^daily /, '')}${h.kind === 'support' ? 'サポート' : 'レジ'}`);
   }
-  for (const a of aggregateSignals(sig, DEFAULT_AGGREGATE)) {
+  // ★本番ミラー: slope 方向一致ボーナス(+0.5)。直近~15分の1分足 close からモメンタム向きを算出して渡す。
+  const momBars = all.filter(b => b.t >= now - 15 * 60000 && b.t <= now).map(b => ({ t: b.t, c: b.c }));
+  const momDir = recentMomentumDir(momBars);
+  for (const a of aggregateSignals(sig, { ...DEFAULT_AGGREGATE, slopeConfluenceBonus: 0.5 }, momDir)) {
     const ck = a.type === 'double' ? `double@${Math.round(a.reference.price / 5) * 5}#${a.stage ?? ''}` : `${a.direction}@${Math.round(a.reference.price / T.levelMergeYen) * T.levelMergeYen}`;
     const cd = a.type === 'double' ? T.doubleCooldownMs : T.zoneCooldownMs;
     if (now - (lastEmit[ck] ?? -1e15) <= cd) continue;

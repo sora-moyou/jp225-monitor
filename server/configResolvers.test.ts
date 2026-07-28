@@ -10,6 +10,7 @@ import {
   resolveScalpLcFloorYen, resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective,
   resolveScalpTrendVetoDirective, resolveScalpCooldownDirective, resolveScalpBiasDirective,
   resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpDotenEnabled,
+  resolveDoubleFormingEnabled, resolveBreakScore, resolveSlopeConfluenceBonus,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
 
@@ -54,6 +55,31 @@ describe('shock param resolvers', () => {
     expect(p.accelTh).toBe(5);
     expect(resolveOpenGuardBars()).toBe(1);
     expect(resolveFlashYen()).toBe(120);
+  });
+
+  // ─── ★検知チューニング(40日ライブ: double反転効かず/break継続0pt/slope+52pt) ───────────
+  it('検知チューニング 未設定は既定(forming=false / breakScore=0.9 / slopeBonus=0.5)', () => {
+    expect(resolveDoubleFormingEnabled()).toBe(false);
+    expect(resolveBreakScore()).toBe(0.9);
+    expect(resolveSlopeConfluenceBonus()).toBe(0.5);
+  });
+
+  it('検知チューニング config.json の値を反映(forming=true / breakScore=1.3 / slopeBonus=0.8)', () => {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'),
+      JSON.stringify({ doubleFormingEnabled: true, breakScore: 1.3, slopeConfluenceBonus: 0.8 }), 'utf-8');
+    resetConfigCache();
+    expect(resolveDoubleFormingEnabled()).toBe(true);
+    expect(resolveBreakScore()).toBe(1.3);
+    expect(resolveSlopeConfluenceBonus()).toBe(0.8);
+  });
+
+  it('doubleFormingEnabled は非boolean を既定 false にフォールバック', () => {
+    mkdirSync(join(dir, '.jp225-monitor'), { recursive: true });
+    writeFileSync(join(dir, '.jp225-monitor', 'config.json'),
+      JSON.stringify({ doubleFormingEnabled: 'yes' }), 'utf-8');
+    resetConfigCache();
+    expect(resolveDoubleFormingEnabled()).toBe(false);
   });
 });
 
