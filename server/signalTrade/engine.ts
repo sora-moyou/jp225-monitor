@@ -293,12 +293,15 @@ export class SignalEngine {
           const sanity = result.plan.direction === 'none' ? null : checkSanity(result.plan, result.plan.refPrice);
           if (result.plan.direction === 'none') {
             // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
+            //   ★②a: AI の見送り根拠(rationale)をログに残す=書き出し(serverlog)で「なぜ入らないか」を可視化。
             this.planSuppressedAnchor = anchorPrice;
-            console.log(`${this.logTag} plan-suppress 見送り→節目まで抑止 anchor=${Math.round(anchorPrice)}`);
+            const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
+            console.log(`${this.logTag} plan-suppress 見送り(none) anchor=${Math.round(anchorPrice)} veto=${result.vetoFired ? 'y' : 'n'} 根拠=${why || '(なし)'}`);
           } else if (sanity && !sanity.ok) {
             // サニティ不通過=見送り(none)と同じ扱い: アンカーを記録し節目まで抑止する。
             this.planSuppressedAnchor = anchorPrice;
-            console.log(`${this.logTag} plan-suppress サニティ不通過(${sanity.reason})→ 正規シグナルにしない anchor=${Math.round(anchorPrice)}`);
+            const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+            console.log(`${this.logTag} plan-suppress サニティ不通過(${sanity.reason})→ 正規シグナルにしない anchor=${Math.round(anchorPrice)} 根拠=${why || '(なし)'}`);
           } else {
             const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
             if (armed) {
