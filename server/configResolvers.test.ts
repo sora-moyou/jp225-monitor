@@ -10,6 +10,7 @@ import {
   resolveScalpLcFloorYen, resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective,
   resolveScalpTrendVetoDirective, resolveScalpCooldownDirective, resolveScalpBiasDirective,
   resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpDotenEnabled,
+  resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled,
   resolveDoubleFormingEnabled, resolveBreakScore, resolveSlopeConfluenceBonus,
 } from './configStore.js';
 import { DEFAULT_SHOCK_PARAMS } from './shockDetector.js';
@@ -164,6 +165,28 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
     expect(resolveScalpDotenEnabled()).toBe(true);
     writeConfig({ dotenEnabled: 'on' });
     expect(resolveScalpDotenEnabled()).toBe(false);
+  });
+
+  it('★indicatorsEnabled 未設定/非boolean は既定 true(テクニカル指標=既定ON)', () => {
+    expect(resolveIndicatorsEnabled()).toBe(true);
+    writeConfig({ indicatorsEnabled: 'on' });
+    expect(resolveIndicatorsEnabled()).toBe(true);
+  });
+
+  it('★indicatorsEnabled=false を反映(パネル/SSE/AI文脈を止める)', () => {
+    writeConfig({ indicatorsEnabled: false });
+    expect(resolveIndicatorsEnabled()).toBe(false);
+  });
+
+  it('★aiTechnicalEnabled 未設定/非boolean は既定 true(AIテクニカル許可=既定ON)', () => {
+    expect(resolveScalpAiTechnicalEnabled()).toBe(true);
+    writeConfig({ aiTechnicalEnabled: 'yes' });
+    expect(resolveScalpAiTechnicalEnabled()).toBe(true);
+  });
+
+  it('★aiTechnicalEnabled=false を反映(system prompt にテクニカル許可行を出さない)', () => {
+    writeConfig({ aiTechnicalEnabled: false });
+    expect(resolveScalpAiTechnicalEnabled()).toBe(false);
   });
 
   it('scalpTrendVetoYen 未設定は既定 100', () => {

@@ -49,6 +49,21 @@ export function resolveScalpRangeReevalEnabled(profile?: SignalProfile): boolean
   return typeof v === 'boolean' ? v : true;
 }
 
+// ★テクニカル指標(RSI/SMA/BB)パネル + AI へのテクニカル文脈供給。未設定/非boolean は true(既定ON)。
+//   false にするとパネル描画・indicatorsLoop の SSE 配信・AI 文脈のテクニカルブロックを止める(表示/文脈のみ・検知は無関係)。
+export function resolveIndicatorsEnabled(): boolean {
+  const v = loadConfig().indicatorsEnabled;
+  return typeof v === 'boolean' ? v : true;
+}
+
+// ★AIテクニカル許可。ON=AI が RSI/BB を「エントリーのタイミング」判断に使ってよい(system prompt に許可行を追記)。
+//   ★決済(手仕舞い)は既定の決済ロジックが担当する=AI には委ねない。
+//   未設定/非boolean は true(既定ON)。false=許可行を出さない(byte-safe=従来の system prompt と一致)。profile 対応(B は A へフォールバック)。
+export function resolveScalpAiTechnicalEnabled(profile?: SignalProfile): boolean {
+  const v = readKnobRaw(profile, 'aiTechnicalEnabled');
+  return typeof v === 'boolean' ? v : true;
+}
+
 // ★チャート撮影失敗(ws-error 等)時の縮退運転。既定 ON=撮影が2回失敗しても「テキストのみ」で AI を継続し
 //   取引を止めない(2026-07-27 のチャートws-error+429で全停止した事故対策)。false=ストリクト vision
 //   (撮影不可なら見送り=従来挙動)。チャートは A/B 共有なのでグローバル設定(profile 非依存)。

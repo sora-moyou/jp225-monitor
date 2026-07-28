@@ -1592,3 +1592,22 @@ describe('buildScalpPlan (no-key path)', () => {
     if (!r.ok) expect(r.error).toBe('LLM未設定');
   });
 });
+
+// ─── ★AIテクニカル: system prompt のテクニカル許可行(エントリーのタイミング判断のみ) ───
+
+describe('buildScalpSystemPrompt テクニカル許可行(aiTechnicalEnabled)', () => {
+  it('既定(false)は従来の system prompt と byte 一致=テクニカル行なし', () => {
+    const off = buildScalpSystemPrompt(45, 65, true, 100);
+    expect(off).toBe(buildScalpSystemPrompt(45, 65, true, 100, false));
+    expect(off).not.toContain('テクニカル指標(RSI/BB)の活用');
+  });
+  it('true でテクニカル許可行を末尾に追記(エントリーの"タイミング"判断のみ・決済は既定ロジック)', () => {
+    const on = buildScalpSystemPrompt(45, 65, true, 100, true);
+    expect(on.startsWith(buildScalpSystemPrompt(45, 65, true, 100, false))).toBe(true);   // 既存部分は不変
+    expect(on).toContain('テクニカル指標(RSI/BB)の活用');
+    expect(on).toContain('生きたトレンドはフェードしない');   // テクニカル単独の逆張りを戒める文言
+    // ★決済(手仕舞い)は AI に委ねない=強制決済の指示は入れない。
+    expect(on).toContain('決済(手仕舞い)は既定のロジックが担当する');
+    expect(on).not.toContain('heldAction');
+  });
+});

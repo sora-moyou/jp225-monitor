@@ -36,6 +36,7 @@ import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
 import { startAlertLoop } from './loops/alertLoop.js';
 import { startLevelsLoop } from './loops/levelsLoop.js';
+import { startIndicatorsLoop } from './loops/indicatorsLoop.js';
 import { startForecastLoop } from './loops/forecastLoop.js';
 import { startAlertHistoryLoop } from './alertHistory.js';
 import { warmFromDb } from './warmup.js';
@@ -131,6 +132,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startAlertLoop();
   startAlertHistoryLoop();
   startLevelsLoop();
+  startIndicatorsLoop();   // テクニカル指標(RSI/SMA/BB)の SSE 配信(表示/AI文脈専用)
   startForecastLoop();
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)

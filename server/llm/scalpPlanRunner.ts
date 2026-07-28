@@ -2,7 +2,7 @@ import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } fr
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPngCached } from '../chart/chartShot.js';
-import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, type SignalProfile } from '../configStore.js';
+import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, resolveIndicatorsEnabled, type SignalProfile } from '../configStore.js';
 import { barsFor } from '../loops/alertLoop.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
 import { openDb, resolveDbPath, getRecentBars, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
@@ -26,7 +26,8 @@ function buildRichScalpContext(symbol: string, currentPrice: number, now: number
       // ★v0.8.2: 自系統の紙成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
       //   A は自分の履歴だけを見る=B の紙トレードに汚染されない(=A の提案が B の存在で変わらない)。
       const trades = getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A');
-      const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session });
+      // ★テクニカル指標(ブロックG)は indicatorsEnabled=false のとき省略(AIへ供給しない)。
+      const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: resolveIndicatorsEnabled() });
       const history = buildScalpTradeHistory(trades, now);
       return [marketData, history].filter(Boolean).join('\n\n');
     } finally {

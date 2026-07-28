@@ -62,6 +62,8 @@ export interface UserConfig {
   scalpLcFloorYen?: number;          // ★v0.7.56: AIエントリー 初期LC幅の下限[円](プロンプトにのみ反映)。未設定は 45。
   dotenEnabled?: boolean;            // ★ドテン(反転)許可。ON=AIが保有中に反転を判断してよい / 未設定/false=OFF(既定・挙動不変)。monitor2 専用UIで設定。
   rangeReevalEnabled?: boolean;      // ★レンジ両指値が平均以上未約定→ブレイク(両逆指値)再評価。未設定/true=ON(既定・ただしレンジ自体が既定OFFなのでレンジ使用時のみ実効) / false=OFF。monitor2 専用UIで設定。
+  indicatorsEnabled?: boolean;       // ★テクニカル指標(RSI/SMA/BB)のパネル表示 + AI文脈供給。未設定/true=ON(既定) / false=OFF。表示/文脈のみ(検知は不変)。
+  aiTechnicalEnabled?: boolean;      // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う)。未設定/true=ON(既定) / false=OFF=許可行なし(byte-safe)。決済は既定ロジック。
   scalpChartFallbackText?: boolean;  // ★チャート撮影失敗(ws-error等)時の縮退。未設定/true=ON(2回失敗ならテキストのみでAI継続=全停止防止) / false=ストリクトvision(撮影不可なら見送り)。グローバル(A/B共有)。
   // ★v0.7.56: 委任可能な各 knob の source。'ai'=AIに委任(該当制約を課さない) / それ以外/未設定='manual'(現状の強制)。
   //   既定は全て 'manual'=現状の挙動を一切変えない。ユーザーが1つずつ AI へ倒す枠組み。
@@ -387,6 +389,7 @@ export {
   resolveScalpLcCeiling, resolveScalpCooldownSec, resolveScalpTrendVetoYen,
   resolveScalpBias, resolveScalpRangeEnabled, resolveScalpLcFloorYen,
   resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText,
+  resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled,
   parseKnobSource,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,

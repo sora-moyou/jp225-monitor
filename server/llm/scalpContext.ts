@@ -13,6 +13,7 @@ import type { SignalSettingsSnapshot } from '../types.js';
 import { rowKind } from '../alertHistory.js';
 import { classifySession, minutesFromOpen } from '../../core/session.js';
 import { extractSwingPivots } from '../swingPivots.js';
+import { computeIndicators } from '../indicators.js';
 
 const MIN = 60_000;
 
@@ -62,6 +63,9 @@ export interface ScalpMarketDataInput {
   currentPrice: number;
   /** 本日セッション OHLC(getSessionOHLC[0])。あれば本日高安を正として使う(無ければ bars から近似)。 */
   session?: SessionOHLC | null;
+  /** ★テクニカル指標ブロック(G)を出すか。未指定は true(既定ON)。false でブロック G を省略する
+   *  (indicatorsEnabled=false のとき runner が渡す=AI へテクニカルを供給しない)。 */
+  indicatorsEnabled?: boolean;
 }
 
 /** 構造化された市場データ(数値主軸)ブロックをコンパクトな日本語で組み立てる純関数。
@@ -81,6 +85,31 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
       if (bars5.length > 0) lines.push('5分足: ' + bars5.map(fmt).join(' | '));
       lines.push('1分足: ' + last1m.map(fmt).join(' | '));
       blocks.push('直近の足(時刻 O/H/L/C):\n' + lines.join('\n'));
+    }
+  } catch { /* 省略 */ }
+
+  // G. テクニカル指標(RSI/SMA/BB・5分足)。確定足(形成中の最後の1本を除く)で算出=安定値。直近推移も渡す。
+  //    indicatorsEnabled=false のときは省略(AI へテクニカルを供給しない)。数値は SSOT の computeIndicators。
+  try {
+    if ((input.indicatorsEnabled ?? true) && bars.length > 0) {
+      const bars5 = aggregateBars(bars, 5 * MIN);
+      const closes = bars5.map(b => b.c).slice(0, -1);          // 形成中足を除く確定 close
+      const times = bars5.map(b => b.t).slice(0, -1);
+      if (closes.length >= 15) {
+        const ind = computeIndicators(closes, times);
+        const parts: string[] = [];
+        if (ind.rsi != null) parts.push(`RSI14=${ind.rsi.toFixed(1)}${ind.rsi >= 70 ? '(買われすぎ)' : ind.rsi <= 30 ? '(売られすぎ)' : ''}`);
+        if (ind.sma != null) parts.push(`SMA14=${R(ind.sma)}`);
+        if (ind.bbLower != null && ind.bbUpper != null) parts.push(`BB[±1.5σ]=${R(ind.bbLower)}〜${R(ind.bbUpper)}`);
+        if (ind.pctB != null) parts.push(`%B=${ind.pctB.toFixed(2)}(${ind.pctB >= 0.8 ? 'バンド上寄り' : ind.pctB <= 0.2 ? 'バンド下寄り' : '中央'})`);
+        const lines: string[] = [];
+        if (parts.length > 0) lines.push('現在値: ' + parts.join(' / '));
+        // 直近12点の RSI 推移(過熱の推移を AI に見せる)。
+        const tail = ind.series.slice(-12);
+        const rsiSeq = tail.map(p => p.rsi != null ? String(Math.round(p.rsi)) : '—').join(' ');
+        if (rsiSeq.trim()) lines.push(`RSI推移(直近${tail.length}点・古→新): ${rsiSeq}`);
+        if (lines.length > 0) blocks.push('テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ):\n' + lines.join('\n'));
+      }
     }
   } catch { /* 省略 */ }
 

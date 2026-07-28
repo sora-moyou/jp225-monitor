@@ -15,6 +15,8 @@ export interface SettingsResponse {
   scalpRangeEnabled: boolean; scalpTrendVetoYen: number;
   dotenEnabled?: boolean;   // ★ドテン(反転)許可(既定OFF)。monitor2(full)専用UI。
   rangeReevalEnabled?: boolean;   // ★レンジ再評価(未約定→ブレイク)許可(既定ON)。monitor2(full)専用UI。
+  indicatorsEnabled?: boolean;   // ★テクニカル指標(RSI/SMA/BB)の表示 + AI文脈供給(既定ON)。
+  aiTechnicalEnabled?: boolean;   // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う・既定ON)。決済は既定ロジック。
   scalpChartFallbackText?: boolean;   // ★チャート撮影失敗でもテキストで継続(既定ON)。
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
   scalpLcFloorYen: number;
@@ -79,6 +81,8 @@ export interface SavePayload {
   scalpRangeEnabled?: boolean | null;
   dotenEnabled?: boolean | null;   // ★ドテン(反転)許可
   rangeReevalEnabled?: boolean | null;   // ★レンジ再評価(未約定→ブレイク)許可
+  indicatorsEnabled?: boolean | null;    // ★テクニカル指標(表示+AI文脈)
+  aiTechnicalEnabled?: boolean | null;   // ★AIテクニカル許可(エントリーのタイミング判断)
   scalpChartFallbackText?: boolean | null;   // ★チャート撮影失敗でもテキストで継続
   scalpTrendVetoYen?: number | null;
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
@@ -119,6 +123,8 @@ export interface SettingsElements {
   checkScalpRangeEnabled: HTMLInputElement; // AIエントリー: レンジ両面ストラドル(実験・紙で別枠計測)
   checkScalpDotenEnabled: HTMLInputElement; // ★ドテン(反転)許可(monitor2 専用・変異gateで lite 非表示)
   checkScalpRangeReeval: HTMLInputElement;  // ★レンジ再評価(未約定→ブレイク)許可(monitor2 専用・変異gateで lite 非表示)
+  checkIndicatorsEnabled: HTMLInputElement; // ★テクニカル指標(RSI/SMA/BB)の表示+AI文脈供給
+  checkAiTechnicalEnabled: HTMLInputElement; // ★AIテクニカル許可(エントリーのタイミング判断)
   checkScalpChartFallback: HTMLInputElement; // ★チャート撮影失敗でもテキストで継続(既定ON)
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor: HTMLInputElement;

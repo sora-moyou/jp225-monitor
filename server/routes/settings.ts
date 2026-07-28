@@ -3,7 +3,8 @@ import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
   resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpDotenEnabled,
-  resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText, PARAM_BOUNDS,
+  resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText,
+  resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled, PARAM_BOUNDS,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled,
@@ -93,6 +94,8 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(★実験終了=未設定は false=OFF)。
     dotenEnabled: resolveScalpDotenEnabled(),   // ★ドテン(反転)許可(既定OFF)。monitor2 専用UIで切替。
     rangeReevalEnabled: resolveScalpRangeReevalEnabled(),   // ★レンジ再評価(未約定→ブレイク)許可(既定ON・レンジ使用時のみ実効)。monitor2 専用UIで切替。
+    indicatorsEnabled: resolveIndicatorsEnabled(),   // ★テクニカル指標(RSI/SMA/BB)パネル + AI文脈供給(既定ON・表示/文脈のみ)。
+    aiTechnicalEnabled: resolveScalpAiTechnicalEnabled(),   // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う・既定ON)。決済は既定ロジック。
     scalpChartFallbackText: resolveScalpChartFallbackText(),   // ★チャート撮影失敗時のテキスト縮退(既定ON=全停止防止)。
     doubleFormingEnabled: resolveDoubleFormingEnabled(),   // ★検知チューニング: double 形成通知(既定OFF=breakout のみ)。breakScore/slopeConfluenceBonus は数値展開に含まれる。
     nwaveEnabled: resolveNwaveEnabled(),   // ★N波動の節目/アラート(既定ON)。nwaveMinSwingYen は数値展開に含まれる。
@@ -163,6 +166,8 @@ interface SettingsBody {
   scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
   dotenEnabled?: boolean | null;       // ★ドテン(反転)許可(true=ON / false/null=OFF=既定)
   rangeReevalEnabled?: boolean | null; // ★レンジ再評価(未約定→ブレイク)許可(true/null=ON=既定 / false=OFF)
+  indicatorsEnabled?: boolean | null;  // ★テクニカル指標(RSI/SMA/BB)の表示+AI文脈供給(true/null=ON=既定 / false=OFF)
+  aiTechnicalEnabled?: boolean | null; // ★AIテクニカル許可(エントリーのタイミング判断)(true/null=ON=既定 / false=OFF)
   scalpChartFallbackText?: boolean | null; // ★チャート撮影失敗時のテキスト縮退(true/null=ON=既定 / false=ストリクトvision)
   doubleFormingEnabled?: boolean | null;   // ★検知チューニング: double 形成通知(true=ON / false/null=OFF=既定=breakout のみ)
   nwaveEnabled?: boolean | null;           // ★N波動の節目/アラート(true/null=ON=既定 / false=OFF)
@@ -292,6 +297,10 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const dotenEnabledValue = applyBoolField(existing.dotenEnabled, bodyRec.dotenEnabled);
   // ★レンジ再評価(未約定→ブレイク)許可(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const rangeReevalEnabledValue = applyBoolField(existing.rangeReevalEnabled, bodyRec.rangeReevalEnabled);
+  // ★テクニカル指標(表示+AI文脈)(boolean・既定 true)。null=既定(true)に戻す(undefined 保存)/ false=OFF。
+  const indicatorsEnabledValue = applyBoolField(existing.indicatorsEnabled, bodyRec.indicatorsEnabled);
+  // ★AIテクニカル許可(エントリーのタイミング判断)(boolean・既定 true)。null=既定(true)に戻す / false=OFF。
+  const aiTechnicalEnabledValue = applyBoolField(existing.aiTechnicalEnabled, bodyRec.aiTechnicalEnabled);
   // ★チャート撮影失敗時のテキスト縮退(boolean・既定 true)。null=既定(true)に戻す。
   const chartFallbackValue = applyBoolField(existing.scalpChartFallbackText, bodyRec.scalpChartFallbackText);
   // ★検知チューニング: double 形成通知(boolean・既定 false)。null/false=OFF(未設定で保存)。
@@ -328,6 +337,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
     dotenEnabled: dotenEnabledValue,   // ★ドテン(反転)許可(既定OFFは未設定で保存)
     rangeReevalEnabled: rangeReevalEnabledValue,   // ★レンジ再評価(未約定→ブレイク)許可(既定ONに戻すときは null→未設定で保存)
+    indicatorsEnabled: indicatorsEnabledValue,   // ★テクニカル指標(表示+AI文脈)(既定ONに戻すときは null→未設定で保存)
+    aiTechnicalEnabled: aiTechnicalEnabledValue, // ★AIテクニカル許可(既定ONに戻すときは null→未設定で保存)
     scalpChartFallbackText: chartFallbackValue,   // ★チャート撮影失敗時のテキスト縮退(既定ONに戻すときは null→未設定で保存)
     doubleFormingEnabled: doubleFormingValue,   // ★検知チューニング: double 形成通知(既定OFFは未設定で保存)
     nwaveEnabled: nwaveEnabledValue,   // ★N波動の節目/アラート(既定ONに戻すときは null→未設定で保存)

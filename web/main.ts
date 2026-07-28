@@ -13,8 +13,9 @@ import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
 import { initAlertsHistoryModal } from './components/alertsHistoryModal.js';
 import { maybeShowUpdateToast } from './components/updateToast.js';
-import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getCurrentLeader, getTopSymbolChange1m } from './lib/correlationClient.js';
+import { startCorrelationPolling, getCorrelationTop, getAnchorSymbol, getTopSymbolChange1m } from './lib/correlationClient.js';
 import { initLevelsPanel, setLevels, setLevelsPrice } from './components/levelsPanel.js';
+import { initIndicatorPanel, setIndicators } from './components/indicatorPanel.js';
 import { renderSignalPanel, renderPositionPanel, initSignalSoundToggle } from './components/signalPanel.js';
 import { initSignalTradesModal, initSignalClearButton } from './components/signalTradesModal.js';
 import { labelOf } from './lib/i18n.js';
@@ -162,6 +163,9 @@ const settingsCtl = initSettingsModal({
   checkScalpRangeEnabled: document.getElementById('scalp-range-enabled') as HTMLInputElement,
   checkScalpDotenEnabled: document.getElementById('scalp-doten-enabled') as HTMLInputElement,
   checkScalpRangeReeval: document.getElementById('scalp-range-reeval-enabled') as HTMLInputElement,
+  // ★③ テクニカル指標(表示+AI文脈)/ AIテクニカル許可(エントリーのタイミング判断)。
+  checkIndicatorsEnabled: document.getElementById('indicators-enabled') as HTMLInputElement,
+  checkAiTechnicalEnabled: document.getElementById('ai-technical-enabled') as HTMLInputElement,
   checkScalpChartFallback: document.getElementById('scalp-chart-fallback') as HTMLInputElement,
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor:   document.getElementById('scalp-lc-floor') as HTMLInputElement,
@@ -334,6 +338,8 @@ const newsListEl = document.getElementById('news-list')!;
 const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
 if (levelsBodyEl) initLevelsPanel(levelsBodyEl);
+const indicatorPanelEl = document.getElementById('indicator-panel');
+if (indicatorPanelEl) initIndicatorPanel(indicatorPanelEl);
 const signalPanelEl = document.getElementById('signal-panel');
 const positionPanelEl = document.getElementById('position-panel');   // ★保有枠(シグナルとは別枠)
 // 当面、再起動後も直近アラートを残す（localStorage から復元）。
@@ -500,7 +506,9 @@ function setStatus(status: 'connecting' | 'online' | 'offline') {
 let marketOpen = true;
 let lastPrices: Parameters<typeof renderPriceGrid>[1] = [];
 function paintPrices(): void {
-  const displayed = new Set([getAnchorSymbol(), getCurrentLeader()]);
+  // ★③パネル刷新: 価格グリッドはアンカー(NIY=F)のみ表示。相関の leader カードは撤去し、
+  //   隣に指標読み取り(indicator-panel)を置く(相関 client/loop は chat が使うため残す=描画のみ停止)。
+  const displayed = new Set([getAnchorSymbol()]);
   renderPriceGrid(priceGridEl, lastPrices, displayed, marketOpen);
 }
 
@@ -520,6 +528,8 @@ connectStream({
     paintPrices();   // 市場開閉が切り替わったら再描画(取引時間外↔取得不能の表示を更新)
   },
   onLevels: (levels) => setLevels(levels),
+  // ★テクニカル指標(RSI/SMA/BB)パネルを更新(価格グリッド脇の読み取り表示)。
+  onIndicators: (snap) => setIndicators(snap),
   onAlert: (alert) => {
     flashCard(priceGridEl, alert);
     alertBeep(alert.direction);

@@ -2,6 +2,7 @@ import type { NewsItem, Price } from '../types.js';
 import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective,
+  resolveScalpAiTechnicalEnabled,
   type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
 import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
@@ -135,6 +136,22 @@ export function buildScalpSystemPrompt(
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
   rangeEnabled = true,
   trendVetoYen: number = DEFAULT_TREND_VETO_YEN,
+  aiTechnicalEnabled = false,   // ★true でテクニカル指標(RSI/BB)許可の1行を追記。false(既定)は byte 一致=従来不変。
+): string {
+  // ★テクニカル許可(RSI/BB)。ON のときだけ追記=OFF(既定)では byte 単位で従来の system prompt と一致。
+  const techLine = aiTechnicalEnabled
+    ? `\n- ★【テクニカル指標(RSI/BB)の活用が許可されています】渡す「テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ)」を、エントリーの"タイミング"判断に使ってよい(例: RSI が売られすぎ[≤30]からの反転や BB 下限からの反発で押し目買い指値、RSI 買われすぎ[≥70]や BB 上限での戻り売り指値など)。ただしテクニカルだけで逆張りせず、上のトレンド判断(生きたトレンドはフェードしない)と節目/勢いを優先すること。※決済(手仕舞い)は既定のロジックが担当するので、テクニカルを根拠に手仕舞いを指示することはしない。`
+    : '';
+  return buildScalpSystemPromptBody(floorYen, ceilingYen, rangeEnabled, trendVetoYen, techLine);
+}
+
+/** system prompt 本体(techLine を末尾に差し込む)。buildScalpSystemPrompt から呼ぶ内部関数。 */
+function buildScalpSystemPromptBody(
+  floorYen: number,
+  ceilingYen: number,
+  rangeEnabled: boolean,
+  trendVetoYen: number,
+  techLine: string,
 ): string {
   // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
   const rangeLine = rangeEnabled
@@ -159,7 +176,7 @@ export function buildScalpSystemPrompt(
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
 - すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
 - rationale は日本語で判断根拠を簡潔に述べる。★rationale は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)。${trendVetoYen > 0 ? `
-- ★【レジーム/勢い】${trendGuidance(trendVetoYen)}` : ''}`;
+- ★【レジーム/勢い】${trendGuidance(trendVetoYen)}` : ''}${techLine}`;
 }
 
 // 固定のスキャル system prompt(既定 LC 幅 45〜65)。プロンプト文言テストや後方互換のための既定インスタンス。
@@ -808,6 +825,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     hardMax,
     exitDesc: describeExitLogic(),
   });
+  // ★AIテクニカル許可(RSI/BB をエントリーの"タイミング"判断に使ってよい)。既定 ON。OFF では system prompt は従来と byte 一致。
+  //   ※決済(手仕舞い)は既定の決済ロジックが担当する=AI に決済判断は委ねない。
+  const aiTechnicalEnabled = resolveScalpAiTechnicalEnabled(profile);
   // ★ドテン(保有中の反転評価=held-eval): heldPosition が渡された時だけ注入する。flat-plan(未指定)では '' = 従来と byte 一致。
   const heldNote = input.heldPosition
     ? `\n\n【保有中(ドテン評価)】現在 ${input.heldPosition.dir === 'buy' ? 'long(買い)' : 'short(売り)'}@${Math.round(input.heldPosition.entry)} を保有中です。`
@@ -824,7 +844,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen)}${biasNote}${strategySpec}${delegationNote}${heldNote}${armedNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled)}${biasNote}${strategySpec}${delegationNote}${heldNote}${armedNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +

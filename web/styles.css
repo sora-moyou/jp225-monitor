@@ -47,6 +47,20 @@ body {
    getCurrentLeader/getAnchorSymbol が他ロジックで使うのでポーリングは継続、表示のみ消す。 */
 .leader-info { display: none; font-size: 12px; color: var(--muted); }
 .leader-info strong { color: var(--text); font-weight: 600; }
+/* ③ テクニカル指標(RSI/SMA/BB)読み取りパネル。価格カード直下・1行のコンパクト表示。 */
+.indicator-panel {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px;
+  font-size: 12px; color: var(--text);
+  padding: 4px 8px; margin: 2px 0 4px;
+  background: var(--card, rgba(127,127,127,0.06)); border-radius: 6px;
+}
+.indicator-panel .ind-label { color: var(--muted); font-size: 11px; margin-right: 4px; }
+.indicator-panel .ind-key { color: var(--muted); font-size: 11px; }
+.indicator-panel .ind-sep { color: var(--muted); opacity: 0.5; }
+.indicator-panel .ind-empty { color: var(--muted); opacity: 0.7; }
+.indicator-panel .ind-rsi-ob { color: #e53935; font-weight: 600; }   /* 買われすぎ(≥70) */
+.indicator-panel .ind-rsi-os { color: #4caf50; font-weight: 600; }   /* 売られすぎ(≤30) */
+.indicator-panel .ind-rsi-neutral { color: var(--text); font-weight: 600; }
 .badge {
   padding: 2px 8px;
   border-radius: 4px;

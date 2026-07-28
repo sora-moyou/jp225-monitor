@@ -219,3 +219,46 @@ describe('parseTradeSettings', () => {
     expect(s?.lcCeiling).toEqual({ mode: 'ai', value: 120 });
   });
 });
+
+// ─── ★ブロック G: テクニカル指標(RSI14/SMA14/BB±1.5σ・5分足) ───
+describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
+  // 5分足で16本以上(=確定足15本以上)が必要。1分足を 16*5+5 本作る(最後の1本は形成中として落ちる)。
+  function longBars(): Bar1m[] {
+    const bars: Bar1m[] = [];
+    const n = 90;
+    for (let i = 0; i < n; i++) {
+      const t = NOW - (n - i) * MIN;
+      const c = 38000 + Math.round(Math.sin(i / 4) * 60);   // 上下する波(RSI が 0/100 に張り付かない)
+      bars.push(bar(t, c, c + 10, c - 10, c));
+    }
+    return bars;
+  }
+
+  it('十分な本数があれば RSI14/SMA14/BB/%B と RSI推移を出す', () => {
+    const s = buildScalpMarketData({ bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
+    expect(s).toContain('テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ)');
+    expect(s).toContain('RSI14=');
+    expect(s).toContain('SMA14=');
+    expect(s).toContain('BB[±1.5σ]=');
+    expect(s).toContain('%B=');
+    expect(s).toContain('RSI推移');
+  });
+
+  it('indicatorsEnabled=false ではブロック G を出さない(AIへテクニカルを供給しない)', () => {
+    const s = buildScalpMarketData({
+      bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000, indicatorsEnabled: false,
+    });
+    expect(s).not.toContain('テクニカル指標(5分足');
+    expect(s).toContain('直近の足(時刻 O/H/L/C)');   // 他のブロックは従来どおり出る
+  });
+
+  it('本数不足(確定5分足が15本未満)ではブロック G を省略する', () => {
+    const bars: Bar1m[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t = NOW - (20 - i) * MIN;
+      bars.push(bar(t, 38000 + i, 38010 + i, 37990 + i, 38005 + i));
+    }
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38024 });
+    expect(s).not.toContain('テクニカル指標(5分足');
+  });
+});

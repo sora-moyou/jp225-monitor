@@ -173,11 +173,38 @@ export interface SignalTradeState {
   updatedAt: number;
 }
 
+// ── テクニカル指標(RSI/SMA/BB)の SSE ペイロード。算出は server/indicators.ts(core→server 非依存のため
+//    ここで送受信スキーマだけを宣言し、server 側の IndicatorSnapshot が構造的に一致する)。
+export interface IndicatorValuesPayload {
+  rsi: number | null;
+  sma: number | null;
+  bbUpper: number | null;
+  bbMid: number | null;
+  bbLower: number | null;
+  price: number;
+  pctB: number | null;
+}
+export interface IndicatorPointPayload {
+  t?: number;
+  close: number;
+  rsi: number | null;
+  sma: number | null;
+  bbU: number | null;
+  bbL: number | null;
+}
+export interface IndicatorSnapshotPayload extends IndicatorValuesPayload {
+  series: IndicatorPointPayload[];
+  t?: number;
+  live?: IndicatorValuesPayload;
+}
+
 export type SSEEvent =
   | { type: 'prices'; payload: Price[] }
   | { type: 'news'; payload: NewsItem[] }
   | { type: 'alert'; payload: AlertEventPayload }
   | { type: 'levels'; payload: LevelsResult }
+  // ★テクニカル指標(RSI/SMA/BB)の現在値+直近系列。表示/AI文脈専用(検知アラートではない)。indicatorsLoop が配信。
+  | { type: 'indicators'; payload: IndicatorSnapshotPayload }
   // v0.7.24: 市場開場フラグ。価格ボードが「取引時間外(閉場・正常)」と「取得不能(フィード障害)」を区別する。
   | { type: 'market'; payload: { open: boolean } }
   // トレードシグナルの現在状態(flat/armed/filled)。既存イベントは不変・これは A(実売買)系統。

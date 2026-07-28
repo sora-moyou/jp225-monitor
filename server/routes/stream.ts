@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { register, unregister } from '../sse/broker.js';
 import { getPrices, getNews } from '../cache.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
+import { getIndicatorsSnapshot } from '../loops/indicatorsLoop.js';
 import { getSignalTradeState, getSignalTradeStateB } from '../signalTrade/engine.js';
 import { isMarketOpen } from '../../core/session.js';
 
@@ -25,6 +26,11 @@ export function streamHandler(req: Request, res: Response): void {
   const levels = getLevelsSnapshot();
   if (levels.up.length > 0 || levels.down.length > 0) {
     res.write(`event: levels\ndata: ${JSON.stringify(levels)}\n\n`);
+  }
+  // テクニカル指標(RSI/SMA/BB)の最新スナップショットを接続直後に一回送る(levels と同様に broadcast 取りこぼしを補う)。
+  const indicators = getIndicatorsSnapshot();
+  if (indicators) {
+    res.write(`event: indicators\ndata: ${JSON.stringify(indicators)}\n\n`);
   }
   // v0.7.24: 接続直後に市場開場フラグを一回送る(price ループの state 変化 broadcast を取りこぼす新規接続を補う)。
   res.write(`event: market\ndata: ${JSON.stringify({ open: isMarketOpen(Date.now()) })}\n\n`);

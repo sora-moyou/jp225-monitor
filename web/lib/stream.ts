@@ -1,4 +1,4 @@
-import type { Price, NewsItem, AlertEvent, LevelsResult } from '../types.js';
+import type { Price, NewsItem, AlertEvent, LevelsResult, IndicatorSnapshot } from '../types.js';
 import type { SignalTradeState } from '../components/signalPanel.js';
 import { apiUrl } from './apiBase.js';
 
@@ -8,6 +8,8 @@ interface StreamHandlers {
   onAlert: (alert: AlertEvent) => void;
   onLevels: (levels: LevelsResult) => void;
   onStatusChange: (status: 'connecting' | 'online' | 'offline') => void;
+  // テクニカル指標(RSI/SMA/BB)。backend の broadcast({type:'indicators'}) を受ける。省略可。
+  onIndicators?: (snap: IndicatorSnapshot) => void;
   // v0.7.24: 市場開場フラグ。閉場(取引時間外)なら価格ボードが「取引時間外」と表示する。省略可(任意ハンドラ)。
   onMarket?: (open: boolean) => void;
   // トレードシグナル (表示専用・紙トラッキング)。backend の broadcast({type:'signalTrade'}) を受ける。省略可。
@@ -45,6 +47,11 @@ export function connectStream(handlers: StreamHandlers): () => void {
     es.addEventListener('levels', (e) => {
       try { handlers.onLevels(JSON.parse((e as MessageEvent).data)); }
       catch (err) { console.error('parse levels', err); }
+    });
+
+    es.addEventListener('indicators', (e) => {
+      try { handlers.onIndicators?.(JSON.parse((e as MessageEvent).data)); }
+      catch (err) { console.error('parse indicators', err); }
     });
 
     es.addEventListener('signalTrade', (e) => {
