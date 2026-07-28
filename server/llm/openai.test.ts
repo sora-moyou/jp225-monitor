@@ -30,10 +30,15 @@ describe('classifyLLMError (5xx/timeout もフォールバック対象に)', () 
   it('413 のうち rate limit 表現(429相当)は quota を優先(誤分類しない)', () => {
     expect(classifyLLMError('rate_limit_exceeded: too many requests')).toBe('quota');
   });
-  it('401/404/400 等の恒久・設定エラー → null(フォールバックせず即 throw)', () => {
-    expect(classifyLLMError('401 Incorrect API key provided')).toBeNull();
-    expect(classifyLLMError('404 status code (no body)')).toBeNull();
-    expect(classifyLLMError('400 Bad Request: invalid model')).toBeNull();
+  it('★401/403/404・モデル不明/権限 → config(フォールバック化・2026-07-28: Kimi 404事故対策)', () => {
+    expect(classifyLLMError('401 Incorrect API key provided')).toBe('config');
+    expect(classifyLLMError('404 status code (no body)')).toBe('config');
+    expect(classifyLLMError('404 Not found the model kimi-k2-0905-preview or Permission denied')).toBe('config');
+    expect(classifyLLMError('403 permission denied')).toBe('config');
+  });
+  it('400 等その他は null(即 throw)', () => {
+    expect(classifyLLMError('400 Bad Request: malformed json')).toBeNull();
+    expect(classifyLLMError('something totally unexpected')).toBeNull();
   });
 });
 

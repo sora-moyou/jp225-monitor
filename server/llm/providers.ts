@@ -18,16 +18,19 @@ const CONSECUTIVE_WINDOW_MS = 10 * 60_000;
 const TRANSIENT_PAUSE_MS = 30_000;
 
 /** LLM エラーを分類。'quota'=429/枯渇(長 ladder), 'oversize'=413/コンテキスト超過(ポーズせず次へ),
- *  'transient'=5xx/timeout/network(短ポーズ),
- *  null=恒久/設定エラー(401/404 等=フォールバックせず即 throw=誤設定を隠さない)。
- *  quota/oversize/transient はいずれも「次プロバイダへフォールバック」する(1つが落ちても他で継続)。 */
-export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient' | null {
+ *  'transient'=5xx/timeout/network(短ポーズ), 'config'=401/403/404・モデル不明/権限/キー無効(★長ポーズして次へ),
+ *  null=その他(即 throw)。quota/oversize/transient/config はいずれも「次プロバイダへフォールバック」する。 */
+export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient' | 'config' | null {
   if (/429|rate[_ ]limit|exhausted|quota/i.test(msg)) return 'quota';
   // 413=単一リクエストがそのモデルの上限(TPM/コンテキスト長)を超過。ペーシングでは直らない=
   // 「そのモデルでは絶対に通らない」ので、より大きいモデル(openai/gemini)へフォールバックする。
   // (Groq on_demand tier の "Request too large ... TPM Limit" が本番の主因。)
   if (/\b413\b|request too large|context length|maximum context|too many tokens|reduce the (?:length|size)/i.test(msg)) return 'oversize';
   if (/\b50[0-4]\b|\b52\d\b|timeout|timed out|aborted|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|network|fetch failed|overloaded|temporarily unavailable/i.test(msg)) return 'transient';
+  // ★config(2026-07-28で null→フォールバック化): 401/403(キー無効/権限)・404(モデル不明)等。そのプロバイダは
+  //   設定不備で使えない=長くポーズして**次へフォールバック**する(1プロバイダの誤設定で全滅させない=Kimi 404で
+  //   連鎖が壊れ news 説明が全滅した事故対策)。誤設定はログ+⚙️「キーを検証」で可視化されるので隠蔽にならない。
+  if (/\b40[134]\b|not found the model|permission denied|incorrect api key|invalid[_ ].*api|no such model|unauthorized|model.*not.*(?:found|exist)/i.test(msg)) return 'config';
   return null;
 }
 
@@ -139,7 +142,7 @@ export function firstAvailableVisionProvider(): { name: string; chatModel: strin
 //   quota(429)      → 連続回数に応じた長い ladder(枠回復まで待つ)+ フォールバック
 //   oversize(413)   → ポーズ無し + フォールバック(この要求だけが上限超過。小さい要求は通り続ける)
 //   transient(5xx等)→ 短い固定ポーズ(すぐ復帰想定)+ フォールバック
-//   それ以外(401/404)→ false(=フォールバックせず即 throw。誤設定を握り潰さない)
+//   config(401/403/404)→ 長ポーズ(30分)+ フォールバック(誤設定のプロバイダを避けて他で継続)
 function tripCircuit(p: ProviderState, err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const kind = classifyLLMError(msg);
@@ -162,6 +165,12 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     p.circuitOpenUntil = now + pause;
     const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
     console.warn(`[LLM:${p.config.name}] 429 #${p.consecutiveFails + 1} — paused for ${human}`);
+  } else if (kind === 'config') {
+    // 設定不備(401/403/404): 再試行しても直らないので長くポーズ(30分)して次へフォールバック。
+    //   これで Kimi 404 等の誤設定プロバイダを避けて他プロバイダで継続できる(連鎖全滅を防ぐ)。
+    p.lastFailAt = now;
+    p.circuitOpenUntil = now + 30 * 60_000;
+    console.warn(`[LLM:${p.config.name}] config error (${msg.slice(0, 70)}) — paused 30min → 次へフォールバック(キー/モデルを確認)`);
   } else {
     // 一過性: ladder を進めず短時間だけ休ませる(枠切れと違い恒久化させない)。
     p.lastFailAt = now;
