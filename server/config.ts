@@ -229,8 +229,10 @@ export const LLM_PROVIDERS: LLMProvider[] = [
     name: 'kimi',
     envVar: 'KIMI_API_KEY',
     baseURL: 'https://api.moonshot.ai/v1',
-    model: 'kimi-k2-0905-preview',
-    chatModel: 'kimi-k2-0905-preview',
+    // ★kimi-k2-0905-preview は実アカウントで 404(権限/未提供)だった(2026-07-28)。"latest" エイリアスに変更=
+    //   自動追従(モデル廃止404に強い・gemini-flash-latest と同方針)。テキスト専用(ビジョンは gemini/openai)。
+    model: 'kimi-latest',
+    chatModel: 'kimi-latest',
   },
   // 4. OpenAI (有料、最後の砦)
   {
