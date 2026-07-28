@@ -1,7 +1,7 @@
 // 主要レベル(意識される水準)の tunable リゾルバ。
 // configStore.ts の純粋な切り出し(挙動・既定・境界は一切変えない)。configStore が re-export する。
 
-import { resolveNumeric } from '../configStore.js';
+import { loadConfig, resolveNumeric } from '../configStore.js';
 
 // 主要レベル(意識される水準)のノブをまとめて解決。
 // 数値のみ返す(Level 型に依存しない＝levels を import しない＝循環回避)。
@@ -23,4 +23,14 @@ export function resolveLevelsConfig(): {
     lookbackSessions: resolveNumeric('levelLookbackSessions'),
     lookbackSessions2: resolveNumeric('levelLookbackSessions2'),
   };
+}
+
+// ★N波動(値幅観測論)の tunable リゾルバ。既定 ON(未設定/true=ON)。
+//   boolean で false のときだけ OFF(節目もアラートも出さない)。それ以外(未設定含む)は既定 ON。
+export function resolveNwaveEnabled(): boolean {
+  return loadConfig().nwaveEnabled !== false;
+}
+// N波動の最小1波幅 |B−A|(円)。未設定は既定 300。境界は PARAM_BOUNDS.nwaveMinSwingYen。
+export function resolveNwaveMinSwingYen(): number {
+  return resolveNumeric('nwaveMinSwingYen');
 }

@@ -33,10 +33,14 @@ const PARAMS: ParamSpec[] = [
   // ★検知チューニング(40日ライブ分析: break継続0pt / slope+52pt)。
   { key: 'breakScore',           inputId: 'params-break-score' },
   { key: 'slopeConfluenceBonus', inputId: 'params-slope-bonus' },
+  // ★N波動(値幅観測論): 最小1波幅(円)。有効/無効は下のチェックボックス。
+  { key: 'nwaveMinSwingYen',     inputId: 'params-nwave-minswing' },
 ];
 
 // ★検知チューニング: double 形成通知(boolean・既定OFF)。数値と別扱いのチェックボックス。
 const DOUBLE_FORMING_ID = 'params-double-forming';
+// ★N波動の節目/アラート 有効(boolean・既定ON)。数値と別扱いのチェックボックス。
+const NWAVE_ENABLED_ID = 'params-nwave-enabled';
 
 export interface ParamsElements {
   openBtn: HTMLButtonElement;
@@ -73,6 +77,9 @@ export function initParamsModal(el: ParamsElements): void {
       // ★double 形成通知(boolean)をチェックボックスへ反映。
       const cb = inputOf(DOUBLE_FORMING_ID);
       if (cb) cb.checked = (s as Record<string, unknown>).doubleFormingEnabled === true;
+      // ★N波動の節目/アラート 有効(boolean・既定ON)をチェックボックスへ反映。
+      const nwcb = inputOf(NWAVE_ENABLED_ID);
+      if (nwcb) nwcb.checked = (s as Record<string, unknown>).nwaveEnabled !== false;
     } catch {
       el.status.textContent = '取得失敗';
     }
@@ -112,6 +119,11 @@ export function initParamsModal(el: ParamsElements): void {
       const cb = inputOf(DOUBLE_FORMING_ID);
       if (cb && current && cb.checked !== ((current as Record<string, unknown>).doubleFormingEnabled === true)) {
         body.doubleFormingEnabled = cb.checked;
+      }
+      // ★N波動 有効(boolean・既定ON)。変更時のみ送る(true/false を明示送信)。
+      const nwcb = inputOf(NWAVE_ENABLED_ID);
+      if (nwcb && current && nwcb.checked !== ((current as Record<string, unknown>).nwaveEnabled !== false)) {
+        body.nwaveEnabled = nwcb.checked;
       }
       const res = await fetch(apiUrl('/api/settings/keys'), {
         method: 'POST',

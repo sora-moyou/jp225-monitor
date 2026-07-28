@@ -38,6 +38,7 @@ const WEIGHTS = {
   volume: 1.2, volumePer: 0.6,       // 価格帯別出来高(HVN/POC): weight = volume + volumePer×rel(POC=rel1)
   congestion: 0.9, congestionPer: 0.4,  // もみ合い帯(直近の時間滞在=出来高の次善): weight = congestion + congestionPer×rel
   trendline: 1.3, trendlinePer: 0.3,    // 有効トレンドライン(3点接触×反応水準と合流): weight = trendline + trendlinePer×min(接触-3,2)
+  nwave: 1.6,                           // ★N波動(値幅観測論)の値幅目標 N値/V値/E値。前方の実投影目標なので上位帯(長期高安 1.6 と同格)=単独でも tier≥1 に届く。
 } as const;
 
 interface Cand {
@@ -172,6 +173,7 @@ export function computeLevels(
   volumeLevels: { price: number; rel: number; isPoc: boolean }[] = [],   // v0.6.13: 価格帯別出来高(HVN/POC)
   congestionLevels: { price: number; rel: number; visits: number }[] = [],   // v0.6.14: もみ合い帯(直近の時間滞在=出来高の次善)
   trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [],   // v0.6.15: 有効トレンドライン(3点接触)を now へ延長
+  nwaveLevels: { price: number; label: string }[] = [],   // ★N波動(値幅観測論)の未到達目標(N値/V値/E値・方向ラベル込み)
 ): LevelsResult {
   const cfg = resolveLevelsConfig();
   const tol = cfg.tol;
@@ -340,6 +342,14 @@ export function computeLevels(
     }
   }
 
+  // ── N波動(v0.9.36・値幅観測論): スイング A→B→C の値幅目標 N値/V値/E値 のうち「未到達」だけを注入。
+  //   前方の実投影目標なので上位帯 weight(=長期高安と同格)にし、単独でも tier≥1 に届かせる(break/level_sr
+  //   の監視対象=registry の tier>=1 ゲートに乗せるため)。方向・未到達の絞り込みは registry 側で済み。
+  for (const nw of nwaveLevels) {
+    if (!Number.isFinite(nw.price) || nw.price <= 0) continue;
+    cands.push({ price: nw.price, label: nw.label, weight: WEIGHTS.nwave, kind: 'nwave' });
+  }
+
   // 高安関係の固定水準(クラスタ/上位N選抜前)。ダブル/水準抜け検知の対象として露出。価格で重複排除。
   // 当日高安(todayHL)は現値追従(min/max(extreme, current))で動くため、固定水準としては使わない
   // (動く端を基準にすると下落中にダブルボトムが乱発する)。当日ぶんは levelsLoop が確定スイング
@@ -380,7 +390,9 @@ export function computeLevels(
     const far = side.filter(l => !inWindow(l));
     // 重要水準 = スイング/反応/セッション高安・前日終値(実際に効いた S/R)。キリ番「単独」は価値が無いので除外
     // (反応等と合流したキリ番は 反応/高/安 ラベルを併せ持つので拾われる)。ユーザー指定。
-    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日|出来高|POC|もみ合い|トレンドライン/.test(s));
+    // N値/V値/E値(値幅観測論の投影目標)も「重要水準」に含める。E値=2B−A は大きな波だと選抜窓(≈1500円)の
+    // 外へ出やすく、これが無いと far ラダーで拾われず tier 未付与=非表示・非監視になる(ユーザー意図=遠方も残す)。
+    const isImportant = (l: Level): boolean => l.labels.some(s => /反応|高|安|前日|出来高|POC|もみ合い|トレンドライン|N値|V値|E値/.test(s));
     // 現値に近い順に、近接重複(±60円)は1本に間引いて farCount+1 本まで(指値/逆指値のラダー)。
     const importantFar: Level[] = [];
     for (const l of far.filter(isImportant).sort((a, b) => Math.abs(a.dist) - Math.abs(b.dist))) {

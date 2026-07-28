@@ -19,6 +19,7 @@ import { extractSwingPivots } from '../server/swingPivots.js';
 import { detectLevelBreak, type BreakSignal } from '../server/levelBreak.js';
 import { detectLevelHold } from '../server/levelHold.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../server/swingDouble.js';
+import { detectNWave } from '../server/nwave.js';
 import { aggregateSignals, DEFAULT_AGGREGATE, recentMomentumDir } from '../server/signals/aggregate.js';
 import { computeLevels } from '../server/levels.js';
 import { getSessionOHLC } from '../server/db/store.js';
@@ -48,6 +49,7 @@ for (let n = 66; n <= ebars.length; n++) {
 // ── levelsLoop(実検知関数 + 本番定数 LEVELS_TUNING でリプレイ)──
 const all = db.prepare('SELECT t,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t').all(SYMBOL, start - 90 * 60000) as Array<{ t: number; h: number; l: number; c: number }>;
 const lastBreakDir: Record<string, number> = {}, lastEmit: Record<string, number> = {};
+const lastNwaveFire: Record<string, number> = {};   // ★N波動: 方向×round(B) の 30分クールダウン(別 B のみ再発火)。
 let lastPivotT = 0, hlCacheT = 0; let hlCache: { price: number; label: string }[] = [];
 // 日足バンド(dailyband): v0.6.22 リアルタイム化。確定済み夜間終値は約60秒キャッシュだが、現在値を進行中
 // 日足の終値として append しバンドは毎ティック再計算する。20分のゾーン(40円)×方向クールダウン。
@@ -85,9 +87,15 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   for (const h of detectLevelHold(hl, recent, price)) sig.push({ type: 'level_sr', direction: h.kind === 'support' ? 'up' : 'down', reference: { kind: 'level', price: h.level }, stage: 'confirmed', score: 1.1, triggeredAt: now, text: `${Math.round(h.level)} ${h.label}${h.kind === 'support' ? 'サポート' : 'レジ'}` });
   const nw = raw[raw.length - 1], pv = raw[raw.length - 2];
   if (nw && nw.t > lastPivotT && (!pv || Math.abs(nw.price - pv.price) >= yenPct(price, T.pivotFormedMinPct))) { lastPivotT = nw.t; sig.push({ type: 'pivot', direction: nw.kind === 'low' ? 'up' : 'down', reference: { kind: 'swing', price: nw.price }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${Math.round(nw.price)} 形成` }); }
-  if (i % 60 === 0) { const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const tf = T.swingDoubleTfMs; const lm = new Map<number, { t: number; h: number; l: number }>(); for (const b of lb) { const k = Math.floor(b.t / tf) * tf; const e = lm.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else lm.set(k, { t: k, h: b.h, l: b.l }); } const lb5 = [...lm.values()].sort((a, b) => a.t - b.t); const sd = detectSwingDouble(extractSwingPivots(lb5, yenPct(price, T.swingPivotReclaimPct)), price, DEFAULT_SWING_DOUBLE);
+  { // ★主要スイング(4日・5分足・reclaim0.8%)を毎バー抽出。本番(computeLevelAnalytics)は double/nwave を約60秒=
+    //   毎バー相当で評価する。double はまれ+高コストのため hourly サンプルのまま、nwave は本番同様に毎バー評価する。
+    const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const tf = T.swingDoubleTfMs; const lm = new Map<number, { t: number; h: number; l: number }>(); for (const b of lb) { const k = Math.floor(b.t / tf) * tf; const e = lm.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else lm.set(k, { t: k, h: b.h, l: b.l }); } const lb5 = [...lm.values()].sort((a, b) => a.t - b.t); const piv5 = extractSwingPivots(lb5, yenPct(price, T.swingPivotReclaimPct));
     // ★本番ミラー(40日ライブ): double は形成(forming)を出さず breakout のみ・スコア 1.0(旧 breakout1.5)。
-    if (sd && sd.stage === 'breakout') sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
+    if (i % 60 === 0) { const sd = detectSwingDouble(piv5, price, DEFAULT_SWING_DOUBLE); if (sd && sd.stage === 'breakout') sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
+    // ★本番ミラー(N波動 nwave): 同じ主要スイングから A→B→C を判定。確認済み(B 抜け)なら目標=V値 を直接 bump
+    //   (集約は通さない)。方向×round(B) の 30分クールダウンで同一波の連発を抑え、別 B のときだけ再発火。既定 minSwing=300。
+    const nwv = detectNWave(piv5, price, 300);
+    if (nwv) { const nk = `${nwv.direction}@${Math.round(nwv.b)}`; if (now - (lastNwaveFire[nk] ?? -1e15) > 30 * 60000) { lastNwaveFire[nk] = now; bump('nwave', `${hm(now)} ${nwv.direction === 'up' ? '▲' : '▼'} ${nwv.direction === 'up' ? '上昇' : '下降'}N波 目標V値${Math.round(nwv.targets.V)}`); } } }
   // 日足バンド(dailyband): v0.6.22 リアルタイム化。確定済み夜間終値は60秒キャッシュ(進行中夜間足は除外)。
   // 現在値を進行中日足の終値として append し、バンドは毎ティック再計算 → break/hold を直接 bump(集約なし)。
   if (now - bandCacheT >= 60000 || confirmedCloses.length === 0) {

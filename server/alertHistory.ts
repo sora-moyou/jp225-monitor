@@ -40,6 +40,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
   if (detectionKind === 'pivot') return 'スイング形成';
   if (detectionKind === 'trend') return 'トレンド転換';
   if (detectionKind === 'dailyband') return '日足バンド';
+  if (detectionKind === 'nwave') return 'N波動';
   // 後方互換(過去履歴の旧種別)
   if (detectionKind === 'granville') return 'グランビル';
   if (detectionKind === 'dtb') return 'Wトップ/ボトム';
@@ -53,7 +54,7 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
 // levelsLoop 由来(double/level_sr/break/pivot)+ slope は monitor 専用(collector は levelsLoop を回さない)。
 // shock/ma_sr/trend は alertEngine 由来、crash は collector も検知 → monitor-only ではない(collector が authoritative)。
 // 旧 dtb/swingdtb も levelsLoop 由来だったため後方互換で残す。
-const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb', 'dailyband']);
+const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb', 'dailyband', 'nwave']);
 
 
 /** monitor 側で alerts に記録すべきか。collector 非稼働なら全種別記録。

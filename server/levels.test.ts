@@ -192,3 +192,41 @@ describe('computeLevels extraLevels (ADR等の外部レベル)', () => {
     expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => x.includes('ADR'))).toBe(false);
   });
 });
+
+describe('computeLevels N波動レベル (値幅観測論)', () => {
+  it('単独の N波動目標が上位帯 weight で tier≥1 に届く(break/level_sr の監視対象になる)', () => {
+    // 終値を高安と別価格にし、通常の高安水準(高々 高+長期高=2.6 程度)を作る(人工的な多重合流は避ける)。
+    const sessions = [
+      s('2026-06-01', 'Night', 67300, 66800, { close: 67000 }),
+      s('2026-06-01', 'Day',   67500, 66600, { close: 67100 }),
+    ];
+    // nwaveLevels は 10 番目の positional 引数(reaction/volume/congestion/trendline の後)。
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [
+      { price: 67650, label: 'V値(上昇)' },
+    ]);
+    const lv = [...r.up, ...r.down].find(l => l.labels.some(x => x.includes('V値(上昇)')));
+    expect(lv).toBeTruthy();
+    expect(lv!.tier).toBeGreaterThanOrEqual(1);   // 単独でも tier≥1(registry の tier>=1 ゲートに乗る)
+  });
+
+  it('選抜窓(≈1500円)の外にある N波動目標も far ラダーで残り tier が付く(遠方も落とさない)', () => {
+    const sessions = [
+      s('2026-06-01', 'Night', 67300, 66800, { close: 67000 }),
+      s('2026-06-01', 'Day',   67500, 66600, { close: 67100 }),
+    ];
+    // E値=69,000 は現値67,000から2,000円=選抜窓(既定1500)の外。isImportant に N/V/E を足したので important-far で拾う。
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [
+      { price: 69000, label: 'E値(上昇)' },
+    ]);
+    const lv = r.up.find(l => l.labels.some(x => x.includes('E値(上昇)')));
+    expect(lv).toBeTruthy();                       // 遠方でも選抜から漏れない
+    expect(Math.abs(lv!.dist)).toBeGreaterThan(1500);   // 実際に窓外
+    expect(lv!.tier).toBeGreaterThanOrEqual(1);    // tier 付与=表示/監視対象になる
+  });
+
+  it('nwaveLevels 省略時は従来どおり(N波動ラベルは出ない)', () => {
+    const sessions = [s('2026-06-01', 'Day', 67500, 66600)];
+    const r = computeLevels(sessions, 67000, 0, null);
+    expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => /N値|V値|E値/.test(x))).toBe(false);
+  });
+});

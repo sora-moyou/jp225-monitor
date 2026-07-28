@@ -6,7 +6,7 @@ import {
   resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText, PARAM_BOUNDS,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
-  resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled,
+  resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled,
   type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig,
 } from '../configStore.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
@@ -25,6 +25,7 @@ const NUMERIC_PARAM_KEYS = [
   'levelTol', 'levelShowN', 'levelSelectWindowYen', 'fibConfluenceBonus', 'levelTestBonus',
   'levelLookbackSessions', 'levelLookbackSessions2',
   'breakScore', 'slopeConfluenceBonus',   // ★検知チューニング(40日ライブ)。resolver が次評価で即時反映=restart 不要。
+  'nwaveMinSwingYen',   // ★N波動の最小1波幅(円)。resolver が次評価で即時反映=restart 不要。
   'scalpLcCeilingYen', 'scalpCooldownSec', 'scalpTrendVetoYen',
   'scalpLcFloorYen', 'scalpLcHardMaxYen',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
@@ -94,6 +95,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     rangeReevalEnabled: resolveScalpRangeReevalEnabled(),   // ★レンジ再評価(未約定→ブレイク)許可(既定ON・レンジ使用時のみ実効)。monitor2 専用UIで切替。
     scalpChartFallbackText: resolveScalpChartFallbackText(),   // ★チャート撮影失敗時のテキスト縮退(既定ON=全停止防止)。
     doubleFormingEnabled: resolveDoubleFormingEnabled(),   // ★検知チューニング: double 形成通知(既定OFF=breakout のみ)。breakScore/slopeConfluenceBonus は数値展開に含まれる。
+    nwaveEnabled: resolveNwaveEnabled(),   // ★N波動の節目/アラート(既定ON)。nwaveMinSwingYen は数値展開に含まれる。
     // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
     scalpLcFloorSource: resolveScalpLcFloorDirective().mode,
     scalpLcCeilingSource: resolveScalpLcCeilingDirective().mode,
@@ -163,6 +165,7 @@ interface SettingsBody {
   rangeReevalEnabled?: boolean | null; // ★レンジ再評価(未約定→ブレイク)許可(true/null=ON=既定 / false=OFF)
   scalpChartFallbackText?: boolean | null; // ★チャート撮影失敗時のテキスト縮退(true/null=ON=既定 / false=ストリクトvision)
   doubleFormingEnabled?: boolean | null;   // ★検知チューニング: double 形成通知(true=ON / false/null=OFF=既定=breakout のみ)
+  nwaveEnabled?: boolean | null;           // ★N波動の節目/アラート(true/null=ON=既定 / false=OFF)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
   scalpLcFloorSource?: string | null;
@@ -293,6 +296,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const chartFallbackValue = applyBoolField(existing.scalpChartFallbackText, bodyRec.scalpChartFallbackText);
   // ★検知チューニング: double 形成通知(boolean・既定 false)。null/false=OFF(未設定で保存)。
   const doubleFormingValue = applyBoolField(existing.doubleFormingEnabled, bodyRec.doubleFormingEnabled);
+  // ★N波動の節目/アラート(boolean・既定 true)。null=既定(true)に戻す(undefined 保存)/ false=OFF。
+  const nwaveEnabledValue = applyBoolField(existing.nwaveEnabled, bodyRec.nwaveEnabled);
   // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
   // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
@@ -325,6 +330,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     rangeReevalEnabled: rangeReevalEnabledValue,   // ★レンジ再評価(未約定→ブレイク)許可(既定ONに戻すときは null→未設定で保存)
     scalpChartFallbackText: chartFallbackValue,   // ★チャート撮影失敗時のテキスト縮退(既定ONに戻すときは null→未設定で保存)
     doubleFormingEnabled: doubleFormingValue,   // ★検知チューニング: double 形成通知(既定OFFは未設定で保存)
+    nwaveEnabled: nwaveEnabledValue,   // ★N波動の節目/アラート(既定ONに戻すときは null→未設定で保存)
     // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。
     scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
     scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),

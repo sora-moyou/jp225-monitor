@@ -30,10 +30,11 @@ import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
 import { detectLevelHold } from '../levelHold.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
+import { detectNWave, nwaveLevelCandidates, type NWave } from '../nwave.js';
 import { aggregateSignals, DEFAULT_AGGREGATE, recentMomentumDir } from '../signals/aggregate.js';
 import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
 import type { AlertSignal } from '../signals/types.js';
-import { resolveLevelsConfig, resolveBreakScore, resolveDoubleFormingEnabled, resolveSlopeConfluenceBonus } from '../configStore.js';
+import { resolveLevelsConfig, resolveBreakScore, resolveDoubleFormingEnabled, resolveSlopeConfluenceBonus, resolveNwaveEnabled, resolveNwaveMinSwingYen } from '../configStore.js';
 import { evaluateBarsNiy, createBarDetectState, type BarDetectState, type AlertSink } from '../alertEngine.js';
 import { DEFAULT_PARAMS, type DetectorParams } from '../alertDetector.js';
 import type { InstrumentMeta } from '../types.js';
@@ -61,6 +62,10 @@ const PIVOT_RECLAIM_PCT = 0.003;
 const LEVEL_MERGE_YEN = 40;
 const PIVOT_FORMED_MIN_PCT = 0.005;
 const SWING_DOUBLE_CHECK_MS = 60_000;
+// ★N波動(値幅観測論): 節目/アラートとも主要スイング(swingDouble と同じ抽出)から算出。約60秒間引き +
+//   方向×round(B) の 30 分クールダウン(別の B は即再発火・同一 B は30分ごとに再アラート)。
+const NWAVE_CHECK_MS = 60_000;
+const NWAVE_COOLDOWN_MS = 30 * 60_000;
 const SWING_LOOKBACK_DAYS = 4;
 const SWING_PIVOT_RECLAIM_PCT = 0.008;
 const SWING_DOUBLE_TF_MS = 5 * 60_000;
@@ -143,6 +148,10 @@ export interface LevelDetectState {
   congestionLevels: { price: number; rel: number; visits: number }[];
   lastTrendCheck: number;
   trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[];
+  // ★N波動: 直近の確認済み N 波(節目投影 + アラート発火に共用)と、その未到達目標の節目候補をキャッシュ。
+  lastNwaveCheck: number;
+  nwave: NWave | null;
+  nwaveLevels: { price: number; label: string }[];
   lastDailyBandCheck: number;
   confirmedDailyCloses: number[];
   // 検知器 cooldown/dedup(runLevelDetectors)
@@ -151,6 +160,7 @@ export interface LevelDetectState {
   lastPivotT: number;
   pivotSeeded: boolean;   // ★起動時に既存の確定ピボットを「既知」化したか(再起動で古いピボットが『形成』と誤発火するのを防ぐ)。
   lastSwingCheck: number;
+  lastNwaveFire: Map<string, number>;   // ★N波動アラートの方向×round(B) の30分クールダウン(別Bは即再発火・同一Bは30分毎)。
   lastDailyBandEmit: Map<string, number>;
   lastDailyMaEmit: Map<string, number>;
 }
@@ -162,8 +172,10 @@ export function createLevelDetectState(): LevelDetectState {
     lastVolumeCheck: 0, volumeLevels: [],
     lastCongestionCheck: 0, congestionLevels: [],
     lastTrendCheck: 0, trendlineLevels: [],
+    lastNwaveCheck: 0, nwave: null, nwaveLevels: [],
     lastDailyBandCheck: 0, confirmedDailyCloses: [],
     lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, pivotSeeded: false, lastSwingCheck: 0,
+    lastNwaveFire: new Map(),
     lastDailyBandEmit: new Map(), lastDailyMaEmit: new Map(),
   };
 }
@@ -199,6 +211,7 @@ export interface LevelAnalytics {
   cs: SessionInfo | null;
   dailyBandLevels: DailyBand[];
   dailyMaLevels: DailyMA[];
+  nwave?: NWave | null;   // ★直近の確認済み N 波(nwave アラート発火用・未確認/OFF は null）
   dbMs: number;
   computeMs: number;
 }
@@ -265,6 +278,23 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
         .map(t => ({ price: t.priceNow, kind: t.kind, touches: t.touches }));
     } catch (err) { console.warn('[detect] trend lines failed:', err instanceof Error ? err.message : err); }
   }
+  // N波動(値幅観測論)を約60秒ごとに再計算してキャッシュ。swingDouble と同じ主要スイング抽出
+  // (4日窓・5分足・reclaim 0.8%)から末尾3ピボットで A→B→C を判定し、確認済み(B 抜け)なら未到達の
+  // N値/V値/E値を節目候補にする。OFF(resolveNwaveEnabled=false)なら空にする。
+  if (now - state.lastNwaveCheck >= NWAVE_CHECK_MS) {
+    state.lastNwaveCheck = now;
+    try {
+      if (resolveNwaveEnabled()) {
+        const nb = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
+        const npiv = extractSwingPivots(resampleHL(nb, SWING_DOUBLE_TF_MS), yenPct(latest.price, SWING_PIVOT_RECLAIM_PCT));
+        const nw = detectNWave(npiv, latest.price, resolveNwaveMinSwingYen());
+        state.nwave = nw;
+        state.nwaveLevels = nw ? nwaveLevelCandidates(nw, latest.price) : [];
+      } else {
+        state.nwave = null; state.nwaveLevels = [];
+      }
+    } catch (err) { console.warn('[detect] nwave failed:', err instanceof Error ? err.message : err); }
+  }
   // 日足バンド用の確定終値(進行中の取引日を除外)を約60秒キャッシュ。
   if (now - state.lastDailyBandCheck >= DAILYBAND_CHECK_MS || state.confirmedDailyCloses.length === 0) {
     state.lastDailyBandCheck = now;
@@ -283,9 +313,9 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
     : [];
   const dailyMaLevels = computeDailyMAs(dailyCloseSeries(state.confirmedDailyCloses, latest.price, 75));
   const tCompute = Date.now();
-  const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels);
+  const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels, state.nwaveLevels);
   const computeMs = Date.now() - tCompute;
-  return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, dbMs, computeMs };
+  return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, nwave: state.nwave, dbMs, computeMs };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -425,6 +455,32 @@ export function runLevelDetectors(
     }
   } catch (err) {
     console.warn('[detect] signal detect failed:', err instanceof Error ? err.message : err);
+  }
+  // ── N波動確認(nwave): 値幅観測論。B 抜けで確認された N 波を「目標=V値(倍返し)」で通知。
+  //    analytics で算出済みの N 波(a.nwave)をそのまま使う(節目と同一の波=乖離しない)。方向×round(B) の
+  //    30 分クールダウン(double/dailyband と同機構): 別の B(=新しい波)は即再発火し、同一 B が続く間は
+  //    30 分ごとに再アラートする(同一波の毎ティック連発だけを抑える)。
+  try {
+    const nw = a.nwave;
+    if (nw) {
+      const key = `${nw.direction}@${Math.round(nw.b)}`;
+      if (now - (state.lastNwaveFire.get(key) ?? -Infinity) > NWAVE_COOLDOWN_MS) {
+        state.lastNwaveFire.set(key, now);
+        const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
+        const dirWord = nw.direction === 'up' ? '上昇' : '下降';
+        const note = `${dirWord}N波を確認 目標V値 ${yen(nw.targets.V)}（A ${yen(nw.a)} / B ${yen(nw.b)} / C ${yen(nw.c)}）`;
+        console.log(`[detect] nwave ${nw.direction} V=${Math.round(nw.targets.V)} (B=${Math.round(nw.b)})`);
+        sink({
+          symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+          changePercent: 0, windowSeconds: 60, detectionKind: 'nwave', direction: nw.direction,
+          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: Math.round(nw.targets.V), note,
+          referenceKind: 'nwave', referencePrice: Math.round(nw.targets.V),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[detect] nwave emit failed:', err instanceof Error ? err.message : err);
   }
   // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
   try {

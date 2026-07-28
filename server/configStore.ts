@@ -49,6 +49,9 @@ export interface UserConfig {
   //   break は継続方向のアルファが≈0pt(単独では乱発のみ)/ slope(超短期フラッシュ)は唯一の順行アルファ +52pt。
   //   → double は形成を止め breakout も減点、break は単独では出さず、slope 方向一致にコンフルエンス加点する。
   doubleFormingEnabled?: boolean;    // double: 形成中(forming)も出すか。未設定/false=OFF(breakout のみ・既定)。
+  // ★N波動(値幅観測論): スイング A→B→C の N値/V値/E値 を節目に出し、B 抜け確認で nwave アラート。
+  nwaveEnabled?: boolean;            // N波動の節目/アラートを出すか。未設定/true=ON(既定)。false=OFF。
+  nwaveMinSwingYen?: number;         // N波動の最小1波幅 |B−A|(円)。これ未満の浅い波は捨てる。未設定は 300。
   breakScore?: number;               // break 単独スコア。既定 0.9(minScore=1未満→単独breakは出さず、コンフルエンス時のみ生きる)。
   slopeConfluenceBonus?: number;     // slope と同方向の直近モメンタムに一致したクラスタへの加点。既定 0.5。
   scalpLcCeilingYen?: number;        // AIエントリー: 最大初期LC(損切り)幅[円]。未設定は 65。buildScalpPlan の上限既定。
@@ -132,6 +135,7 @@ export const PARAM_BOUNDS = {
   levelTestBonus:        { min: 0, max: 1, default: 0.15 },
   levelLookbackSessions:  { min: 2, max: 60,  default: 10 },
   levelLookbackSessions2: { min: 2, max: 120, default: 20 },
+  nwaveMinSwingYen:      { min: 50, max: 3000, default: 300 },   // ★N波動の最小1波幅 |B−A|(円)。浅い波の雑音を捨てる。
   breakScore:            { min: 0, max: 3, default: 0.9 },   // ★40日ライブ: break 継続は≈0pt。単独(0.9<minScore1)は出さずコンフルエンスでのみ生かす。
   slopeConfluenceBonus:  { min: 0, max: 2, default: 0.5 },   // ★40日ライブ: slope は唯一の順行アルファ +52pt。方向一致クラスタへ加点。
   scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
@@ -394,4 +398,4 @@ export {
   resolveGranvilleMaMid, resolveGranvilleMaLong, resolveHitThreshold,
   resolveDoubleFormingEnabled, resolveBreakScore, resolveSlopeConfluenceBonus,
 } from './config/alertResolvers.js';
-export { resolveLevelsConfig } from './config/levelsResolvers.js';
+export { resolveLevelsConfig, resolveNwaveEnabled, resolveNwaveMinSwingYen } from './config/levelsResolvers.js';

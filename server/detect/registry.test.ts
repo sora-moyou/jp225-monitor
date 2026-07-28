@@ -254,6 +254,62 @@ describe('runLevelDetectors — double(スイングW)の形成抑制 / breakout 
   });
 });
 
+describe('runLevelDetectors — N波動(nwave)アラートの発火/未発火/クールダウン', () => {
+  // ★nwave は analytics で算出済みの N 波(a.nwave)を使って emit する(節目と同一の波=乖離しない)。
+  //   ここでは emit/クールダウン配線を検証(値幅計算そのものは nwave.test.ts で網羅)。
+  let db: DatabaseSync;
+  const t0 = 1_700_000_000_000;
+  const now = t0 + 5 * 60_000;
+
+  beforeEach(() => { db = memDb(); });
+
+  // 上昇N波(確認済み): A66,100 → B66,800 → C66,300、V値=67,300。
+  const nwUp = { direction: 'up' as const, a: 66100, b: 66800, c: 66300, bT: t0 + 2 * 60_000,
+    targets: { N: 67000, V: 67300, E: 67500 } };
+  const base = (nwave: unknown): LevelAnalytics => ({
+    result: { current: 66900, up: [], down: [], swing: null, reversalSatisfied: false, asOf: now } as LevelsResult,
+    latest: { symbol: NIY, t: now, price: 66900 },
+    sessions: [], cs: null, dailyBandLevels: [], dailyMaLevels: [],
+    nwave: nwave as LevelAnalytics['nwave'], dbMs: 0, computeMs: 0,
+  });
+
+  it('確認済み上昇N波で nwave を発火し、目標V値(67,300)を文言に含む', () => {
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, base(nwUp), now, createLevelDetectState(), e => calls.push(e));
+    const ev = calls.find(e => e.detectionKind === 'nwave');
+    expect(ev).toBeTruthy();
+    expect(ev!.direction).toBe('up');
+    expect(ev!.note).toContain('上昇N波');
+    expect(ev!.note).toContain('67,300');   // V値
+    expect(ev!.referencePrice).toBe(67300);
+  });
+
+  it('N波が無い(未確認)なら nwave を発火しない', () => {
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, base(null), now, createLevelDetectState(), e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'nwave')).toBe(false);
+  });
+
+  it('同一B(同じ波)はクールダウンで再発火しない', () => {
+    const st = createLevelDetectState();
+    const first: AlertEventPayload[] = [];
+    runLevelDetectors(db, base(nwUp), now, st, e => first.push(e));
+    expect(first.filter(e => e.detectionKind === 'nwave').length).toBe(1);
+    const second: AlertEventPayload[] = [];
+    runLevelDetectors(db, base(nwUp), now + 60_000, st, e => second.push(e));
+    expect(second.filter(e => e.detectionKind === 'nwave').length).toBe(0);
+  });
+
+  it('別のB(新しい波)はクールダウン内でも再発火する', () => {
+    const st = createLevelDetectState();
+    runLevelDetectors(db, base(nwUp), now, st, () => {});
+    const nwUp2 = { ...nwUp, b: 66900, targets: { N: 67100, V: 67500, E: 67700 } };   // 別のB
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, base(nwUp2), now + 60_000, st, e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'nwave')).toBe(true);
+  });
+});
+
 describe('computeLevelAnalytics — tick が無ければ null', () => {
   it('ticks 空の DB では null(「蓄積中」相当)', () => {
     const db = memDb();
