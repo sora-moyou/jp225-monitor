@@ -921,6 +921,52 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
     </div>
   </div>
 
+  <h3 style="font-size:18px; margin:36px 0 8px;">エントリーの損切り幅と方向は自分で調整できます</h3>
+  <p style="color:var(--text-muted); font-size:14.5px; margin-bottom:20px;">
+    <span class="kbd">🎛️</span> <strong>詳細設定</strong>(画面右上)で、AI の提案に効く 4 項目を変更できます。変更して <span class="kbd-green">保存</span> を押すと、<strong>次のエントリーから反映</strong>されます。設定はこのアプリ専用に保存され、バージョンアップしても保持されます。
+  </p>
+
+  <div class="shot-wrap" style="margin-bottom:12px;">
+    <img src="https://raw.githubusercontent.com/sora-moyou/jp225-monitor/master/docs/screenshots/params-ai-entry.png" alt="詳細設定 — AI エントリー">
+  </div>
+  <p style="text-align:center; color:var(--text-faint); font-size:13px; margin:0 0 24px;">▲ 🎛️ 詳細設定 — 各項目に説明が付いています。「AI 委任」を選ぶと値の入力欄は使われません。</p>
+
+  <div class="ref">
+    <div class="ref-body" style="padding-top:14px;">
+      <table class="ref-table">
+        <thead>
+          <tr><th style="width:150px;">項目</th><th>説明</th><th style="width:110px;">既定</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>初期LC下限(円)</strong></td>
+            <td>損切り幅の下限の目安。これより狭い損切りを狙わないよう AI に指示します(コードでの強制はしません)。狭すぎるとダマシの往復で切られやすくなります。</td>
+            <td>45 円</td>
+          </tr>
+          <tr>
+            <td><strong>最大初期LC(円)</strong></td>
+            <td>損切り幅の上限。<code>|エントリー価格 − 損切り価格|</code> がこれを超える計画は出しません(超えたその注文は見送り)。広すぎると 1 回の損切りで積み上げた利益を失います。</td>
+            <td>65 円</td>
+          </tr>
+          <tr>
+            <td><strong>バイアス</strong></td>
+            <td>買い/売りのどちらを中心に狙うか。「買い中心」なら売りの新規を見送ります(完全に片側)。</td>
+            <td>両方向</td>
+          </tr>
+          <tr>
+            <td><strong>LC安全上限(円)</strong></td>
+            <td>上の設定とは独立した最後の安全網。チェックが入っていれば、どんな場合でもこの幅を超える損切りは出しません。</td>
+            <td>有効・150 円</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:16px;">
+    <strong>手動 / AI 委任</strong> — 上の 3 項目(初期LC下限・最大初期LC・バイアス)は、値の決め方を選べます。<strong>手動</strong> = 設定した数値を必ず守らせます。<strong>AI 委任</strong> = その項目は AI が場面ごとに決めます(設定値は使いません)。LC安全上限は安全網なので、常に有効/無効と上限値のみです。
+  </div>
+
 </section>
 
 <!-- ─── アラート(補助) ─── -->
