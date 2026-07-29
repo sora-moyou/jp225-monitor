@@ -21,7 +21,7 @@ import { initSignalTradesModal, initSignalClearButton } from './components/signa
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
-import { applyVariantVisibility, normalizeVariant } from './lib/variant.js';
+import { applyVariantVisibility, applyLiteKnobNotes, normalizeVariant, LITE_SCALP, type Variant } from './lib/variant.js';
 
 // v0.3.17: アラート検知はサーバ側 (alertLoop + tickDetector) に移管。クライアントは SSE で受信のみ。
 
@@ -215,6 +215,25 @@ const settingsCtl = initSettingsModal({
   testResult:     document.getElementById('settings-test-result') as HTMLElement,
 });
 
+// ★lite: 詳細設定(🎛️)の「AIエントリー」を 4項目(A系統のみ)に絞るための要素収集。
+//   どの行を残すかは index.html の data-lite="1"、セレクタは variant.ts の LITE_SCALP に集約する。
+const scalpFieldsetEl = document.getElementById('ai-entry-fieldset');
+const scalpQueryAll = (sel: string): HTMLElement[] =>
+  scalpFieldsetEl ? Array.from(scalpFieldsetEl.querySelectorAll<HTMLElement>(sel)) : [];
+const scalpKeepRows = (): HTMLElement[] => scalpQueryAll(LITE_SCALP.keepRow);
+
+// /api/version 取得後に確定する variant。詳細設定を開くたび AI委任の注記を同期するため保持する。
+let uiVariant: Variant = 'full';
+
+// ★lite: 委任モード select を隠すので、AI委任中の項目は値入力が灰色になる理由が見えない。
+//   該当行にだけ注記を出す(full は applyLiteKnobNotes が何もしない=表示は現状と同一)。
+function syncLiteKnobNotes(): void {
+  applyLiteKnobNotes(uiVariant, scalpKeepRows().map(row => ({
+    mode: row.querySelector<HTMLSelectElement>(LITE_SCALP.modeSelect),
+    note: row.querySelector<HTMLElement>(LITE_SCALP.aiNote),
+  })));
+}
+
 // 詳細パラメータ モーダル (定期ポーリング / クールダウン等。設定とは別ボタン 🎛️)
 initParamsModal({
   openBtn:     document.getElementById('params-btn') as HTMLButtonElement,
@@ -225,8 +244,9 @@ initParamsModal({
   portWarning: document.getElementById('params-port-warning') as HTMLElement,
   status:      document.getElementById('params-status') as HTMLElement,
   // ★v0.8.3: 🎛️ を開いたら移設フィールドを反映し、🎛️ 保存で移設フィールドも保存する。
-  onOpen:      () => settingsCtl.refresh(),
-  onSave:      () => settingsCtl.save(),
+  //   ★lite: 反映後に AI委任注記を同期する(反映で入力の有効/無効が決まるため反映の後)。
+  onOpen:      async () => { await settingsCtl.refresh(); syncLiteKnobNotes(); },
+  onSave:      async () => { await settingsCtl.save(); syncLiteKnobNotes(); },
 });
 
 // ③ Ctrl + / Ctrl - / Ctrl 0 でチャート以外のUI文字サイズを可変 (zoom)。localStorage 永続。
@@ -382,18 +402,19 @@ setInterval(() => {
 }, 1000);
 
 // バージョン表示 (起動時に1回取得) + Tauri内なら更新チェック + variant(lite)UI縮小
-// lite なら詳細設定系 UI を隠す(履歴/ログ/詳細パラメータ + 設定「AIエントリー」fieldset)。
+// lite なら詳細設定系 UI を隠す(履歴/ログ + 設定の一部 fieldset)。
+// ★lite(ユーザー指示): 詳細設定(🎛️)自体は開けるようにし、「AIエントリー」の4項目
+//   (初期LC下限 / 最大初期LC / バイアス / LC安全上限)を A系統だけ表示して編集させる。
 // 取得失敗/variant欠落は full 扱い=全表示(安全側)。
 const versionEl = document.getElementById('app-version');
 fetch(apiUrl('/api/version'))
   .then(r => r.json())
   .then((d: { version: string; variant?: string }) => {
     if (versionEl) versionEl.textContent = `v${d.version}`;
-    applyVariantVisibility(normalizeVariant(d.variant), {
+    uiVariant = normalizeVariant(d.variant);
+    applyVariantVisibility(uiVariant, {
       alertsHistoryBtn: document.getElementById('alerts-history-btn'),
       openLogsBtn: document.getElementById('open-logs'),
-      paramsBtn: document.getElementById('params-btn'),
-      scalpFieldset: document.getElementById('ai-entry-fieldset'),
       // ★lite は履歴モーダルの A/B 系統セレクタを非表示(B の成績は full のみで確認)。
       signalTradesSystem: document.getElementById('signal-trades-system-row'),
       // ★lite 追加(ユーザー指示): Web検索モデル設定 と データ(DB管理)fieldset も隠す。API キーは表示のまま。
@@ -401,7 +422,16 @@ fetch(apiUrl('/api/version'))
       dataFieldset: document.getElementById('data-fieldset'),
       // ★基礎データ公開(225labo)は monitor2 メンテナ専用=lite で非表示。
       basedataPublishFieldset: document.getElementById('basedata-publish-fieldset'),
+      // ★lite: 詳細設定の右カラム(ポーリング/急変閾値/節目/データ)は丸ごと非表示。
+      paramsOtherCol: document.getElementById('params-col2'),
+      // ★lite: AIエントリーは 4項目(data-lite="1")だけ残し、他の行と B系統/委任モード/Aタグを隠す。
+      scalpHideRows: scalpQueryAll(LITE_SCALP.dropRow),
+      scalpHideInRows: scalpKeepRows().flatMap(row =>
+        Array.from(row.querySelectorAll<HTMLElement>(LITE_SCALP.inRowHide))),
+      scalpFullHints: scalpQueryAll(LITE_SCALP.fullHint),
+      scalpLiteHints: scalpQueryAll(LITE_SCALP.liteHint),
     });
+    syncLiteKnobNotes();
   })
   .catch(() => { if (versionEl) versionEl.textContent = 'v?'; });
 

@@ -4,6 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, renameSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { resolveVariant } from './variant.js';
 
 const CONFIG_DIR = () => join(homedir(), '.jp225-monitor');
 const CONFIG_FILE = () => join(CONFIG_DIR(), 'config.json');
@@ -81,7 +82,30 @@ export interface UserConfig {
   //   B リゾルバは signalB.<knob> を優先し、未設定は A(グローバル)値/directive にフォールバックする
   //   (箱出しは B も A と同一挙動→そこから B だけ差分)。実売買 A には一切影響しない(B は currentSignal を出さない)。
   signalB?: SignalBConfig;
+  // ★lite(簡易公開版)の独立設定。lite の 🎛️ に露出した 5項目だけをここに持ち、monitor2(full)の
+  //   最上位キーと混ざらないようにする(同一PCで両方使っても互いに干渉しない)。
+  //   variant='lite' のときだけ参照され、未設定の項目は最上位→組み込み既定へフォールバックする。
+  lite?: LiteConfig;
 }
+
+// ★lite 独立設定ブロック。lite の詳細設定に露出した 5項目のみ(全て任意=未設定は最上位へフォールバック)。
+//   ここに項目を足すのは「lite の画面に出した」ときだけ。出していない設定を入れてはいけない
+//   (monitor2 が設定した値が lite 側で見えなくなり、原因不明の挙動差になる)。
+export interface LiteConfig {
+  scalpBias?: ScalpBias;
+  scalpLcFloorYen?: number;
+  scalpLcCeilingYen?: number;
+  scalpLcHardMaxEnabled?: boolean;
+  scalpLcHardMaxYen?: number;
+}
+
+// ★lite 名前空間が担当するキー(= lite の画面に出した 5項目)。これ以外は lite でも最上位から解決する。
+export const LITE_OWNED_KEYS = [
+  'scalpBias', 'scalpLcFloorYen', 'scalpLcCeilingYen', 'scalpLcHardMaxEnabled', 'scalpLcHardMaxYen',
+] as const;
+export type LiteOwnedKey = typeof LITE_OWNED_KEYS[number];
+const LITE_OWNED_SET: ReadonlySet<string> = new Set(LITE_OWNED_KEYS);
+export function isLiteOwnedKey(key: string): key is LiteOwnedKey { return LITE_OWNED_SET.has(key); }
 
 // ★v0.8.2: System B の独立設定ブロック。A と同じ knob 一式(全て任意=未設定は A へフォールバック)。
 export interface SignalBConfig {
@@ -316,18 +340,27 @@ export function validateParam(
 // ★内部ヘルパ(export): 切り出したドメインモジュール(config/*Resolvers.ts)が使う。
 //   configStore が re-export する構成のため public 面に出るが、用途はドメインリゾルバの実装専用。
 export function resolveNumeric(key: keyof typeof PARAM_BOUNDS): number {
-  const v = (loadConfig() as Record<string, unknown>)[key];
+  // ★lite 名前空間の解決を1か所に集約するため readKnobRaw 経由にする。
+  //   profile 省略 + full では従来どおり最上位を読むだけ(=monitor2 はバイト不変)。
+  const v = readKnobRaw(undefined, key);
   return typeof v === 'number' ? v : PARAM_BOUNDS[key].default;
 }
 
 // ★v0.8.2: プロファイル対応の knob 生値読み取り。profile==='B' のとき signalB.<key> を優先し、
 //   未設定/undefined は A(グローバル・トップレベル)値へフォールバックする。profile 省略/'A' は
 //   トップレベルのみ=既存挙動と完全一致(=A はバイト不変)。
+// ★lite 独立設定: variant='lite' のときだけ、露出 5項目(LITE_OWNED_KEYS)を config.lite から先に読む。
+//   未設定なら最上位へ落ちる=既存 lite ユーザーがバージョンアップしても実効設定が変わらない。
+//   full(monitor2)では config.lite を一切見ない。
 export function readKnobRaw(profile: SignalProfile | undefined, key: string): unknown {
   const cfg = loadConfig() as Record<string, unknown>;
   if (profile === 'B') {
     const b = cfg.signalB as Record<string, unknown> | undefined;
     if (b && b[key] !== undefined) return b[key];
+  }
+  if (isLiteOwnedKey(key) && resolveVariant() === 'lite') {
+    const l = cfg.lite as Record<string, unknown> | undefined;
+    if (l && l[key] !== undefined) return l[key];
   }
   return cfg[key];
 }

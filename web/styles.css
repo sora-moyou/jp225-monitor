@@ -657,6 +657,9 @@ body {
 #params-modal #ai-entry-fieldset .ab-col { flex-wrap: nowrap; }
 #params-modal #ai-entry-fieldset .ab-col-b { border-left: none; padding-left: 0; margin-left: 0; }
 #params-modal #ai-entry-fieldset .setting-row { margin: 8px 0 12px; }
+/* ★lite: 委任モード select を隠すので、AI委任中で値入力が灰色になっている理由を行内に注記する
+   (既定 hidden・variant=lite かつ その項目が AI委任のときだけ variant.ts が出す)。 */
+.lite-ai-note { font-size: 12px; color: #d29922; margin: 4px 0 0; line-height: 1.5; }
 /* 狭い画面では1カラムに戻す(横スクロール防止)。 */
 @media (max-width: 780px) {
   .settings-cols { flex-direction: column; gap: 0; }

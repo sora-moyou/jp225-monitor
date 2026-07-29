@@ -197,7 +197,9 @@
       <fieldset class="settings-section" id="ai-entry-fieldset">
         <legend>AIエントリー</legend>
         <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。<br>★v0.8.2: 各行は <b>A(実売買・trade2が追従)</b> と <b>B(📝紙のみ・並走比較)</b> を横並びで設定します。B は空欄/「A追従」なら A と同じ設定で動きます(B だけ差分を付けて比較)。B は実売買に一切渡りません。</div>
-        <div class="setting-row ab-row">
+        <!-- ★lite 専用の説明(既定 hidden・variant=lite のときだけ表示。full の見た目は不変)。 -->
+        <div class="exit-hint lite-hint" hidden>AIエントリーの<b>損切り幅</b>と<b>バイアス(狙う方向)</b>の設定です。変更したら「保存」を押すと、次のエントリーから反映されます。</div>
+        <div class="setting-row ab-row" data-lite="1">
           <label>初期LC下限(円)</label>
           <span class="ab-col"><span class="ab-tag">A</span>
             <select id="scalp-lc-floor-mode" class="knob-mode">
@@ -214,8 +216,10 @@
             </select>
             <input type="number" id="scalp-lc-floor-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
           </span>
+          <div class="lite-ai-note" hidden>🤖 この項目は現在「AIにおまかせ」設定のため、値の入力はできません(AI が毎回決めます)。</div>
+          <div class="exit-hint lite-hint" hidden>損切り幅の下限の目安。これより狭い損切りを狙わないよう AI に指示します(コードでの強制はしません)。狭すぎるとダマシの往復で切られやすくなります。既定 45円。</div>
         </div>
-        <div class="setting-row ab-row">
+        <div class="setting-row ab-row" data-lite="1">
           <label>最大初期LC(円)</label>
           <span class="ab-col"><span class="ab-tag">A</span>
             <select id="scalp-lc-ceiling-mode" class="knob-mode">
@@ -232,6 +236,8 @@
             </select>
             <input type="number" id="scalp-lc-ceiling-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
           </span>
+          <div class="lite-ai-note" hidden>🤖 この項目は現在「AIにおまかせ」設定のため、値の入力はできません(AI が毎回決めます)。</div>
+          <div class="exit-hint lite-hint" hidden>損切り幅の上限。|エントリー価格 − 損切り価格| がこれを超える計画は出しません(超えたその注文は見送り)。広すぎると1回の損切りで積み上げた利益を失います。既定 65円。</div>
         </div>
         <div class="setting-row ab-row">
           <label>トレンドveto(円)</label>
@@ -269,7 +275,7 @@
             <input type="number" id="scalp-cooldown-b" autocomplete="off" min="0" max="3600" step="1" placeholder="A追従" />
           </span>
         </div>
-        <div class="setting-row ab-row">
+        <div class="setting-row ab-row" data-lite="1">
           <label>バイアス</label>
           <span class="ab-col"><span class="ab-tag">A</span>
             <select id="scalp-bias-mode" class="knob-mode">
@@ -295,6 +301,8 @@
               <option value="short">売り中心</option>
             </select>
           </span>
+          <div class="lite-ai-note" hidden>🤖 この項目は現在「AIにおまかせ」設定のため、選択はできません(AI が毎回決めます)。</div>
+          <div class="exit-hint lite-hint" hidden>買い/売りのどちらを中心に狙うか。「買い中心」なら売りの新規を見送ります(完全に片側)。既定は「両方向」。</div>
         </div>
         <div class="setting-row ab-row">
           <label>レンジ両面(実験)</label>
@@ -318,7 +326,7 @@
             </select>
           </span>
         </div>
-        <div class="setting-row ab-row">
+        <div class="setting-row ab-row" data-lite="1">
           <label>LC安全上限(円)</label>
           <span class="ab-col"><span class="ab-tag">A</span>
             <input type="checkbox" id="scalp-lc-hardmax-enabled" />
@@ -332,6 +340,7 @@
             </select>
             <input type="number" id="scalp-lc-hardmax-b" autocomplete="off" min="20" max="500" step="1" placeholder="A追従" />
           </span>
+          <div class="exit-hint lite-hint" hidden>上の設定とは独立した最後の安全網。左のチェックが入っていれば、どんな場合でもこの幅を超える損切りは出しません(チェックを外すと上限なし)。既定=有効・150円。</div>
         </div>
         <div class="setting-row">
           <label>ドテン許可(反転)</label>
@@ -367,7 +376,8 @@
         <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。<b>A</b> は monitorのシグナルエンジンと jp225-Trade の両方(実売買)に反映されます。<b>B</b> は紙専用の並走比較のみで、実売買には一切渡りません。<br>★LC安全上限: 実弾の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・150円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。<br>★ドテン許可(AIが保有中に反転を判断してよい): 保有中に AI が「決済と同時に反対方向へ新規」した方がよいと判断した場面だけ、monitor が反転(=決済+反対新規)シグナルを出します。常に反転するわけではなく AI が都度判断します。既定=OFF(反転しない=従来どおり)。反転は通常の決済→別の新規とは区別して記録されます。<br>★レンジ未約定でブレイク再評価: レンジ両指値(逆張りフェード)が「平均約定所要 × 1.5」を超えて約定しないとき、AI に「両逆指値(ブレイク追随)へ切替 / 現状維持 / 見送り」を再判断させます。レンジを使う設定のときだけ実効(レンジ自体が既定OFF)。既定=ON。<br>★チャート撮影失敗でもテキストで継続: チャート画像(TradingView撮影)が ws-error 等で取れない時、1回リトライ後もダメなら画像なし(価格/レベル/指標のテキストのみ)で AI に戦略を作らせて取引を継続します。既定=ON(チャート障害で全停止するのを防ぐ)。OFF にすると撮影できない間は見送り(ストリクトvision=従来挙動)。</div>
       </fieldset>
       </div>
-      <div class="scol">
+      <!-- ★lite: 右カラム(データ/ポーリング/急変閾値/節目)は丸ごと非表示。左カラムの AIエントリーだけ残す。 -->
+      <div class="scol" id="params-col2">
 
       <fieldset class="settings-section" id="data-fieldset">
         <legend>データ</legend>

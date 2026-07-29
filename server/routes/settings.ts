@@ -8,8 +8,9 @@ import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled,
-  type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig,
+  type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig, type LiteConfig,
 } from '../configStore.js';
+import { resolveVariant } from '../variant.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
 import { openDb, resolveDbPath, getMeta } from '../db/store.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
@@ -246,6 +247,33 @@ function buildSignalB(
   return Object.keys(next).length > 0 ? (next as SignalBConfig) : undefined;
 }
 
+// ★lite 独立設定: lite の 🎛️ に露出した 5項目だけを config.lite へ組み立てる。
+//   - 未指定(undefined)=lite の既存値を保持 / null=unset(=最上位→組み込み既定へフォールバック)
+//   - 'none' や false も明示保存する(unset にすると monitor2 側の値を引き継いでしまい独立にならない)
+//   数値・bias の検証は呼び出し元(最上位の適用ループ)が同じ incoming/同じ bounds で先に済ませ、
+//   エラー時は 400 で return しているため、ここへ来る値は必ず妥当。
+const LITE_NUMERIC_KEYS = ['scalpLcFloorYen', 'scalpLcCeilingYen', 'scalpLcHardMaxYen'] as const;
+function buildLiteConfig(existing: LiteConfig | undefined, body: Record<string, unknown>): LiteConfig | undefined {
+  const ex = existing ?? {};
+  const next: LiteConfig = {};
+  for (const key of LITE_NUMERIC_KEYS) {
+    const v = applyNumberField(key, ex[key], body[key]).value;
+    if (v !== undefined) next[key] = v;
+  }
+  // バイアス: 'none' も明示保存する('' / null / 非文字列 は unset=フォールバック)。
+  const biasIn = body.scalpBias;
+  if (biasIn === undefined) {
+    if (ex.scalpBias !== undefined) next.scalpBias = ex.scalpBias;
+  } else if (typeof biasIn === 'string') {
+    const t = biasIn.trim();
+    if (t === 'none' || t === 'long' || t === 'short') next.scalpBias = t;
+  }
+  // LC安全上限の有効/無効: false も明示保存(null は unset=フォールバック)。
+  const enabled = applyBoolField(ex.scalpLcHardMaxEnabled, body.scalpLcHardMaxEnabled);
+  if (enabled !== undefined) next.scalpLcHardMaxEnabled = enabled;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 function applyStringField(existing: string | undefined, incoming: unknown): string | undefined {
   if (incoming === undefined) return existing;
   if (incoming === null) return undefined;
@@ -317,6 +345,10 @@ export function postSettingsHandler(req: Request, res: Response): void {
     res.status(400).json({ error: errors.join('; ') });
     return;
   }
+  // ★lite 独立設定: lite で保存したら露出 5項目は config.lite にだけ書き、最上位は据え置く。
+  //   full で保存したら config.lite には一切触れない(monitor2 は lite を読み書きしない)。
+  const isLite = resolveVariant() === 'lite';
+  const liteValue = isLite ? buildLiteConfig(existing.lite, bodyRec) : existing.lite;
 
   // 文字列フィールドを先に埋め、数値フィールドはループで代入
   const next: UserConfig = {
@@ -333,7 +365,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
 
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
-    scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
+    // ★lite は最上位の bias を据え置く(lite の変更は config.lite にだけ入る)。full は従来どおり。
+    scalpBias: isLite ? existing.scalpBias : biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
     dotenEnabled: dotenEnabledValue,   // ★ドテン(反転)許可(既定OFFは未設定で保存)
     rangeReevalEnabled: rangeReevalEnabledValue,   // ★レンジ再評価(未約定→ブレイク)許可(既定ONに戻すときは null→未設定で保存)
@@ -349,14 +382,20 @@ export function postSettingsHandler(req: Request, res: Response): void {
     scalpCooldownSource: applySourceField(existing.scalpCooldownSource, bodyRec.scalpCooldownSource),
     scalpBiasSource: applySourceField(existing.scalpBiasSource, bodyRec.scalpBiasSource),
     scalpRangeSource: applySourceField(existing.scalpRangeSource, bodyRec.scalpRangeSource),
-    // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。
-    scalpLcHardMaxEnabled: hardMaxEnabledValue,
+    // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。★lite は最上位を据え置く。
+    scalpLcHardMaxEnabled: isLite ? existing.scalpLcHardMaxEnabled : hardMaxEnabledValue,
     // ★v0.8.2: System B(紙専用)の設定(空=undefined で保存=全て A追従)。
     signalB: signalBValue,
+    // ★lite 独立設定(full では existing.lite をそのまま持ち越す=触らない)。
+    lite: liteValue,
   };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {
     nextRec[key] = results[key]!.value;
+  }
+  // ★lite: 露出した数値 3項目は config.lite に書いたので、最上位は保存前の値へ戻す(monitor2 の設定を壊さない)。
+  if (isLite) {
+    for (const key of LITE_NUMERIC_KEYS) nextRec[key] = existing[key];
   }
   saveConfig(next);
   reloadProviders();
