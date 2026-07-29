@@ -6,6 +6,9 @@ import {
   type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
 import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
+// ★v0.9.44: レンジの形の観測は依存ゼロの leaf(signalTrade/rangeShape.ts)に置く。engine.ts が LLM スタックを
+//   遅延ロードしている設計を壊さないため(engine は result.rangeAnomaly を読むだけ=静的 import 不要)。
+import { describeRangeAnomaly, type RangeAnomaly } from '../signalTrade/rangeShape.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { getPrices } from '../cache.js';
@@ -51,9 +54,71 @@ export interface AiPlan {
   range?: { upper?: RangeLeg; lower?: RangeLeg };
 }
 
+/** ★v0.9.44: 見送り(none)に至った経路(記録専用)。判定・採否・SSE・決済には一切影響しない。
+ *  従来 engine のログは veto=y/n の1ビットしか区別できず、8通りの経路が同じ見た目になっていた。
+ *  - 'ai'            : AI 自身が direction:"none" を返した(良い場面が無い)
+ *  - 'geometry'      : エントリーが refPrice の反対側(売りなのに指値が現在値の下 等)で両レッグ落ち
+ *  - 'stopSide'      : 損切りがエントリーの内側/反対側で両レッグ落ち
+ *  - 'lc'            : 初期LC幅が上限超で両レッグ落ち
+ *  - 'bias'          : バイアス veto(long なのに sell / short なのに buy)
+ *  - 'trend'         : トレンド veto(強上昇に逆行する sell / 強下降に逆行する buy)
+ *  - 'rangeDisabled' : レンジ無効設定なのに range が返った(防御多重化)
+ *  - 'missing'       : AI がレッグを出さなかった / 壊れた形だった */
+export type NoneReason = 'ai' | 'geometry' | 'stopSide' | 'lc' | 'bias' | 'trend' | 'rangeDisabled' | 'missing';
+
+/** 見送り(none)時に「AI が出したが最終プランに残らなかった」レッグの生数値(記録専用)。
+ *  ログ1行に出すことで、根拠文(rationale)から価格を推定する必要を無くす。 */
+export interface NoneLeg {
+  name: 'limit' | 'stop' | 'upper' | 'lower';
+  entry: number;
+  stopLoss?: number;
+  ok: boolean;    // そのレッグ自体は検証を通っていたか(bias/trend の全体 veto では true になりうる)
+}
+/** none 化される前に AI が出した direction と、そのレッグ群(記録専用)。 */
+export interface NoneLegs { dir: 'buy' | 'sell' | 'range'; legs: NoneLeg[]; }
+
 // vetoFired(v0.7.54): buildScalpPlan が enforcePlanConstraints のトレンド veto が発火したかを surface する
 //   (挙動は不変=記録のみ)。regime/confidence は plan 側に載る。engine が meta へ保存し A/B 計測に使う。
-export type ScalpPlanResult = { ok: true; plan: AiPlan; vetoFired?: boolean } | { ok: false; error: string };
+// noneReason/noneLegs(v0.9.44): 見送り(none)の経路と落としたレッグの生数値(記録のみ=engine のログ用)。
+// rangeAnomaly(v0.9.44): レンジが規約(2択・組を混ぜない)に反する形で届いたか。★必ず **AI の生出力(parse 直後)**
+//   に対して判定した結果を載せる(enforce 後だと veto/bias で片脚が落ちて観測できなくなる)。記録のみ。
+export type ScalpPlanResult =
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; rangeAnomaly?: RangeAnomaly }
+  | { ok: false; error: string };
+
+// 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
+// トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
+const NONE_REASON_PRIORITY: NoneReason[] =
+  ['trend', 'bias', 'lc', 'geometry', 'stopSide', 'missing', 'rangeDisabled', 'ai'];
+
+/** 2レッグ分の脱落理由から、ログに載せる代表理由を1つ選ぶ純関数(記録専用)。両方 null なら undefined。 */
+export function pickNoneReason(a: NoneReason | null, b: NoneReason | null): NoneReason | undefined {
+  const cand = [a, b].filter((x): x is NoneReason => x != null);
+  if (cand.length === 0) return undefined;
+  return cand.sort((x, y) => NONE_REASON_PRIORITY.indexOf(x) - NONE_REASON_PRIORITY.indexOf(y))[0];
+}
+
+/** レンジ2脚の生数値を診断用 NoneLegs にする(記録専用)。AI が出さなかった脚は含めない。 */
+function noneLegsFromRange(
+  upper0: RangeLeg | null | undefined, lower0: RangeLeg | null | undefined, ok = false,
+): NoneLegs | undefined {
+  const legs: NoneLeg[] = [];
+  if (upper0) legs.push({ name: 'upper', entry: upper0.entry, stopLoss: upper0.stopLoss, ok });
+  if (lower0) legs.push({ name: 'lower', entry: lower0.entry, stopLoss: lower0.stopLoss, ok });
+  return legs.length ? { dir: 'range', legs } : undefined;
+}
+
+/** directional(buy/sell)2脚の生数値を診断用 NoneLegs にする(記録専用)。価格が無い脚は含めない。 */
+function noneLegsFromDirectional(
+  dir: 'buy' | 'sell',
+  v: { limitEntry?: number | null; stopLossForLimit?: number | null; stopEntry?: number | null; stopLossForStop?: number | null },
+  limitOk: boolean, stopOk: boolean,
+): NoneLegs | undefined {
+  const legs: NoneLeg[] = [];
+  if (v.limitEntry != null) legs.push({ name: 'limit', entry: v.limitEntry, stopLoss: v.stopLossForLimit ?? undefined, ok: limitOk });
+  if (v.stopEntry != null) legs.push({ name: 'stop', entry: v.stopEntry, stopLoss: v.stopLossForStop ?? undefined, ok: stopOk });
+  return legs.length ? { dir, legs } : undefined;
+}
 
 // 初期 LC(損切り)幅の既定レンジ。呼び出し側(trade2)が /api/scalp-plan で lcFloorYen/lcCeilingYen を
 // 指定しない時のフォールバック。★v0.7.39: 旧「原則45〜75/上限95」の二段を撤去し、
@@ -71,46 +136,82 @@ export function buildScalpQuestion(
   trendVetoYen: number = DEFAULT_TREND_VETO_YEN,
 ): string {
   // レンジ両面ストラドルの追記(実験・紙で別枠計測)。rangeEnabled=false のときは range を禁止する。
+  // ★v0.9.44: 1行に詰め込んでいた説明を複数行の箇条書きに開き、「fade / breakout の2択(組で選ぶ)」に書き直す。
+  //   従来は4通り(上下×指値/逆指値)を並べていたため、AI が組を混ぜて「下=買い逆指値」のような
+  //   定義上ありえない配置(lower.entry<現在値 と両立しない)を出し、parse で落ちて見送りになっていた。
   const rangeNote = rangeEnabled
-    ? '⑤明確な方向性が無く、上下に反応帯があるレンジと判断したら direction:"range" で、' +
-      '現在値の上と下に1レッグずつ置いてよい(両面ストラドル)。各レッグは side/type/entry/stopLoss。' +
-      'レンジ内で逆張りするなら指値(上=売り指値/下=買い指値)、抜けに追随するなら逆指値(上=買い逆指値/下=売り逆指値)。' +
-      `★どちらを選ぶか(重要): 上下の反応帯の幅が${ceilingYen * 2}円より広ければ両指値(レンジ内逆張り)、` +
-      `${ceilingYen * 2}円以下の狭い横這いなら両側逆指値(上=買い逆指値/下=売り逆指値)にすること。` +
-      `理由: 損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下だと逆張りの利幅が損切り幅を上回らず成立しない。狭い横這いは抜けに追随する方が正しい。` +
-      '(両レッグとも type:"stop" の両側逆指値は正当なプランとして受け付ける) ' +
-      '上レッグ(upper)の entry は現在値超・下レッグ(lower)の entry は現在値未満。各レッグの初期LCも上限内に収めること。' +
-      '★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。'
-    : 'direction は buy/sell/none のみ、range(両面)は出さないこと。';
+    ? '\n⑤明確な方向性が無く、上下に反応帯があるレンジと判断したら direction:"range" で、' +
+      '現在値の上と下に1レッグずつ置いてよい(両面ストラドル)。各レッグは side/type/entry/stopLoss。\n' +
+      '  ★【レンジは2択(組で選ぶ・必須)】次の2つの「組」のどちらか一方を丸ごと選ぶこと。組を混ぜない(4通りから好きな2つを拾わない)。\n' +
+      '   ・fade(両側指値/type:"limit")の組 = 上(upper)は 売り指値[side:"sell"/type:"limit"] / 下(lower)は 買い指値[side:"buy"/type:"limit"]\n' +
+      '   ・breakout(両側ブレイク新規/type:"stop")の組 = 上(upper)は 買いのブレイク新規[side:"buy"/type:"stop"] / 下(lower)は 売りのブレイク新規[side:"sell"/type:"stop"]\n' +
+      '   ※組を混ぜると上下が同じ方向の注文になり、それはレンジではなく通常の buy/sell プランと同じものになるため。\n' +
+      `  ★どちらの組を選ぶか(重要): 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、` +
+      `${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。\n` +
+      `   理由: 損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下だと逆張りの利幅が損切り幅を上回らず成立しない。狭い横這いは抜けに追随する方が正しい。\n` +
+      '  ★上下の位置(無条件): upper.entry > 現在値 > lower.entry。この不等式を満たさない数値は出力しないこと。\n' +
+      '   ※買いのブレイク新規は必ず現在値より上・売りのブレイク新規は必ず現在値より下なので、' +
+      '「下(lower)に買いのブレイク新規」「上(upper)に売りのブレイク新規」は定義上ありえない。絶対に出さないこと。\n' +
+      `  各レッグの初期LCも上限(≤${ceilingYen}円)内に収めること。\n` +
+      '  ★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。\n'
+    : '\ndirection は buy/sell/none のみ、range(両面)は出さないこと。\n';
   return (
-    'あなたが考える現在のスキャル戦略を教えてください。' +
-    '①最初に買い/売りのどちらかを判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい) ' +
-    '②指値と逆指値の両方の新規注文を作り、先に約定した方で取引します ' +
-    '(指値と逆指値は、現在値からそれぞれ少なくとも50円以上離すこと) ' +
-    '(★節目への置き方=約定させるため必須: 狙うサポート/レジスタンスちょうどには置かない。' +
-    '指値は節目から最低5円(目安5〜10円)内側[現在値側]にずらす=買いはサポートの5〜10円上・売りはレジスタンスの5〜10円下。' +
-    '逆指値は節目の0〜5円 外側[抜ける方向]にずらす=買いはレジスタンスの0〜5円上・売りはサポートの0〜5円下。' +
-    '節目ちょうどだと指値は刺さらず/逆指値はだまし[往復]に遭いやすいため) ' +
-    '(★逆張り指値の節目選び[重要]: 反発を狙う指値は「十分に強い節目」にのみ置く(複数回タッチ/主要なラウンド/上位足の節目など)。' +
-    '最も近い(隣接の)節目が弱い(タッチが浅い・新しい・薄い)場合は、そこで逆張りせず、もう一つ先のより強い節目まで引きつけて指値を置くこと。' +
-    '手前の弱い節目は抜けやすく、そこに置いた逆張り指値は割れて損切りになりやすい(実測でも弱い隣接節目の逆張りは勝率が低い)。' +
-    '近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク追随(逆指値)を優先する) ' +
-    '(★方向と指値/逆指値の位置[必須]: 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置くと即約定・不正なので厳禁) ' +
-    '(★指値・逆指値の距離[必須]: 両方を出すときは現在値がその2つの価格の間に入るように置く[買い: 指値<現在値<逆指値 / 売り: 逆指値<現在値<指値。この場合は現在値との距離の上限は無いが、指値と逆指値の価格差[両者の幅]は400円以内にする=幅が広すぎる両面は出さない]。片方だけ[指値のみ/逆指値のみ]を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める。現在値から200円を超えて離れた片レッグは出さない[約定不能・古い価格になりやすいため]) ' +
-    '③それぞれのストップ(逆指値の損切り)を定めてください。ただしストップ幅に5円加えること。' +
-    '損切りは必ずエントリーの外側に置く(買いは各エントリーより下・売りは各エントリーより上)。指値レッグの損切りは limitEntry の外側・逆指値レッグの損切りは stopEntry の外側。内側/反対側には置かないこと。' +
-    '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。' +
-    `ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)。` +
-    '損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。' +
-    `${ceilingYen}円を超える損切りは出さない。` +
-    `この LC 上限(≤${ceilingYen}円)は、指値レッグ・逆指値レッグ それぞれ独立に満たすこと。` +
+    'あなたが考える現在のスキャル戦略を教えてください。\n' +
+    '①最初に買い/売りのどちらかを判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい)\n' +
+    '②指値(limitEntry)とブレイク新規(stopEntry)の両方の新規注文を作り、先に約定した方で取引します' +
+    '(指値とブレイク新規は、現在値からそれぞれ少なくとも50円以上離すこと。この最低距離は buy/sell のみで、range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)\n' +
+    // ★最優先=無条件の不等式。節目の話より前に単独行で置く(節目基準を主語にしない)。
+    '\n★【最優先: 価格の向き(無条件・例外なし)】現在値(refPrice)に対して、次の不等式を必ず満たすこと。\n' +
+    '  売り: stopEntry < refPrice < limitEntry\n' +
+    '  買い: limitEntry < refPrice < stopEntry\n' +
+    '  節目・トレンド・ニュースなど他のどんな理由よりもこの不等式を優先する。この不等式を満たさない数値は出力しないこと。\n' +
+    '  言い換えると 買いは 指値=現在値より下 / ブレイク新規=現在値より上、売りは 指値=現在値より上 / ブレイク新規=現在値より下。逆に置くと即約定・不正なので厳禁。\n' +
+    '  片方だけ(指値のみ/ブレイク新規のみ)を出すときも、その1本は上の不等式における自分の位置を必ず守る(例: 売りの stopEntry は必ず現在値より下)。\n' +
+    // ★語の分離。「逆指値」がブレイク新規と損切りの両方を指すため混線していた。
+    '\n★【用語の区別(混同禁止)】「逆指値」という語は2つの別物を指すので、必ず英語フィールド名で呼び分けること。\n' +
+    '  stopEntry = ブレイク新規(まだ建てていない・節目を抜けたら入るエントリー注文)。損切りではない。\n' +
+    '  stopLossForLimit / stopLossForStop = 損切り(すでに約定した建玉を守る注文)。エントリーではない。\n' +
+    '  rationale(説明文)でも「ブレイク新規」「損切り」と別の語で書き、両方をまとめて「逆指値」とだけ書かないこと。\n' +
+    '\n★【ブレイク新規(stopEntry)の置き場所】\n' +
+    '  売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く。' +
+    'レジスタンス(現在値より上)の上に置くのは買いのブレイク新規であり、売りプランでは絶対に出さない。\n' +
+    '  買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く。' +
+    'サポート(現在値より下)の下に置くのは売りのブレイク新規であり、買いプランでは絶対に出さない。\n' +
+    // ★節目基準は不等式の後。ここでの「内側/外側」は節目に対する相対で、上の不等式を覆さない。
+    '\n★【節目への置き方(約定させるため必須)】狙うサポート/レジスタンスちょうどには置かない。\n' +
+    '  指値は節目から最低5円(目安5〜10円)内側[現在値側]にずらす=買いはサポートの5〜10円上・売りはレジスタンスの5〜10円下。\n' +
+    '  ブレイク新規(stopEntry)は節目の0〜5円 外側[抜ける方向]にずらす=買いはレジスタンスの0〜5円上・売りはサポートの0〜5円下。\n' +
+    '  節目ちょうどだと指値は刺さらず/ブレイク新規はだまし[往復]に遭いやすいため。\n' +
+    '  ★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと(売りなら 指値=現在値より上のレジスタンス / ブレイク新規=現在値より下のサポート、買いは対称)。逆張り指値の「強さ」でもう一つ先の節目まで引きつけるのと同じ要領で、"向き"でも節目を選び直す。選び直しても適切な節目が無いときに限り、そのレッグを省く。\n' +
+    '\n★【逆張り指値の節目選び(重要)】反発を狙う指値は「十分に強い節目」にのみ置く(複数回タッチ/主要なラウンド/上位足の節目など)。\n' +
+    '  最も近い(隣接の)節目が弱い(タッチが浅い・新しい・薄い)場合は、そこで逆張りせず、もう一つ先のより強い節目まで引きつけて指値を置くこと。\n' +
+    '  手前の弱い節目は抜けやすく、そこに置いた逆張り指値は割れて損切りになりやすい(実測でも弱い隣接節目の逆張りは勝率が低い)。\n' +
+    '  近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク新規(stopEntry)を優先する。\n' +
+    '\n★【指値・ブレイク新規の距離(必須)】\n' +
+    '  両方を出すときは現在値がその2つの価格の間に入るように置く[買い: limitEntry<refPrice<stopEntry / 売り: stopEntry<refPrice<limitEntry]。' +
+    'この場合は現在値との距離の上限は無いが、指値とブレイク新規の価格差[両者の幅]は400円以内にする=幅が広すぎる両面は出さない。\n' +
+    '  片方だけ[指値のみ/ブレイク新規のみ]を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める。' +
+    '現在値から200円を超えて離れた片レッグは出さない[約定不能・古い価格になりやすいため]。\n' +
+    '\n③それぞれのストップ(損切り)を定めてください。ただしストップ幅に5円加えること。\n' +
+    '  損切りは必ずエントリーの外側に置く(買いは各エントリーより下・売りは各エントリーより上)。' +
+    '指値レッグの損切りは limitEntry の外側・ブレイク新規レッグの損切りは stopEntry の外側。内側/反対側には置かないこと。\n' +
+    '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。\n' +
+    `  ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)。\n` +
+    '  損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。' +
+    `${ceilingYen}円を超える損切りは出さない。\n` +
+    `  この LC 上限(≤${ceilingYen}円)は、指値レッグ・ブレイク新規レッグ それぞれ独立に満たすこと。\n` +
     rangeNote +
-    '逆指値(ブレイク追随)の新規は現在値/節目から離れるほど LC が広がりやすい。' +
-    `逆指値レッグの LC が${ceilingYen}円を超える場合は、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、` +
-    '(b)逆指値レッグを出さず「指値のみ」で取引する(stopEntry と stopLossForStop を出さない)。' +
-    `対称に、指値レッグが構造上どうしても${ceilingYen}円超になるなら、指値レッグを省いて逆指値のみにしてもよい。` +
-    `どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも${ceilingYen}円以内に収まらなければ direction:"none" で見送ること。` +
-    '(★rationale[説明文]は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」等と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」等と書かない。実際の注文と食い違う説明は禁止) ' +
+    '\n★【LC が収まらないときのレッグ省略】ブレイク新規(stopEntry)は現在値/節目から離れるほど LC が広がりやすい。\n' +
+    `  ブレイク新規レッグの LC が${ceilingYen}円を超える場合は、(a)ブレイク新規の価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、` +
+    '(b)ブレイク新規レッグを出さず「指値のみ」で取引する(stopEntry と stopLossForStop を出さない)。\n' +
+    `  対称に、指値レッグが構造上どうしても${ceilingYen}円超になるなら、指値レッグを省いてブレイク新規のみにしてもよい。\n` +
+    `  どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも${ceilingYen}円以内に収まらなければ direction:"none" で見送ること。\n` +
+    // ★出力直前の自己検算。ここで落とせば、コード側の検証で両レッグ落ち=見送り(none)になる事故を防げる。
+    '\n★【出力前の自己検算(必須)】出力前に limitEntry と stopEntry を refPrice と比較し、' +
+    '上の不等式が成立しないレッグは(省く前に、まず上の『節目を選び直す』を試すこと。それでも置けないときだけ)省略すること(対の損切りも一緒に省く)。' +
+    '両レッグとも成立しなければ direction:"none" にする。\n' +
+    '\n★rationale[説明文]は実際に出力したレッグだけ説明すること: ' +
+    'ブレイク新規レッグ(stopEntry)を出さないなら「ブレイク新規を置いた」等と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」等と書かない。実際の注文と食い違う説明は禁止。\n' +
     trendGuidance(trendVetoYen)
   );
 }
@@ -137,7 +238,7 @@ function trendGuidance(trendVetoYen: number): string {
     `『レンジ』は 10分・30分・MA20傾き のどれも横ばい(10分が±${trendVetoYen}円未満 かつ 30分が±${trendVetoYen * 2}円未満)` +
     'のときだけと判断すること。10分が静かでも 30分/MA20傾き が一方向に動いていればレンジではない' +
     '(『直近の勢い』行の末尾ラベルがこの合議の結論。『長い時間軸(1時間/2時間/当日始値比)』の数値も併せて参照すること)。' +
-    'トレンドと判断したら、トレンド方向の順張り(ブレイク逆指値/押し目・戻りの順張り)か direction:"none" で見送りにする。' +
+    'トレンドと判断したら、トレンド方向の順張り(ブレイク新規(stopEntry)/押し目・戻りの順張り)か direction:"none" で見送りにする。' +
     'トレンドに逆行する新規(順トレンドの高値売り/安値買いの戻り売買)は出さない。' +
     '★直近10分と長い時間軸が逆向きのとき(『直近の勢い』が「戻り」「押し目」表示)は、どちらのトレンドとも断定せず、' +
     'direction:"none"(見送り)を基本とすること。' +
@@ -175,9 +276,20 @@ function buildScalpSystemPromptBody(
   techLine: string,
 ): string {
   // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
+  // ★v0.9.44: 1行に詰め込んでいたレンジ指示を複数行に開き、「fade / breakout の2択(組で選ぶ)」へ書き直す。
+  //   4通り(上下×指値/逆指値)の並列表記だと AI が組を混ぜて「下=買い逆指値」等の定義上ありえない配置を出し、
+  //   lower.entry<現在値 と両立せず parse で落ちて見送りになっていた。
   const rangeLine = rangeEnabled
-    ? `\n- direction は buy / sell / none / range のいずれか。明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随逆指値)・entry・stopLoss を出す。upper.entry は現在値超・lower.entry は現在値未満。レンジ内逆張りは 上=売り指値 / 下=買い指値、抜け追随は 上=買い逆指値 / 下=売り逆指値。★fade(両指値)と breakout(両側逆指値)の使い分け[重要]: 上下の反応帯の幅が${ceilingYen * 2}円より広ければ両指値(レンジ内逆張り)、${ceilingYen * 2}円以下の狭い横這いなら両側逆指値(上=買い逆指値/下=売り逆指値)にすること。損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。両レッグとも type:"stop" の両側逆指値は正当なプランとして受け付ける(片方 limit・片方 stop の混在も可)。各レッグの初期LCも上限(≤${ceilingYen}円)内に収める。★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。方向性が明確なら従来どおり buy/sell を優先。`
-    : `\n- direction は buy / sell / none のみ。range(両面ストラドル)は出さないこと。`;
+    ? `\n- ★レンジ両面(direction:"range"): 明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随のブレイク新規)・entry・stopLoss を出す。
+  ★【レンジは2択(組で選ぶ・必須)】次の2つの「組」のどちらか一方を丸ごと選ぶこと。組を混ぜない(4通りから好きな2つを拾わない)。
+   ・fade(両側指値/type:"limit")の組 = 上(upper)は 売り指値[side:"sell"/type:"limit"] / 下(lower)は 買い指値[side:"buy"/type:"limit"]
+   ・breakout(両側ブレイク新規/type:"stop")の組 = 上(upper)は 買いのブレイク新規[side:"buy"/type:"stop"] / 下(lower)は 売りのブレイク新規[side:"sell"/type:"stop"]
+   ※組を混ぜると上下が同じ方向の注文になり、それはレンジではなく通常の buy/sell プランと同じものになるため。
+  ★どちらの組を選ぶか[重要]: 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。
+  ★上下の位置(無条件): upper.entry > 現在値 > lower.entry。この不等式を満たさない数値は出力しないこと。※買いのブレイク新規は必ず現在値より上・売りのブレイク新規は必ず現在値より下なので、「下(lower)に買いのブレイク新規」「上(upper)に売りのブレイク新規」は定義上ありえない。絶対に出さないこと。
+  各レッグの初期LCも上限(≤${ceilingYen}円)内に収める。
+  ★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。方向性が明確なら従来どおり buy/sell を優先。`
+    : `\n- range(両面ストラドル)は出さないこと(direction に range を使わない)。`;
   return `あなたは日経225先物(NIY=F)のスキャルピングを専門とするトレーダーです。
 手元の【市場の現状】(現在価格・テクニカル節目・直近アラート・本日OHLC・ニュース)と、
 利用可能なデータツール(explain_move / query_alerts / price_history / web_search)を必要に応じて使い、
@@ -185,18 +297,39 @@ function buildScalpSystemPromptBody(
 
 制約:
 - ★まず自分で現在のレジーム(regime: trend_up=上昇トレンド / trend_down=下降トレンド / range=レンジ / unclear=不明)と、その判断・計画への確信度(confidence: 0〜100)を下し、JSON の regime と confidence に入れてから direction 以下の計画を出すこと(自分の相場観を明示してから計画する)。渡された構造化データ(数値の足/節目/ボラ/スイング/アラート結果/自分の成績)を最優先の根拠にする。
-- direction は buy / sell / none のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
-- buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、逆指値(stopEntry)はブレイク追随側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/逆指値のみ)でもよい。
-- ★【節目への置き方(約定させるため必須)】指値・逆指値を狙う節目(サポート/レジスタンス)ちょうどに置かないこと。指値(押し目買い/戻り売り)は節目より 5〜10円 内側(現在値側)にずらす: 買いは対象サポートの 5〜10円上、売りは対象レジスタンスの 5〜10円下。逆指値(ブレイク追随)は節目より 0〜5円 外側(抜ける方向)にずらす: 買いは対象レジスタンスの 0〜5円上、売りは対象サポートの 0〜5円下。理由: 指値を節目ちょうどに置くと反応して約定しない(刺さらない)ことが多く、逆指値を節目ちょうどに置くとだまし(往復)に遭いやすい。range の各レッグ(limit=逆張り指値 / stop=抜け追随逆指値)も同じ置き方にする。★逆張り(指値)の節目選び: 反発を狙う指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足の節目)にのみ置く。最も近い(隣接の)節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先のより強い節目まで引きつけて置くこと。手前の弱い節目は抜けやすく、逆張り指値は割れて損切りになりやすい(実測でも低勝率)。近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク追随(逆指値)を優先する。
-- ★【方向と指値/逆指値の位置(必須)】現在値(refPrice)に対して: 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置く(買いなのに指値が現在値の上/売りなのに指値が現在値の下 等)と即約定してしまい不正なので厳禁。
-- ★【指値・逆指値の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置く(買い: 指値<現在値<逆指値 / 売り: 逆指値<現在値<指値。この場合は現在値との距離の上限は無いが、指値と逆指値の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない)。片方だけ(指値のみ/逆指値のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること。現在値から200円を超えて離れた片レッグは出さない(約定不能・古い価格になりやすいため)。
-- それぞれの約定時の損切り逆指値(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、逆指値レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
-- ★【損切りの向き(必須)】損切り(stopLossForLimit / stopLossForStop)は必ずエントリーの外側に置くこと: 買い(long)は各エントリーより下、売り(short)は各エントリーより上。指値レッグの損切りは limitEntry の外側、逆指値レッグの損切りは stopEntry の外側に置く。損切りをエントリーの内側や反対側(買いなのに上・売りなのに下)に置いてはならない(その建玉を保護しない不正なストップになる)。range の各レッグも同様に、buy レッグの stopLoss は entry の下・sell レッグの stopLoss は entry の上に置く。
+- direction は buy / sell / none${rangeEnabled ? ' / range' : ''} のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
+- buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、ブレイク新規(stopEntry)は節目を抜けた側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/ブレイク新規のみ)でもよい。
+- ★【最優先: 価格の向き(無条件・例外なし)】現在値(refPrice)に対して、次の不等式を必ず満たすこと。
+  売り: stopEntry < refPrice < limitEntry
+  買い: limitEntry < refPrice < stopEntry
+  節目・トレンド・ニュースなど他のどんな理由よりもこの不等式を優先する。この不等式を満たさない数値は出力しないこと。
+  言い換えると 買いは 指値=現在値より下 / ブレイク新規=現在値より上、売りは 指値=現在値より上 / ブレイク新規=現在値より下。逆に置く(買いなのに指値が現在値の上/売りなのに指値が現在値の下 等)と即約定してしまい不正なので厳禁。
+  片方だけ(指値のみ/ブレイク新規のみ)を出すときも、その1本は上の不等式における自分の位置を必ず守る(例: 売りの stopEntry は必ず現在値より下)。
+- ★【用語の区別(混同禁止)】「逆指値」という語は2つの別物を指すので、必ず英語フィールド名で呼び分けること。
+  stopEntry = ブレイク新規(まだ建てていない・節目を抜けたら入るエントリー注文)。損切りではない。
+  stopLossForLimit / stopLossForStop = 損切り(すでに約定した建玉を守る注文)。エントリーではない。
+  rationale(説明文)でも「ブレイク新規」「損切り」と別の語で書き、両方をまとめて「逆指値」とだけ書かないこと。
+- ★【ブレイク新規(stopEntry)の置き場所】
+  売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く。レジスタンス(現在値より上)の上に置くのは買いのブレイク新規であり、売りプランでは絶対に出さない。
+  買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く。サポート(現在値より下)の下に置くのは売りのブレイク新規であり、買いプランでは絶対に出さない。
+- ★【節目への置き方(約定させるため必須)】指値・ブレイク新規を狙う節目(サポート/レジスタンス)ちょうどに置かないこと。
+  指値(押し目買い/戻り売り)は節目より 5〜10円 内側(現在値側)にずらす: 買いは対象サポートの 5〜10円上、売りは対象レジスタンスの 5〜10円下。
+  ブレイク新規(stopEntry)は節目より 0〜5円 外側(抜ける方向)にずらす: 買いは対象レジスタンス(現在値より上)の 0〜5円上、売りは対象サポート(現在値より下)の 0〜5円下。
+  理由: 指値を節目ちょうどに置くと反応して約定しない(刺さらない)ことが多く、ブレイク新規を節目ちょうどに置くとだまし(往復)に遭いやすい。
+  ★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと(売りなら 指値=現在値より上のレジスタンス / ブレイク新規=現在値より下のサポート、買いは対称)。逆張り指値の「強さ」でもう一つ先の節目まで引きつけるのと同じ要領で、"向き"でも節目を選び直す。選び直しても適切な節目が無いときに限り、そのレッグを省く。
+  range の各レッグ(limit=逆張り指値 / stop=抜け追随のブレイク新規)も同じ置き方にする。
+- ★【逆張り(指値)の節目選び】反発を狙う指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足の節目)にのみ置く。最も近い(隣接の)節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先のより強い節目まで引きつけて置くこと。手前の弱い節目は抜けやすく、逆張り指値は割れて損切りになりやすい(実測でも低勝率)。近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク新規(stopEntry)を優先する。
+- ★【指値・ブレイク新規の距離(必須)】
+  両方を出すときは現在値がその2つの価格の間に入るように置く(買い: limitEntry<refPrice<stopEntry / 売り: stopEntry<refPrice<limitEntry。この場合は現在値との距離の上限は無いが、指値とブレイク新規の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない)。
+  片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること。現在値から200円を超えて離れた片レッグは出さない(約定不能・古い価格になりやすいため)。
+- それぞれの約定時の損切り(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、ブレイク新規レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
+- ★【損切りの向き(必須)】損切り(stopLossForLimit / stopLossForStop)は必ずエントリーの外側に置くこと: 買い(long)は各エントリーより下、売り(short)は各エントリーより上。指値レッグの損切りは limitEntry の外側、ブレイク新規レッグの損切りは stopEntry の外側に置く。損切りをエントリーの内側や反対側(買いなのに上・売りなのに下)に置いてはならない(その建玉を保護しない不正なストップになる)。range の各レッグも同様に、buy レッグの stopLoss は entry の下・sell レッグの stopLoss は entry の上に置く。
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。${ceilingYen}円を超える損切りは出さない。
-- ★この LC 上限(≤${ceilingYen}円)は 指値レッグ・逆指値レッグ それぞれ独立に 満たすこと。逆指値(ブレイク追随)は現在値/節目から離れるほど LC が広がりやすい。逆指値レッグの LC が${ceilingYen}円を超えるなら、(a)逆指値の新規価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、(b)逆指値レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上${ceilingYen}円超になるなら指値レッグを省いて逆指値のみにしてもよい。どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
+- ★この LC 上限(≤${ceilingYen}円)は 指値レッグ・ブレイク新規レッグ それぞれ独立に 満たすこと。ブレイク新規(stopEntry)は現在値/節目から離れるほど LC が広がりやすい。ブレイク新規レッグの LC が${ceilingYen}円を超えるなら、(a)ブレイク新規の価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、(b)ブレイク新規レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上${ceilingYen}円超になるなら指値レッグを省いてブレイク新規のみにしてもよい。どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
+- ★【出力前の自己検算(必須)】出力前に limitEntry と stopEntry を refPrice と比較し、上の不等式が成立しないレッグは(省く前に、まず上の『節目を選び直す』を試すこと。それでも置けないときだけ)省略すること(対の損切りも一緒に省く)。両レッグとも成立しなければ direction:"none" にする。
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
 - すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
-- rationale は日本語で判断根拠を簡潔に述べる。★rationale は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)。${trendVetoYen > 0 ? `
+- rationale は日本語で判断根拠を簡潔に述べる。★rationale は実際に出力したレッグだけ説明すること: ブレイク新規レッグ(stopEntry)を出さないなら「ブレイク新規を置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)。${trendVetoYen > 0 ? `
 - ★【レジーム/勢い】${trendGuidance(trendVetoYen)}` : ''}${techLine}`;
 }
 
@@ -207,6 +340,39 @@ export const SCALP_SYSTEM_PROMPT = buildScalpSystemPrompt();
 export interface KnobModes {
   lcFloor: KnobSource; lcCeiling: KnobSource; trendVeto: KnobSource;
   cooldown: KnobSource; bias: KnobSource; range: KnobSource;
+}
+
+/** ★v0.9.44: buildScalpPlan がインラインで組み立てていた注記を純関数化(出力は byte 不変=挙動不変)。
+ *  目的は「AI に届く文字列の生成箇所」を全てテストで固定できるようにすること。旧実装では biasNote /
+ *  heldNote / armedNote / visionNote がテストから到達できず、新ルールとの矛盾が入り込んでも検出できなかった。 */
+
+/** エントリー方向の制約(手動バイアス時のみ)。'none' は '' = 注入なし。 */
+export function buildBiasNote(bias: ScalpBias): string {
+  return bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
+       : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
+       : '';
+}
+
+/** ドテン(保有中の反転評価=held-eval)。未指定(flat-plan)は '' = 従来と byte 一致。 */
+export function buildHeldNote(held?: { dir: 'buy' | 'sell'; entry: number }): string {
+  if (!held) return '';
+  return `\n\n【保有中(ドテン評価)】現在 ${held.dir === 'buy' ? 'long(買い)' : 'short(売り)'}@${Math.round(held.entry)} を保有中です。`
+    + `ドテン(反転=決済して同時に反対方向へ新規)が許可されています。決済が妥当かつ反対方向へ強く動く場面だと判断したときだけ、`
+    + `direction を保有と反対(${held.dir === 'buy' ? 'sell' : 'buy'})にした反転プランを返してよい(常にではなく、その場面だけ)。`
+    + `反転が不要なら direction:"none" で保有継続とすること。`;
+}
+
+/** レンジ再評価(未約定→ブレイク)。未指定(通常)は '' = 従来と byte 一致。 */
+export function buildArmedNote(ctx?: { mode: 'range-fade'; ageMs: number; avgMs: number }): string {
+  if (!ctx) return '';
+  return `\n\n【レンジ未約定(ブレイク再評価)】現在レンジ両指値を ARM後 ${Math.round(ctx.ageMs / 60_000)}分 未約定`
+    + `(平均 ${Math.round(ctx.avgMs / 60_000)}分 を超過)。レンジが反発せず抜けそうなら breakout(両側ブレイク新規・range 各レッグ type:"stop")の組へ`
+    + `切替えたプランを返してよい(組は混ぜない)。反発継続が見込めるなら現状維持(同じ fade=両側指値の組)。場面が崩れたなら direction:none。`;
+}
+
+/** チャート画像を添付した時だけの注記。 */
+export function buildVisionNote(hasImage: boolean): string {
+  return hasImage ? '添付のチャート画像(当日の日経225先物のローソク足・主要水準・直近アラート)も判断材料にすること。\n\n' : '';
 }
 
 /** ★v0.7.56: AI に委任した knob だけ「この値はあなたが決める(自由・根拠を述べよ)」を動的に注入する。
@@ -235,11 +401,12 @@ export function buildDelegationNote(
   }
   if (modes.trendVeto === 'ai') {
     lines.push(
-      `トレンド/レンジの見極め: 固定の数値閾値は課さない=あなたが判定する。判断ロジック: 直近10〜30分がほぼ横ばいのときだけ「レンジ」とみなし逆張り(フェード指値)してよい。` +
+      `トレンド/レンジの見極め: 固定の数値閾値は課さない=あなたが判定する。判断ロジック: 直近10〜30分がほぼ横ばいのときだけ「レンジ」とみなす。` +
+      `レンジと判断したときの取り方は上の2択に従うこと(上下の反応帯の幅が広ければ fade=両側指値の組 / 狭い横這いなら breakout=両側ブレイク新規の組。狭いレンジで逆張りしない)。` +
       `直近が一方向に明確に動いていれば「トレンド」であり、それに逆行する新規(順トレンドの高値を売る/安値を買う戻り売買)は出さないこと。` +
       `★根拠: 生きたトレンドをフェードすると負ける(monitorの実データで勝率約2割・9年バックテストでも不利)ことが確認済み。` +
       `上で渡す「直近の勢い(10分/30分の値動き・MA20傾き・直近高安内の位置)」の数値を必ず根拠に使い、regime と confidence を自分で下すこと。` +
-      `トレンドなら順張り(押し目/戻りの順張り or ブレイク追随)か direction:"none" で見送りにする。`,
+      `トレンドなら順張り(押し目/戻りの順張り or ブレイク新規(stopEntry))か direction:"none" で見送りにする。`,
     );
   }
   if (modes.bias === 'ai') {
@@ -247,7 +414,8 @@ export function buildDelegationNote(
   }
   if (modes.range === 'ai') {
     lines.push(
-      'レンジ両面: 明確な方向性が無く上下に反応帯があると判断すれば range(両面=現在値の上下に指値/逆指値を1本ずつ)を提案してよい。' +
+      'レンジ両面: 明確な方向性が無く上下に反応帯があると判断すれば range(両面=現在値の上下に1レッグずつ置く両面ストラドル)を提案してよい。' +
+      '取り方は上の2択(fade=両側指値の組 / breakout=両側ブレイク新規の組)に従い、組は混ぜないこと。' +
       '★連敗が続いている(単方向のエントリーが機能していない)ときは、相場がレンジ(往復)で単方向が負け続けている可能性が高い。' +
       'その場合は上の「直近の成績(連敗)」を根拠に、range(両面)へ切り替えた方がよいかを必ず検討すること。' +
       'ただしトレンドが明確なら range にしない(生きたトレンドの両側フェードは不利=負ける)。真に横ばい/往復のときだけ range にする。');
@@ -281,10 +449,10 @@ export function scalpJsonInstruction(
     `  "regime": "trend_up" | "trend_down" | "range" | "unclear",  // まず自分で現在の相場レジームを判定して入れる\n` +
     `  "confidence": number,        // このレジーム判断と計画への確信度(0〜100の整数)\n` +
     `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の価格4つは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の価格4つは不要)' : ''}\n` +
-    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(逆指値のみ)の時は省略(stopLossForLimit と対で省く)\n` +
-    `  "stopEntry": number,         // 逆指値(ブレイク側の新規)。none/range または逆指値レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
-    `  "stopLossForLimit": number,  // 指値約定時の損切り逆指値(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
-    `  "stopLossForStop": number,   // 逆指値約定時の損切り逆指値(${lcNote})。逆指値レッグを出さない/none の時は stopEntry と対で省略\n` +
+    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(ブレイク新規のみ)の時は省略(stopLossForLimit と対で省く)\n` +
+    `  "stopEntry": number,         // ブレイク新規(ブレイク側の新規エントリー。損切りではない)。none/range またはブレイク新規レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
+    `  "stopLossForLimit": number,  // 指値約定時の損切り(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
+    `  "stopLossForStop": number,   // ブレイク新規約定時の損切り(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
     rangeShape +
     `  "rationale": string,         // 判断理由(日本語)。none の時は見送り理由\n` +
     `  "refPrice": number           // 計画時に見た現在値(${refPrice})\n` +
@@ -394,7 +562,7 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   // ★見送り(direction:"none"): 価格は不要。rationale + refPrice のみで ok:true の正当な「見送り」応答。
   //   これはエラー(ok:false)ではない=plan-failed とは区別される。
   if (o.direction === 'none') {
-    return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
+    return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }), noneReason: 'ai' };
   }
   // ★レンジ両面ストラドル(direction:"range"): range.upper / range.lower を各レッグ検証。
   //   幾何(upper.entry>refPrice>lower.entry)を満たさない/壊れているレッグは落とす。片レッグでも残れば range として通す。
@@ -403,6 +571,9 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     const rangeObj = typeof o.range === 'object' && o.range !== null ? o.range as Record<string, unknown> : {};
     let upper = parseRangeLeg(rangeObj.upper);
     let lower = parseRangeLeg(rangeObj.lower);
+    // ★v0.9.44(記録専用): 落とす前の生数値を控える。none 化したときログ1行に出す(採否には使わない)。
+    const upper0 = upper;
+    const lower0 = lower;
     // ★脱落理由の記録(表示専用・v0.9.37): AI の rationale は「上下両面に置いた」と語るのに画面は片側だけ、
     //   という「理由の無い片面」を無くす。落とす前の side を控え、enforcePlanConstraints と同じ流儀
     //   (rangeDropNote + \n 連結)で rationale に追記する。採否ロジック(何を落とすか)は一切変えない。
@@ -420,7 +591,11 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) { lower = null; lowerReason = 'stopSide'; }
     if (!upper && !lower) {
       // 両脚とも落ちた見送り(none)は rationale を据え置く(enforce の両脚落ちと同じ既存挙動)。
-      return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
+      return {
+        ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }),
+        noneReason: pickNoneReason(upperReason, lowerReason),
+        noneLegs: noneLegsFromRange(upper0, lower0),
+      };
     }
     // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
     const notes: string[] = [];
@@ -463,7 +638,19 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!) && entrySideOk(o.direction, 'limit', limitEntry!, refPrice);
   const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!) && entrySideOk(o.direction, 'stop', stopEntry!, refPrice);
   if (!limitLegOk && !stopLegOk) {
-    return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
+    // ★v0.9.44(記録専用): どの検証で落ちたかをレッグ単位で判定して残す(採否は不変)。
+    //   検証順(stopSideOk → entrySideOk)に合わせ、レッグ不在=missing / SL 向き違反=stopSide / 残りは geometry。
+    const limitReason: NoneReason =
+      !hasLimitLeg ? 'missing'
+      : !stopSideOk(o.direction, limitEntry!, stopLossForLimit!) ? 'stopSide' : 'geometry';
+    const stopReason: NoneReason =
+      !hasStopLeg ? 'missing'
+      : !stopSideOk(o.direction, stopEntry!, stopLossForStop!) ? 'stopSide' : 'geometry';
+    return {
+      ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }),
+      noneReason: pickNoneReason(limitReason, stopReason),
+      noneLegs: noneLegsFromDirectional(o.direction, { limitEntry, stopLossForLimit, stopEntry, stopLossForStop }, false, false),
+    };
   }
   // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
   // 存在し、かつ向きが正しいレッグの価格のみ plan に入れる(欠落/向き違反レッグは省略=undefined)。
@@ -606,19 +793,25 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     '■ エントリー',
     `- 初期LC(損切り)幅: 下限${i.floor.value}円${knobTag(i.floor.mode)} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`,
     '- 損切りは本来のストップ幅に +5円 加える(往復のダマシ緩衝)',
-    '- 指値/逆指値は現在値からそれぞれ最低 50円 離す',
-    '- 節目への置き方(約定重視・節目ちょうどには置かない): 指値=狙う節目から最低5円(目安5〜10円)内側(現在値側)[買い=サポート+5〜10円 / 売り=レジスタンス−5〜10円]。逆指値=狙う節目の 0〜5円 外側(抜ける方向)[買い=レジスタンス+0〜5円 / 売り=サポート−0〜5円]。理由: 節目ちょうどだと指値は刺さらず・逆指値はだまし(往復)に遭いやすい',
-    '- 逆張り指値の節目選び: 反発狙いの指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足)にのみ置く。隣接(最も近い)の節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先の強い節目まで引きつける。手前の弱い節目は抜けやすく逆張り指値は割れて損切りになりやすい(実測で低勝率)。近くに強い節目が無ければ逆張りは見送り、順方向のブレイク追随(逆指値)を優先',
-    '- ★方向と指値/逆指値の位置(必須): 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置くと即約定・不正なので厳禁',
-    '- ★指値・逆指値の距離(必須): 両方を出すときは現在値が2つの価格の間に入るように置く(買い: 指値<現在値<逆指値 / 売り: 逆指値<現在値<指値。現在値との距離上限は無いが、指値と逆指値の価格差は400円以内=幅が広すぎる両面は出さない)。片方だけ(指値のみ/逆指値のみ)を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める(200円超離れた片レッグは出さない=約定不能・古い価格対策)',
-    '- ★rationale(説明文)は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)',
+    '- 指値/ブレイク新規は現在値からそれぞれ最低 50円 離す(この最低距離は buy/sell のみ。range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)',
+    // ★v0.9.44: 語彙は system prompt / question と統一する(stopEntry=ブレイク新規 / stopLossFor*=損切り)。
+    //   ただし spec は「設定値＋委任タグ」が役割なので、規則の全文は重複させず不等式(最重要)だけを置く
+    //   (用語の区別・ブレイク新規の置き場所・出力前の自己検算は system prompt と question に完全な形で入る)。
+    '- ★最優先: 価格の向き(無条件・例外なし) 現在値(refPrice)に対して次の不等式を必ず満たすこと。'
+      + ' 売り: stopEntry < refPrice < limitEntry / 買い: limitEntry < refPrice < stopEntry。'
+      + '節目・トレンド・ニュースなど他のどんな理由よりもこの不等式を優先する。この不等式を満たさない数値は出力しないこと。'
+      + '言い換えると 買いは 指値=現在値より下 / ブレイク新規=現在値より上、売りは 指値=現在値より上 / ブレイク新規=現在値より下。逆に置くと即約定・不正なので厳禁',
+    '- 節目への置き方(約定重視・節目ちょうどには置かない): 指値=狙う節目から最低5円(目安5〜10円)内側(現在値側)[買い=サポート+5〜10円 / 売り=レジスタンス−5〜10円]。ブレイク新規(stopEntry)=狙う節目の 0〜5円 外側(抜ける方向)[買い=レジスタンス+0〜5円 / 売り=サポート−0〜5円]。理由: 節目ちょうどだと指値は刺さらず・ブレイク新規はだまし(往復)に遭いやすい。★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと(売りなら 指値=現在値より上のレジスタンス / ブレイク新規=現在値より下のサポート、買いは対称)。逆張り指値の「強さ」でもう一つ先の節目まで引きつけるのと同じ要領で、"向き"でも節目を選び直す。選び直しても適切な節目が無いときに限り、そのレッグを省く。',
+    '- 逆張り指値の節目選び: 反発狙いの指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足)にのみ置く。隣接(最も近い)の節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先の強い節目まで引きつける。手前の弱い節目は抜けやすく逆張り指値は割れて損切りになりやすい(実測で低勝率)。近くに強い節目が無ければ逆張りは見送り、順方向のブレイク新規(stopEntry)を優先',
+    '- ★指値・ブレイク新規の距離(必須): 両方を出すときは現在値が2つの価格の間に入るように置く(買い: limitEntry<refPrice<stopEntry / 売り: stopEntry<refPrice<limitEntry。現在値との距離上限は無いが、指値とブレイク新規の価格差は400円以内=幅が広すぎる両面は出さない)。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める(200円超離れた片レッグは出さない=約定不能・古い価格対策)',
+    '- ★rationale(説明文)は実際に出力したレッグだけ説明すること: ブレイク新規レッグ(stopEntry)を出さないなら「ブレイク新規を置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)',
     `- トレンド判定: 10分・30分・MA20傾き の合議(10分で±${i.trendVeto.value}円以上 / 30分で±${i.trendVeto.value * 2}円以上 / MA20が傾いており30分も±${i.trendVeto.value}円以上、のいずれか)でトレンド`
       + `=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止。`
       + `10分と長い時間軸が逆向きなら どちらとも断定せず見送り(direction:"none")を基本にする。`
       + `※コードの自動見送り(veto)は直近10分の±${i.trendVeto.value}円だけで判定する(長い時間軸のトレンドは veto されないので、逆行を出さないのはあなたの判断による)${knobTag(i.trendVeto.mode)}`,
     `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
     `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,
-    `- レンジ両面(現在値の上下に指値/逆指値を1本ずつ): ${i.range.value ? '有効' : '無効'}${knobTag(i.range.mode)}`,
+    `- レンジ両面(direction:"range"=現在値の上下に1レッグずつ置く両面ストラドル): ${i.range.value ? '有効' : '無効'}${knobTag(i.range.mode)}`,
     '- ★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く',
     '■ 決済(この建玉の決済逆指値はこう動く=エントリー計画時に前提とすること)',
     i.exitDesc,
@@ -690,7 +883,7 @@ export function rangeDropNote(
 export function enforcePlanConstraintsReport(
   plan: AiPlan,
   opts: EnforceOpts,
-): { plan: AiPlan; vetoFired: boolean } {
+): { plan: AiPlan; vetoFired: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs } {
   if (plan.direction === 'none') return { plan, vetoFired: false };
   const { ceilingYen, bias, trend, ceilingMode, lcHardMax } = opts;
   // ★v0.7.56: レッグの LC 幅ドロップ判定(mode 分岐 + 安全網)。既定(引数省略)は従来と完全一致。
@@ -708,6 +901,9 @@ export function enforcePlanConstraintsReport(
   if (plan.direction === 'range') {
     let upper = plan.range?.upper;
     let lower = plan.range?.lower;
+    // ★v0.9.44(記録専用): 落とす前の生数値を控える。両脚落ち=none のときログ1行に出す(採否には使わない)。
+    const upper0 = upper;
+    const lower0 = lower;
     // ★脚の脱落理由を記録(rationale 明記用)。AI の rationale は両脚を説明するが、以降のコード側 drop で
     //   片脚だけ表示される場合に「なぜ消えたか」を rationale に追記する。表示ロジック/脚/価格/veto は不変。
     const upperSide0 = upper?.side;
@@ -738,7 +934,11 @@ export function enforcePlanConstraintsReport(
     }
     // 両脚とも落ちたら none(既存挙動: rationale は元のまま据え置き)。
     if (!upper && !lower) {
-      return { plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired };
+      return {
+        plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired,
+        noneReason: pickNoneReason(upperReason, lowerReason),
+        noneLegs: noneLegsFromRange(upper0, lower0),
+      };
     }
     // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
     const notes: string[] = [];
@@ -756,7 +956,12 @@ export function enforcePlanConstraintsReport(
   // ★directional(buy/sell): leg side === direction。逆行(dropSide===direction: 強上昇の sell / 強下降の buy)なら
   //   plan 全体を見送り(none)に。順行はそのまま以降の LC・バイアス処理へ進む。
   if (dropSide && dropSide === plan.direction) {
-    return { plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired: true };
+    return {
+      plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired: true,
+      noneReason: 'trend',
+      // レッグ自体は妥当でも plan 全体が veto されるので ok:false(=最終プランに残らなかった)で記録する。
+      noneLegs: noneLegsFromDirectional(plan.direction, plan, false, false),
+    };
   }
 
   const out: AiPlan = { ...plan };
@@ -777,16 +982,44 @@ export function enforcePlanConstraintsReport(
 
   // 両レッグ落ちたら見送り(価格を持たない none)。
   if (out.limitEntry == null && out.stopEntry == null) {
-    return { plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false };
+    // ★v0.9.44(記録専用): レッグ不在=missing / SL 向き違反=stopSide / それ以外は LC 上限超=lc。
+    const dir = plan.direction;   // クロージャ内では絞り込みが効かないので const に束ねる。
+    const legReason = (entry?: number, sl?: number): NoneReason =>
+      entry == null || sl == null ? 'missing'
+      : !stopSideOk(dir, entry, sl) ? 'stopSide' : 'lc';
+    return {
+      plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false,
+      noneReason: pickNoneReason(legReason(plan.limitEntry, plan.stopLossForLimit), legReason(plan.stopEntry, plan.stopLossForStop)),
+      noneLegs: noneLegsFromDirectional(plan.direction, plan, false, false),
+    };
   }
 
   // 2. バイアス veto。
   if ((bias === 'long' && out.direction === 'sell') ||
       (bias === 'short' && out.direction === 'buy')) {
-    return { plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false };
+    return {
+      plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false,
+      noneReason: 'bias',
+      // ここまで残ったレッグは幾何/LC を満たしている(=bias だけで消えた)ので ok:true で記録する。
+      noneLegs: noneLegsFromDirectional(plan.direction, out, true, true),
+    };
   }
 
   return { plan: out, vetoFired: false };
+}
+
+/** レンジ無効設定なのに direction:"range" が返った場合の防御多重化(純関数・プロンプト指示の保険)。
+ *  rangeEnabled=false かつ range のときだけ none 化し、記録専用の noneReason='rangeDisabled' を添える。
+ *  それ以外は plan をそのまま返す(参照も維持=挙動不変)。 */
+export function enforceRangeEnabled(
+  plan: AiPlan, rangeEnabled: boolean,
+): { plan: AiPlan; noneReason?: NoneReason; noneLegs?: NoneLegs } {
+  if (rangeEnabled || plan.direction !== 'range') return { plan };
+  return {
+    plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice },
+    noneReason: 'rangeDisabled',
+    noneLegs: noneLegsFromRange(plan.range?.upper, plan.range?.lower),
+  };
 }
 
 // LC 幅の下限/上限の受理可能レンジ(サニタイズ用)。この範囲外・非有限・floor>ceiling は既定に戻す。
@@ -852,10 +1085,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       cooldown: cooldownD.mode, bias: biasD.mode, range: rangeD.mode },
     { floorYen, ceilingYen, hardMax },
   );
-  const biasNote =
-    bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
-  : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
-  : '';
+  const biasNote = buildBiasNote(bias);
   // ★v0.7.58: 戦略ロジックを定数込みで完全に AI へ渡す(エントリー全定数＋各項目の委任状態＋決済ロジックの実数値)。
   //   「何を委任するか」は設定(各 directive の mode)に従い【】で明示。決済数値は describeExitLogic()=private 実行時注入。
   const strategySpec = buildStrategySpec({
@@ -872,18 +1102,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   //   ※決済(手仕舞い)は既定の決済ロジックが担当する=AI に決済判断は委ねない。
   const aiTechnicalEnabled = resolveScalpAiTechnicalEnabled(profile);
   // ★ドテン(保有中の反転評価=held-eval): heldPosition が渡された時だけ注入する。flat-plan(未指定)では '' = 従来と byte 一致。
-  const heldNote = input.heldPosition
-    ? `\n\n【保有中(ドテン評価)】現在 ${input.heldPosition.dir === 'buy' ? 'long(買い)' : 'short(売り)'}@${Math.round(input.heldPosition.entry)} を保有中です。`
-      + `ドテン(反転=決済して同時に反対方向へ新規)が許可されています。決済が妥当かつ反対方向へ強く動く場面だと判断したときだけ、`
-      + `direction を保有と反対(${input.heldPosition.dir === 'buy' ? 'sell' : 'buy'})にした反転プランを返してよい(常にではなく、その場面だけ)。`
-      + `反転が不要なら direction:"none" で保有継続とすること。`
-    : '';
+  const heldNote = buildHeldNote(input.heldPosition);
   // ★レンジ再評価(未約定→ブレイク): armedContext が渡された時だけ注入する。未指定(通常)では '' = 従来と byte 一致。
-  const armedNote = input.armedContext
-    ? `\n\n【レンジ未約定(ブレイク再評価)】現在レンジ両指値を ARM後 ${Math.round(input.armedContext.ageMs / 60_000)}分 未約定`
-      + `(平均 ${Math.round(input.armedContext.avgMs / 60_000)}分 を超過)。レンジが反発せず抜けそうなら両逆指値(ブレイク追随・range 各レッグ type:stop)へ`
-      + `切替えたプランを返してよい。反発継続が見込めるなら現状維持(同じ両指値)。場面が崩れたなら direction:none。`
-    : '';
+  const armedNote = buildArmedNote(input.armedContext);
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
   const systemPrompt =
@@ -908,7 +1129,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // チャート画像がある時は判断材料にするよう明示的に指示する(ビジョン対応プロバイダ時のみ添付される)。
   const img = input.chartImageDataUrl && input.chartImageDataUrl.startsWith('data:image/')
     ? input.chartImageDataUrl : null;
-  const visionNote = img ? '添付のチャート画像(当日の日経225先物のローソク足・主要水準・直近アラート)も判断材料にすること。\n\n' : '';
+  const visionNote = buildVisionNote(!!img);
   const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, ceilingYen, rangeEnabled)}`;
 
   try {
@@ -931,16 +1152,28 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     const enforced = enforcePlanConstraintsReport(parsed.plan, {
       ceilingYen, bias, trend, ceilingMode, lcHardMax: hardMax,
     });
-    let finalPlan = enforced.plan;
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
-    if (!rangeEnabled && finalPlan.direction === 'range') {
-      finalPlan = { direction: 'none', rationale: finalPlan.rationale, refPrice: finalPlan.refPrice };
-    }
+    const guarded = enforceRangeEnabled(enforced.plan, rangeEnabled);
+    const finalPlan = guarded.plan;
     // AI 自己レジーム/確信度(記録のみ)を最終 plan に保持する。enforce/none 化で新規オブジェクトになり
     // 落ちることがあるため parsed.plan から再付与する(ゲートには使わない=挙動不変)。
     if (parsed.plan.regime !== undefined) finalPlan.regime = parsed.plan.regime;
     if (parsed.plan.confidence !== undefined) finalPlan.confidence = parsed.plan.confidence;
-    return { ok: true, plan: finalPlan, vetoFired: enforced.vetoFired };
+    const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: finalPlan, vetoFired: enforced.vetoFired };
+    // ★v0.9.44(記録専用): レンジの規約違反は **parsed.plan(AI の生出力)** に対して判定する。
+    //   enforce 後の plan で判定すると、トレンド veto / バイアスで片脚が落ちた回が upper/lower 不揃いになり
+    //   null=観測不能になる。「プロンプトが効いていない」ことを知りたい母集団はまさにそこなので生出力を見る。
+    const anomaly = describeRangeAnomaly(parsed.plan);
+    if (anomaly) out.rangeAnomaly = anomaly;
+    // ★v0.9.44(記録専用): 見送り(none)の経路と落としたレッグの生数値を surface する。
+    //   下流(rangeDisabled)→ enforce → parse の順に「最後に none 化したステージ」の理由を採る。
+    if (finalPlan.direction === 'none') {
+      const noneReason = guarded.noneReason ?? enforced.noneReason ?? parsed.noneReason;
+      const noneLegs = guarded.noneLegs ?? enforced.noneLegs ?? parsed.noneLegs;
+      if (noneReason) out.noneReason = noneReason;
+      if (noneLegs) out.noneLegs = noneLegs;
+    }
+    return out;
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

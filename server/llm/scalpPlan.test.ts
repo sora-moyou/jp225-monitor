@@ -6,9 +6,13 @@ import {
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
   lcLegExceeds, buildDelegationNote, buildStrategySpec, buildLegNote,
+  pickNoneReason, enforceRangeEnabled,
+  buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
   type ToolHandlers, type AiPlan, type KnobModes,
 } from './openai.js';
+import { describeRangeAnomaly } from '../signalTrade/rangeShape.js';
+import { formatMomentumLine, type Regime } from '../signalTrade/regime.js';
 
 // LLM 応答テキスト→AiPlan の検証(refPrice は必ず monitor 側の値で上書きされる)。
 const REF = 38250;
@@ -651,7 +655,7 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
   it('SCALP_SYSTEM_PROMPT(既定)にレッグ独立の LC 上限とレッグ省略の指針が含まれる', () => {
     expect(SCALP_SYSTEM_PROMPT).toContain('それぞれ独立');
     expect(SCALP_SYSTEM_PROMPT).toContain('指値のみ');
-    expect(SCALP_SYSTEM_PROMPT).toContain('逆指値のみ');
+    expect(SCALP_SYSTEM_PROMPT).toContain('ブレイク新規のみ');   // ★v0.9.44: 語彙統一(逆指値のみ→ブレイク新規のみ)
     // ★新既定: 上限65(旧95 は撤去)。
     expect(SCALP_SYSTEM_PROMPT).toContain('65');
     expect(SCALP_SYSTEM_PROMPT).not.toContain('95');
@@ -762,7 +766,7 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
     // v0.7.37 のレッグ独立・指値のみ/逆指値のみ回避は上限が変わっても保持。
     expect(q).toContain('それぞれ独立');
     expect(q).toContain('指値のみ');
-    expect(s).toContain('逆指値のみ');
+    expect(s).toContain('ブレイク新規のみ');   // ★v0.9.44: 語彙統一
     // v0.7.38 のギャップ知見も保持。
     expect(s).toContain('ギャップ');
     expect(s).toContain('検証済みの知見');
@@ -1779,5 +1783,644 @@ describe('buildScalpSystemPrompt テクニカル許可行(aiTechnicalEnabled)', 
     // ★決済(手仕舞い)は AI に委ねない=強制決済の指示は入れない。
     expect(on).toContain('決済(手仕舞い)は既定のロジックが担当する');
     expect(on).not.toContain('heldAction');
+  });
+});
+
+// ─── ★v0.9.44: プロンプトの構造化(1行詰め込みを解除し、無条件の不等式を最上位に置く) ───
+//   実データで「売りプランの指値/逆指値が買い側の幾何で出て両レッグ落ち→見送り(none)」が多発したため、
+//   ①不等式を最初に単独行で置く ②stopEntry(ブレイク新規)と stopLoss*(損切り)の語を分離する
+//   ③売りのブレイク新規はサポート側だと明示する ④節目基準はその後 ⑤出力前の自己検算 ⑥レンジは2択(組)、を固定する。
+
+describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
+  const targets = () => [buildScalpSystemPrompt(), buildScalpQuestion()];
+
+  it('無条件の不等式が売り/買いとも単独行で入る', () => {
+    for (const t of targets()) {
+      expect(t).toContain('売り: stopEntry < refPrice < limitEntry');
+      expect(t).toContain('買い: limitEntry < refPrice < stopEntry');
+      expect(t).toContain('この不等式を満たさない数値は出力しないこと');
+    }
+  });
+
+  it('不等式は節目の説明より前に置かれる(節目基準が主語にならない)', () => {
+    for (const t of targets()) {
+      const ineq = t.indexOf('売り: stopEntry < refPrice < limitEntry');
+      const level = t.indexOf('節目への置き方');
+      expect(ineq).toBeGreaterThanOrEqual(0);
+      expect(level).toBeGreaterThanOrEqual(0);
+      expect(ineq).toBeLessThan(level);
+    }
+  });
+
+  it('「逆指値」の語を分離する(stopEntry=ブレイク新規 / stopLossForStop=損切り)', () => {
+    for (const t of targets()) {
+      expect(t).toContain('stopEntry = ブレイク新規');
+      expect(t).toContain('stopLossForStop = 損切り');
+      expect(t).toContain('rationale');
+    }
+  });
+
+  it('売り/買いのブレイク新規の置き場所を明示する(サポート/レジスタンス)', () => {
+    for (const t of targets()) {
+      expect(t).toContain('売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く');
+      expect(t).toContain('買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く');
+      expect(t).toContain('売りプランでは絶対に出さない');
+      expect(t).toContain('買いプランでは絶対に出さない');
+    }
+  });
+
+  it('JSON 出力前の自己検算を要求する', () => {
+    for (const t of targets()) {
+      expect(t).toContain('出力前に limitEntry と stopEntry を refPrice と比較し');
+      // ★自己検算は「省く」を言い切らない: 出力直前という最も直近性の高い位置で②の「選び直す」を打ち消さないため。
+      expect(t).toContain('省く前に、まず上の『節目を選び直す』を試すこと');
+    }
+  });
+
+  it('レンジは2択(組を混ぜない)で、幅130円の使い分け基準は維持', () => {
+    for (const t of targets()) {
+      expect(t).toContain('fade(両側指値)の組');
+      expect(t).toContain('breakout(両側ブレイク新規');
+      expect(t).toContain('組を混ぜない');
+      expect(t).toContain('130円');
+      // 混在(片方 limit・片方 stop)は指示しない=プロンプト上は2択。
+      expect(t).not.toContain('混在も可');
+    }
+  });
+
+  it('既存の重要制約は1つも落ちていない(回帰)', () => {
+    for (const t of targets()) {
+      expect(t).toContain('それぞれ独立');        // LC上限のレッグ独立
+      expect(t).toContain('指値のみ');
+      expect(t).toContain('ブレイク新規のみ');
+      expect(t).toContain('45〜65円');            // LC 幅
+      expect(t).toContain('5〜10円');             // 節目の内側オフセット
+      expect(t).toContain('0〜5円');              // 節目の外側オフセット
+      expect(t).toContain('400円以内');           // 両レッグの幅上限 / レンジ上下幅
+      expect(t).toContain('200円以内');           // 片レッグの距離上限
+      expect(t).toContain('レンジの距離');
+      expect(t).toContain('直近の勢い');          // トレンド判断
+      expect(t).toContain('実際に出力したレッグだけ説明');
+    }
+    // ギャップ知見は system prompt 側・現在値からの最低距離(50円)は question 側の担当(従来どおりの分担)。
+    expect(buildScalpSystemPrompt()).toContain('検証済みの知見');
+    expect(buildScalpSystemPrompt()).toContain('ギャップ');
+    expect(buildScalpQuestion()).toContain('50円以上離す');
+  });
+});
+
+// ─── ★v0.9.44: 見送り(none)の経路計測(記録専用・挙動不変) ───
+
+describe('pickNoneReason(理由の優先順位・純関数)', () => {
+  it('両脚とも理由なしは undefined', () => {
+    expect(pickNoneReason(null, null)).toBeUndefined();
+  });
+  it('片方だけならその理由', () => {
+    expect(pickNoneReason('geometry', null)).toBe('geometry');
+    expect(pickNoneReason(null, 'lc')).toBe('lc');
+  });
+  it('異なるときは上流ステージ(trend>bias>lc>geometry>stopSide>missing)を優先', () => {
+    expect(pickNoneReason('trend', 'bias')).toBe('trend');
+    expect(pickNoneReason('missing', 'geometry')).toBe('geometry');
+    expect(pickNoneReason('stopSide', 'lc')).toBe('lc');
+  });
+});
+
+describe('parseScalpPlan noneReason/noneLegs(記録専用)', () => {
+  it('AI 自身の見送り→ noneReason="ai"・noneLegs なし', () => {
+    const r = parseScalpPlan(JSON.stringify({ direction: 'none', rationale: '好機なし' }), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.noneReason).toBe('ai');
+      expect(r.noneLegs).toBeUndefined();
+    }
+  });
+
+  it('成立した plan には noneReason を付けない(挙動不変)', () => {
+    const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.noneReason).toBeUndefined();
+      expect(r.noneLegs).toBeUndefined();
+    }
+  });
+
+  it('売りが買い側の幾何(指値<現在値<逆指値)→ noneReason="geometry" と生数値', () => {
+    // ★本番で多発した形: 売りなのに 指値<逆指値。両レッグとも entrySideOk で落ちる。
+    const bad = {
+      direction: 'sell', rationale: '戻り売り', refPrice: 0,
+      limitEntry: 38200, stopLossForLimit: 38250,
+      stopEntry: 38300, stopLossForStop: 38350,
+    };
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.noneReason).toBe('geometry');
+      expect(r.noneLegs).toEqual({
+        dir: 'sell',
+        legs: [
+          { name: 'limit', entry: 38200, stopLoss: 38250, ok: false },
+          { name: 'stop', entry: 38300, stopLoss: 38350, ok: false },
+        ],
+      });
+    }
+  });
+
+  it('損切りの向きが両レッグとも不正→ noneReason="stopSide"', () => {
+    const bad = {
+      direction: 'buy', rationale: '押し目買い', refPrice: 0,
+      limitEntry: 38200, stopLossForLimit: 38240,   // buy なのに SL が上
+      stopEntry: 38350, stopLossForStop: 38400,     // buy なのに SL が上
+    };
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.noneReason).toBe('stopSide');
+      expect(r.noneLegs?.dir).toBe('buy');
+      expect(r.noneLegs?.legs.map(l => l.name)).toEqual(['limit', 'stop']);
+    }
+  });
+
+  it('range で両脚ともAIが出さない→ noneReason="missing"・noneLegs なし', () => {
+    const bad = { direction: 'range', rationale: 'レンジ', range: {} };
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.noneReason).toBe('missing');
+      expect(r.noneLegs).toBeUndefined();
+    }
+  });
+
+  it('range で上下が逆(upper<現在値<lower)→ noneReason="geometry"・生数値あり', () => {
+    const bad = {
+      direction: 'range', rationale: 'レンジ',
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38100, stopLoss: 38150 },
+        lower: { side: 'buy', type: 'limit', entry: 38400, stopLoss: 38350 },
+      },
+    };
+    const r = parseScalpPlan(JSON.stringify(bad), REF);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.plan.direction).toBe('none');
+      expect(r.noneReason).toBe('geometry');
+      expect(r.noneLegs).toEqual({
+        dir: 'range',
+        legs: [
+          { name: 'upper', entry: 38100, stopLoss: 38150, ok: false },
+          { name: 'lower', entry: 38400, stopLoss: 38350, ok: false },
+        ],
+      });
+    }
+  });
+});
+
+describe('enforcePlanConstraintsReport noneReason/noneLegs(記録専用)', () => {
+  const buyPlan2: AiPlan = {
+    direction: 'buy',
+    limitEntry: 38200, stopLossForLimit: 38150,
+    stopEntry: 38350, stopLossForStop: 38300,
+    rationale: '押し目買い', refPrice: REF,
+  };
+  const sellPlan2: AiPlan = {
+    direction: 'sell',
+    limitEntry: 38300, stopLossForLimit: 38340,
+    stopEntry: 38150, stopLossForStop: 38190,
+    rationale: '戻り売り', refPrice: REF,
+  };
+
+  it('トレンド veto(強上昇 sell)→ noneReason="trend"', () => {
+    const r = enforcePlanConstraintsReport(sellPlan2, { ceilingYen: 65, bias: 'none', trend: { dir: 'up', strong: true } });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('trend');
+    expect(r.noneLegs?.dir).toBe('sell');
+    expect(r.noneLegs?.legs.map(l => l.entry)).toEqual([38300, 38150]);
+  });
+
+  it('LC 上限で両レッグ落ち→ noneReason="lc"', () => {
+    const r = enforcePlanConstraintsReport(buyPlan2, { ceilingYen: 10, bias: 'none' });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('lc');
+    expect(r.noneLegs?.legs.length).toBe(2);
+  });
+
+  it('バイアス veto→ noneReason="bias"(レッグ自体は妥当なので ok:true)', () => {
+    const r = enforcePlanConstraintsReport(sellPlan2, { ceilingYen: 65, bias: 'long' });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('bias');
+    expect(r.noneLegs?.legs.every(l => l.ok)).toBe(true);
+  });
+
+  it('損切り向きの二重防御で両レッグ落ち→ noneReason="stopSide"', () => {
+    const bad: AiPlan = {
+      direction: 'buy',
+      limitEntry: 38200, stopLossForLimit: 38240,
+      stopEntry: 38350, stopLossForStop: 38390,
+      rationale: 'x', refPrice: REF,
+    };
+    const r = enforcePlanConstraintsReport(bad, { ceilingYen: 65, bias: 'none' });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('stopSide');
+  });
+
+  it('range 両脚が LC 上限超→ noneReason="lc"・生数値あり', () => {
+    const base: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38600 },
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 37900 },
+      },
+    };
+    const r = enforcePlanConstraintsReport(base, { ceilingYen: 65, bias: 'none' });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('lc');
+    expect(r.noneLegs?.dir).toBe('range');
+    expect(r.noneLegs?.legs.map(l => l.name)).toEqual(['upper', 'lower']);
+  });
+
+  it('range 両脚がバイアス veto(long で両脚 sell)→ noneReason="bias"', () => {
+    const base: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+        lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 },
+      },
+    };
+    const r = enforcePlanConstraintsReport(base, { ceilingYen: 65, bias: 'long' });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('bias');
+  });
+
+  it('none 入力/成立 plan には noneReason を付けない(挙動不変)', () => {
+    expect(enforcePlanConstraintsReport({ direction: 'none', rationale: 'x', refPrice: REF }, { ceilingYen: 65, bias: 'none' }).noneReason).toBeUndefined();
+    expect(enforcePlanConstraintsReport(buyPlan2, { ceilingYen: 65, bias: 'none' }).noneReason).toBeUndefined();
+  });
+});
+
+describe('enforceRangeEnabled(レンジ無効設定の防御多重化)', () => {
+  const rangePlan: AiPlan = {
+    direction: 'range', rationale: 'レンジ', refPrice: REF,
+    range: {
+      upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
+      lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },
+    },
+  };
+  it('rangeEnabled=true は素通し(挙動不変)', () => {
+    const r = enforceRangeEnabled(rangePlan, true);
+    expect(r.plan).toBe(rangePlan);
+    expect(r.noneReason).toBeUndefined();
+  });
+  it('rangeEnabled=false かつ range → none 化 & noneReason="rangeDisabled"', () => {
+    const r = enforceRangeEnabled(rangePlan, false);
+    expect(r.plan.direction).toBe('none');
+    expect(r.plan.rationale).toBe('レンジ');
+    expect(r.noneReason).toBe('rangeDisabled');
+    expect(r.noneLegs?.legs.map(l => l.name)).toEqual(['upper', 'lower']);
+  });
+  it('rangeEnabled=false でも directional は素通し', () => {
+    const p: AiPlan = { direction: 'buy', rationale: 'x', refPrice: REF };
+    expect(enforceRangeEnabled(p, false).plan).toBe(p);
+  });
+});
+
+// ─── ★v0.9.44: レンジ規約違反(2択に反する形)の観測(記録専用・弾かない) ───
+//   プロンプトでは「両側指値(fade) / 両側逆指値(breakout) の2択・組を混ぜない」と指示するが、
+//   コード側の受理は現状のまま(混在も通す)。弾かない方がバグを発見できる、というユーザー判断。
+//   AI が指示に反した形を出したら「プロンプトが効いていない証拠」なので、ログ1行で観測できるようにする。
+
+describe('describeRangeAnomaly(レンジ規約違反の観測・純関数)', () => {
+  const mk = (
+    us: 'buy' | 'sell', ut: 'limit' | 'stop', ls: 'buy' | 'sell', lt: 'limit' | 'stop',
+  ): AiPlan => ({
+    direction: 'range', rationale: 'レンジ', refPrice: REF,
+    range: {
+      upper: { side: us, type: ut, entry: 38400, stopLoss: us === 'buy' ? 38350 : 38450 },
+      lower: { side: ls, type: lt, entry: 38100, stopLoss: ls === 'buy' ? 38050 : 38150 },
+    },
+  });
+
+  it('規約どおりの fade(上=売り指値/下=買い指値)は null', () => {
+    expect(describeRangeAnomaly(mk('sell', 'limit', 'buy', 'limit'))).toBeNull();
+  });
+  it('規約どおりの breakout(上=買い逆指値/下=売り逆指値)は null', () => {
+    expect(describeRangeAnomaly(mk('buy', 'stop', 'sell', 'stop'))).toBeNull();
+  });
+  it('混在(片方 limit・片方 stop)→ plan-range-mixed と生数値', () => {
+    const a = describeRangeAnomaly(mk('buy', 'stop', 'buy', 'limit'));
+    expect(a?.tag).toBe('plan-range-mixed');
+    expect(a?.legs).toBe('upper=buy/stop@38400 lower=buy/limit@38100');
+  });
+  it('両側逆指値だが向きが逆(上=売り/下=買い)→ plan-range-sides', () => {
+    const a = describeRangeAnomaly(mk('sell', 'stop', 'buy', 'stop'));
+    expect(a?.tag).toBe('plan-range-sides');
+    expect(a?.legs).toBe('upper=sell/stop@38400 lower=buy/stop@38100');
+  });
+  it('両指値だが向きが逆(上=買い/下=売り)→ plan-range-sides', () => {
+    expect(describeRangeAnomaly(mk('buy', 'limit', 'sell', 'limit'))?.tag).toBe('plan-range-sides');
+  });
+  it('片脚だけ/range 以外は判定しない(null)', () => {
+    const oneLeg: AiPlan = {
+      direction: 'range', rationale: 'x', refPrice: REF,
+      range: { lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } },
+    };
+    expect(describeRangeAnomaly(oneLeg)).toBeNull();
+    const directional: AiPlan = { direction: 'buy', rationale: 'x', refPrice: REF };
+    expect(describeRangeAnomaly(directional)).toBeNull();
+  });
+});
+
+// ─── ★v0.9.44: 常時注入される3ビルダーの語彙/規約パリティ ───
+//   AI は system prompt・question・戦略仕様(buildStrategySpec)を同時に読む。片方で「stopEntry=ブレイク新規/
+//   stopLossFor*=損切り、語を分けて書け」と指示しながら、もう片方で旧来の曖昧な「逆指値」を使っていると
+//   どちらの規約に従うかで揺れる。3つとも同じ語彙・同じ順序であることを固定する。
+
+const SPEC_BASE = {
+  floor: { mode: 'manual' as const, value: 45 },
+  ceiling: { mode: 'manual' as const, value: 65 },
+  trendVeto: { mode: 'manual' as const, value: 100 },
+  cooldown: { mode: 'manual' as const, value: 90 },
+  bias: { mode: 'manual' as const, value: 'none' as const },
+  range: { mode: 'manual' as const, value: true },
+  hardMax: { enabled: true, value: 150 },
+  exitDesc: '【決済ロジック(phase-exit)】…利益ロックのラチェット床…',
+};
+
+describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
+  const all = () => [buildScalpSystemPrompt(), buildScalpQuestion(), buildStrategySpec(SPEC_BASE)];
+
+  it('無条件の不等式が3つとも同じ表記で入る', () => {
+    for (const t of all()) {
+      expect(t).toContain('売り: stopEntry < refPrice < limitEntry');
+      expect(t).toContain('買い: limitEntry < refPrice < stopEntry');
+      expect(t).toContain('この不等式を満たさない数値は出力しないこと');
+    }
+  });
+
+  // ★規則の全文は system prompt と question の2箇所に置き、strategySpec には重複させない
+  //   (spec の役割は「設定値＋委任タグ」。トークン膨張が後半の指示の遵守率を下げるため)。
+  //   spec に残すのは不等式だけ=【手動=固定・厳守】タグを持つ最高権威のブロックで規約が競合しないようにする。
+  it('用語の分離(stopEntry=ブレイク新規 / stopLossForStop=損切り)が system/question に入る', () => {
+    for (const t of [buildScalpSystemPrompt(), buildScalpQuestion()]) {
+      expect(t).toContain('stopEntry = ブレイク新規');
+      expect(t).toContain('stopLossForStop = 損切り');
+    }
+    // spec は重複させない代わりに、旧来の曖昧な「逆指値」も使わない(語彙の競合が起きない)。
+    expect(buildStrategySpec(SPEC_BASE)).not.toContain('stopEntry = ブレイク新規');
+  });
+
+  it('ブレイク新規の置き場所(売り=サポート/買い=レジスタンス)が system/question に入る', () => {
+    for (const t of [buildScalpSystemPrompt(), buildScalpQuestion()]) {
+      expect(t).toContain('売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く');
+      expect(t).toContain('買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く');
+      expect(t).toContain('売りプランでは絶対に出さない');
+      expect(t).toContain('買いプランでは絶対に出さない');
+    }
+  });
+
+  it('出力前の自己検算が system/question に入る', () => {
+    for (const t of [buildScalpSystemPrompt(), buildScalpQuestion()]) {
+      expect(t).toContain('出力前に limitEntry と stopEntry を refPrice と比較し');
+    }
+  });
+
+  it('buildStrategySpec の既存の定数/委任状態/決済注入は不変(回帰)', () => {
+    const s = buildStrategySpec({ ...SPEC_BASE, range: { mode: 'manual', value: false } });
+    expect(s).toContain('下限45円');
+    expect(s).toContain('上限65円');
+    expect(s).toContain('±100円');
+    expect(s).toContain('90秒');
+    expect(s).toContain('+5円');
+    expect(s).toContain('50円');
+    expect(s).toContain('安全上限 150円');
+    expect(s).toContain('ラチェット');
+    expect(s).toContain('【手動=固定・厳守】');
+    expect(s).toContain('節目への置き方');
+    expect(s).toContain('レンジの距離');
+  });
+});
+
+describe('「逆指値」が新規(エントリー)の意味で残っていない(v0.9.44)', () => {
+  // 許容するのは (a)用語の区別で曖昧語として引用している「逆指値」 (b)決済(exit)の意味の「決済逆指値」のみ。
+  // それ以外の裸の「逆指値」は新規の意味なので、ブレイク新規(stopEntry)へ置き換える。
+  const ALLOWED = ['「逆指値」', '決済逆指値'];
+  const strip = (s: string) => ALLOWED.reduce((acc, w) => acc.split(w).join(''), s);
+
+  const CASES: [string, string][] = [
+    ['system(range ON)', buildScalpSystemPrompt()],
+    ['system(range OFF)', buildScalpSystemPrompt(45, 65, false)],
+    ['system(テクニカルON)', buildScalpSystemPrompt(45, 65, true, 100, true)],
+    ['question(range ON)', buildScalpQuestion()],
+    ['question(range OFF)', buildScalpQuestion(45, 65, false)],
+    ['strategySpec(range ON)', buildStrategySpec(SPEC_BASE)],
+    ['strategySpec(range OFF)', buildStrategySpec({ ...SPEC_BASE, range: { mode: 'manual', value: false } })],
+    ['jsonInstruction(range ON)', scalpJsonInstruction(38250)],
+    ['jsonInstruction(range OFF)', scalpJsonInstruction(38250, 45, 65, false)],
+    ['delegationNote(全AI委任)', buildDelegationNote(
+      { lcFloor: 'ai', lcCeiling: 'ai', trendVeto: 'ai', cooldown: 'ai', bias: 'ai', range: 'ai' },
+      { floorYen: 45, ceilingYen: 65, hardMax: { enabled: true, value: 150 } },
+    )],
+  ];
+
+  for (const [name, text] of CASES) {
+    it(`${name} に新規の意味の「逆指値」が無い`, () => {
+      expect(strip(text)).not.toContain('逆指値');
+    });
+  }
+});
+
+// ─── ★v0.9.44: 評価で出た指摘の回帰固定(①②⑥⑦⑧) ───
+
+describe('レビュー指摘の修正(v0.9.44)', () => {
+  it('① strategySpec のレンジ両面行が「組」に踏み込まない(禁止した混在形を宣言しない)', () => {
+    const s = buildStrategySpec(SPEC_BASE);
+    expect(s).toContain('レンジ両面(direction:"range"=現在値の上下に1レッグずつ置く両面ストラドル)');
+    // 「指値/ブレイク新規を1本ずつ」は fade と breakout を1つずつ混ぜた形=新ルールが禁止した形。
+    expect(s).not.toContain('上下に指値/ブレイク新規を1本ずつ');
+    expect(s).not.toContain('上下に指値/逆指値を1本ずつ');
+    // 委任タグ・設定値の意味は不変。
+    expect(s).toContain('レンジ両面(direction:"range"=現在値の上下に1レッグずつ置く両面ストラドル): 有効【手動=固定・厳守】');
+  });
+
+  it('② 節目が不等式に反するときは「省く」の前に「選び直す」(3ビルダーとも)', () => {
+    for (const t of [buildScalpSystemPrompt(), buildScalpQuestion(), buildStrategySpec(SPEC_BASE)]) {
+      expect(t).toContain('まず不等式を満たす側の節目を選び直すこと');
+      expect(t).toContain('選び直しても適切な節目が無いときに限り、そのレッグを省く');
+      // 「省く」しか逃げ道が無かった旧文言は残っていない(見送りを増やす向きの指示)。
+      expect(t).not.toContain('節目ではなく不等式を優先し、そのレッグを省く');
+    }
+  });
+
+  it('⑥ direction の enum は1箇所だけで、range 有効/無効と矛盾しない', () => {
+    const on = buildScalpSystemPrompt(45, 65, true);
+    const off = buildScalpSystemPrompt(45, 65, false);
+    expect(on).toContain('- direction は buy / sell / none / range のいずれか。');
+    expect(off).toContain('- direction は buy / sell / none のいずれか。');
+    expect(off).not.toContain('- direction は buy / sell / none / range のいずれか。');
+    // enum を宣言する行は必ず1回だけ(range ON で「none のみ」と「none / range」が並ぶ矛盾を防ぐ)。
+    expect(on.split('- direction は buy / sell / none').length - 1).toBe(1);
+    expect(off.split('- direction は buy / sell / none').length - 1).toBe(1);
+  });
+
+  it('⑦ 最低50円距離が range に掛からないことを明記(question / spec)', () => {
+    for (const t of [buildScalpQuestion(), buildStrategySpec(SPEC_BASE)]) {
+      expect(t).toContain('50円');
+      expect(t).toContain('range の各レッグには適用しない');
+    }
+  });
+
+  it('⑧ question のレンジ LC 上限に数値が入る(system と揃う)', () => {
+    expect(buildScalpQuestion(45, 65)).toContain('各レッグの初期LCも上限(≤65円)内に収めること');
+    expect(buildScalpQuestion(50, 120)).toContain('各レッグの初期LCも上限(≤120円)内に収めること');
+    expect(buildScalpSystemPrompt(45, 65)).toContain('上限(≤65円)内に収める');
+  });
+});
+
+// ─── ★③ レンジ規約違反は「AI の生出力(parse 直後)」で観測する ───
+//   enforce(トレンド veto / バイアス / LC上限)の後だと片脚が落ちて upper/lower が揃わず null になり、
+//   いちばん知りたい母集団(プロンプトが効いていない回)で盲目になる。
+
+describe('③ レンジ規約違反は parse 直後の plan で観測する', () => {
+  it('トレンド veto で両脚が落ちる回でも、parse 直後なら混在を観測できる', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジ',
+      range: {
+        upper: { side: 'buy', type: 'stop', entry: 38400, stopLoss: 38350 },    // breakout の上脚
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },   // fade の下脚 = 組の混在
+      },
+    });
+    const parsed = parseScalpPlan(raw, REF);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(describeRangeAnomaly(parsed.plan)?.tag).toBe('plan-range-mixed');
+    expect(describeRangeAnomaly(parsed.plan)?.legs).toBe('upper=buy/stop@38400 lower=buy/limit@38100');
+    // 強下降トレンドの veto で buy 脚が両方落ちる → enforce 後は観測できない(=旧実装が盲目だった経路)。
+    const enforced = enforcePlanConstraintsReport(parsed.plan, { ceilingYen: 65, bias: 'none', trend: { dir: 'down', strong: true } });
+    expect(enforced.plan.direction).toBe('none');
+    expect(describeRangeAnomaly(enforced.plan)).toBeNull();
+  });
+
+  it('バイアスで片脚が落ちる回でも、parse 直後なら向き逆を観測できる', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: 'レンジ',
+      range: {
+        upper: { side: 'sell', type: 'stop', entry: 38400, stopLoss: 38450 },   // breakout なのに上が売り
+        lower: { side: 'buy', type: 'stop', entry: 38100, stopLoss: 38050 },    // breakout なのに下が買い
+      },
+    });
+    const parsed = parseScalpPlan(raw, REF);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(describeRangeAnomaly(parsed.plan)?.tag).toBe('plan-range-sides');
+    const enforced = enforcePlanConstraintsReport(parsed.plan, { ceilingYen: 65, bias: 'long' });
+    expect(enforced.plan.range?.upper).toBeUndefined();      // sell 脚が bias で落ちて片面化
+    expect(describeRangeAnomaly(enforced.plan)).toBeNull();  // 片脚では判定対象外=観測できない
+  });
+});
+
+// ─── ★v0.9.44: 「AI に届く文字列」の全生成箇所・全分岐を1箇所に集めた CASES ─────────────
+//   前回、①(混在形の宣言)を buildStrategySpec だけ直して buildDelegationNote を取り残した。
+//   原因は「用語のテストは全生成箇所を見ていたのに、意味のテストは1ビルダーしか見ていなかった」こと。
+//   ここで CASES を1つに統一し、用語ルールも意味ルールも同じ母集団に掛けることで取り残しを自動検出する。
+//   ★新しいプロンプト生成箇所を足したら、必ずこの CASES にも足すこと。
+
+const SPEC_ARGS = (rangeOn: boolean, mode: 'manual' | 'ai' = 'manual') => ({
+  floor: { mode, value: 45 }, ceiling: { mode, value: 65 },
+  trendVeto: { mode, value: 100 }, cooldown: { mode, value: 90 },
+  bias: { mode, value: 'none' as const }, range: { mode, value: rangeOn },
+  hardMax: { enabled: true, value: 150 },
+  exitDesc: '【決済ロジック(phase-exit)】…利益ロックのラチェット床…',
+});
+const ALL_AI: KnobModes = { lcFloor: 'ai', lcCeiling: 'ai', trendVeto: 'ai', cooldown: 'ai', bias: 'ai', range: 'ai' };
+const DELEG_CTX = { floorYen: 45, ceilingYen: 65, hardMax: { enabled: true, value: 150 } };
+const one = (k: keyof KnobModes): KnobModes =>
+  ({ lcFloor: 'manual', lcCeiling: 'manual', trendVeto: 'manual', cooldown: 'manual', bias: 'manual', range: 'manual', [k]: 'ai' });
+const regimeOf = (over: Partial<Regime>): Regime => ({
+  ret10: 0, ret30: 0, ma20Slope: 0, swingHigh: 38100, swingLow: 38000, posPct: 50,
+  dir: 'flat', strong: false, trendDir: 'flat', longDir: 'flat', trendStrong: false, ret10StaleMin: null, ...over,
+});
+
+/** AI に届く文字列の生成箇所(全分岐)。[名前, 文字列] */
+const PROMPT_CASES: [string, string][] = [
+  // ① system prompt 本体(rangeLine / techLine / trendGuidance を内包)
+  ['systemPrompt(range ON)', buildScalpSystemPrompt()],
+  ['systemPrompt(range OFF)', buildScalpSystemPrompt(45, 65, false)],
+  ['systemPrompt(テクニカルON)', buildScalpSystemPrompt(45, 65, true, 100, true)],
+  ['systemPrompt(trendVeto=0)', buildScalpSystemPrompt(45, 65, true, 0)],
+  // ② 固定質問(rangeNote / trendGuidance を内包)
+  ['question(range ON)', buildScalpQuestion()],
+  ['question(range OFF)', buildScalpQuestion(45, 65, false)],
+  ['question(trendVeto=0)', buildScalpQuestion(45, 65, true, 0)],
+  // ③ 戦略ロジック仕様(knobTag / exitDesc を内包)
+  ['strategySpec(range ON)', buildStrategySpec(SPEC_ARGS(true))],
+  ['strategySpec(range OFF)', buildStrategySpec(SPEC_ARGS(false))],
+  ['strategySpec(全AI委任)', buildStrategySpec(SPEC_ARGS(true, 'ai'))],
+  // ④ AI委任ノート(6分岐すべて + 全部盛り)
+  ['delegationNote(lcFloor)', buildDelegationNote(one('lcFloor'), DELEG_CTX)],
+  ['delegationNote(lcCeiling)', buildDelegationNote(one('lcCeiling'), DELEG_CTX)],
+  ['delegationNote(trendVeto)', buildDelegationNote(one('trendVeto'), DELEG_CTX)],
+  ['delegationNote(cooldown)', buildDelegationNote(one('cooldown'), DELEG_CTX)],
+  ['delegationNote(bias)', buildDelegationNote(one('bias'), DELEG_CTX)],
+  ['delegationNote(range)', buildDelegationNote(one('range'), DELEG_CTX)],
+  ['delegationNote(全AI委任)', buildDelegationNote(ALL_AI, DELEG_CTX)],
+  ['delegationNote(hardMax無効)', buildDelegationNote(ALL_AI, { ...DELEG_CTX, hardMax: { enabled: false, value: 150 } })],
+  // ⑤ バイアス注記
+  ['biasNote(long)', buildBiasNote('long')],
+  ['biasNote(short)', buildBiasNote('short')],
+  ['biasNote(none)', buildBiasNote('none')],
+  // ⑥ ドテン注記 / ⑦ レンジ再評価注記 / ⑧ 画像注記
+  ['heldNote(buy)', buildHeldNote({ dir: 'buy', entry: 38200 })],
+  ['heldNote(sell)', buildHeldNote({ dir: 'sell', entry: 38200 })],
+  ['armedNote', buildArmedNote({ mode: 'range-fade', ageMs: 900_000, avgMs: 600_000 })],
+  ['visionNote', buildVisionNote(true)],
+  // ⑨ JSON 出力指示
+  ['jsonInstruction(range ON)', scalpJsonInstruction(38250)],
+  ['jsonInstruction(range OFF)', scalpJsonInstruction(38250, 45, 65, false)],
+  // ⑩ 勢い1行(technical に載る・レンジ許可/競合/ギャップの各注記)
+  ['momentum(横ばい+range ON)', formatMomentumLine(regimeOf({ trendDir: 'flat' }), true)],
+  ['momentum(横ばい+range OFF)', formatMomentumLine(regimeOf({ trendDir: 'flat' }), false)],
+  ['momentum(トレンド)', formatMomentumLine(regimeOf({ dir: 'up', trendDir: 'up', trendStrong: true }), true)],
+  ['momentum(競合)', formatMomentumLine(regimeOf({ dir: 'up', trendDir: 'conflict', longDir: 'down' }), true)],
+  ['momentum(ギャップ)', formatMomentumLine(regimeOf({ trendDir: 'stale', ret10StaleMin: 900 }), true)],
+];
+
+describe('全生成箇所: 語彙ルール(「逆指値」が新規の意味で残っていない)', () => {
+  // 許容は (a)用語の区別で曖昧語として引用している「逆指値」 (b)決済(exit)の意味の「決済逆指値」のみ。
+  const ALLOWED = ['「逆指値」', '決済逆指値'];
+  const strip = (s: string) => ALLOWED.reduce((acc, w) => acc.split(w).join(''), s);
+  for (const [name, text] of PROMPT_CASES) {
+    it(`${name}`, () => { expect(strip(text)).not.toContain('逆指値'); });
+  }
+});
+
+describe('全生成箇所: 意味ルール(混在形の示唆・狭いレンジの fade 断定・旧表現)', () => {
+  // ★①の取り残しの真因対策: 意味レベルのルールも語彙ルールと同じ CASES に掛ける。
+  const FORBIDDEN: [string, string][] = [
+    ['指値/ブレイク新規を1本ずつ', '混在形(fade と breakout を1つずつ)の示唆'],
+    ['指値/逆指値を1本ずつ', '混在形の示唆(旧表現)'],
+    ['指値/ブレイク新規を1レッグずつ', '混在形の示唆'],
+    ['フェード指値)してよい', '狭いレンジでも fade を断定する記述(130円ルールと矛盾)'],
+    ['横ばいのときだけ「レンジ」とみなし逆張り', '狭いレンジでも fade を断定する記述'],
+    ['両側逆指値', '旧表現(→ breakout=両側ブレイク新規)'],
+    ['ブレイク追随', '旧表現(→ ブレイク新規(stopEntry))'],
+    ['混在も可', '組の混在を許可する記述'],
+  ];
+  for (const [name, text] of PROMPT_CASES) {
+    it(`${name}`, () => {
+      for (const [phrase, why] of FORBIDDEN) {
+        expect(text, `${name} に「${phrase}」(${why})が残っている`).not.toContain(phrase);
+      }
+    });
+  }
+
+  it('fade / breakout に言及する生成箇所は必ず「組」(2択)の枠組みで語る', () => {
+    for (const [name, text] of PROMPT_CASES) {
+      if (text.includes('fade') || text.includes('breakout')) {
+        expect(text, `${name} が fade/breakout に触れているのに「組」の枠組みが無い`).toContain('組');
+      }
+    }
   });
 });

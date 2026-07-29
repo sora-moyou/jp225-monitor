@@ -8,6 +8,9 @@ import { planToArmed, detectRangeFill, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN } fro
 //   - 両指値(fade): 上=売り指値 / 下=買い指値。幅の広いレンジ向き。
 //   - 両側逆指値(breakout): 上=買い逆指値 / 下=売り逆指値。狭い横這い向き(ユーザー指定で明示許可)。
 //   - 混在: 片方 limit・片方 stop。
+//     ★v0.9.44: プロンプト上は「2択(fade / breakout の組)・組を混ぜない」を指示するので混在は指示しない。
+//       ただしコード側の受理は現状のまま=混在も通す(弾かない方がバグを発見できる、というユーザー判断)。
+//       AI が混在を出したら engine が plan-range-mixed を1行ログするので、次セッションで観測できる。
 //   ここが通らないと AI が正しく出しても黙って落ちるため、回帰で気づけるようにテストで固定する。
 
 const PRICE = 38000;

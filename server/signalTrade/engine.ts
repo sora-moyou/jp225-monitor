@@ -291,12 +291,26 @@ export class SignalEngine {
           //   誤って弾く過剰抑止、(b) monitor が anchor でだけ通し trade2 が refPrice で弾く乖離、が起きる。
           //   非有限(refPrice 欠落等)なら checkSanity が NG→抑止(安全)。
           const sanity = result.plan.direction === 'none' ? null : checkSanity(result.plan, result.plan.refPrice);
+          // ★v0.9.44(記録専用): レンジがプロンプトの規約(2択=fade/breakout の組)に反する形で届いたら1行残す。
+          //   判定は buildScalpPlan が **AI の生出力(parse 直後)** に対して行い result に載せる(veto/bias で
+          //   片脚が落ちた回も観測できる)。受理は現状のまま(弾かない=バグを発見できる)。該当時だけ出す。
+          if (result.rangeAnomaly) {
+            console.log(`${this.logTag} ${result.rangeAnomaly.tag} ${result.rangeAnomaly.legs} ref=${Math.round(result.plan.refPrice)}`);
+          }
           if (result.plan.direction === 'none') {
             // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
             //   ★②a: AI の見送り根拠(rationale)をログに残す=書き出し(serverlog)で「なぜ入らないか」を可視化。
             this.planSuppressedAnchor = anchorPrice;
             const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
-            console.log(`${this.logTag} plan-suppress 見送り(none) anchor=${Math.round(anchorPrice)} veto=${result.vetoFired ? 'y' : 'n'} 根拠=${why || '(なし)'}`);
+            //   ★v0.9.44: veto=y/n の1ビットでは8通りの経路が同じ見た目になるため、none の経路(reason)と
+            //     計画自身の参照価格(ref)を添える。さらに落としたレッグの生数値を1行出し、根拠文からの推定を不要にする。
+            console.log(`${this.logTag} plan-suppress 見送り(none) anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=${result.noneReason ?? '(不明)'} veto=${result.vetoFired ? 'y' : 'n'} 根拠=${why || '(なし)'}`);
+            if (result.noneLegs) {
+              const legs = result.noneLegs.legs
+                .map(l => `${l.name}=${Math.round(l.entry)}${l.stopLoss != null ? `,SL=${Math.round(l.stopLoss)}` : ''}(${l.ok ? 'OK' : 'NG'})`)
+                .join(' ');
+              console.log(`${this.logTag} plan-legs dir=${result.noneLegs.dir} ref=${Math.round(result.plan.refPrice)} ${legs}`);
+            }
           } else if (sanity && !sanity.ok) {
             // サニティ不通過=見送り(none)と同じ扱い: アンカーを記録し節目まで抑止する。
             this.planSuppressedAnchor = anchorPrice;

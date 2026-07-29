@@ -181,9 +181,11 @@ describe('formatMomentumLine', () => {
     expect(line).toContain('横ばい(弱)');
     expect(line).toContain('レンジ両面が有効な設定');
     expect(line).toContain('direction:"range"');
-    // 両指値(逆張り)と両側逆指値(抜け追随)の両方が選べることを伝える。
-    expect(line).toContain('両指値');
-    expect(line).toContain('両側逆指値');
+    // ★v0.9.44: 2択(fade=両側指値の組 / breakout=両側ブレイク新規の組)の両方が選べることを伝える。
+    //   語彙は system prompt の rangeLine と揃える(SSOT)。組を混ぜないことも明示する。
+    expect(line).toContain('fade=両側指値の組');
+    expect(line).toContain('breakout=両側ブレイク新規の組');
+    expect(line).toContain('組は混ぜない');
   });
 
   it('レンジ両面ON でもトレンド判定のときはレンジを勧めない', () => {

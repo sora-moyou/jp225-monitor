@@ -281,7 +281,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(arg.technical).not.toContain('direction:"range"');
   });
 
-  it('レンジ両面ONの横ばい局面 → 勢い行が range(両指値/両側逆指値)を出してよいと伝える', async () => {
+  it('レンジ両面ONの横ばい局面 → 勢い行が range(fade/breakout の2択)を出してよいと伝える', async () => {
     firstVisionMock.mockReturnValue(null);
     rangeEnabledMock.mockReturnValue(true);
     const now = Date.now();
@@ -292,7 +292,8 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
 
     const arg = buildScalpPlanMock.mock.calls[0]![0] as { technical?: string };
     expect(arg.technical).toContain('direction:"range"');
-    expect(arg.technical).toContain('両側逆指値');
+    // ★v0.9.44: 語彙は system prompt の rangeLine と揃える(SSOT)=2択の組で表現する。
+    expect(arg.technical).toContain('breakout=両側ブレイク新規の組');
   });
 
   it('レンジ設定の解決にプロファイル(A/B)を引き継ぐ', async () => {
