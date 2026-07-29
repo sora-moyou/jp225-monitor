@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { rsi14, sma, bollinger, computeIndicators, pctBOf, aggregate5m } from './indicators.js';
+import { rsi14, sma, bollinger, computeIndicators, pctBOf, aggregate5m, indicatorProgress, MIN_CLOSES_FOR_MAIN } from './indicators.js';
 
 describe('rsi14 (Wilder)', () => {
   // StockCharts の教科書データ。最初の14変化(15本)で first RSI ≈ 70.53。
@@ -96,6 +96,26 @@ describe('computeIndicators', () => {
     const snap = computeIndicators(closes, times);
     expect(snap.t).toBe(times[15]);
     expect(snap.series[snap.series.length - 1]!.t).toBe(times[15]);
+  });
+});
+
+describe('indicatorProgress', () => {
+  it('窓内の1分足が0本なら no-bars(データ供給そのものが無い)', () => {
+    expect(indicatorProgress(0, 0)).toEqual({ state: 'no-bars', remaining: MIN_CLOSES_FOR_MAIN });
+  });
+  it('足はあるが本数不足なら warming + 残り本数', () => {
+    expect(indicatorProgress(120, 7)).toEqual({ state: 'warming', remaining: MIN_CLOSES_FOR_MAIN - 7 });
+    expect(indicatorProgress(120, 0)).toEqual({ state: 'warming', remaining: MIN_CLOSES_FOR_MAIN });
+  });
+  it('主指標(SMA14/BB14)が算出できる本数に達したら ready(remaining=0)', () => {
+    expect(indicatorProgress(300, MIN_CLOSES_FOR_MAIN)).toEqual({ state: 'ready', remaining: 0 });
+    expect(indicatorProgress(300, MIN_CLOSES_FOR_MAIN + 30)).toEqual({ state: 'ready', remaining: 0 });
+  });
+  it('残り本数は SMA/BB の実要件と整合する(remaining=0 で sma が算出できる)', () => {
+    const closes = Array.from({ length: MIN_CLOSES_FOR_MAIN }, (_, i) => 41000 + i);
+    expect(indicatorProgress(999, closes.length).remaining).toBe(0);
+    expect(sma(closes, 14)).not.toBeNull();
+    expect(sma(closes.slice(0, -1), 14)).toBeNull();   // 1本欠けると算出できない
   });
 });
 

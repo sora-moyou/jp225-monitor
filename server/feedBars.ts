@@ -15,8 +15,15 @@ import type { Bar } from './correlation.js';
 const MAX_BARS = 520;            // 60分 baseline + 相関用の深さ(約8.7時間)。古いバーは捨てる。
 const MIN_BARS_READY = 65;       // alertLoop の発火/確認要件 (これ未満は評価をスキップ)
 
-interface Series { closed: Bar[]; curMinute: number; curBar: Bar | null; }
+// v0.9.38: 分内の高値/安値も積む。close-only の足を指標/AI 文脈へ流すとローソクのレンジが 0 になり、
+// ATR14 が実態の半分以下に潰れる(=AI が誤ったボラ前提で LC/利確を組む)ため、分内の全サンプルで h/l を更新する。
+// 検知系が使う getRealtimeBars({t,close}) の形は変えない(既存利用者に影響を出さない)。
+interface OHLCSeriesBar { t: number; o: number; h: number; l: number; close: number; }
+interface Series { closed: OHLCSeriesBar[]; curMinute: number; curBar: OHLCSeriesBar | null; }
 const series = new Map<string, Series>();
+
+/** 分内高安つきのリアルタイム足(barsSource/指標/AI 文脈向け)。 */
+export interface RealtimeOHLCBar { t: number; o: number; h: number; l: number; c: number; }
 
 // v0.3.33: 短期検知/相関のリアルタイム化用に、生サンプル(サブ分解能)も保持する。
 // 1分足は分境界でしか動かないため、~2秒ごとのローリング窓(60秒/5分)には生サンプルが要る。
@@ -67,17 +74,34 @@ export function feedRealtimePrice(symbol: string, price: number, timestamp: numb
       if (s.closed.length > MAX_BARS) s.closed = s.closed.slice(-MAX_BARS);
     }
     s.curMinute = minute;
-    s.curBar = { t: minute * 60_000, close: price };
+    s.curBar = { t: minute * 60_000, o: price, h: price, l: price, close: price };   // 初回サンプル= h=l=o=c
   } else if (s.curBar) {
     s.curBar.close = price;                     // 同一分内は最新値で close 更新
+    if (price > s.curBar.h) s.curBar.h = price; // 分内の高値/安値も更新(レンジ0のローソクにしない)
+    if (price < s.curBar.l) s.curBar.l = price;
   }
 }
 
-/** 確定済み + 進行中バーを純リアルタイム配列で返す (末尾が現在足)。未投入銘柄は空配列。 */
-export function getRealtimeBars(symbol: string): Bar[] {
+/** 内部系列(確定済み + 進行中バー)。末尾が現在足。 */
+function seriesBars(symbol: string): OHLCSeriesBar[] {
   const s = series.get(symbol);
   if (!s) return [];
   return s.curBar ? [...s.closed, s.curBar] : [...s.closed];
+}
+
+/** 確定済み + 進行中バーを純リアルタイム配列で返す (末尾が現在足)。未投入銘柄は空配列。
+ *  ★形は {t,close} のまま(検知/相関の既存利用者の契約を変えない)。高安が要る場合は getRealtimeOHLCBars。
+ *  ★v0.9.38 の注意: 戻り値は内部バーの参照ではなく「その時点のスナップショット(コピー)」になった。
+ *    取得した配列を保持しても、同一分内の後続ティックで末尾バーの close は更新されない(要再取得)。
+ *    現在の利用者は毎回取得し直すので無害だが、配列を持ち回して現在足の更新を見る書き方はできない。 */
+export function getRealtimeBars(symbol: string): Bar[] {
+  return seriesBars(symbol).map(b => ({ t: b.t, close: b.close }));
+}
+
+/** 分内の高安つきリアルタイム足(O/H/L/C)。指標/AI 文脈が実レンジのローソクを使えるようにする。
+ *  DB 種付け(seedBars)由来の足は close しか無いため o/h/l/c 全てが同値になる。 */
+export function getRealtimeOHLCBars(symbol: string): RealtimeOHLCBar[] {
+  return seriesBars(symbol).map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.close }));
 }
 
 /** alertLoop の発火/確認要件を満たすだけバーが溜まっているか。 */
@@ -95,10 +119,12 @@ export function seedBars(symbol: string, bars: Bar[]): void {
   if (existing && (existing.closed.length > 0 || existing.curBar)) return;
   const trimmed = bars.slice(-MAX_BARS);
   const last = trimmed[trimmed.length - 1]!;
+  // DB 種付けは close のみ(1分足の h/l は持ち込まない)なので o/h/l/c 全てに写像する。
+  const toBar = (b: Bar): OHLCSeriesBar => ({ t: b.t, o: b.close, h: b.close, l: b.close, close: b.close });
   series.set(symbol, {
-    closed: trimmed.slice(0, -1).map(b => ({ t: b.t, close: b.close })),
+    closed: trimmed.slice(0, -1).map(toBar),
     curMinute: Math.floor(last.t / 60_000),
-    curBar: { t: last.t, close: last.close },
+    curBar: toBar(last),
   });
 }
 

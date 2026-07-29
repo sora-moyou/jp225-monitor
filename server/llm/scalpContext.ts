@@ -7,7 +7,7 @@
 // 各サブブロックは try で囲み、入力欠落・計算失敗はそのブロックを省略する(scalp-plan を壊さない)。
 // トークン節約のためコンパクトに(足は1行に横並び・節目は近い順 上位のみ)。
 
-import type { Bar1m, AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.js';
+import type { AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.js';
 import type { LevelsResult } from '../levels.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 import { rowKind } from '../alertHistory.js';
@@ -52,8 +52,10 @@ function computeAtr14(bars: OHLCBar[]): number | null {
 }
 
 export interface ScalpMarketDataInput {
-  /** DB の実 OHLC(o/h/l/c)。昇順(t 昇順)。realtime の close-only ではなく getRecentBars を渡す。 */
-  bars: Bar1m[];
+  /** 実 OHLC(o/h/l/c)の1分足。昇順(t 昇順)。runner は collectRecentBars(DBの bars_1m ∪ メモリ内ライブ足)を渡す
+   *  (DB だけだと collector 未稼働の環境で0本になり、足/ボラ/スイング/テクニカルの各ブロックが消えるため)。
+   *  型は OHLC の構造だけを要求する(Bar1m もそのまま渡せる)。 */
+  bars: OHLCBar[];
   /** getLevelsSnapshot() の節目。null/空は当該ブロック省略。 */
   levels: LevelsResult | null;
   /** getRecentAlerts()。新しい順。ret5/15/30 があれば「その後」を併記。 */
@@ -149,7 +151,14 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
     if (hi !== null && lo !== null && hi > lo && currentPrice > 0) {
       const pos = ((currentPrice - lo) / (hi - lo)) * 100;
       parts.push(`本日高安 ${R(hi)}〜${R(lo)}(レンジ内位置${R(pos)}%)`);
-      parts.push(`高値まで+${R(hi - currentPrice)}円 / 安値まで-${R(currentPrice - lo)}円`);
+      // 符号は距離の向きをそのまま出す(通常は 高値=+ / 安値=−)。現値が高安を外れた場合も
+      // 「+-118円」のような壊れた表記にならないよう、符号を二重に付けない。
+      // ★挙動差はレンジ外の壊れた表記の解消のみ。レンジ内はバイト同一で、現値がちょうど高値/安値に
+      //   一致する境界2点だけ「+0円 / -0円」→「0円」になる(意図した差・実害なし)。
+      const toHigh = R(hi - currentPrice);
+      const toLow = R(lo - currentPrice);
+      const sgn = (v: number): string => `${v > 0 ? '+' : ''}${v}`;
+      parts.push(`高値まで${sgn(toHigh)}円 / 安値まで${sgn(toLow)}円`);
     }
     if (parts.length > 0) blocks.push('ボラ/レンジ: ' + parts.join(' / '));
   } catch { /* 省略 */ }

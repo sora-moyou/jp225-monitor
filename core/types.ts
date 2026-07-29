@@ -192,10 +192,19 @@ export interface IndicatorPointPayload {
   bbU: number | null;
   bbL: number | null;
 }
+// ★蓄積状況(ADD-ONLY・任意)。パネルが「蓄積中…」の理由を画面だけで自己診断するための状態マーカー。
+//   'no-bars'=窓内の1分足が0本(データ供給そのものが無い)/ 'warming'=足はあるが本数不足(remaining=残り本数)/
+//   'ready'=主指標を算出済み / 'closed'=取引時間外(ドーマント)/ 'disabled'=機能OFF(設定)。
+//   既存フィールドの意味は一切変えない(欠落=旧世代=従来表示)。
+export interface IndicatorProgressPayload {
+  state: 'no-bars' | 'warming' | 'ready' | 'closed' | 'disabled';
+  remaining: number;
+}
 export interface IndicatorSnapshotPayload extends IndicatorValuesPayload {
   series: IndicatorPointPayload[];
   t?: number;
   live?: IndicatorValuesPayload;
+  progress?: IndicatorProgressPayload;
 }
 
 export type SSEEvent =

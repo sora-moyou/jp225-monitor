@@ -1,11 +1,13 @@
+import type { DatabaseSync } from 'node:sqlite';
 import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } from './openai.js';
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPngCached } from '../chart/chartShot.js';
 import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, resolveIndicatorsEnabled, type SignalProfile } from '../configStore.js';
-import { barsFor } from '../loops/alertLoop.js';
+import { getRealtimeOHLCBars } from '../feedBars.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
-import { openDb, resolveDbPath, getRecentBars, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
+import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
+import { collectRecentBars } from '../barsSource.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
 
@@ -16,26 +18,33 @@ const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
  *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。 */
 function buildRichScalpContext(symbol: string, currentPrice: number, now: number, profile?: SignalProfile): string {
   if (!(typeof currentPrice === 'number' && currentPrice > 0)) return '';
+  // ★DB が開けなくても止めない: メモリ内ライブ足だけで足/ボラ/スイング/テクニカルは組める。
+  //   indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で AI 文脈をゼロにしない。
+  //   DB 依存のブロック(アラート履歴/セッションOHLC/紙成績)だけが欠落し、各ブロックは元々欠損で省略される。
+  let db: DatabaseSync | null = null;
+  try { db = openDb(resolveDbPath()); }
+  catch (e) {
+    console.warn('[scalp-plan] DB を開けません(メモリ内ライブ足のみで文脈構築):', e instanceof Error ? e.message : String(e));
+  }
   try {
-    const db = openDb(resolveDbPath());
-    try {
-      const bars = getRecentBars(db, symbol, now - RICH_BARS_WINDOW_MS);
-      const levels = getLevelsSnapshot();
-      const alerts = getRecentAlerts(db, 8);
-      const session = getSessionOHLC(db, symbol, 1)[0] ?? null;
-      // ★v0.8.2: 自系統の紙成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
-      //   A は自分の履歴だけを見る=B の紙トレードに汚染されない(=A の提案が B の存在で変わらない)。
-      const trades = getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A');
-      // ★テクニカル指標(ブロックG)は indicatorsEnabled=false のとき省略(AIへ供給しない)。
-      const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: resolveIndicatorsEnabled() });
-      const history = buildScalpTradeHistory(trades, now);
-      return [marketData, history].filter(Boolean).join('\n\n');
-    } finally {
-      db.close();
-    }
+    // ★足は「DBの bars_1m ∪ メモリ内のライブ足」= collectRecentBars。DB だけを見ていたため
+    //   collector 未稼働の環境では窓内0本→ブロックA/C/D/G(テクニカル)がまるごと消えていた(修正)。
+    const bars = collectRecentBars(db, symbol, now - RICH_BARS_WINDOW_MS);
+    const levels = getLevelsSnapshot();
+    const alerts = db ? getRecentAlerts(db, 8) : [];
+    const session = db ? (getSessionOHLC(db, symbol, 1)[0] ?? null) : null;
+    // ★v0.8.2: 自系統の紙成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
+    //   A は自分の履歴だけを見る=B の紙トレードに汚染されない(=A の提案が B の存在で変わらない)。
+    const trades = db ? getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A') : [];
+    // ★テクニカル指標(ブロックG)は indicatorsEnabled=false のとき省略(AIへ供給しない)。
+    const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: resolveIndicatorsEnabled() });
+    const history = buildScalpTradeHistory(trades, now);
+    return [marketData, history].filter(Boolean).join('\n\n');
   } catch (e) {
     console.warn('[scalp-plan] rich context 構築失敗(省略):', e instanceof Error ? e.message : String(e));
     return '';
+  } finally {
+    try { db?.close(); } catch { /* close 失敗は無視 */ }
   }
 }
 
@@ -123,9 +132,11 @@ export async function runScalpPlanWithChart(
   }
 
   // ── レジーム/勢いを1回だけ算出し、(a)技術文脈への注入 と (b)コードの trend veto の両方へ同じ値を渡す(一貫)。
-  //   リアルタイム足は close のみ(o/h/l/c 無し)なので close を OHLC 全てに写像する(swing=close の高安)。
+  //   ★v0.9.38: リアルタイム足は分内の高安(h/l)を持つ(feedBars)ので、そのまま OHLC として渡す。
+  //   以前は close を o/h/l/c 全てに写像していたため、computeRegime の「直近30分高安[L-H]内pos%」が
+  //   終値ベースで過小になっていた(実レンジより狭い)。dir/strong は ret10(終値差)だけで決まるので不変。
   const vetoYen = resolveScalpTrendVetoYen(overrides.profile);
-  const ohlc = barsFor(symbol).map(b => ({ t: b.t, o: b.close, h: b.close, l: b.close, c: b.close }));
+  const ohlc = getRealtimeOHLCBars(symbol);
   const regime = computeRegime(ohlc, Date.now(), vetoYen > 0 ? vetoYen : 100);
   // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
   const baseTech = buildNikkeiTechnical(undefined, price);

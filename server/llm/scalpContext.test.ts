@@ -91,6 +91,32 @@ describe('buildScalpMarketData', () => {
     expect(s).toContain('安値まで-100円');
   });
 
+  it('現値が本日高安を外れていても符号が壊れない(「+-118円」を出さない)', () => {
+    const bars: Bar1m[] = [];
+    for (let i = 0; i < 16; i++) bars.push(bar(NOW - (16 - i) * MIN, 38000, 38020, 37980, 38010));
+    const session: SessionOHLC = {
+      sessionDate: '2026-07-16', session: 'Day', open: 38000, high: 38300, low: 38100, close: 38200,
+      highT: NOW, lowT: NOW, openT: NOW,
+    };
+    // session の高値(38300)を現値(38418)が上抜けている状況(セッション集計が追いつく前など)。
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38418, session });
+    expect(s).not.toContain('+-');
+    expect(s).toContain('高値まで-118円');
+    expect(s).toContain('安値まで-318円');
+  });
+
+  it('現値がちょうど本日高値に一致する境界は「0円」(符号なし・意図した唯一の差分)', () => {
+    const bars: Bar1m[] = [];
+    for (let i = 0; i < 16; i++) bars.push(bar(NOW - (16 - i) * MIN, 38000, 38020, 37980, 38010));
+    const session: SessionOHLC = {
+      sessionDate: '2026-07-16', session: 'Day', open: 38000, high: 38300, low: 38100, close: 38300,
+      highT: NOW, lowT: NOW, openT: NOW,
+    };
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38300, session });
+    expect(s).toContain('高値まで0円');    // 旧: +0円
+    expect(s).toContain('安値まで-200円');
+  });
+
   it('直近アラート+その後(ret5/15/30)を併記し、ret 欠落は省く', () => {
     const alerts: AlertRow[] = [
       {

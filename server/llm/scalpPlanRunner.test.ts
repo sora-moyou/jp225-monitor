@@ -31,13 +31,11 @@ vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => trendVetoYenMock(),
   resolveScalpChartFallbackText: () => chartFallbackMock(),
+  resolveIndicatorsEnabled: () => true,
 }));
 
-// barsFor(リアルタイム足 {t,close})をテストで差し替え。既定は空(=regime flat)。
-const barsForMock = vi.fn<[], { t: number; close: number }[]>(() => []);
-vi.mock('../loops/alertLoop.js', () => ({
-  barsFor: () => barsForMock(),
-}));
+// ★v0.9.38: レジームの入力はリアルタイム足(feedBars・分内高安つき)を直接使う。
+//   モックせず本物へ feedRealtimePrice で投入する(既定は空=regime flat)。
 
 const captureMock = vi.fn<[number], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();
 vi.mock('../chart/chartShot.js', () => ({
@@ -46,8 +44,9 @@ vi.mock('../chart/chartShot.js', () => ({
 
 // v0.7.54: 構造化データ(rich context)の DB 読みは本テストの対象外。DB/levels/scalpContext をモックして
 // 実 DB を触らせず、technical への追記が既存の勢い1行を壊さないことだけ担保する(rich は '' でオフ)。
+const openDbMock = vi.fn<[], { close: () => void }>(() => ({ close: () => {} }));
 vi.mock('../db/store.js', () => ({
-  openDb: () => ({ close: () => {} }),
+  openDb: () => openDbMock(),
   resolveDbPath: () => ':memory:',
   getRecentBars: () => [],
   getRecentAlerts: () => [],
@@ -57,12 +56,15 @@ vi.mock('../db/store.js', () => ({
 vi.mock('../loops/levelsLoop.js', () => ({
   getLevelsSnapshot: () => ({ current: 0, up: [], down: [], swing: null, reversalSatisfied: false, asOf: 0 }),
 }));
+// 既定は '' (rich context オフ)。DB オープン失敗時に「メモリ足で文脈を組めるか」を見るため入力を記録する。
+const marketDataMock = vi.fn<[{ bars: { t: number }[] }], string>(() => '');
 vi.mock('./scalpContext.js', () => ({
-  buildScalpMarketData: () => '',
+  buildScalpMarketData: (i: { bars: { t: number }[] }) => marketDataMock(i),
   buildScalpTradeHistory: () => '',
 }));
 
 import { runScalpPlanWithChart } from './scalpPlanRunner.js';
+import { feedRealtimePrice, _reset as resetBars } from '../feedBars.js';
 
 const GOOD_PLAN = { ok: true, plan: { direction: 'buy' } };
 
@@ -71,9 +73,11 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     buildScalpPlanMock.mockReset().mockResolvedValue(GOOD_PLAN);
     firstVisionMock.mockReset();
     captureMock.mockReset();
-    barsForMock.mockReset().mockReturnValue([]);
     trendVetoYenMock.mockReset().mockReturnValue(100);
     chartFallbackMock.mockReset().mockReturnValue(true);   // 既定=テキスト縮退ON
+    openDbMock.mockReset().mockImplementation(() => ({ close: () => {} }));
+    marketDataMock.mockReset().mockReturnValue('');
+    resetBars();
     delete process.env.SCALP_CHART_VISION;
   });
   afterEach(() => {
@@ -92,6 +96,22 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
     expect(arg.chartImageDataUrl).toBe(`data:image/png;base64,${png.toString('base64')}`);
     expect(result).toEqual(GOOD_PLAN);
+  });
+
+  // DB が開けない環境(破損/権限/ロック)でも、メモリ内ライブ足があるなら AI 文脈を組む。
+  // indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で文脈ゼロにしない。
+  it('★openDb 失敗でもメモリ内ライブ足で構造化データ文脈を組む', async () => {
+    firstVisionMock.mockReturnValue(null);
+    openDbMock.mockImplementation(() => { throw new Error('database is locked'); });
+    const now = Date.now();
+    const start = Math.floor((now - 30 * 60_000) / 60_000) * 60_000;
+    for (let i = 0; i < 30; i++) feedRealtimePrice('NIY=F', 38200 + i, start + i * 60_000);
+
+    await runScalpPlanWithChart();
+
+    expect(marketDataMock).toHaveBeenCalledTimes(1);
+    const input = marketDataMock.mock.calls[0]![0];
+    expect(input.bars.length).toBeGreaterThan(0);   // DB 無しでも足が渡る
   });
 
   it('★fallback ON(既定): capture 2回失敗 → リトライ後テキストのみで AI 継続(画像なし)', async () => {
@@ -187,11 +207,9 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     firstVisionMock.mockReturnValue(null);   // ゲート対象外
     const now = Date.now();
     // now−10分 で 38000、now で 38200(+200円 ≥ 閾値100) → 強上昇。
-    barsForMock.mockReturnValue([
-      { t: now - 10 * 60_000, close: 38000 },
-      { t: now - 5 * 60_000, close: 38100 },
-      { t: now, close: 38200 },
-    ]);
+    feedRealtimePrice('NIY=F', 38000, now - 10 * 60_000);
+    feedRealtimePrice('NIY=F', 38100, now - 5 * 60_000);
+    feedRealtimePrice('NIY=F', 38200, now);
 
     await runScalpPlanWithChart();
 
@@ -203,14 +221,37 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(arg.technical).toContain('上昇トレンド(強)');
   });
 
+  // ★v0.9.38: レジームの高安は分内の実レンジで出す(終値で潰さない)。
+  //   dir/strong は ret10(終値差)だけで決まるので、レンジが広がっても veto 判断は変わらない。
+  it('★勢い行の「直近30分高安」は分内の実レンジ(終値ベースで潰さない)・dir/strong は不変', async () => {
+    firstVisionMock.mockReturnValue(null);
+    // 分内サンプルが分を跨がないよう分境界に揃える(足の区切りは floor(t/60秒))。
+    const base = Math.floor(Date.now() / 60_000) * 60_000;
+    // 終値は全て 38000(ret10=0=flat)だが、分内では 38300 まで上げて 37800 まで下げている。
+    feedRealtimePrice('NIY=F', 38000, base - 10 * 60_000);
+    feedRealtimePrice('NIY=F', 38300, base - 10 * 60_000 + 20_000);   // 分内高値
+    feedRealtimePrice('NIY=F', 38000, base - 10 * 60_000 + 40_000);
+    feedRealtimePrice('NIY=F', 37800, base - 5 * 60_000);             // 分内安値
+    feedRealtimePrice('NIY=F', 38000, base - 5 * 60_000 + 30_000);
+    feedRealtimePrice('NIY=F', 38000, base);
+
+    await runScalpPlanWithChart();
+
+    const arg = buildScalpPlanMock.mock.calls[0]![0] as {
+      trend?: { dir: string; strong: boolean }; technical?: string;
+    };
+    // 高安は終値の範囲(38000-38000)ではなく実レンジ(37800-38300)になる。
+    expect(arg.technical).toContain('直近30分高安[37800-38300]');
+    // 終値差(ret10=0)は変わらないので dir/strong=veto 判断は不変。
+    expect(arg.trend).toEqual({ dir: 'flat', strong: false });
+  });
+
   it('trendVeto=0(無効) → trend を渡さない(veto なし=現行挙動)が勢い文は注入する', async () => {
     firstVisionMock.mockReturnValue(null);
     trendVetoYenMock.mockReturnValue(0);
     const now = Date.now();
-    barsForMock.mockReturnValue([
-      { t: now - 10 * 60_000, close: 38000 },
-      { t: now, close: 38200 },
-    ]);
+    feedRealtimePrice('NIY=F', 38000, now - 10 * 60_000);
+    feedRealtimePrice('NIY=F', 38200, now);
 
     await runScalpPlanWithChart();
 

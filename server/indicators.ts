@@ -97,11 +97,37 @@ export interface IndicatorPoint {
   bbL: number | null;
 }
 
+/** 主指標(SMA14 / BB14)の算出に必要な確定 close の本数。RSI14 はこれ+1本(=15本)必要。
+ *  5分足の本数で言えば「形成中の1本」を除くため +1 本(主指標15本 / RSI16本)。 */
+export const MIN_CLOSES_FOR_MAIN = 14;
+
+/** 蓄積状況。'no-bars'=窓内の1分足が0本(データ供給そのものが無い)/ 'warming'=足はあるが本数不足 /
+ *  'ready'=主指標を算出済み / 'closed'=取引時間外(ドーマント)/ 'disabled'=機能OFF(設定)。
+ *  パネルが「蓄積中…」の理由を画面だけで自己診断するために使う。
+ *  'closed'/'disabled' は算出そのものをしないため remaining は目安(=満杯の要件本数)で意味を持たない。 */
+export type IndicatorReadyState = 'no-bars' | 'warming' | 'ready' | 'closed' | 'disabled';
+export interface IndicatorProgress { state: IndicatorReadyState; remaining: number; }
+
+/** 主指標(RSI/SMA/BB)のいずれかが算出できているか。「値を残して印を付ける」か「理由だけを出す」かの分岐に使う
+ *  (パネル側の空判定と同じ条件)。 */
+export function hasMainValues(s: IndicatorSnapshot | null): boolean {
+  return !!s && (s.rsi != null || s.sma != null || s.bbUpper != null);
+}
+
+/** 蓄積状況を判定する純関数。barCount=窓内の1分足の本数 / closesUsed=主指標に使った確定 close の本数。
+ *  remaining は主指標(SMA/BB)が出るまでに不足している本数(ready は 0)。 */
+export function indicatorProgress(barCount: number, closesUsed: number): IndicatorProgress {
+  if (!(barCount > 0)) return { state: 'no-bars', remaining: MIN_CLOSES_FOR_MAIN };
+  const remaining = Math.max(0, MIN_CLOSES_FOR_MAIN - Math.max(0, closesUsed));
+  return { state: remaining > 0 ? 'warming' : 'ready', remaining };
+}
+
 /** 指標スナップショット。現在値 + 直近~12点の系列。live は loop が形成中足込みで埋める速報値(任意)。 */
 export interface IndicatorSnapshot extends IndicatorValues {
   series: IndicatorPoint[];
   t?: number;                // 参照した最新 close の timestamp(あれば)
   live?: IndicatorValues;    // 形成中足を含む速報値(パネル/連携の補助・loop が付与)
+  progress?: IndicatorProgress;   // ADD-ONLY: 蓄積状況(パネルの自己診断表示用・loop が付与)
 }
 
 /** BB 上下限と現値から %B を求める純関数(幅0/未算出は null)。 */
