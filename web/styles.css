@@ -47,20 +47,46 @@ body {
    getCurrentLeader/getAnchorSymbol が他ロジックで使うのでポーリングは継続、表示のみ消す。 */
 .leader-info { display: none; font-size: 12px; color: var(--muted); }
 .leader-info strong { color: var(--text); font-weight: 600; }
-/* ③ テクニカル指標(RSI/SMA/BB)読み取りパネル。価格カード直下・1行のコンパクト表示。 */
+/* ③ テクニカル指標(RSI/14MA/±1.5σ)読み取りパネル。価格ボードの右隣(旧・相関カードの空き枠)に
+   価格カード(.price-card)と同じ見た目で置く。中身はヘッダ1行＋データ1行の4列表(ユーザー指定)。 */
 .indicator-panel {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px;
-  font-size: 12px; color: var(--text);
-  padding: 4px 8px; margin: 2px 0 4px;
-  background: var(--card, rgba(127,127,127,0.06)); border-radius: 6px;
+  color: var(--text);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px;
+  min-width: 0;                     /* flex 行の中で内容がはみ出さない */
+  container-type: inline-size;      /* 中の数値サイズを枠幅に追従させる(cqw) */
 }
-.indicator-panel .ind-label { color: var(--muted); font-size: 11px; margin-right: 4px; }
-.indicator-panel .ind-key { color: var(--muted); font-size: 11px; }
-.indicator-panel .ind-sep { color: var(--muted); opacity: 0.5; }
-.indicator-panel .ind-empty { color: var(--muted); opacity: 0.7; }
-.indicator-panel .ind-rsi-ob { color: #e53935; font-weight: 600; }   /* 買われすぎ(≥70) */
-.indicator-panel .ind-rsi-os { color: #4caf50; font-weight: 600; }   /* 売られすぎ(≤30) */
-.indicator-panel .ind-rsi-neutral { color: var(--text); font-weight: 600; }
+/* ヘッダ4セルとデータ4セルを1つのグリッドに入れる = 列位置が必ず一致する。 */
+.indicator-panel .ind-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px 6px;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;     /* 等幅数字=桁が揃う */
+}
+/* ヘッダ = 価格カードの .label と同じ 11px/muted。値と同じ右揃えで列位置を合わせる。 */
+.indicator-panel .ind-th {
+  display: flex; align-items: baseline; justify-content: flex-end; gap: 4px;
+  min-width: 0;
+  color: var(--muted); font-size: 11px; letter-spacing: 0.02em; white-space: nowrap;
+}
+/* 停止理由の印は左端セルの空きへ(margin-right:auto で列名から離す=行を増やさない)。 */
+.indicator-panel .ind-th .ind-mark { margin-right: auto; font-size: 10px; opacity: 0.8; }
+/* データ = 価格カードの .value .num と同じ 22px/700。枠が狭いときだけ cqw で縮めて
+   4列が1行に収まり続けるようにする(折り返さない)。 */
+.indicator-panel .ind-td {
+  text-align: right; white-space: nowrap; line-height: 1.15;
+  font-size: 22px; font-weight: 700;
+  font-size: min(22px, 6.2cqw);
+}
+.indicator-panel .ind-note {
+  grid-column: 1 / -1;                    /* 値が無いときの理由は4列をまたぐ1行 */
+  font-size: 12px; color: var(--muted); opacity: 0.7;
+  line-height: 1.3; overflow-wrap: anywhere;
+}
+.indicator-panel .ind-rsi-ob { color: #e53935; }   /* 買われすぎ(≥70) */
+.indicator-panel .ind-rsi-os { color: #4caf50; }   /* 売られすぎ(≤30) */
+.indicator-panel .ind-rsi-neutral { color: var(--text); }
 .badge {
   padding: 2px 8px;
   border-radius: 4px;
@@ -225,8 +251,9 @@ body {
   min-height: 0;                    /* flex子のスクロールを有効化 */
 }
 
-/* 左列のブロック高さ配分 (価格カード → 主要レベル → AIチャット。チャートは右へ移動) */
-.left-col .price-grid { flex: 0 0 auto; }                              /* 内容ぶん */
+/* 左列のブロック高さ配分 (価格ボード行 → 主要レベル → AIチャット。チャートは右へ移動) */
+.left-col .board-row { flex: 0 0 auto; }                               /* 内容ぶん */
+.left-col .price-grid { flex: 0 0 auto; }                              /* 内容ぶん(単体で置いた場合) */
 .left-col .levels-panel { flex: 0 0 auto; height: 150px; min-height: 40px; }  /* D&Dで高さ可変・内部スクロール */
 .left-col .chat-board { flex: 1 1 auto; min-height: 120px; }           /* 残りを占有 */
 
@@ -305,6 +332,23 @@ body {
 }
 .right-col .chart-panel { flex: 1 1 auto; min-height: 150px; }            /* 右の中段にチャート (大きく) */
 .right-col .news-feed { flex: 0 0 auto; height: 220px; min-height: 80px; overflow-y: auto; }  /* D&Dで高さ可変 */
+
+/* 価格ボード行: 左=価格カード / 右=テクニカル指標パネル を横並びにする枠。
+   幅は非対称(価格カード≒38% / 指標≒62%)。価格カードは「銘柄名＋価格」だけなので狭くてよく、
+   指標は 4列×桁区切り5桁(72,010)を1行に収める必要があるため広く取る。
+   flex-wrap なので、左列を狭めた(列境界D&D/小さい窓)ときは自動で縦積みに戻る
+   = ビューポート幅の media query では左列の実幅を拾えないため、コンテナ基準で畳む。 */
+.board-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+/* min-width は価格カードの min-content(実測 219px)より上に取る。下回ると 1fr 列の自動最小幅で
+   カードが枠からはみ出し、右の指標パネルに重なる(実測で確認)。 */
+.board-row .price-grid    { flex: 38 1 0; min-width: 230px; }
+.board-row .indicator-panel { flex: 62 1 0; min-width: 250px; } /* 先に縮むのはこちら(cqw で字が縮む) */
+.board-row .price-grid { grid-template-columns: 1fr; }   /* 行内では価格カードは1列(右はパネル) */
 
 .price-grid {
   display: grid;

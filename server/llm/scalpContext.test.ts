@@ -270,6 +270,14 @@ describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
     expect(s).toContain('RSI推移');
   });
 
+  // U+301C(WAVE DASH)は cp932 環境で '?' に化ける。BB の範囲区切りは U+FF5E(FULLWIDTH TILDE)。
+  it('BB の範囲区切りは U+FF5E(～)で U+301C を使わない', () => {
+    const s = buildScalpMarketData({ bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
+    const bbLine = s.split('\n').find(l => l.includes('BB[±1.5σ]='))!;
+    expect(bbLine).toContain('～');
+    expect(bbLine).not.toContain('〜');
+  });
+
   it('indicatorsEnabled=false ではブロック G を出さない(AIへテクニカルを供給しない)', () => {
     const s = buildScalpMarketData({
       bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000, indicatorsEnabled: false,

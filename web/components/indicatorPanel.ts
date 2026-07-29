@@ -1,20 +1,16 @@
 import type { IndicatorSnapshot } from '../types.js';
 
-// テクニカル指標(RSI/SMA/BB)のコンパクトな読み取り表示。価格グリッド脇に置き、
-// SSE 'indicators' で更新する。RSI≥70=買われすぎ / ≤30=売られすぎ を色で示す。
+// テクニカル指標(RSI/SMA/BB)のコンパクトな読み取り表示。価格ボードの右隣(旧・相関カードの空き枠)に
+// 価格カードと同じ見た目のカードとして置き、SSE 'indicators' で更新する。
+// 表示はユーザー指定の「ヘッダ1行 + データ1行」の4列表(見出し行や %B は出さない):
+//   RSI   14MA    1.5σ    -1.5σ
+//   64.1  72,010  72,310  71,810
+// RSI≥70=買われすぎ / ≤30=売られすぎ は色で示す(既存仕様を維持)。
 // データ未到達(null / 未算出)は「蓄積中…」を出す(検知ではなく表示専用)。
 
 /** 整数 + 桁区切り(円価格用)。null は '—'。 */
 function yen(v: number | null): string {
   return v == null ? '—' : Math.round(v).toLocaleString('en-US');
-}
-
-/** %B の位置ラベル(上寄り/中央/下寄り)。null は空。 */
-function pctBLabel(pctB: number | null): string {
-  if (pctB == null) return '';
-  if (pctB >= 0.8) return '上寄り';
-  if (pctB <= 0.2) return '下寄り';
-  return '中央';
 }
 
 /** RSI の色分類(overbought/oversold/neutral)。 */
@@ -25,8 +21,26 @@ export function rsiClass(rsi: number | null): 'ind-rsi-ob' | 'ind-rsi-os' | 'ind
   return 'ind-rsi-neutral';
 }
 
-const LABEL = `<span class="ind-label">テクニカル(5分)</span>`;
 const BAR_MINUTES = 5;   // 1本=5分足。残り本数から待ち時間を出す(「あと13本」だけでは何分待ちか分からない)。
+const COLS = ['RSI', '14MA', '1.5σ', '-1.5σ'] as const;   // 列名(ユーザー指定の表記どおり)
+
+/** ヘッダ行の4セル。mark(取引時間外 / OFF)は左端セルの空きに置く=行数を増やさない。 */
+function headerCells(mark = ''): string {
+  const markHtml = mark ? `<span class="ind-mark">${mark}</span>` : '';
+  return COLS
+    .map((c, i) => `<div class="ind-th">${i === 0 ? markHtml : ''}<span>${c}</span></div>`)
+    .join('');
+}
+
+/** ヘッダとデータを同じグリッドに入れる(列位置を一致させるため2行を分けない)。 */
+function grid(inner: string): string {
+  return `<div class="ind-grid">${inner}</div>`;
+}
+
+/** 列をまたぐ注記行(値が無いときの理由)。 */
+function note(text: string): string {
+  return `<div class="ind-note">${text}</div>`;
+}
 
 /** 主指標が出せないときの文言(progress で理由を切り分ける・画面だけで自己診断できるように)。
  *   no-bars  → 「足データ未取得」= データ供給そのものが無い(フィード停止/収集デーモン未稼働)。
@@ -37,18 +51,18 @@ const BAR_MINUTES = 5;   // 1本=5分足。残り本数から待ち時間を出�
 function emptyHtml(snap: IndicatorSnapshot | null): string {
   const p = snap?.progress;
   if (p?.state === 'no-bars') {
-    return `${LABEL}<span class="ind-empty">足データ未取得(価格フィード停止 or 収集デーモン未稼働の可能性)</span>`;
+    return grid(headerCells() + note('足データ未取得(価格フィード停止 or 収集デーモン未稼働の可能性)'));
   }
   if (p?.state === 'closed') {
-    return `${LABEL}<span class="ind-empty">取引時間外(次の取引時間に再開します)</span>`;
+    return grid(headerCells() + note('取引時間外(次の取引時間に再開します)'));
   }
   if (p?.state === 'disabled') {
-    return `${LABEL}<span class="ind-empty">OFF(設定「テクニカル指標」で有効にできます)</span>`;
+    return grid(headerCells() + note('OFF(設定「テクニカル指標」で有効にできます)'));
   }
   const rest = p?.state === 'warming' && p.remaining > 0
     ? ` あと${p.remaining}本(約${p.remaining * BAR_MINUTES}分)`
     : '';
-  return `${LABEL}<span class="ind-empty">蓄積中…${rest}</span>`;
+  return grid(headerCells() + note(`蓄積中…${rest}`));
 }
 
 /** 指標スナップショットからパネル HTML を組み立てる純関数(DOM 非依存・テスト容易化)。
@@ -57,30 +71,16 @@ export function buildIndicatorHtml(snap: IndicatorSnapshot | null): string {
   if (!snap || (snap.rsi == null && snap.sma == null && snap.bbUpper == null)) {
     return emptyHtml(snap);
   }
-  const rsiTxt = snap.rsi == null ? '—' : String(Math.round(snap.rsi));
-  const bb = (snap.bbLower != null && snap.bbUpper != null)
-    ? `${yen(snap.bbLower)}〜${yen(snap.bbUpper)}`
-    : '—';
-  const pos = pctBLabel(snap.pctB);
-  const pctBTxt = snap.pctB == null ? '' : `(%B ${snap.pctB.toFixed(2)})`;
-  const priceCell = pos ? `価格 ${pos}${pctBTxt}` : `価格 ${yen(snap.price)}`;
-  // 更新が止まっている理由は「印」として末尾に付ける(値は消さない=引け後にセッション最終値を読める)。
+  // 更新が止まっている理由は「印」としてヘッダ行に付ける(値は消さない=引け後にセッション最終値を読める)。
   const mark = snap.progress?.state === 'closed' ? '取引時間外'
-    : snap.progress?.state === 'disabled' ? 'OFF(更新停止)' : '';
-  const markCell = mark
-    ? `<span class="ind-sep">・</span><span class="ind-empty">${mark}</span>`
-    : '';
-  return [
-    `<span class="ind-label">テクニカル(5分)</span>`,
-    `<span class="ind-item"><span class="ind-key">RSI</span> <span class="${rsiClass(snap.rsi)}">${rsiTxt}</span></span>`,
-    `<span class="ind-sep">・</span>`,
-    `<span class="ind-item"><span class="ind-key">SMA</span> ${yen(snap.sma)}</span>`,
-    `<span class="ind-sep">・</span>`,
-    `<span class="ind-item"><span class="ind-key">BB[±1.5σ]</span> ${bb}</span>`,
-    `<span class="ind-sep">・</span>`,
-    `<span class="ind-item">${priceCell}</span>`,
-    markCell,
+    : snap.progress?.state === 'disabled' ? 'OFF' : '';
+  const dataCells = [
+    `<div class="ind-td ${rsiClass(snap.rsi)}">${snap.rsi == null ? '—' : snap.rsi.toFixed(1)}</div>`,
+    `<div class="ind-td">${yen(snap.sma)}</div>`,
+    `<div class="ind-td">${yen(snap.bbUpper)}</div>`,
+    `<div class="ind-td">${yen(snap.bbLower)}</div>`,
   ].join('');
+  return grid(headerCells(mark) + dataCells);
 }
 
 let mounted: HTMLElement | null = null;

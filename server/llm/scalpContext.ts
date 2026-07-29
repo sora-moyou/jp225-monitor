@@ -102,7 +102,8 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
         const parts: string[] = [];
         if (ind.rsi != null) parts.push(`RSI14=${ind.rsi.toFixed(1)}${ind.rsi >= 70 ? '(買われすぎ)' : ind.rsi <= 30 ? '(売られすぎ)' : ''}`);
         if (ind.sma != null) parts.push(`SMA14=${R(ind.sma)}`);
-        if (ind.bbLower != null && ind.bbUpper != null) parts.push(`BB[±1.5σ]=${R(ind.bbLower)}〜${R(ind.bbUpper)}`);
+        // 範囲区切りは U+FF5E(～)。U+301C(〜)は cp932 環境で '?' に化ける。
+        if (ind.bbLower != null && ind.bbUpper != null) parts.push(`BB[±1.5σ]=${R(ind.bbLower)}～${R(ind.bbUpper)}`);
         if (ind.pctB != null) parts.push(`%B=${ind.pctB.toFixed(2)}(${ind.pctB >= 0.8 ? 'バンド上寄り' : ind.pctB <= 0.2 ? 'バンド下寄り' : '中央'})`);
         const lines: string[] = [];
         if (parts.length > 0) lines.push('現在値: ' + parts.join(' / '));

@@ -577,10 +577,13 @@
   <main class="main-grid">
     <!-- 左 1/3: 価格カード → 主要レベル → AIチャット -->
     <div class="left-col">
-      <section id="price-grid" class="price-grid"></section>
-
-      <!-- ③ テクニカル指標(RSI/SMA/BB)の読み取り表示。価格カード直下に配置。SSE 'indicators' で更新。 -->
-      <section id="indicator-panel" class="indicator-panel"></section>
+      <!-- 価格ボード行: 左=価格カード(#price-grid は renderPriceGrid が innerHTML ごと差し替えるので
+           パネルを中に入れてはいけない) / 右=テクニカル指標パネル(旧・相関カードの空き枠)。
+           ③ テクニカル指標(RSI/SMA/BB)の読み取り表示。SSE 'indicators' で更新。 -->
+      <div class="board-row">
+        <section id="price-grid" class="price-grid"></section>
+        <section id="indicator-panel" class="indicator-panel"></section>
+      </div>
 
       <!-- 売買シグナル枠と保有枠は別枠。シグナル枠は現在シグナルを常時表示(保有中も消えない)、
            保有枠は建値+含みを表示。主要レベルの直上に配置。 -->
