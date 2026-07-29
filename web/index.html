@@ -198,7 +198,7 @@
         <legend>AIエントリー</legend>
         <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。<br>★v0.8.2: 各行は <b>A(実売買・trade2が追従)</b> と <b>B(📝紙のみ・並走比較)</b> を横並びで設定します。B は空欄/「A追従」なら A と同じ設定で動きます(B だけ差分を付けて比較)。B は実売買に一切渡りません。</div>
         <!-- ★lite 専用の説明(既定 hidden・variant=lite のときだけ表示。full の見た目は不変)。 -->
-        <div class="exit-hint lite-hint" hidden>AIエントリーの<b>損切り幅</b>と<b>バイアス(狙う方向)</b>の設定です。変更したら「保存」を押すと、次のエントリーから反映されます。</div>
+        <div class="exit-hint lite-hint" hidden>AIエントリーの<b>損切り幅</b>と<b>バイアス(狙う方向)</b>の設定です。変更したら「保存」を押すと、次のエントリーから反映されます。<br><b>手動</b>＝設定した数値を必ず守らせます。<b>AI委任</b>＝この項目はAIが場面ごとに決めます（設定値は使いません）。</div>
         <div class="setting-row ab-row" data-lite="1">
           <label>初期LC下限(円)</label>
           <span class="ab-col"><span class="ab-tag">A</span>
@@ -216,7 +216,6 @@
             </select>
             <input type="number" id="scalp-lc-floor-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
           </span>
-          <div class="lite-ai-note" hidden>🤖 この項目は現在「AIにおまかせ」設定のため、値の入力はできません(AI が毎回決めます)。</div>
           <div class="exit-hint lite-hint" hidden>損切り幅の下限の目安。これより狭い損切りを狙わないよう AI に指示します(コードでの強制はしません)。狭すぎるとダマシの往復で切られやすくなります。既定 45円。</div>
         </div>
         <div class="setting-row ab-row" data-lite="1">
@@ -236,7 +235,6 @@
             </select>
             <input type="number" id="scalp-lc-ceiling-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
           </span>
-          <div class="lite-ai-note" hidden>🤖 この項目は現在「AIにおまかせ」設定のため、値の入力はできません(AI が毎回決めます)。</div>
           <div class="exit-hint lite-hint" hidden>損切り幅の上限。|エントリー価格 − 損切り価格| がこれを超える計画は出しません(超えたその注文は見送り)。広すぎると1回の損切りで積み上げた利益を失います。既定 65円。</div>
         </div>
         <div class="setting-row ab-row">
@@ -301,7 +299,6 @@
               <option value="short">売り中心</option>
             </select>
           </span>
-          <div class="lite-ai-note" hidden>🤖 この項目は現在「AIにおまかせ」設定のため、選択はできません(AI が毎回決めます)。</div>
           <div class="exit-hint lite-hint" hidden>買い/売りのどちらを中心に狙うか。「買い中心」なら売りの新規を見送ります(完全に片側)。既定は「両方向」。</div>
         </div>
         <div class="setting-row ab-row">

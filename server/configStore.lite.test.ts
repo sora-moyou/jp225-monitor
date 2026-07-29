@@ -6,7 +6,8 @@ import {
   resetConfigCache, LITE_OWNED_KEYS,
   resolveScalpBias, resolveScalpLcFloorYen, resolveScalpLcCeiling, resolveScalpLcHardMax,
   resolveScalpTrendVetoYen, resolveScalpCooldownSec, resolveScalpRangeEnabled,
-  resolveScalpBiasDirective, resolveScalpLcCeilingDirective,
+  resolveScalpBiasDirective, resolveScalpLcCeilingDirective, resolveScalpLcFloorDirective,
+  resolveScalpTrendVetoDirective, resolveScalpCooldownDirective, resolveScalpRangeDirective,
   resolveAllNumericParams,
 } from './configStore.js';
 
@@ -42,9 +43,12 @@ describe('configStore: lite 独立名前空間(config.lite)', () => {
     resetConfigCache();
   });
 
-  it('lite に露出する 5項目だけが LITE_OWNED_KEYS(それ以外は最上位のまま)', () => {
+  it('lite に露出する項目だけが LITE_OWNED_KEYS(値5 + 委任モード3。それ以外は最上位のまま)', () => {
     expect([...LITE_OWNED_KEYS].sort()).toEqual([
-      'scalpBias', 'scalpLcCeilingYen', 'scalpLcFloorYen', 'scalpLcHardMaxEnabled', 'scalpLcHardMaxYen',
+      'scalpBias', 'scalpBiasSource',
+      'scalpLcCeilingSource', 'scalpLcCeilingYen',
+      'scalpLcFloorSource', 'scalpLcFloorYen',
+      'scalpLcHardMaxEnabled', 'scalpLcHardMaxYen',
     ]);
   });
 
@@ -128,20 +132,56 @@ describe('configStore: lite 独立名前空間(config.lite)', () => {
     expect(resolveAllNumericParams().scalpLcCeilingYen).toBe(65);
   });
 
-  // ─── ③ 露出 5項目以外は名前空間の対象外 ───────────────────────────────
-  it('露出 5項目以外(トレンドveto/クールダウン/レンジ/委任source)は lite でも最上位から解決する', () => {
+  // ─── 委任モード(手動/AI)も lite 独立 ─────────────────────────────────
+  it('★委任モード(初期LC下限/最大初期LC/バイアス)も lite 名前空間から解決し、full は最上位のまま', () => {
+    writeConfig({
+      scalpLcFloorSource: 'ai', scalpLcCeilingSource: 'manual', scalpBiasSource: 'ai',
+      lite: { scalpLcFloorSource: 'manual', scalpLcCeilingSource: 'ai', scalpBiasSource: 'manual' },
+    });
+    asLite();
+    expect(resolveScalpLcFloorDirective().mode).toBe('manual');
+    expect(resolveScalpLcCeilingDirective().mode).toBe('ai');
+    expect(resolveScalpBiasDirective().mode).toBe('manual');
+    asFull();
+    expect(resolveScalpLcFloorDirective().mode).toBe('ai');
+    expect(resolveScalpLcCeilingDirective().mode).toBe('manual');
+    expect(resolveScalpBiasDirective().mode).toBe('ai');
+  });
+
+  it('★委任モードが lite 未設定なら最上位へフォールバック(既存 config で挙動が変わらない)', () => {
+    writeConfig({ scalpLcFloorSource: 'ai', scalpBiasSource: 'ai', lite: { scalpLcCeilingSource: 'ai' } });
+    asLite();
+    expect(resolveScalpLcFloorDirective().mode).toBe('ai');    // 最上位へフォールバック
+    expect(resolveScalpBiasDirective().mode).toBe('ai');       // 最上位へフォールバック
+    expect(resolveScalpLcCeilingDirective().mode).toBe('ai');  // lite 名前空間
+  });
+
+  it("lite の 'manual' も明示値として尊重する(最上位の 'ai' を引き継がない)", () => {
+    writeConfig({ scalpBiasSource: 'ai', lite: { scalpBiasSource: 'manual' } });
+    asLite();
+    expect(resolveScalpBiasDirective().mode).toBe('manual');
+    asFull();
+    expect(resolveScalpBiasDirective().mode).toBe('ai');
+  });
+
+  // ─── ③ 露出項目以外は名前空間の対象外 ───────────────────────────────
+  it('露出項目以外(トレンドveto/クールダウン/レンジ + その委任source)は lite でも最上位から解決する', () => {
     writeConfig({
       scalpTrendVetoYen: 200, scalpCooldownSec: 30, scalpRangeEnabled: true,
-      scalpBiasSource: 'ai', scalpLcCeilingSource: 'ai',
+      scalpTrendVetoSource: 'ai', scalpCooldownSource: 'ai', scalpRangeSource: 'ai',
       // lite 名前空間に紛れ込んでいても対象外キーは読まない(混入への防御)。
-      lite: { scalpTrendVetoYen: 1, scalpCooldownSec: 1, scalpRangeEnabled: false, scalpBiasSource: 'manual' },
+      lite: {
+        scalpTrendVetoYen: 1, scalpCooldownSec: 1, scalpRangeEnabled: false,
+        scalpTrendVetoSource: 'manual', scalpCooldownSource: 'manual', scalpRangeSource: 'manual',
+      } as Record<string, unknown>,
     });
     asLite();
     expect(resolveScalpTrendVetoYen()).toBe(200);
     expect(resolveScalpCooldownSec()).toBe(30);
     expect(resolveScalpRangeEnabled()).toBe(true);
-    expect(resolveScalpBiasDirective().mode).toBe('ai');
-    expect(resolveScalpLcCeilingDirective().mode).toBe('ai');
+    expect(resolveScalpTrendVetoDirective().mode).toBe('ai');
+    expect(resolveScalpCooldownDirective().mode).toBe('ai');
+    expect(resolveScalpRangeDirective().mode).toBe('ai');
   });
 
   // ─── System B との関係 ───────────────────────────────────────────────

@@ -82,26 +82,33 @@ export interface UserConfig {
   //   B リゾルバは signalB.<knob> を優先し、未設定は A(グローバル)値/directive にフォールバックする
   //   (箱出しは B も A と同一挙動→そこから B だけ差分)。実売買 A には一切影響しない(B は currentSignal を出さない)。
   signalB?: SignalBConfig;
-  // ★lite(簡易公開版)の独立設定。lite の 🎛️ に露出した 5項目だけをここに持ち、monitor2(full)の
+  // ★lite(簡易公開版)の独立設定。lite の 🎛️ に露出した項目だけをここに持ち、monitor2(full)の
   //   最上位キーと混ざらないようにする(同一PCで両方使っても互いに干渉しない)。
   //   variant='lite' のときだけ参照され、未設定の項目は最上位→組み込み既定へフォールバックする。
   lite?: LiteConfig;
 }
 
-// ★lite 独立設定ブロック。lite の詳細設定に露出した 5項目のみ(全て任意=未設定は最上位へフォールバック)。
+// ★lite 独立設定ブロック。lite の詳細設定に露出した項目のみ(全て任意=未設定は最上位へフォールバック)。
 //   ここに項目を足すのは「lite の画面に出した」ときだけ。出していない設定を入れてはいけない
 //   (monitor2 が設定した値が lite 側で見えなくなり、原因不明の挙動差になる)。
+//   委任モード(source)も設定なので、値と一緒に独立させる(片方で AI委任にしたら両方変わる、を防ぐ)。
 export interface LiteConfig {
   scalpBias?: ScalpBias;
   scalpLcFloorYen?: number;
   scalpLcCeilingYen?: number;
   scalpLcHardMaxEnabled?: boolean;
   scalpLcHardMaxYen?: number;
+  // 委任モード(手動/AI)。LC安全上限は「AIに委ねる対象」ではない安全弁なので source を持たない。
+  scalpLcFloorSource?: KnobSource;
+  scalpLcCeilingSource?: KnobSource;
+  scalpBiasSource?: KnobSource;
 }
 
-// ★lite 名前空間が担当するキー(= lite の画面に出した 5項目)。これ以外は lite でも最上位から解決する。
+// ★lite 名前空間が担当するキー(= lite の画面に出した 値5 + 委任モード3)。
+//   これ以外は lite でも最上位から解決する。
 export const LITE_OWNED_KEYS = [
   'scalpBias', 'scalpLcFloorYen', 'scalpLcCeilingYen', 'scalpLcHardMaxEnabled', 'scalpLcHardMaxYen',
+  'scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpBiasSource',
 ] as const;
 export type LiteOwnedKey = typeof LITE_OWNED_KEYS[number];
 const LITE_OWNED_SET: ReadonlySet<string> = new Set(LITE_OWNED_KEYS);

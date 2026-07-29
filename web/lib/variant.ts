@@ -22,15 +22,16 @@ export type ToggleableEls = readonly (ToggleableEl | null | undefined)[] | null;
 // ★lite: 詳細設定(🎛️)の「AIエントリー」を 4項目(初期LC下限/最大初期LC/バイアス/LC安全上限)の
 //   A系統だけに絞るための CSS セレクタ。index.html のマークアップと main.ts の収集を
 //   この 1か所に集約する(テストも同じ定数で index.html を検証するのでセレクタがずれない)。
+//   ★委任モード select(.knob-mode)は lite でも表示する(手動/AI委任をユーザーが選べる)ので
+//     inRowHide には入れない。B側の .knob-mode は .ab-col-b ごと隠れるので個別指定は不要。
 export const LITE_SCALP = {
   fieldset:   '#ai-entry-fieldset',
   keepRow:    '.setting-row[data-lite="1"]',         // lite で残す 4行
   dropRow:    '.setting-row:not([data-lite="1"])',   // lite で隠す残りの行
-  inRowHide:  '.ab-col-b, .knob-mode, .ab-tag',      // 残す行のうち隠す部品(B系統 / 委任モード / A タグ)
-  modeSelect: '.knob-mode',                          // 残す行の A側 委任モード select(先頭)
+  inRowHide:  '.ab-col-b, .ab-tag',                  // 残す行のうち隠す部品(B系統 / A タグ)
+  modeSelect: '.knob-mode',                          // A側 委任モード select(残す 4行のうち 3行が持つ)
   fullHint:   '.exit-hint:not(.lite-hint)',          // full 向けの説明(A/B・AI委任) = lite では隠す
   liteHint:   '.lite-hint',                          // lite 専用の簡潔な説明 = lite でだけ出す
-  aiNote:     '.lite-ai-note',                       // 「AIにおまかせ中で編集不可」注記(条件付き表示)
 } as const;
 
 export interface VariantElements {
@@ -82,19 +83,4 @@ export function applyVariantVisibility(variant: Variant, els: VariantElements): 
   for (const el of els.scalpHideInRows ?? []) hide(el);
   for (const el of els.scalpFullHints ?? []) hide(el);
   for (const el of els.scalpLiteHints ?? []) show(el);
-}
-
-// ★lite: 委任モード select を隠すので、AI委任(mode='ai')の項目は値入力が無効(灰色)になる理由が見えない。
-//   該当行にだけ「AIにおまかせ中」の注記を出して、黙って触れない入力を見せることを避ける。
-//   full は何もしない(注記は index.html で hidden のまま=表示は現状と完全同一)。
-export interface LiteKnobNote {
-  mode?: { value: string } | null;   // 委任モード select(値だけ読む・未検出は manual 扱い)
-  note?: ToggleableEl | null;        // 行内の注記要素(既定 hidden)
-}
-export function applyLiteKnobNotes(variant: Variant, notes: readonly LiteKnobNote[]): void {
-  if (variant !== 'lite') return;
-  for (const n of notes) {
-    if (!n.note) continue;
-    if (n.mode?.value === 'ai') show(n.note); else hide(n.note);
-  }
 }

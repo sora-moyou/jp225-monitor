@@ -21,7 +21,7 @@ import { initSignalTradesModal, initSignalClearButton } from './components/signa
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
-import { applyVariantVisibility, applyLiteKnobNotes, normalizeVariant, LITE_SCALP, type Variant } from './lib/variant.js';
+import { applyVariantVisibility, normalizeVariant, LITE_SCALP } from './lib/variant.js';
 
 // v0.3.17: アラート検知はサーバ側 (alertLoop + tickDetector) に移管。クライアントは SSE で受信のみ。
 
@@ -222,18 +222,6 @@ const scalpQueryAll = (sel: string): HTMLElement[] =>
   scalpFieldsetEl ? Array.from(scalpFieldsetEl.querySelectorAll<HTMLElement>(sel)) : [];
 const scalpKeepRows = (): HTMLElement[] => scalpQueryAll(LITE_SCALP.keepRow);
 
-// /api/version 取得後に確定する variant。詳細設定を開くたび AI委任の注記を同期するため保持する。
-let uiVariant: Variant = 'full';
-
-// ★lite: 委任モード select を隠すので、AI委任中の項目は値入力が灰色になる理由が見えない。
-//   該当行にだけ注記を出す(full は applyLiteKnobNotes が何もしない=表示は現状と同一)。
-function syncLiteKnobNotes(): void {
-  applyLiteKnobNotes(uiVariant, scalpKeepRows().map(row => ({
-    mode: row.querySelector<HTMLSelectElement>(LITE_SCALP.modeSelect),
-    note: row.querySelector<HTMLElement>(LITE_SCALP.aiNote),
-  })));
-}
-
 // 詳細パラメータ モーダル (定期ポーリング / クールダウン等。設定とは別ボタン 🎛️)
 initParamsModal({
   openBtn:     document.getElementById('params-btn') as HTMLButtonElement,
@@ -244,9 +232,8 @@ initParamsModal({
   portWarning: document.getElementById('params-port-warning') as HTMLElement,
   status:      document.getElementById('params-status') as HTMLElement,
   // ★v0.8.3: 🎛️ を開いたら移設フィールドを反映し、🎛️ 保存で移設フィールドも保存する。
-  //   ★lite: 反映後に AI委任注記を同期する(反映で入力の有効/無効が決まるため反映の後)。
-  onOpen:      async () => { await settingsCtl.refresh(); syncLiteKnobNotes(); },
-  onSave:      async () => { await settingsCtl.save(); syncLiteKnobNotes(); },
+  onOpen:      () => settingsCtl.refresh(),
+  onSave:      () => settingsCtl.save(),
 });
 
 // ③ Ctrl + / Ctrl - / Ctrl 0 でチャート以外のUI文字サイズを可変 (zoom)。localStorage 永続。
@@ -411,8 +398,7 @@ fetch(apiUrl('/api/version'))
   .then(r => r.json())
   .then((d: { version: string; variant?: string }) => {
     if (versionEl) versionEl.textContent = `v${d.version}`;
-    uiVariant = normalizeVariant(d.variant);
-    applyVariantVisibility(uiVariant, {
+    applyVariantVisibility(normalizeVariant(d.variant), {
       alertsHistoryBtn: document.getElementById('alerts-history-btn'),
       openLogsBtn: document.getElementById('open-logs'),
       // ★lite は履歴モーダルの A/B 系統セレクタを非表示(B の成績は full のみで確認)。
@@ -424,14 +410,14 @@ fetch(apiUrl('/api/version'))
       basedataPublishFieldset: document.getElementById('basedata-publish-fieldset'),
       // ★lite: 詳細設定の右カラム(ポーリング/急変閾値/節目/データ)は丸ごと非表示。
       paramsOtherCol: document.getElementById('params-col2'),
-      // ★lite: AIエントリーは 4項目(data-lite="1")だけ残し、他の行と B系統/委任モード/Aタグを隠す。
+      // ★lite: AIエントリーは 4項目(data-lite="1")だけ残し、他の行と B系統/Aタグを隠す。
+      //   委任モード select(手動/AI委任)は lite でも表示する=隠さない。
       scalpHideRows: scalpQueryAll(LITE_SCALP.dropRow),
       scalpHideInRows: scalpKeepRows().flatMap(row =>
         Array.from(row.querySelectorAll<HTMLElement>(LITE_SCALP.inRowHide))),
       scalpFullHints: scalpQueryAll(LITE_SCALP.fullHint),
       scalpLiteHints: scalpQueryAll(LITE_SCALP.liteHint),
     });
-    syncLiteKnobNotes();
   })
   .catch(() => { if (versionEl) versionEl.textContent = 'v?'; });
 

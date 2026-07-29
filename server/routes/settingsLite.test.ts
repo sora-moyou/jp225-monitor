@@ -102,6 +102,7 @@ describe('/api/settings の lite 独立保存', () => {
     expect(liteAfter).toEqual({
       scalpLcFloorYen: 55, scalpLcCeilingYen: 80, scalpLcHardMaxYen: 200,
       scalpBias: 'short', scalpLcHardMaxEnabled: false,
+      scalpLcFloorSource: 'manual', scalpLcCeilingSource: 'manual', scalpBiasSource: 'ai',
     });
   });
 
@@ -111,14 +112,74 @@ describe('/api/settings の lite 独立保存', () => {
     post(liteFormBody({ scalpLcCeilingYen: 90 }));
     const lite = readRaw().lite as Record<string, unknown>;
     expect(Object.keys(lite).sort()).toEqual([
-      'scalpBias', 'scalpLcCeilingYen', 'scalpLcFloorYen', 'scalpLcHardMaxEnabled', 'scalpLcHardMaxYen',
+      'scalpBias', 'scalpBiasSource',
+      'scalpLcCeilingSource', 'scalpLcCeilingYen',
+      'scalpLcFloorSource', 'scalpLcFloorYen',
+      'scalpLcHardMaxEnabled', 'scalpLcHardMaxYen',
     ]);
-    // トレンドveto/クールダウン/レンジ/委任source は最上位のまま(値も不変)。
+    // トレンドveto/クールダウン/レンジ は最上位のまま(値も不変)。
     const raw = readRaw();
     expect(raw.scalpTrendVetoYen).toBe(120);
     expect(raw.scalpCooldownSec).toBe(60);
     expect(raw.scalpRangeEnabled).toBe(true);
+    // ★lite に露出した委任source も最上位は据え置き(BASE の 'ai' のまま)。
     expect(raw.scalpBiasSource).toBe('ai');
+  });
+
+  // ─── ★委任モード(手動/AI)も lite 独立 ────────────────────────────────
+  it('★lite で AI委任 に切り替えて保存 → source は config.lite にだけ入り、最上位の source は不変', () => {
+    writeConfig(BASE);
+    asLite();
+    const before = readRaw();
+    expect(post(liteFormBody({ scalpLcFloorSource: 'ai', scalpBiasSource: 'manual' })).code).toBe(200);
+    const after = readRaw();
+    // 最上位の source は 1つも変わらない(BASE の scalpBiasSource:'ai' が保たれる)。
+    expect(after.scalpLcFloorSource).toBe(before.scalpLcFloorSource);   // 未設定のまま
+    expect(after.scalpBiasSource).toBe('ai');
+    expect(after.scalpLcCeilingSource).toBe(before.scalpLcCeilingSource);
+    const lite = after.lite as Record<string, unknown>;
+    expect(lite.scalpLcFloorSource).toBe('ai');
+    expect(lite.scalpBiasSource).toBe('manual');       // 'manual' も明示保存(最上位の 'ai' を引き継がない)
+    expect(lite.scalpLcCeilingSource).toBe('manual');
+  });
+
+  it('★lite で AI委任 にしても full(monitor2)の実効 source は変わらない', () => {
+    writeConfig(BASE);
+    asLite();
+    post(liteFormBody({ scalpLcFloorSource: 'ai', scalpLcCeilingSource: 'ai', scalpBiasSource: 'manual' }));
+    asFull();
+    const f = get();
+    expect(f.scalpLcFloorSource).toBe('manual');   // 最上位は未設定=既定 manual のまま
+    expect(f.scalpLcCeilingSource).toBe('manual');
+    expect(f.scalpBiasSource).toBe('ai');          // BASE のまま
+    asLite();
+    const l = get();
+    expect(l.scalpLcFloorSource).toBe('ai');
+    expect(l.scalpLcCeilingSource).toBe('ai');
+    expect(l.scalpBiasSource).toBe('manual');
+  });
+
+  it('★config.lite に source が無い既存 config なら lite の実効 source は従来どおり(フォールバック)', () => {
+    writeConfig(BASE);
+    asFull();
+    const f = get();
+    asLite();
+    const l = get();
+    for (const k of ['scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpBiasSource']) {
+      expect(l[k]).toEqual(f[k]);
+    }
+    expect(l.scalpBiasSource).toBe('ai');
+  });
+
+  it('lite の委任モード変更は、画面に出していない委任source(トレンドveto等)を最上位で書き換えない', () => {
+    writeConfig({ ...BASE, scalpTrendVetoSource: 'ai', scalpCooldownSource: 'ai' });
+    asLite();
+    post(liteFormBody({ scalpBiasSource: 'ai' }));
+    const raw = readRaw();
+    expect(raw.scalpTrendVetoSource).toBe('ai');
+    expect(raw.scalpCooldownSource).toBe('ai');
+    expect((raw.lite as Record<string, unknown>).scalpTrendVetoSource).toBeUndefined();
+    expect((raw.lite as Record<string, unknown>).scalpCooldownSource).toBeUndefined();
   });
 
   it('★full で保存しても config.lite は変わらない(monitor2 は lite を触らない)', () => {

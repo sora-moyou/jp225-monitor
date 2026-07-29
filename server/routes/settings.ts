@@ -32,6 +32,42 @@ const NUMERIC_PARAM_KEYS = [
   'scalpLcFloorYen', 'scalpLcHardMaxYen',
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
 
+// ★保存経路が「扱いを明示的に決める」非数値フィールド(= 設定画面が送ってくるもの)。
+//   数値は NUMERIC_PARAM_KEYS が担当するので、ここには並べない。
+//   下の decided がこの一覧を型で強制されるため、追加し忘れ/書き忘れがコンパイルエラーになる。
+const EXPLICIT_PARAM_KEYS = [
+  'kimiKey', 'geminiKey', 'groqKey', 'openaiKey', 'webSearchKey',
+  'basedataUser', 'basedataPass', 'basedataSaveDir', 'githubToken', 'basedataAutoPublish',
+  'webSearchModel', 'webSearchOpenaiModel',
+  'scalpBias', 'scalpRangeEnabled', 'dotenEnabled', 'rangeReevalEnabled',
+  'indicatorsEnabled', 'aiTechnicalEnabled', 'scalpChartFallbackText',
+  'doubleFormingEnabled', 'nwaveEnabled',
+  'scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpTrendVetoSource',
+  'scalpCooldownSource', 'scalpBiasSource', 'scalpRangeSource',
+  'scalpLcHardMaxEnabled',
+  'signalB', 'lite',
+] as const satisfies readonly (keyof UserConfig)[];
+type ExplicitParamKey = typeof EXPLICIT_PARAM_KEYS[number];
+
+// ★保存経路が値を決めない=既存値をそのまま持ち越すフィールド。
+//   設定画面にUIが無く、config.json の手編集でしか設定しない類(chromePath など)。
+const PRESERVED_PARAM_KEYS = [
+  'chromePath',   // チャート撮影に使う chrome.exe の明示パス(UI 無し・手編集のみ)
+] as const satisfies readonly (keyof UserConfig)[];
+type PreservedParamKey = typeof PRESERVED_PARAM_KEYS[number];
+
+// ★型で漏れを検出する仕掛け: UserConfig にフィールドを足したのに、明示決定(EXPLICIT_PARAM_KEYS /
+//   NUMERIC_PARAM_KEYS)にも持ち越し(PRESERVED_PARAM_KEYS)にも入れ忘れると、ここがコンパイル
+//   エラーになり、漏れたキー名がエラーメッセージに出る。
+//   (実行時も next = {...existing, ...} で値は保持されるが、扱いの明示を型で強制しておく。)
+type AssertTrue<T extends true> = T;
+type UnclassifiedConfigKey = Exclude<
+  keyof UserConfig,
+  ExplicitParamKey | PreservedParamKey | typeof NUMERIC_PARAM_KEYS[number]
+>;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type _AllConfigKeysClassified = AssertTrue<[UnclassifiedConfigKey] extends [never] ? true : UnclassifiedConfigKey>;
+
 // source フィールド適用: undefined=変更なし / 'ai'→'ai' 保存 / それ以外(null/'manual'/不正)=既定 manual(=未設定で保存)。
 function applySourceField(existing: KnobSource | undefined, incoming: unknown): KnobSource | undefined {
   if (incoming === undefined) return existing;
@@ -247,12 +283,15 @@ function buildSignalB(
   return Object.keys(next).length > 0 ? (next as SignalBConfig) : undefined;
 }
 
-// ★lite 独立設定: lite の 🎛️ に露出した 5項目だけを config.lite へ組み立てる。
+// ★lite 独立設定: lite の 🎛️ に露出した項目だけを config.lite へ組み立てる。
 //   - 未指定(undefined)=lite の既存値を保持 / null=unset(=最上位→組み込み既定へフォールバック)
-//   - 'none' や false も明示保存する(unset にすると monitor2 側の値を引き継いでしまい独立にならない)
+//   - 'none' / false / 'manual' といった「既定と同じ値」も明示保存する。最上位の規約(既定=unset)を
+//     そのまま持ち込むと unset になり、monitor2 側の値を引き継いでしまって独立にならない。
 //   数値・bias の検証は呼び出し元(最上位の適用ループ)が同じ incoming/同じ bounds で先に済ませ、
 //   エラー時は 400 で return しているため、ここへ来る値は必ず妥当。
 const LITE_NUMERIC_KEYS = ['scalpLcFloorYen', 'scalpLcCeilingYen', 'scalpLcHardMaxYen'] as const;
+// 委任モード(手動/AI)も lite 独立。LC安全上限は安全弁なので source を持たない(UI にもモード選択が無い)。
+const LITE_SOURCE_KEYS = ['scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpBiasSource'] as const;
 function buildLiteConfig(existing: LiteConfig | undefined, body: Record<string, unknown>): LiteConfig | undefined {
   const ex = existing ?? {};
   const next: LiteConfig = {};
@@ -271,6 +310,11 @@ function buildLiteConfig(existing: LiteConfig | undefined, body: Record<string, 
   // LC安全上限の有効/無効: false も明示保存(null は unset=フォールバック)。
   const enabled = applyBoolField(ex.scalpLcHardMaxEnabled, body.scalpLcHardMaxEnabled);
   if (enabled !== undefined) next.scalpLcHardMaxEnabled = enabled;
+  // 委任モード: 'manual' も明示保存(applySignalBSource と同じ規約。'' / 未指定は既存保持→unset)。
+  for (const key of LITE_SOURCE_KEYS) {
+    const s = body[key] === undefined ? ex[key] : applySignalBSource(body[key]);
+    if (s !== undefined) next[key] = s;
+  }
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
@@ -350,8 +394,9 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const isLite = resolveVariant() === 'lite';
   const liteValue = isLite ? buildLiteConfig(existing.lite, bodyRec) : existing.lite;
 
-  // 文字列フィールドを先に埋め、数値フィールドはループで代入
-  const next: UserConfig = {
+  // 保存で扱いを明示的に決めるフィールド(非数値)。EXPLICIT_PARAM_KEYS 全件の記載を型が強制する
+  // (書き忘れ=コンパイルエラー)。数値フィールドは下のループで代入する。
+  const decided: { [K in ExplicitParamKey]: UserConfig[K] } = {
     kimiKey: applyStringField(existing.kimiKey, body.kimiKey),
     geminiKey: applyStringField(existing.geminiKey, body.geminiKey),
     groqKey: applyStringField(existing.groqKey, body.groqKey),
@@ -376,11 +421,12 @@ export function postSettingsHandler(req: Request, res: Response): void {
     doubleFormingEnabled: doubleFormingValue,   // ★検知チューニング: double 形成通知(既定OFFは未設定で保存)
     nwaveEnabled: nwaveEnabledValue,   // ★N波動の節目/アラート(既定ONに戻すときは null→未設定で保存)
     // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。
-    scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
-    scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),
+    //   ★lite に露出した 3つ(初期LC下限/最大初期LC/バイアス)は最上位を据え置く(変更は config.lite へ)。
+    scalpLcFloorSource: isLite ? existing.scalpLcFloorSource : applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
+    scalpLcCeilingSource: isLite ? existing.scalpLcCeilingSource : applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),
     scalpTrendVetoSource: applySourceField(existing.scalpTrendVetoSource, bodyRec.scalpTrendVetoSource),
     scalpCooldownSource: applySourceField(existing.scalpCooldownSource, bodyRec.scalpCooldownSource),
-    scalpBiasSource: applySourceField(existing.scalpBiasSource, bodyRec.scalpBiasSource),
+    scalpBiasSource: isLite ? existing.scalpBiasSource : applySourceField(existing.scalpBiasSource, bodyRec.scalpBiasSource),
     scalpRangeSource: applySourceField(existing.scalpRangeSource, bodyRec.scalpRangeSource),
     // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。★lite は最上位を据え置く。
     scalpLcHardMaxEnabled: isLite ? existing.scalpLcHardMaxEnabled : hardMaxEnabledValue,
@@ -389,6 +435,14 @@ export function postSettingsHandler(req: Request, res: Response): void {
     // ★lite 独立設定(full では existing.lite をそのまま持ち越す=触らない)。
     lite: liteValue,
   };
+
+  // ★既存 config を土台にして、明示的に決めたフィールドだけを上書きする。
+  //   全フィールドを列挙して新しいオブジェクトを作る形にすると、列挙から漏れたフィールド
+  //   (実害: chromePath)が保存のたびに黙って消える。土台にすれば PRESERVED_PARAM_KEYS も
+  //   将来足されるフィールドも自動的に生き残る。
+  //   なお decided の値が undefined のキーは「上書きして undefined」になり、saveConfig の
+  //   JSON 直列化でキーごと落ちる=従来どおり「既定に戻す」規約が保たれる。
+  const next: UserConfig = { ...existing, ...decided };
   const nextRec = next as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {
     nextRec[key] = results[key]!.value;

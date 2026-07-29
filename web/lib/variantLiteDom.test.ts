@@ -41,6 +41,33 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     }
   });
 
+  it('★lite で隠す部品に委任モード select は含めない(手動/AI委任をユーザーが選べる)', () => {
+    expect(LITE_SCALP.inRowHide).not.toContain('knob-mode');
+    for (const row of keepRows.toArray()) {
+      // 隠す対象(B列 / A タグ)を集めても、A 側の委任モード select は入らない。
+      const hidden = $(row).find(LITE_SCALP.inRowHide).toArray();
+      const aMode = $(row).find('.ab-col:not(.ab-col-b) ' + LITE_SCALP.modeSelect).toArray();
+      for (const m of aMode) expect(hidden).not.toContain(m);
+    }
+  });
+
+  it('★委任モード select は 3項目(初期LC下限/最大初期LC/バイアス)にあり、LC安全上限には無い', () => {
+    const withMode = keepRows.toArray()
+      .filter(r => $(r).find('.ab-col:not(.ab-col-b) ' + LITE_SCALP.modeSelect).length > 0)
+      .map(labelOf);
+    expect(withMode).toEqual(['初期LC下限(円)', '最大初期LC(円)', 'バイアス']);
+    const hardMax = keepRows.toArray().find(r => labelOf(r) === 'LC安全上限(円)')!;
+    expect($(hardMax).find(LITE_SCALP.modeSelect).length).toBe(0);   // A/B とも無い=安全弁は委任対象外
+  });
+
+  it('★lite 冒頭の説明に「手動/AI委任」の意味が書いてある', () => {
+    const top = fieldset.children(LITE_SCALP.liteHint).first().text();
+    expect(top).toContain('手動');
+    expect(top).toContain('設定した数値を必ず守らせます');
+    expect(top).toContain('AI委任');
+    expect(top).toContain('AIが場面ごとに決めます');
+  });
+
   it('lite 専用の説明(.lite-hint)は fieldset 冒頭 + 4項目それぞれに 1つずつあり、既定は hidden(=full に出ない)', () => {
     const lite = fieldset.find(LITE_SCALP.liteHint);
     expect(lite.length).toBe(5);   // 冒頭 1 + 各行 4
@@ -54,15 +81,6 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     const full = fieldset.find(LITE_SCALP.fullHint);
     expect(full.length).toBe(2);
     full.each((_, el) => expect($(el).attr('hidden')).toBeUndefined());
-  });
-
-  it('委任モード select を持つ行には「AIにおまかせ中」注記があり、既定は hidden', () => {
-    for (const row of keepRows.toArray()) {
-      const hasMode = $(row).find(LITE_SCALP.modeSelect).length > 0;
-      const note = $(row).find(LITE_SCALP.aiNote);
-      expect(note.length).toBe(hasMode ? 1 : 0);
-      if (hasMode) expect(note.attr('hidden')).toBeDefined();
-    }
   });
 
   it('詳細設定の右カラム(#params-col2)が存在する(lite で丸ごと隠す=ポーリング/急変閾値/データを見せない)', () => {
