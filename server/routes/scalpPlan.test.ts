@@ -13,6 +13,8 @@ const firstVisionMock = vi.fn<[], { name: string } | null>();
 vi.mock('../llm/openai.js', () => ({
   buildScalpPlan: (...a: unknown[]) => buildScalpPlanMock(...a),
   firstAvailableVisionProvider: () => firstVisionMock(),
+  // 勢い1行のレンジ文言に使う実効値(既定 OFF=レンジへ誘導しない)。ここでは撮影ゲートの検証が目的なので固定。
+  resolveEffectiveRangeEnabled: () => false,
 }));
 
 vi.mock('../cache.js', () => ({

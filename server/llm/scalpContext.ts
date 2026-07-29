@@ -38,6 +38,24 @@ function aggregateBars(bars: OHLCBar[], tfMs: number): OHLCBar[] {
   return [...m.values()].sort((a, b) => a.t - b.t);
 }
 
+/** 参照足の鮮度上限[ms]。目標時刻(now−N時間)から これ以上離れた足しか無ければ「データ無し」とみなす。
+ *  実データ(NIY=F 1分足)では参照足のズレが「2分以内」か「30分超(=セッション跨ぎ)」の二極だったため、
+ *  3分(足3本ぶん)で「小さな欠測は許容 / セッション跨ぎは拒否」を分離できる。
+ *  ※signalTrade/regime.ts にも同じ値の定数がある。llm 層を signalTrade へ依存させないため意図的に別置き
+ *   (両者は「どの参照足なら嘘でないか」という同じ判断を、別レイヤーで独立に行っている)。 */
+const MAX_STALE_MS = 3 * MIN;
+
+/** t<=time のうち最大 t を持つバーの close。該当なし/鮮度切れ(time から MAX_STALE_MS 超)は null。 */
+function closeAtOrBeforeFresh(bars: OHLCBar[], time: number): number | null {
+  let bestT = -Infinity;
+  let bestC: number | null = null;
+  for (const b of bars) {
+    if (b.t <= time && b.t >= bestT) { bestT = b.t; bestC = b.c; }
+  }
+  if (bestC === null || time - bestT > MAX_STALE_MS) return null;
+  return bestC;
+}
+
 /** ATR(14) を 1分足の真のレンジ平均で算出。バー2本未満は null。 */
 function computeAtr14(bars: OHLCBar[]): number | null {
   if (!bars || bars.length < 2) return null;
@@ -162,6 +180,27 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
       parts.push(`高値まで${sgn(toHigh)}円 / 安値まで${sgn(toLow)}円`);
     }
     if (parts.length > 0) blocks.push('ボラ/レンジ: ' + parts.join(' / '));
+  } catch { /* 省略 */ }
+
+  // H. 長い時間軸の方向(現在値との差)。★「直近の勢い」は最長30分しか無く、AI が大きな流れを数値で
+  //    読めていなかった(30分で下げ続けている最中に買いを出す等)。1時間/2時間/当日始値比 を追加で渡す。
+  //    足が足りない/参照足が古すぎる(セッション跨ぎ)期間は「—」で欠測を明示する(嘘の数字を出さない)。
+  //    全部欠測ならブロックごと省略。
+  try {
+    if (currentPrice > 0) {
+      const sgn = (v: number): string => `${v >= 0 ? '+' : ''}${R(v)}円`;
+      const diffAgo = (minutes: number): string | null => {
+        const c = closeAtOrBeforeFresh(bars, now - minutes * MIN);
+        return c === null ? null : sgn(currentPrice - c);
+      };
+      const h1 = diffAgo(60);
+      const h2 = diffAgo(120);
+      const open = input.session?.open;
+      const fromOpen = typeof open === 'number' && Number.isFinite(open) && open > 0 ? sgn(currentPrice - open) : null;
+      if (h1 !== null || h2 !== null || fromOpen !== null) {
+        blocks.push(`長い時間軸(現在値との差): 1時間${h1 ?? '—'} / 2時間${h2 ?? '—'} / 当日始値比${fromOpen ?? '—'}`);
+      }
+    }
   } catch { /* 省略 */ }
 
   // D. スイング構造。確定スイングピボット 直近3。

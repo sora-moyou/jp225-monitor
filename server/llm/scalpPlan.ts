@@ -75,6 +75,10 @@ export function buildScalpQuestion(
     ? '⑤明確な方向性が無く、上下に反応帯があるレンジと判断したら direction:"range" で、' +
       '現在値の上と下に1レッグずつ置いてよい(両面ストラドル)。各レッグは side/type/entry/stopLoss。' +
       'レンジ内で逆張りするなら指値(上=売り指値/下=買い指値)、抜けに追随するなら逆指値(上=買い逆指値/下=売り逆指値)。' +
+      `★どちらを選ぶか(重要): 上下の反応帯の幅が${ceilingYen * 2}円より広ければ両指値(レンジ内逆張り)、` +
+      `${ceilingYen * 2}円以下の狭い横這いなら両側逆指値(上=買い逆指値/下=売り逆指値)にすること。` +
+      `理由: 損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下だと逆張りの利幅が損切り幅を上回らず成立しない。狭い横這いは抜けに追随する方が正しい。` +
+      '(両レッグとも type:"stop" の両側逆指値は正当なプランとして受け付ける) ' +
       '上レッグ(upper)の entry は現在値超・下レッグ(lower)の entry は現在値未満。各レッグの初期LCも上限内に収めること。' +
       '★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。'
     : 'direction は buy/sell/none のみ、range(両面)は出さないこと。';
@@ -114,15 +118,32 @@ export function buildScalpQuestion(
 // トレンド veto の初期閾値[円]。config resolveScalpTrendVetoYen と揃える(0=veto 無効)。
 export const DEFAULT_TREND_VETO_YEN = 100;
 
+/** レンジ両面(direction:"range")の実効許可値。manual は設定値(override 優先)/ ai は AI 委任=許可(true)。
+ *  ★SSOT: system prompt の rangeLine と、技術文脈の「直近の勢い」1行に添えるレンジ文言は、必ず同じ値を使う
+ *   (片方が「レンジ禁止」もう片方が「レンジ可」だと AI が混乱するため)。scalpPlanRunner が同じ関数を呼ぶ。 */
+export function resolveEffectiveRangeEnabled(profile?: SignalProfile, override?: boolean): boolean {
+  const d = resolveScalpRangeDirective(profile);
+  return d.mode === 'manual' ? (override ?? d.value) : true;
+}
+
 /** レジーム/トレンド逆行フェードを禁じる補助プロンプト(遵守はコードの enforcePlanConstraints で担保)。
  *  trendVetoYen<=0(=veto 無効)のときは空文字(=注入なし)。 */
 function trendGuidance(trendVetoYen: number): string {
   if (!(trendVetoYen > 0)) return '';
   return (
-    `『レンジ』は直近10〜30分がほぼ横ばい(±${trendVetoYen}円未満)のときだけと判断すること。` +
-    '直近が一方向に強く動いていればレンジではない=トレンド方向の順張り(ブレイク逆指値/押し目・戻りの順張り)か、' +
-    'direction:"none" で見送りにする。トレンドに逆行する新規(順トレンドの高値売り/安値買いの戻り売買)は出さない。' +
-    '上で渡す『直近の勢い』の数値を必ず判断に使うこと。'
+    // ★トレンド判定は「10分だけ」ではなく 10分・30分・MA20傾き の合議(=『直近の勢い』行の末尾ラベルの正体)。
+    //   軸の列挙は実装(computeRegime)と厳密に一致させる。1時間は数値基準を持たないので合議には入れず、
+    //   『長い時間軸』ブロックの数値を AI 自身に見せて補助的に参照させる。
+    `『レンジ』は 10分・30分・MA20傾き のどれも横ばい(10分が±${trendVetoYen}円未満 かつ 30分が±${trendVetoYen * 2}円未満)` +
+    'のときだけと判断すること。10分が静かでも 30分/MA20傾き が一方向に動いていればレンジではない' +
+    '(『直近の勢い』行の末尾ラベルがこの合議の結論。『長い時間軸(1時間/2時間/当日始値比)』の数値も併せて参照すること)。' +
+    'トレンドと判断したら、トレンド方向の順張り(ブレイク逆指値/押し目・戻りの順張り)か direction:"none" で見送りにする。' +
+    'トレンドに逆行する新規(順トレンドの高値売り/安値買いの戻り売買)は出さない。' +
+    '★直近10分と長い時間軸が逆向きのとき(『直近の勢い』が「戻り」「押し目」表示)は、どちらのトレンドとも断定せず、' +
+    'direction:"none"(見送り)を基本とすること。' +
+    `※コード側の自動見送り(veto)は直近10分の勢い(±${trendVetoYen}円)だけで判定する。` +
+    `10分が±${trendVetoYen}円未満でも長い時間軸がトレンドなら veto は掛からないので、逆行を出さないのはあなたの判断による。` +
+    '上で渡す『直近の勢い』と『長い時間軸』の数値を必ず判断に使うこと。'
   );
 }
 
@@ -155,7 +176,7 @@ function buildScalpSystemPromptBody(
 ): string {
   // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
   const rangeLine = rangeEnabled
-    ? `\n- direction は buy / sell / none / range のいずれか。明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随逆指値)・entry・stopLoss を出す。upper.entry は現在値超・lower.entry は現在値未満。レンジ内逆張りは 上=売り指値 / 下=買い指値、抜け追随は 上=買い逆指値 / 下=売り逆指値。各レッグの初期LCも上限(≤${ceilingYen}円)内に収める。★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。方向性が明確なら従来どおり buy/sell を優先。`
+    ? `\n- direction は buy / sell / none / range のいずれか。明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随逆指値)・entry・stopLoss を出す。upper.entry は現在値超・lower.entry は現在値未満。レンジ内逆張りは 上=売り指値 / 下=買い指値、抜け追随は 上=買い逆指値 / 下=売り逆指値。★fade(両指値)と breakout(両側逆指値)の使い分け[重要]: 上下の反応帯の幅が${ceilingYen * 2}円より広ければ両指値(レンジ内逆張り)、${ceilingYen * 2}円以下の狭い横這いなら両側逆指値(上=買い逆指値/下=売り逆指値)にすること。損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。両レッグとも type:"stop" の両側逆指値は正当なプランとして受け付ける(片方 limit・片方 stop の混在も可)。各レッグの初期LCも上限(≤${ceilingYen}円)内に収める。★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。方向性が明確なら従来どおり buy/sell を優先。`
     : `\n- direction は buy / sell / none のみ。range(両面ストラドル)は出さないこと。`;
   return `あなたは日経225先物(NIY=F)のスキャルピングを専門とするトレーダーです。
 手元の【市場の現状】(現在価格・テクニカル節目・直近アラート・本日OHLC・ニュース)と、
@@ -577,7 +598,10 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     '- ★方向と指値/逆指値の位置(必須): 買いは 指値=現在値より下 / 逆指値=現在値より上。売りは 指値=現在値より上 / 逆指値=現在値より下。逆に置くと即約定・不正なので厳禁',
     '- ★指値・逆指値の距離(必須): 両方を出すときは現在値が2つの価格の間に入るように置く(買い: 指値<現在値<逆指値 / 売り: 逆指値<現在値<指値。現在値との距離上限は無いが、指値と逆指値の価格差は400円以内=幅が広すぎる両面は出さない)。片方だけ(指値のみ/逆指値のみ)を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める(200円超離れた片レッグは出さない=約定不能・古い価格対策)',
     '- ★rationale(説明文)は実際に出力したレッグだけ説明すること: 逆指値レッグ(stopEntry)を出さないなら「逆指値エントリーを置いた」と書かない・指値レッグ(limitEntry)を出さないなら「指値を置いた」と書かない(説明が実際の注文と食い違ってはならない)',
-    `- トレンド判定: 直近10分で ±${i.trendVeto.value}円 以上動けばトレンド=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止${knobTag(i.trendVeto.mode)}`,
+    `- トレンド判定: 10分・30分・MA20傾き の合議(10分で±${i.trendVeto.value}円以上 / 30分で±${i.trendVeto.value * 2}円以上 / MA20が傾いており30分も±${i.trendVeto.value}円以上、のいずれか)でトレンド`
+      + `=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止。`
+      + `10分と長い時間軸が逆向きなら どちらとも断定せず見送り(direction:"none")を基本にする。`
+      + `※コードの自動見送り(veto)は直近10分の±${i.trendVeto.value}円だけで判定する(長い時間軸のトレンドは veto されないので、逆行を出さないのはあなたの判断による)${knobTag(i.trendVeto.mode)}`,
     `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
     `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,
     `- レンジ両面(現在値の上下に指値/逆指値を1本ずつ): ${i.range.value ? '有効' : '無効'}${knobTag(i.range.mode)}`,
@@ -796,7 +820,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const ceilingInput = input.lcCeilingYen ?? ceilingD.value;
   // バイアス/レンジ: manual は設定(override 優先)を適用 / ai は制約なし(bias='none'・range 許可)。
   const bias: ScalpBias = biasD.mode === 'manual' ? (input.bias ?? biasD.value) : 'none';
-  const rangeEnabled = rangeD.mode === 'manual' ? (input.rangeEnabled ?? rangeD.value) : true;
+  const rangeEnabled = resolveEffectiveRangeEnabled(profile, input.rangeEnabled);
   const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen ?? floorD.value, ceilingInput);
   // レジーム/トレンド veto の閾値[円](0=無効)。manual は閾値・ai は数値veto無効(=0)。プロンプト文言に反映し、
   // トレンド veto 自体は input.trend で駆動する(0 のとき trend を渡さない=veto なし)。

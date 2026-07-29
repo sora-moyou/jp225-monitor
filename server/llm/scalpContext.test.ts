@@ -135,6 +135,71 @@ describe('buildScalpMarketData', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ★長い時間軸の方向(1時間/2時間/当日始値比)。「直近の勢い」が最長30分しか無く、
+//   AI が大きな流れを数値で読めなかったための追加ブロック(ADD-ONLY)。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('buildScalpMarketData 長い時間軸ブロック', () => {
+  /** now から hoursBack 時間前まで 1分刻みで埋めた足(close は closeFn(minAgo))。 */
+  function filled(minutes: number, closeFn: (minAgo: number) => number): Bar1m[] {
+    const out: Bar1m[] = [];
+    for (let i = minutes; i >= 0; i--) {
+      const c = closeFn(i);
+      out.push(bar(NOW - i * MIN, c, c, c, c));
+    }
+    return out;
+  }
+
+  it('1時間/2時間/当日始値比 の変化額を現在値との差で出す', () => {
+    // 2時間前=38500 / 1時間前=38300 / 現在値=38000。
+    const bars = filled(150, minAgo => (minAgo >= 120 ? 38500 : minAgo >= 60 ? 38300 : 38000));
+    const session: SessionOHLC = {
+      sessionDate: '2026-07-16', session: 'Day', open: 38800, high: 38900, low: 38000, close: 38000,
+      highT: NOW, lowT: NOW, openT: NOW - 150 * MIN,
+    };
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000, session });
+    expect(s).toContain('長い時間軸(現在値との差)');
+    expect(s).toContain('1時間-300円');
+    expect(s).toContain('2時間-500円');
+    expect(s).toContain('当日始値比-800円');
+  });
+
+  it('上昇局面は + 符号で出す', () => {
+    const bars = filled(150, minAgo => (minAgo >= 120 ? 37500 : minAgo >= 60 ? 37800 : 38000));
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
+    expect(s).toContain('1時間+200円');
+    expect(s).toContain('2時間+500円');
+  });
+
+  it('足が足りない期間は「—」で欠測を明示する(嘘の数字を出さない)', () => {
+    // 直近70分ぶんしか無い → 1時間は出せるが 2時間は欠測。session なしで当日始値比も欠測。
+    const bars = filled(70, minAgo => 38000 + minAgo);
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
+    expect(s).toContain('1時間-60円');
+    expect(s).toContain('2時間—');
+    expect(s).toContain('当日始値比—');
+  });
+
+  it('目標時刻から離れすぎた足しか無ければ「—」(セッション跨ぎの偽の数値を出さない)', () => {
+    // 直近30分ぶん + 6時間前の足だけ。6時間前の足を「1時間前」として使わない。
+    const bars: Bar1m[] = [bar(NOW - 360 * MIN, 39500, 39500, 39500, 39500)];
+    for (let i = 30; i >= 0; i--) bars.push(bar(NOW - i * MIN, 38000, 38000, 38000, 38000));
+    const session: SessionOHLC = {
+      sessionDate: '2026-07-16', session: 'Day', open: 38050, high: 39500, low: 38000, close: 38000,
+      highT: NOW, lowT: NOW, openT: NOW - 30 * MIN,
+    };
+    const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000, session });
+    expect(s).toContain('1時間—');
+    expect(s).toContain('2時間—');
+    expect(s).not.toContain('-1500円');
+  });
+
+  it('全部欠測(足なし)ならブロックごと省略する', () => {
+    const s = buildScalpMarketData({ bars: [], levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
+    expect(s).not.toContain('長い時間軸');
+  });
+});
+
 function trade(over: Partial<SignalTradeRow>): SignalTradeRow {
   return {
     id: 1, entry_t: 1000, entry_price: 38000, dir: 'buy',

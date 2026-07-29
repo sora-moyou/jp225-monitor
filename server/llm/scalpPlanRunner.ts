@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { buildScalpPlan, firstAvailableVisionProvider, type ScalpPlanResult } from './openai.js';
+import { buildScalpPlan, firstAvailableVisionProvider, resolveEffectiveRangeEnabled, type ScalpPlanResult } from './openai.js';
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPngCached } from '../chart/chartShot.js';
@@ -138,12 +138,17 @@ export async function runScalpPlanWithChart(
   const vetoYen = resolveScalpTrendVetoYen(overrides.profile);
   const ohlc = getRealtimeOHLCBars(symbol);
   const regime = computeRegime(ohlc, Date.now(), vetoYen > 0 ? vetoYen : 100);
+  // ★レンジ両面の実効許可値。buildScalpPlan が system prompt の rangeLine に使うのと同じ関数=同じ値
+  //   (プロファイル A/B も同じ解決。B は A へフォールバック)。勢い1行のレンジ文言と rangeLine が食い違うと
+  //   AI が「レンジ禁止なのにレンジ可」と矛盾した指示を受けるため、必ず SSOT を共有する。
+  //   ※runner は rangeEnabled の override を渡さないので buildScalpPlan 側と完全に同値になる。
+  const rangeEnabled = resolveEffectiveRangeEnabled(overrides.profile);
   // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
   const baseTech = buildNikkeiTechnical(undefined, price);
   // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
   //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
   const rich = buildRichScalpContext(symbol, price ?? 0, Date.now(), overrides.profile);
-  const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime)}${rich ? `\n\n${rich}` : ''}`;
+  const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime, rangeEnabled)}${rich ? `\n\n${rich}` : ''}`;
   // veto 無効(0)は trend を渡さない=現行挙動(veto なし)。>0 のときだけ {dir,strong} を渡してコード veto を効かせる。
   const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
 

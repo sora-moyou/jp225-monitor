@@ -11,9 +11,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const buildScalpPlanMock = vi.fn();
 const firstVisionMock = vi.fn<[], { name: string } | null>();
+// ★レンジ両面の実効許可値。buildScalpPlan の rangeLine と同じ SSOT を runner も呼ぶ(勢い1行の文言に使う)。
+const rangeEnabledMock = vi.fn<[unknown?], boolean>(() => false);
 vi.mock('./openai.js', () => ({
   buildScalpPlan: (...a: unknown[]) => buildScalpPlanMock(...a),
   firstAvailableVisionProvider: () => firstVisionMock(),
+  resolveEffectiveRangeEnabled: (...a: unknown[]) => rangeEnabledMock(...a),
 }));
 
 vi.mock('../cache.js', () => ({
@@ -74,6 +77,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     firstVisionMock.mockReset();
     captureMock.mockReset();
     trendVetoYenMock.mockReset().mockReturnValue(100);
+    rangeEnabledMock.mockReset().mockReturnValue(false);   // 既定 OFF=レンジへ誘導しない
     chartFallbackMock.mockReset().mockReturnValue(true);   // 既定=テキスト縮退ON
     openDbMock.mockReset().mockImplementation(() => ({ close: () => {} }));
     marketDataMock.mockReset().mockReturnValue('');
@@ -260,5 +264,42 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     };
     expect(arg.trend).toBeUndefined();
     expect(arg.technical).toContain('直近の勢い');
+  });
+
+  // ★勢い1行のレンジ文言は設定連動(system prompt の rangeLine と同じ SSOT を使う)。
+  it('レンジ両面OFF(既定)の横ばい局面 → 勢い行はレンジへ誘導しない', async () => {
+    firstVisionMock.mockReturnValue(null);
+    rangeEnabledMock.mockReturnValue(false);
+    const now = Date.now();
+    feedRealtimePrice('NIY=F', 38000, now - 10 * 60_000);
+    feedRealtimePrice('NIY=F', 38000, now);
+
+    await runScalpPlanWithChart();
+
+    const arg = buildScalpPlanMock.mock.calls[0]![0] as { technical?: string };
+    expect(arg.technical).toContain('横ばい');
+    expect(arg.technical).not.toContain('direction:"range"');
+  });
+
+  it('レンジ両面ONの横ばい局面 → 勢い行が range(両指値/両側逆指値)を出してよいと伝える', async () => {
+    firstVisionMock.mockReturnValue(null);
+    rangeEnabledMock.mockReturnValue(true);
+    const now = Date.now();
+    feedRealtimePrice('NIY=F', 38000, now - 10 * 60_000);
+    feedRealtimePrice('NIY=F', 38000, now);
+
+    await runScalpPlanWithChart();
+
+    const arg = buildScalpPlanMock.mock.calls[0]![0] as { technical?: string };
+    expect(arg.technical).toContain('direction:"range"');
+    expect(arg.technical).toContain('両側逆指値');
+  });
+
+  it('レンジ設定の解決にプロファイル(A/B)を引き継ぐ', async () => {
+    firstVisionMock.mockReturnValue(null);
+
+    await runScalpPlanWithChart({ profile: 'B' });
+
+    expect(rangeEnabledMock).toHaveBeenCalledWith('B');
   });
 });
