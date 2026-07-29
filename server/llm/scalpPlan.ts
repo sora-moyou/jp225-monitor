@@ -403,20 +403,34 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     const rangeObj = typeof o.range === 'object' && o.range !== null ? o.range as Record<string, unknown> : {};
     let upper = parseRangeLeg(rangeObj.upper);
     let lower = parseRangeLeg(rangeObj.lower);
+    // ★脱落理由の記録(表示専用・v0.9.37): AI の rationale は「上下両面に置いた」と語るのに画面は片側だけ、
+    //   という「理由の無い片面」を無くす。落とす前の side を控え、enforcePlanConstraints と同じ流儀
+    //   (rangeDropNote + \n 連結)で rationale に追記する。採否ロジック(何を落とすか)は一切変えない。
+    const upperSide0 = upper?.side;
+    const lowerSide0 = lower?.side;
+    // AI がそもそもレッグを出さなかった(欠落・壊れた形で parseRangeLeg が null)場合も無言にしない。
+    let upperReason: RangeDropReason | null = upper ? null : 'missing';
+    let lowerReason: RangeDropReason | null = lower ? null : 'missing';
     // 現在値の上下の幾何を満たさないレッグは落とす(upper は現在値超・lower は現在値未満)。
-    if (upper && !(upper.entry > refPrice)) upper = null;
-    if (lower && !(lower.entry < refPrice)) lower = null;
+    if (upper && !(upper.entry > refPrice)) { upper = null; upperReason = 'geometry'; }
+    if (lower && !(lower.entry < refPrice)) { lower = null; lowerReason = 'geometry'; }
     // ★損切りの向き検証: 各レッグは自分の side を持つ → buy レッグは stopLoss<entry・sell レッグは stopLoss>entry。
     //   内側/反対側(境界=幅0 も)の損切りを持つレッグは落とす(不正プランを出さない)。幾何(向き)のみ=LC 幅は enforce の責務。
-    if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) upper = null;
-    if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) lower = null;
+    if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) { upper = null; upperReason = 'stopSide'; }
+    if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) { lower = null; lowerReason = 'stopSide'; }
     if (!upper && !lower) {
+      // 両脚とも落ちた見送り(none)は rationale を据え置く(enforce の両脚落ちと同じ既存挙動)。
       return { ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }) };
     }
+    // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
+    const notes: string[] = [];
+    if (upperReason) notes.push(rangeDropNote('上部', upperSide0, upperReason));
+    if (lowerReason) notes.push(rangeDropNote('下部', lowerSide0, lowerReason));
+    const rangeRationale = notes.length ? `${rationale}\n${notes.join('\n')}` : rationale;
     const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
-    return { ok: true, plan: withMeta({ direction: 'range', rationale, refPrice, range }) };
+    return { ok: true, plan: withMeta({ direction: 'range', rationale: rangeRationale, refPrice, range }) };
   }
   const num = (v: unknown): number | null =>
     (typeof v === 'number' && Number.isFinite(v)) ? v : null;
@@ -637,8 +651,10 @@ export function lcLegExceeds(w: number, opts: { ceilingYen: number; ceilingMode?
   return overCeiling || overHard;
 }
 
-/** レンジ脚がコード側で落とされた理由(rationale 明記用)。 */
-type RangeDropReason = 'trend' | 'stopSide' | 'lc' | 'bias';
+/** レンジ脚がコード側で落とされた理由(rationale 明記用)。
+ *  trend/lc/bias は enforcePlanConstraints(制約適用)由来、geometry/missing は parseScalpPlan(AI応答の検証)由来、
+ *  stopSide は両方で起きうる(parse で落ちた脚は enforce では既に無いので注記は重複しない)。 */
+type RangeDropReason = 'trend' | 'stopSide' | 'lc' | 'bias' | 'geometry' | 'missing';
 
 /** 脱落したレンジ脚の位置(上部/下部)・side・理由から、rationale へ追記する注記文を組み立てる。
  *  例: `※下部(買い指値)はバイアス(売り優先)のため除外` / `※上部(売り指値)はLC上限超のため除外`。
@@ -649,11 +665,14 @@ export function rangeDropNote(
   reason: RangeDropReason,
   bias?: 'long' | 'short' | 'none',
 ): string {
+  // AI がそのレッグを出していない(欠落/壊れた形)場合は side が無いので、位置だけの専用文にする。
+  if (reason === 'missing') return `※${pos}のレッグはAIが提示しなかったため無し`;
   const sideLabel = side === 'sell' ? '売り指値' : side === 'buy' ? '買い指値' : '指値';
   let reasonLabel: string;
   switch (reason) {
     case 'trend': reasonLabel = 'トレンド逆行'; break;
     case 'stopSide': reasonLabel = 'SL向き不正'; break;
+    case 'geometry': reasonLabel = '現在値との上下関係が不正'; break;
     case 'lc': reasonLabel = 'LC上限超'; break;
     case 'bias':
       reasonLabel = bias === 'long' ? 'バイアス(買い優先)'

@@ -1051,6 +1051,176 @@ describe('parseScalpPlan range(レンジ両面ストラドル)', () => {
   });
 });
 
+// ─── parse 段階のレンジ脚 drop 理由も rationale に明記(片面の「理由なし」を無くす) ───
+//   ユーザー報告「レンジのシグナルが買いだけで、売りが出ない理由が表示されていない」の真因対策。
+//   enforce(トレンド/バイアス/LC/SL向き)は注記していたが、parse(幾何・SL向き・AI未提示)は完全に無言だった。
+describe('parseScalpPlan range 脚 drop 理由を rationale に明記', () => {
+  const okUpper = { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 };  // 上=売り指値 LC=50
+  const okLower = { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 };    // 下=買い指値 LC=50
+  const RATIONALE = '上下に反応帯があるレンジ。上部に売り指値、下部に買い指値を設定';
+
+  it('★幾何不正(upper.entry が現在値以下)で上部が落ちる→rationale に幾何の理由を明記', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: { ...okUpper, entry: 38200 }, lower: okLower },   // upper.entry<REF=幾何不正
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.direction).toBe('range');
+    expect(r.plan.range?.upper).toBeUndefined();
+    expect(r.plan.range?.lower?.side).toBe('buy');
+    expect(r.plan.rationale).toContain(RATIONALE);   // 元文は保つ
+    expect(r.plan.rationale).toContain('上部');
+    expect(r.plan.rationale).toContain('売り指値');
+    expect(r.plan.rationale).toContain('現在値との上下関係が不正');
+    expect(r.plan.rationale).toContain('\n');        // enforce と同じ \n 連結
+    // 注記行は落ちた上部の1本だけ(残った下部については注記しない)。
+    const notes = r.plan.rationale.split('\n').filter(l => l.startsWith('※'));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('上部');
+  });
+
+  it('★幾何不正(lower.entry が現在値以上)で下部が落ちる→rationale に幾何の理由を明記', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: okUpper, lower: { ...okLower, entry: 38300 } },   // lower.entry>REF=幾何不正
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.range?.lower).toBeUndefined();
+    expect(r.plan.rationale).toContain('下部');
+    expect(r.plan.rationale).toContain('買い指値');
+    expect(r.plan.rationale).toContain('現在値との上下関係が不正');
+  });
+
+  it('★SL向き不正で落ちた脚は「SL向き不正」を明記(enforce と同じ語彙)', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: { ...okUpper, stopLoss: 38350 }, lower: okLower },   // sell なのに SL が下=逆側
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.range?.upper).toBeUndefined();
+    expect(r.plan.rationale).toContain('上部');
+    expect(r.plan.rationale).toContain('SL向き不正');
+  });
+
+  it('★AI が片側しか出さなかった(upper 欠落)→「AIが提示しなかった」を明記', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { lower: okLower },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.direction).toBe('range');
+    expect(r.plan.range?.lower?.side).toBe('buy');
+    expect(r.plan.rationale).toContain(RATIONALE);
+    expect(r.plan.rationale).toContain('上部');
+    expect(r.plan.rationale).toContain('AIが提示しなかった');
+  });
+
+  it('★AI のレッグが壊れた形(side 不正)も「AIが提示しなかった」扱いで明記', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: { ...okUpper, side: 'hold' }, lower: okLower },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.range?.upper).toBeUndefined();
+    expect(r.plan.rationale).toContain('上部');
+    expect(r.plan.rationale).toContain('AIが提示しなかった');
+  });
+
+  it('両脚とも落ちて none になる場合は rationale を改変しない(既存挙動を維持)', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: { ...okUpper, entry: 38000 }, lower: { ...okLower, entry: 38500 } },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.direction).toBe('none');
+    expect(r.plan.rationale).toBe(RATIONALE);
+  });
+
+  it('両脚とも正常な range は rationale を改変しない', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: okUpper, lower: okLower },
+    });
+    const r = parseScalpPlan(raw, REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.rationale).toBe(RATIONALE);
+  });
+
+  it('★parse の注記は enforce を通しても残り、二重に付かない', () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: { ...okUpper, entry: 38200 }, lower: okLower },   // upper=幾何不正(parse で落ちる)
+    });
+    const parsed = parseScalpPlan(raw, REF);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const out = enforcePlanConstraints(parsed.plan, { ceilingYen: 65, bias: 'none' });
+    expect(out.direction).toBe('range');
+    expect(out.range?.lower?.side).toBe('buy');
+    expect(out.rationale).toContain(RATIONALE);
+    // enforce は既に消えた脚を再度注記しない=同じ注記は1回だけ。
+    expect(out.rationale.split('現在値との上下関係が不正').length - 1).toBe(1);
+  });
+
+  it('★parse の注記 + enforce の注記が両方載る(下部=parse幾何 / 上部=enforce LC上限)', () => {
+    // 下部: AI が現在値超の lower を出す=幾何不正で parse が落とす(注記①)。
+    // 上部: 幾何/SL向きは正しいが LC=150 で上限65超=enforce が落とす(注記②)。両脚落ちなので最終は none だが、
+    //       none 化しても rationale は据え置き(既存挙動)なので、両方の注記が読める。
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38550 },   // LC=150(上限超)
+        lower: { ...okLower, entry: 38300 },                                      // 現在値超=幾何不正
+      },
+    });
+    const parsed = parseScalpPlan(raw, REF);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.plan.rationale).toContain('現在値との上下関係が不正');   // 注記①(parse)
+    const out = enforcePlanConstraints(parsed.plan, { ceilingYen: 65, bias: 'none' });
+    expect(out.direction).toBe('none');
+    expect(out.rationale).toContain(RATIONALE);
+    expect(out.rationale).toContain('現在値との上下関係が不正');            // 注記①が残る
+  });
+
+  it('★片脚が残る合成: 下部=parse幾何 / 上部=enforce バイアス → 両方の注記が載る', () => {
+    // 3脚は作れないため「parse で下部落ち → enforce の後に上部だけ残る」構図で、片面表示時に
+    // parse 注記と enforce 注記が併記されることを確認する(手組み plan で enforce 側の脚を足す)。
+    const raw = JSON.stringify({
+      direction: 'range', rationale: RATIONALE, refPrice: 1,
+      range: { upper: okUpper, lower: { ...okLower, entry: 38300 } },   // lower=幾何不正(parse 注記)
+    });
+    const parsed = parseScalpPlan(raw, REF);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // parse 注記付きの plan に、enforce が LC 上限で落とす lower を手で足す。
+    const p: AiPlan = {
+      ...parsed.plan,
+      range: { upper: parsed.plan.range!.upper, lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 37950 } },
+    };
+    const out = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none' });
+    expect(out.direction).toBe('range');
+    expect(out.range?.upper?.side).toBe('sell');
+    expect(out.range?.lower).toBeUndefined();
+    expect(out.rationale).toContain('現在値との上下関係が不正');   // parse 由来
+    expect(out.rationale).toContain('LC上限');                     // enforce 由来
+    expect(out.rationale).toContain(RATIONALE);
+  });
+});
+
 describe('parseRangeLeg', () => {
   it('正常レッグを返す', () => {
     expect(parseRangeLeg({ side: 'buy', type: 'stop', entry: 100, stopLoss: 90 }))
