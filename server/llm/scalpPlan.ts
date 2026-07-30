@@ -63,8 +63,10 @@ export interface AiPlan {
  *  - 'bias'          : バイアス veto(long なのに sell / short なのに buy)
  *  - 'trend'         : トレンド veto(強上昇に逆行する sell / 強下降に逆行する buy)
  *  - 'rangeDisabled' : レンジ無効設定なのに range が返った(防御多重化)
- *  - 'missing'       : AI がレッグを出さなかった / 壊れた形だった */
-export type NoneReason = 'ai' | 'geometry' | 'stopSide' | 'lc' | 'bias' | 'trend' | 'rangeDisabled' | 'missing';
+ *  - 'missing'       : AI がレッグを出さなかった / 壊れた形だった
+ *  - 'stale'         : ★ARM 時点の live 価格では既にエントリーを通過していて全レッグ落ち(engine の
+ *                      stale plan veto=checkStaleLegs。plan 段では起きない=engine のログ専用の値) */
+export type NoneReason = 'ai' | 'geometry' | 'stopSide' | 'lc' | 'bias' | 'trend' | 'rangeDisabled' | 'missing' | 'stale';
 
 /** 見送り(none)時に「AI が出したが最終プランに残らなかった」レッグの生数値(記録専用)。
  *  ログ1行に出すことで、根拠文(rationale)から価格を推定する必要を無くす。 */
@@ -88,8 +90,9 @@ export type ScalpPlanResult =
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
 // トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
+// 'stale' は plan 段では発生しない(engine の ARM 直前ガード=最下流)ため末尾に置く。
 const NONE_REASON_PRIORITY: NoneReason[] =
-  ['trend', 'bias', 'lc', 'geometry', 'stopSide', 'missing', 'rangeDisabled', 'ai'];
+  ['trend', 'bias', 'lc', 'geometry', 'stopSide', 'missing', 'rangeDisabled', 'ai', 'stale'];
 
 /** 2レッグ分の脱落理由から、ログに載せる代表理由を1つ選ぶ純関数(記録専用)。両方 null なら undefined。 */
 export function pickNoneReason(a: NoneReason | null, b: NoneReason | null): NoneReason | undefined {

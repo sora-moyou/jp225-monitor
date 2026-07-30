@@ -144,27 +144,110 @@ export function detectFill(a: ArmedBracket, price: number): { leg: 'limit' | 'st
   return null;
 }
 
-/** レンジ両面ストラドルの約定判定(純関数)。現在値が upper.entry に到達(≥)なら上レッグ、
- *  そうでなく lower.entry に到達(≤)なら下レッグを約定。約定 side/建値/初期LC を返す。未到達は null。
+/** レンジ両面ストラドルの約定判定(純関数)。現在値が上レッグの約定条件を満たせば上レッグ、
+ *  そうでなく下レッグの条件を満たせば下レッグを約定。約定 side/建値/初期LC を返す。未到達は null。
+ *  ★条件はレッグ type 別: limit=節目を LIMIT_FILL_MARGIN_YEN 行き過ぎ / stop=タッチ(下の legHit を参照)。
  *  ★どちらか約定した時点で もう片方は暗黙にキャンセル(OCO)= 呼び出し側は position へ遷移するだけ。
  *  upper/lower はどちらか欠落しうる(enforce/parse で片レッグに落ちた range = 実質片面)。 */
 export function detectRangeFill(
   a: ArmedBracket, price: number,
 ): { side: 'buy' | 'sell'; entryPrice: number; initialStop: number } | null {
-  // レンジ両面は逆張り指値(LIMIT)なので detectFill と同じ保守マージンを課す(節目を 5円 行き過ぎて約定)。
+  // ★約定条件はレッグ type で分岐する(detectFill の指値/逆指値と同じ規約に統一):
+  //   type==='limit'(fade=逆張り指値): 節目を LIMIT_FILL_MARGIN_YEN 円 “行き過ぎ” て約定(保守モデル。
+  //     現実の指値は主要水準ちょうどでは約定しづらいため)。
+  //   type==='stop'(breakout=抜け追随の逆指値): タッチ(0円)で約定。実弾(trade2)の逆指値はタッチで発火して
+  //     成行になるため、紙が 5円 待つと「タッチして反転した回=実弾は建玉あり・紙は建玉なし」の台帳食い違いが出る。
+  //   type 欠落は limit 扱い(保守側=行き過ぎ要求)。
+  const legHit = (leg: RangeLeg, up: boolean): boolean => {
+    const margin = leg.type === 'stop' ? 0 : LIMIT_FILL_MARGIN_YEN;
+    return up ? price >= leg.entry + margin : price <= leg.entry - margin;
+  };
   // ★約定建値: type==='stop'(breakout=成行)レッグのみ不利方向へ 1tick スリップ(buy は高く/sell は安く)。
   //   type==='limit'(fade)は指値ちょうどで約定=スリップ無し(trade2 と一致)。type 欠落は limit 扱い(スリップ無し)。
   const legEntry = (leg: RangeLeg): number =>
     leg.type === 'stop' ? leg.entry + (leg.side === 'buy' ? SLIPPAGE_YEN : -SLIPPAGE_YEN) : leg.entry;
   const upper = a.range?.upper;
   const lower = a.range?.lower;
-  if (upper && price >= upper.entry + LIMIT_FILL_MARGIN_YEN) {
+  if (upper && legHit(upper, true)) {
     return { side: upper.side, entryPrice: legEntry(upper), initialStop: upper.stopLoss };
   }
-  if (lower && price <= lower.entry - LIMIT_FILL_MARGIN_YEN) {
+  if (lower && legHit(lower, false)) {
     return { side: lower.side, entryPrice: legEntry(lower), initialStop: lower.stopLoss };
   }
   return null;
+}
+
+/** ★通過済み(stale)レッグの診断(記録専用)。checkStaleLegs が判定した各レッグの生数値と「もう通過しているか」。
+ *  engine が1行ログに出す(名前は NoneLeg と同じ 'limit'|'stop'|'upper'|'lower')。 */
+export interface StaleLegReport {
+  name: 'limit' | 'stop' | 'upper' | 'lower';
+  entry: number;
+  stale: boolean;   // true = ARM 時点の live 価格で既に約定条件を満たす(=武装したら即約定する)
+}
+
+/** ★「もう通過した価格」のレッグを武装しない純関数(stale plan veto)。
+ *  monitor は ARM 前サニティを plan.refPrice(チャート撮影時の価格)に対して行う(そこは設計判断として不変。
+ *  anchorPrice で弾くと過剰抑止と trade2 との乖離が起きる)。しかし画像生成+LLM 応答に数秒〜十数秒かかる間に
+ *  価格が動くため、refPrice には妥当でも **ARM 時点の live 価格では既にエントリーを通過している** 計画が届く。
+ *  それを武装すると次の価格tickで即約定し、現実には執行不可能な取引が紙の成績に混ざる(紙と実弾の忠実性を損なう)。
+ *  → ARM 時点で「そのレッグが即約定してしまう」なら、そのレッグを落とす。
+ *  ★判定は detectFill / detectRangeFill を **そのまま再利用** する(1レッグだけのブラケットを組んで問う)ので、
+ *    約定条件と完全に同一規約になる(指値=LIMIT_FILL_MARGIN_YEN 行き過ぎ / 逆指値=タッチ / レンジは type 別分岐)。
+ *    同じ判定を2箇所に書かないための実装方針(規約が変わっても自動的に追従する)。
+ *  戻り値 armed: 生き残ったレッグだけのブラケット。落とすレッグが無ければ **引数と同一参照**(=挙動 byte 不変)。
+ *    全レッグが通過済みなら null(=ARM しない=見送り)。legs: 判定した全レッグの生数値(ログ用・記録専用)。
+ *  ★live 価格が取れない/非有限(null/undefined/NaN/Inf)なら判定せず引数をそのまま返す(安全側=新しい抑止で
+ *    取引を止めない)。 */
+export function checkStaleLegs(
+  a: ArmedBracket, livePrice: number | null | undefined,
+): { armed: ArmedBracket | null; legs: StaleLegReport[] } {
+  if (livePrice == null || !Number.isFinite(livePrice)) return { armed: a, legs: [] };
+  const price = livePrice;
+  const legs: StaleLegReport[] = [];
+  if (a.mode === 'range' || a.range != null) {
+    // レンジ: 片側だけの range を組んで detectRangeFill に問う(=レッグ type 別の約定条件をそのまま使う)。
+    const upper = a.range?.upper;
+    const lower = a.range?.lower;
+    let keepUpper = upper;
+    let keepLower = lower;
+    if (upper) {
+      const stale = detectRangeFill({ ...a, range: { upper } }, price) != null;
+      legs.push({ name: 'upper', entry: upper.entry, stale });
+      if (stale) keepUpper = undefined;
+    }
+    if (lower) {
+      const stale = detectRangeFill({ ...a, range: { lower } }, price) != null;
+      legs.push({ name: 'lower', entry: lower.entry, stale });
+      if (stale) keepLower = undefined;
+    }
+    if (!keepUpper && !keepLower) return { armed: null, legs };
+    if (keepUpper === upper && keepLower === lower) return { armed: a, legs };   // 何も落ちない=同一参照。
+    const next: ArmedBracket = { ...a, range: {} };
+    if (keepUpper) next.range!.upper = keepUpper;
+    if (keepLower) next.range!.lower = keepLower;
+    return { armed: next, legs };
+  }
+  // 単方向(directional): レッグ単独のブラケットを組んで detectFill に問う(指値=5円行き過ぎ / 逆指値=タッチ)。
+  const hasLimit = a.limitEntry != null && a.stopLossForLimit != null;
+  const hasStop = a.stopEntry != null && a.stopLossForStop != null;
+  let keepLimit = hasLimit;
+  let keepStop = hasStop;
+  if (hasLimit) {
+    const stale = detectFill({ ...a, stopEntry: undefined, stopLossForStop: undefined }, price) != null;
+    legs.push({ name: 'limit', entry: a.limitEntry as number, stale });
+    if (stale) keepLimit = false;
+  }
+  if (hasStop) {
+    const stale = detectFill({ ...a, limitEntry: undefined, stopLossForLimit: undefined }, price) != null;
+    legs.push({ name: 'stop', entry: a.stopEntry as number, stale });
+    if (stale) keepStop = false;
+  }
+  if (!keepLimit && !keepStop) return { armed: null, legs };
+  if (keepLimit === hasLimit && keepStop === hasStop) return { armed: a, legs };   // 何も落ちない=同一参照。
+  const next: ArmedBracket = { ...a };
+  if (!keepLimit) { delete next.limitEntry; delete next.stopLossForLimit; }
+  if (!keepStop) { delete next.stopEntry; delete next.stopLossForStop; }
+  return { armed: next, legs };
 }
 
 /** 含み損益(pt)。buy は上昇で+、sell は下落で+。 */

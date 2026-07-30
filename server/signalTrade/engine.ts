@@ -24,12 +24,12 @@ import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
 import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, type SignalProfile } from '../configStore.js';
 import {
   advance, toSignalTradeState, computeHold, planToArmed, armedToCurrentSignal,
-  inCooldown, realizedLcFromArmed, ARMED_TIMEOUT_MS,
+  inCooldown, realizedLcFromArmed, checkStaleLegs, ARMED_TIMEOUT_MS,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
   AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_FACTOR, REEVAL_CAP_MS,
   type SignalPhase, type EngineState, type CurrentSignal, type SignalHold, type RecordedTrade,
-  type OpenPosition, type HeldIdentity, type ArmedBracket, type ArmedIdentity,
+  type OpenPosition, type HeldIdentity, type ArmedBracket, type ArmedIdentity, type StaleLegReport,
 } from './decisions.js';
 import type { ScalpPlanResult } from '../llm/openai.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
@@ -154,6 +154,28 @@ export class SignalEngine {
   /** SSE/hold に載せる現在シグナル。A は currentSignal / B は常に null(currentSignal を露出しない)。 */
   private signalForState(): CurrentSignal | null {
     return this.cfg.maintainsCurrentSignal ? this.currentSignal : null;
+  }
+
+  /** ★stale plan veto に渡す「新鮮な」live 価格(NIY=F)。取れない/古い(stale)なら null。
+   *  ★必ず stale を見る: priceLoop は取得失敗/清算の銘柄を「前回値を古い timestamp のまま stale:true で持ち越す」
+   *    (実弾安全ルール)ため、キャッシュには古い価格が残る。約定判定側は `if (niy && !niy.stale)` で新鮮値のみを
+   *    feed している。ここで stale を見ないと、フィード断中に解決した計画を「古い価格」で判定して
+   *    (a) 跨いでいなければ抑止漏れ(元のバグが残る)、(b) 跨いでいれば未到達レッグを落とす誤抑止 が起きる。
+   *    null = 判定せず素通し(=従来どおり ARM。新しい抑止で取引を止めない)。 */
+  private livePrice(): number | null {
+    const p = getPrices().find(x => x.symbol === NIKKEI_SYMBOL);
+    return p && !p.stale ? p.price : null;
+  }
+
+  /** テスト用: ゲートに渡る live 価格(新鮮値のみ・stale/欠落は null)を覗く。 */
+  _peekLivePrice(): number | null { return this.livePrice(); }
+
+  /** ★通過済み(stale)レッグを1行ログする(記録専用)。tag で経路を区別する(plan-stale / doten-stale / reeval-stale)。
+   *  例) `[signalTrade] plan-stale dir=sell ref=61905 live=61920 limit=61905(通過済み) stop=62000` */
+  private logStaleLegs(tag: string, dir: string, refPrice: number, live: number | null, legs: StaleLegReport[]): void {
+    const s = legs.map(l => `${l.name}=${Math.round(l.entry)}${l.stale ? '(通過済み)' : ''}`).join(' ');
+    console.log(`${this.logTag} ${tag} dir=${dir} ref=${Math.round(refPrice)} `
+      + `live=${live != null && Number.isFinite(live) ? Math.round(live) : '-'} ${s}`);
   }
 
   /** 起動: 非公開 exit 実装をロードしてエンジンを有効化(冪等)。 */
@@ -317,7 +339,26 @@ export class SignalEngine {
             const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
             console.log(`${this.logTag} plan-suppress サニティ不通過(${sanity.reason})→ 正規シグナルにしない anchor=${Math.round(anchorPrice)} 根拠=${why || '(なし)'}`);
           } else {
-            const armed = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
+            const armed0 = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
+            // ★stale plan veto: ARM 時点の live 価格で「もう通過した価格」のレッグは武装しない。
+            //   checkSanity は plan.refPrice(撮影時価格)基準のまま(上のコメントの設計判断=不変)。ここは別観点の
+            //   ガードで、画像生成+LLM のレイテンシ中に価格が動き「ARM 時点では既にエントリーを通過している」計画を
+            //   そのまま武装して次tickで即約定する事故を防ぐ(=現実に執行できない取引が紙の成績に混ざるのを止める)。
+            //   判定は checkStaleLegs=detectFill/detectRangeFill の再利用(約定条件と同一規約)。
+            //   live 価格が取れない/非有限なら checkStaleLegs は素通し=従来どおり ARM(安全側)。
+            const live = this.livePrice();
+            const stale = armed0 ? checkStaleLegs(armed0, live) : { armed: null, legs: [] as StaleLegReport[] };
+            if (stale.legs.some(l => l.stale)) {
+              this.logStaleLegs('plan-stale', result.plan.direction, result.plan.refPrice, live, stale.legs);
+            }
+            const armed = stale.armed;
+            if (armed0 && !armed) {
+              // 全レッグ通過済み → 見送り(none)と同じ扱い: アンカーを記録し節目まで再計画を抑止する。
+              this.planSuppressedAnchor = anchorPrice;
+              const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+              console.log(`${this.logTag} plan-suppress 見送り(none) anchor=${Math.round(anchorPrice)} `
+                + `ref=${Math.round(result.plan.refPrice)} reason=stale veto=${result.vetoFired ? 'y' : 'n'} 根拠=${why || '(なし)'}`);
+            }
             if (armed) {
               // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
               armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
@@ -367,8 +408,11 @@ export class SignalEngine {
         // held-context(§3.2)を注入して反転可否を AI に問う(profile で A/B の設定を解決)。
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile, heldPosition: { dir: heldDir, entry: heldEntry } });
         const nowR = Date.now();
+        // priceR = P を成行決済する価格(従来どおり・キャッシュ欠落時は要求時価格へフォールバック)=挙動不変。
+        // ★ゲート(stale plan veto)用の価格は別に取る: 新鮮値のみ(stale は null=素通し)。古い持ち越し価格で
+        //   レッグを落とす/落とさない を判断しないため、決済価格とは分離する。
         const priceR = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? price;
-        this.applyHeldEvalResult(result, identity, nowR, priceR);
+        this.applyHeldEvalResult(result, identity, nowR, priceR, this.livePrice());
       } catch (e) {
         console.warn(`${this.logTag} held-eval request failed:`, e instanceof Error ? e.message : String(e));
       } finally {
@@ -381,8 +425,14 @@ export class SignalEngine {
    *  checkSanity → reverseToDoten(P を成行決済して反対ブラケットを arm・doten:true)→ 新 signalId を1回だけ採番して
    *  currentSignal を更新し broadcast。戻り値は 'doten'(反転した)/'stale'(別建玉/決済済みで破棄)/'reject'(反転しない)。
    *  ★純ロジックは decisions.ts(reverseToDoten/opposite/sameHeldPosition)。ここは engine 状態の更新と記録・採番・broadcast のみ。
-   *  ★_ 接頭辞: async 経路から呼ぶ内部メソッドだが、単体テストからも直接叩けるよう公開する(_peekSignalIdCounter と同方針)。 */
-  applyHeldEvalResult(result: ScalpPlanResult, identity: HeldIdentity, now: number, price: number): 'doten' | 'stale' | 'reject' {
+   *  ★_ 接頭辞: async 経路から呼ぶ内部メソッドだが、単体テストからも直接叩けるよう公開する(_peekSignalIdCounter と同方針)。
+   *  price = P を成行決済する価格 / live = stale plan veto の判定に使う「新鮮な」live 価格。
+   *  ★既定は null=素通し(fail-safe)。ゲートを効かせたい呼び出し元が **明示的に** live を渡す契約にしてある
+   *    (既定を price=決済価格にすると、渡し忘れた呼び出し元が静かに「決済価格でゲート判定」=古い/別用途の価格で
+   *     レッグを落とす旧挙動へ戻る。既定は必ず安全側=判定しない に倒す)。実運用の呼び出し元は livePrice() を渡す。 */
+  applyHeldEvalResult(
+    result: ScalpPlanResult, identity: HeldIdentity, now: number, price: number, live: number | null = null,
+  ): 'doten' | 'stale' | 'reject' {
     // ★async 同一性再チェック: まだ filled かつ同一建玉(at+direction)かつ同一 signalId(currentSignal)でなければ破棄。
     if (!sameHeldPosition(this.state, identity)) return 'stale';
     if (this.currentSignal?.signalId !== identity.signalId) return 'stale';
@@ -396,18 +446,25 @@ export class SignalEngine {
     if (!sanity.ok) return 'reject';
     const rev = reverseToDoten(this.state, plan, price, now, { vetoFired: result.vetoFired });
     if (!rev) return 'reject';
+    // ★stale plan veto(反対ブラケットにも同一規約で適用): ARM 時点の live 価格でもう通過しているレッグは武装しない。
+    //   reverseToDoten は純関数=ここまで engine 状態は未変更なので、全レッグ通過済みならそのまま降りれば保有継続(無害)。
+    //   ★判定は新鮮な live 価格のみ(null=素通し)。決済価格 price ではなく live を使う(古い持ち越し値で落とさない)。
+    const stale = checkStaleLegs(rev.armed, live);
+    if (stale.legs.some(l => l.stale)) this.logStaleLegs('doten-stale', plan.direction, plan.refPrice, live, stale.legs);
+    if (!stale.armed) return 'reject';
+    const armed = stale.armed;   // 生き残ったレッグだけの反対ブラケット(何も落ちなければ rev.armed と同一参照)。
     // ① 現保有 P を決済(pnl を signal_trades に記録)。この時点の currentSignal は P の ARM 采番=P の signalId で結合。
     this.persistTrade(rev.recorded);
     this.lastSignalExitAt = now;
     this.cooldownLogged = false;
     if (this.currentSignal) this.lastExitedSignalId = this.currentSignal.signalId;
     // ② 反対ブラケットを arm(実効設定スナップショットを確定)。★新 signalId を1回だけ採番して currentSignal を更新する。
-    rev.armed.settings = buildSettingsSnapshot(realizedLcFromArmed(rev.armed), this.cfg.profile);
-    this.state = rev.next;
+    armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+    this.state = { ...rev.next, armed };   // ★通過済みレッグを落とした後のブラケットを武装する。
     this.planSuppressedAnchor = null;
     this.signalIdCounter += 1;
     this.persistSignalIdCounter();
-    this.currentSignal = armedToCurrentSignal(rev.armed, this.signalIdCounter);
+    this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
     // ③ 反対建玉は以降 detectFill の交差で filled になる(paper と live が同じタイミング/価格で約定)。
     this.recordExitStopChange(now);
     this.broadcastSignalState(now);
@@ -457,7 +514,7 @@ export class SignalEngine {
   //   held-eval と同じ長間隔でクールダウンする。★async 同一性再チェック: 要求時に armed 識別(at+signalId+mode)を控え、
   //   AI 応答解決時に「まだ同じ未約定 armed」でなければ破棄する(約定/取消/差替え済みなら幽霊差替えしない)。
   //   ★A のみ(maintainsCurrentSignal): B は currentSignal を持たない=差替え(新 signalId 采番)ができない=走らせない(byte 不変)。
-  private maybeRequestRangeReeval(price: number, now: number): void {
+  private maybeRequestRangeReeval(now: number): void {
     if (!this.cfg.maintainsCurrentSignal) return;   // B は差替えしない(currentSignal を持たない)。
     if (this.planning) return;                       // flat-plan / held-eval と in-flight を共有。
     if (!inPollWindow(now)) return;                  // 取引時間外は要求しない。
@@ -481,8 +538,9 @@ export class SignalEngine {
         // armed-context(§3)を注入して「ブレイク切替 / 現状維持 / none」を AI に問う(profile で A/B の設定を解決)。
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile, armedContext: { mode: 'range-fade', ageMs, avgMs } });
         const nowR = Date.now();
-        const priceR = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? price;
-        this.applyRangeReevalResult(result, identity, nowR, priceR);
+        // ★ゲート(stale plan veto)の判定は新鮮な live 価格のみ。取れない/stale は null=素通し
+        //   (要求時価格へのフォールバックはしない=古い価格でレッグを落とさない)。
+        this.applyRangeReevalResult(result, identity, nowR, this.livePrice());
       } catch (e) {
         console.warn(`${this.logTag} range-reeval request failed:`, e instanceof Error ? e.message : String(e));
       } finally {
@@ -497,8 +555,9 @@ export class SignalEngine {
    *  - cancel: direction:none → armed を取消して FLAT(armed-timeout と同型・currentSignal は保持し trade2 の stale 追従に委ねる)。
    *  - keep: AI が実質同じ fade を返した → 何もしない(維持)。
    *  - swap: 妥当かつ現行と異なる新ブラケット(ブレイク両逆指値 等)→ 新 signalId を1回采番して armed を差替え・currentSignal 更新・broadcast。
-   *  ★_ 接頭辞: async 経路から呼ぶ内部メソッドだが、単体テストからも直接叩けるよう公開する(applyHeldEvalResult と同方針)。 */
-  applyRangeReevalResult(result: ScalpPlanResult, identity: ArmedIdentity, now: number, price: number): 'swap' | 'cancel' | 'keep' | 'stale' | 'reject' {
+   *  ★_ 接頭辞: async 経路から呼ぶ内部メソッドだが、単体テストからも直接叩けるよう公開する(applyHeldEvalResult と同方針)。
+   *  live = stale plan veto の判定に使う「新鮮な」live 価格(null=取得不能/stale=判定せず素通し=従来どおり差替え)。 */
+  applyRangeReevalResult(result: ScalpPlanResult, identity: ArmedIdentity, now: number, live: number | null): 'swap' | 'cancel' | 'keep' | 'stale' | 'reject' {
     if (!sameArmedBracket(this.state, identity)) return 'stale';
     if (this.currentSignal?.signalId !== identity.signalId) return 'stale';
     if (!result.ok) return 'reject';
@@ -521,9 +580,15 @@ export class SignalEngine {
     // 妥当性(trade2 と同一の checkSanity/checkRangeSanity)。不通過は現状維持(差替えない)。
     const sanity = checkSanity(plan, plan.refPrice);
     if (!sanity.ok) return 'reject';
-    const armed = planToArmed(plan, now, { vetoFired: result.vetoFired });
-    if (!armed) return 'reject';
-    if (sameBracketShape(cur, armed)) return 'keep';   // 実質同じ fade(=反発継続の維持)→ 何もしない。
+    const armed0 = planToArmed(plan, now, { vetoFired: result.vetoFired });
+    if (!armed0) return 'reject';
+    if (sameBracketShape(cur, armed0)) return 'keep';   // 実質同じ fade(=反発継続の維持)→ 何もしない。
+    // ★stale plan veto(差替え先にも同一規約で適用): ARM 時点の live 価格でもう通過しているレッグは武装しない。
+    //   全レッグ通過済みなら差替えない(reject=現状維持)。まだ engine 状態は未変更なのでそのまま降りれば無害。
+    const stale = checkStaleLegs(armed0, live);
+    if (stale.legs.some(l => l.stale)) this.logStaleLegs('reeval-stale', plan.direction, plan.refPrice, live, stale.legs);
+    if (!stale.armed) return 'reject';
+    const armed = stale.armed;
     // 差替え: 実効設定スナップショットを確定 → armed 差替え → 新 signalId を1回采番 → currentSignal 更新 → broadcast。
     armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
     this.state = { phase: 'armed', armed, lastExit: this.state.lastExit };
@@ -583,7 +648,7 @@ export class SignalEngine {
       this.recordExitStopChange(now);
       this.maybeRequestPlan(price, now);
       this.maybeRequestHeldEval(price, now);   // ★ドテン: filled かつ dotenEnabled のとき保有中の反転評価を要求(既定OFF=no-op)。
-      this.maybeRequestRangeReeval(price, now);   // ★レンジ再評価: armed かつ レンジ両指値が平均超過未約定のとき ブレイク切替評価を要求(非レンジ/既定OFF=no-op)。
+      this.maybeRequestRangeReeval(now);   // ★レンジ再評価: armed かつ レンジ両指値が平均超過未約定のとき ブレイク切替評価を要求(非レンジ/既定OFF=no-op)。
       this.heartbeat(now);   // ★診断: 定期にエンジン状態を1行ログ(固着の早期発見)。
       this.broadcastSignalState(now);
     } catch (e) {

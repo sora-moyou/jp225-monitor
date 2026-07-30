@@ -70,15 +70,36 @@ describe('レンジ両面プランがパイプライン全段を通る(両指値
     const armed = planToArmed(
       { direction: 'range', rationale: 'r', range: { upper: BREAK_UPPER, lower: BREAK_LOWER } }, 1_000,
     )!;
-    // 上抜け: upper.entry + 約定マージン に到達 → buy。type:'stop' なので不利方向へ 1tick スリップ。
+    // ★逆指値(type:'stop')はタッチで約定(実弾 trade2 の逆指値はタッチ発火→成行)。建値だけ不利方向へ 1tick スリップ。
+    expect(detectRangeFill(armed, BREAK_UPPER.entry)).toEqual({
+      side: 'buy', entryPrice: BREAK_UPPER.entry + SLIPPAGE_YEN, initialStop: BREAK_UPPER.stopLoss,
+    });
+    expect(detectRangeFill(armed, BREAK_LOWER.entry)).toEqual({
+      side: 'sell', entryPrice: BREAK_LOWER.entry - SLIPPAGE_YEN, initialStop: BREAK_LOWER.stopLoss,
+    });
+    // さらに行き過ぎても同じ(建値は逆指値+スリップで据置)。
     expect(detectRangeFill(armed, BREAK_UPPER.entry + LIMIT_FILL_MARGIN_YEN)).toEqual({
       side: 'buy', entryPrice: BREAK_UPPER.entry + SLIPPAGE_YEN, initialStop: BREAK_UPPER.stopLoss,
     });
-    // 下抜け: lower.entry − 約定マージン に到達 → sell。
     expect(detectRangeFill(armed, BREAK_LOWER.entry - LIMIT_FILL_MARGIN_YEN)).toEqual({
       side: 'sell', entryPrice: BREAK_LOWER.entry - SLIPPAGE_YEN, initialStop: BREAK_LOWER.stopLoss,
     });
     // レンジ内(未到達)は約定しない。
     expect(detectRangeFill(armed, PRICE)).toBeNull();
+  });
+
+  it('混在(上=逆指値/下=指値)は レッグ type ごとに条件が変わる', () => {
+    const armed = planToArmed(
+      { direction: 'range', rationale: 'r', range: { upper: BREAK_UPPER, lower: FADE_LOWER } }, 1_000,
+    )!;
+    // 上=逆指値: タッチで約定。
+    expect(detectRangeFill(armed, BREAK_UPPER.entry)).toEqual({
+      side: 'buy', entryPrice: BREAK_UPPER.entry + SLIPPAGE_YEN, initialStop: BREAK_UPPER.stopLoss,
+    });
+    // 下=指値: タッチでは約定せず、LIMIT_FILL_MARGIN_YEN 行き過ぎて約定(建値は指値のまま=スリップ無し)。
+    expect(detectRangeFill(armed, FADE_LOWER.entry)).toBeNull();
+    expect(detectRangeFill(armed, FADE_LOWER.entry - LIMIT_FILL_MARGIN_YEN)).toEqual({
+      side: 'buy', entryPrice: FADE_LOWER.entry, initialStop: FADE_LOWER.stopLoss,
+    });
   });
 });

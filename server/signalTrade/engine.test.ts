@@ -6,7 +6,7 @@ import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, ARMED_TIMEOUT_MS, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   rangeTpTrigger, RANGE_TP_OFFSET_YEN, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN,
-  computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed,
+  computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed, checkStaleLegs,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
   REEVAL_FACTOR, AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_CAP_MS,
@@ -18,6 +18,7 @@ import {
   buildExitStopRecord, type ExitStopTracker,
 } from './persist.js';
 import type { SignalHold } from './decisions.js';
+import type { RangeLeg } from '../llm/openai.js';
 import {
   getSignalTradeState, getSignalTradeStateB,
   getCurrentSignal, getSignalHold, getSignalPhase,
@@ -530,10 +531,424 @@ describe('detectRangeFill', () => {
         upper: { side: 'buy', type: 'stop', entry: 38400, stopLoss: 38350 },
         lower: { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 },
       } };
-    // 上=買い逆指値(breakout上抜け): トリガ38405、成行建値は不利+5=38405。
+    // 上=買い逆指値(breakout上抜け): トリガ38400(タッチ)、成行建値は不利+5=38405。
     expect(detectRangeFill(bo, 38405)).toEqual({ side: 'buy', entryPrice: 38405, initialStop: 38350 });
-    // 下=売り逆指値(breakout下抜け): トリガ38095、成行建値は不利−5=38095。
+    // 下=売り逆指値(breakout下抜け): トリガ38100(タッチ)、成行建値は不利−5=38095。
     expect(detectRangeFill(bo, 38095)).toEqual({ side: 'sell', entryPrice: 38095, initialStop: 38150 });
+  });
+});
+
+// ★レンジ両面の約定条件はレッグ type で分岐する(指値=5円行き過ぎ / 逆指値=タッチ)。
+//   旧実装は両レッグ一律に LIMIT_FILL_MARGIN_YEN を課していた(=stop レッグが 1tick 遅い)。
+//   実弾(trade2)の逆指値はタッチで発火して成行になるため、紙が待つと
+//   「タッチして反転した回=実弾は建玉あり・紙は建玉なし」の台帳食い違いになる。
+describe('detectRangeFill: レッグ type 別の約定条件(境界値)', () => {
+  const mk = (upper?: RangeLeg, lower?: RangeLeg): ArmedBracket =>
+    ({ direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper, lower } });
+  const UP_STOP: RangeLeg = { side: 'buy', type: 'stop', entry: 38400, stopLoss: 38350 };
+  const LO_STOP: RangeLeg = { side: 'sell', type: 'stop', entry: 38100, stopLoss: 38150 };
+  const UP_LIMIT: RangeLeg = { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 };
+  const LO_LIMIT: RangeLeg = { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 };
+
+  it('上レッグ type=stop: entry−1 は不約定・entry(タッチ)で約定・entry+1 も約定', () => {
+    const a = mk(UP_STOP, LO_STOP);
+    expect(detectRangeFill(a, 38399)).toBeNull();
+    expect(detectRangeFill(a, 38400)).toEqual({ side: 'buy', entryPrice: 38405, initialStop: 38350 });   // ★旧実装は null
+    expect(detectRangeFill(a, 38401)).toEqual({ side: 'buy', entryPrice: 38405, initialStop: 38350 });   // ★旧実装は null
+  });
+  it('下レッグ type=stop: entry+1 は不約定・entry(タッチ)で約定・entry−1 も約定', () => {
+    const a = mk(UP_STOP, LO_STOP);
+    expect(detectRangeFill(a, 38101)).toBeNull();
+    expect(detectRangeFill(a, 38100)).toEqual({ side: 'sell', entryPrice: 38095, initialStop: 38150 });  // ★旧実装は null
+    expect(detectRangeFill(a, 38099)).toEqual({ side: 'sell', entryPrice: 38095, initialStop: 38150 });  // ★旧実装は null
+  });
+  it('上レッグ type=limit: entry+4 は不約定・entry+5 で約定・entry+6 も約定(従来どおり)', () => {
+    const a = mk(UP_LIMIT, LO_LIMIT);
+    expect(detectRangeFill(a, 38404)).toBeNull();
+    expect(detectRangeFill(a, 38405)).toEqual({ side: 'sell', entryPrice: 38400, initialStop: 38450 });
+    expect(detectRangeFill(a, 38406)).toEqual({ side: 'sell', entryPrice: 38400, initialStop: 38450 });
+  });
+  it('下レッグ type=limit: entry−4 は不約定・entry−5 で約定・entry−6 も約定(従来どおり)', () => {
+    const a = mk(UP_LIMIT, LO_LIMIT);
+    expect(detectRangeFill(a, 38096)).toBeNull();
+    expect(detectRangeFill(a, 38095)).toEqual({ side: 'buy', entryPrice: 38100, initialStop: 38050 });
+    expect(detectRangeFill(a, 38094)).toEqual({ side: 'buy', entryPrice: 38100, initialStop: 38050 });
+  });
+  it('混在(上=stop / 下=limit): 上はタッチ約定・下は5円行き過ぎで約定', () => {
+    const a = mk(UP_STOP, LO_LIMIT);
+    expect(detectRangeFill(a, 38400)).toEqual({ side: 'buy', entryPrice: 38405, initialStop: 38350 });   // タッチ
+    expect(detectRangeFill(a, 38100)).toBeNull();          // 下は limit=タッチのみでは不約定
+    expect(detectRangeFill(a, 38096)).toBeNull();
+    expect(detectRangeFill(a, 38095)).toEqual({ side: 'buy', entryPrice: 38100, initialStop: 38050 });
+  });
+  it('混在(上=limit / 下=stop): 上は5円行き過ぎ・下はタッチ約定', () => {
+    const a = mk(UP_LIMIT, LO_STOP);
+    expect(detectRangeFill(a, 38400)).toBeNull();          // 上は limit=タッチのみでは不約定
+    expect(detectRangeFill(a, 38404)).toBeNull();
+    expect(detectRangeFill(a, 38405)).toEqual({ side: 'sell', entryPrice: 38400, initialStop: 38450 });
+    expect(detectRangeFill(a, 38100)).toEqual({ side: 'sell', entryPrice: 38095, initialStop: 38150 });  // タッチ
+  });
+  it('type 欠落レッグは limit 扱い(現状の規約を維持)= タッチでは不約定・5円行き過ぎで約定', () => {
+    // parse を通れば type は必ず在るが、型を落とした経路でも保守側(limit)に倒れることを固定する。
+    const noType = { side: 'sell', entry: 38400, stopLoss: 38450 } as unknown as RangeLeg;
+    const a = mk(noType, undefined);
+    expect(detectRangeFill(a, 38400)).toBeNull();
+    expect(detectRangeFill(a, 38404)).toBeNull();
+    expect(detectRangeFill(a, 38405)).toEqual({ side: 'sell', entryPrice: 38400, initialStop: 38450 });
+  });
+  it('片面 range(下レッグのみ stop)はタッチで約定・上抜けでは約定しない', () => {
+    const a = mk(undefined, LO_STOP);
+    expect(detectRangeFill(a, 39000)).toBeNull();
+    expect(detectRangeFill(a, 38100)).toEqual({ side: 'sell', entryPrice: 38095, initialStop: 38150 });
+  });
+});
+
+// ★単方向ブラケット(detectFill)は無変更。網羅コーパスで「指値=5円行き過ぎ / 逆指値=タッチ」を再確認する
+//   (decisions.ts の変更が directional 経路へ漏れていないことの検査)。
+describe('detectFill: 単方向は仕様不変(網羅コーパス)', () => {
+  it('buy/sell × 全価格グリッドで 指値=entry±5 到達・逆指値=タッチ の境界が保たれる', () => {
+    const LIMIT = 38000, STOP = 38200;
+    for (const dir of ['buy', 'sell'] as const) {
+      // buy: 指値38000(下)/逆指値38200(上) — sell は上下を入れ替える。
+      const limitEntry = dir === 'buy' ? LIMIT : STOP;
+      const stopEntry = dir === 'buy' ? STOP : LIMIT;
+      const a: ArmedBracket = {
+        direction: dir, limitEntry, stopEntry,
+        stopLossForLimit: dir === 'buy' ? limitEntry - 50 : limitEntry + 50,
+        stopLossForStop: dir === 'buy' ? stopEntry - 50 : stopEntry + 50,
+        rationale: 'x', at: 0,
+      };
+      for (let price = LIMIT - 20; price <= STOP + 20; price += 1) {
+        const limitHit = dir === 'buy' ? price <= limitEntry - 5 : price >= limitEntry + 5;
+        const stopHit = dir === 'buy' ? price >= stopEntry : price <= stopEntry;
+        const got = detectFill(a, price);
+        if (limitHit) expect({ dir, price, leg: got?.leg }).toEqual({ dir, price, leg: 'limit' });         // 同 tick 同時成立は指値優先
+        else if (stopHit) expect({ dir, price, leg: got?.leg }).toEqual({ dir, price, leg: 'stop' });
+        else expect({ dir, price, got }).toEqual({ dir, price, got: null });
+      }
+    }
+  });
+});
+
+// ★通過済みレッグの veto(stale plan veto)。画像生成+LLM 応答の数秒〜十数秒で価格が動くため、
+//   plan.refPrice(チャート撮影時の価格)には妥当でも ARM 時点の live 価格では既にエントリーを通過している
+//   計画が届く。それを武装すると次tickで即約定し、現実には執行できない取引が紙の成績に混ざる。
+//   判定は detectFill / detectRangeFill の再利用=約定条件と完全に同一規約(指値=5円行き過ぎ / 逆指値=タッチ)。
+describe('checkStaleLegs(通過済みレッグを武装しない・境界値)', () => {
+  // buy: 指値61900(下・LC61850)/ 逆指値62000(上・LC61950)。
+  const buyOco = (): ArmedBracket => ({
+    direction: 'buy', limitEntry: 61900, stopEntry: 62000,
+    stopLossForLimit: 61850, stopLossForStop: 61950, rationale: 'r', at: 0,
+  });
+  // sell: 指値62000(上・LC62050)/ 逆指値61900(下・LC61850)。
+  const sellOco = (): ArmedBracket => ({
+    direction: 'sell', limitEntry: 62000, stopEntry: 61900,
+    stopLossForLimit: 62050, stopLossForStop: 61850, rationale: 'r', at: 0,
+  });
+  const range = (upper: RangeLeg, lower: RangeLeg): ArmedBracket =>
+    ({ direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper, lower } });
+  const FADE_UP: RangeLeg = { side: 'sell', type: 'limit', entry: 62000, stopLoss: 62050 };
+  const FADE_LO: RangeLeg = { side: 'buy', type: 'limit', entry: 61900, stopLoss: 61850 };
+  const BREAK_UP: RangeLeg = { side: 'buy', type: 'stop', entry: 62000, stopLoss: 61950 };
+  const BREAK_LO: RangeLeg = { side: 'sell', type: 'stop', entry: 61900, stopLoss: 61950 };
+
+  it('live 価格が取れない(null/undefined/NaN)→ 判定せず従来どおり ARM(同一参照・legs 空)', () => {
+    const a = buyOco();
+    for (const live of [null, undefined, NaN, Infinity]) {
+      const r = checkStaleLegs(a, live);
+      expect(r.armed).toBe(a);       // ★同一参照=挙動 byte 不変(新しい抑止で取引を止めない)
+      expect(r.legs).toEqual([]);
+    }
+  });
+
+  it('buy 指値(61900): あと1円(61896)は武装・ちょうど(61895)は落とす・1円超過(61894)も落とす', () => {
+    expect(checkStaleLegs(buyOco(), 61896).legs).toEqual([
+      { name: 'limit', entry: 61900, stale: false }, { name: 'stop', entry: 62000, stale: false },
+    ]);
+    for (const live of [61895, 61894]) {
+      const r = checkStaleLegs(buyOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 61900, stale: true }, { name: 'stop', entry: 62000, stale: false },
+      ]);
+      expect(r.armed).toMatchObject({ direction: 'buy', stopEntry: 62000, stopLossForStop: 61950 });
+      expect(r.armed?.limitEntry).toBeUndefined();          // 通過済みの指値レッグだけ落ちる
+      expect(r.armed?.stopLossForLimit).toBeUndefined();
+    }
+  });
+
+  it('buy 逆指値(62000): あと1円(61999)は武装・タッチ(62000)は落とす・1円超過(62001)も落とす', () => {
+    expect(checkStaleLegs(buyOco(), 61999).armed).toEqual(buyOco());
+    for (const live of [62000, 62001]) {
+      const r = checkStaleLegs(buyOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 61900, stale: false }, { name: 'stop', entry: 62000, stale: true },
+      ]);
+      expect(r.armed).toMatchObject({ direction: 'buy', limitEntry: 61900, stopLossForLimit: 61850 });
+      expect(r.armed?.stopEntry).toBeUndefined();
+      expect(r.armed?.stopLossForStop).toBeUndefined();
+    }
+  });
+
+  it('sell 指値(62000): あと1円(62004)は武装・ちょうど(62005)は落とす・1円超過(62006)も落とす', () => {
+    expect(checkStaleLegs(sellOco(), 62004).armed).toEqual(sellOco());
+    for (const live of [62005, 62006]) {
+      const r = checkStaleLegs(sellOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 62000, stale: true }, { name: 'stop', entry: 61900, stale: false },
+      ]);
+      expect(r.armed?.limitEntry).toBeUndefined();
+      expect(r.armed).toMatchObject({ stopEntry: 61900, stopLossForStop: 61850 });
+    }
+  });
+
+  it('sell 逆指値(61900): あと1円(61901)は武装・タッチ(61900)は落とす・1円超過(61899)も落とす', () => {
+    expect(checkStaleLegs(sellOco(), 61901).armed).toEqual(sellOco());
+    for (const live of [61900, 61899]) {
+      const r = checkStaleLegs(sellOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 62000, stale: false }, { name: 'stop', entry: 61900, stale: true },
+      ]);
+      expect(r.armed?.stopEntry).toBeUndefined();
+      expect(r.armed).toMatchObject({ limitEntry: 62000, stopLossForLimit: 62050 });
+    }
+  });
+
+  it('range 指値ストラドル(fade): 上=62005 / 下=61895 で落とす(1円手前は武装)', () => {
+    expect(checkStaleLegs(range(FADE_UP, FADE_LO), 62004).legs.every(l => !l.stale)).toBe(true);
+    expect(checkStaleLegs(range(FADE_UP, FADE_LO), 61896).legs.every(l => !l.stale)).toBe(true);
+    for (const live of [62005, 62006]) {
+      const r = checkStaleLegs(range(FADE_UP, FADE_LO), live);
+      expect(r.legs).toEqual([
+        { name: 'upper', entry: 62000, stale: true }, { name: 'lower', entry: 61900, stale: false },
+      ]);
+      expect(r.armed?.mode).toBe('range');
+      expect(r.armed?.range).toEqual({ lower: FADE_LO });   // 通過済みの上レッグだけ落ちる(片面 range で継続)
+    }
+    for (const live of [61895, 61894]) {
+      const r = checkStaleLegs(range(FADE_UP, FADE_LO), live);
+      expect(r.legs).toEqual([
+        { name: 'upper', entry: 62000, stale: false }, { name: 'lower', entry: 61900, stale: true },
+      ]);
+      expect(r.armed?.range).toEqual({ upper: FADE_UP });
+    }
+  });
+
+  it('range 逆指値ストラドル(breakout): 上=タッチ62000 / 下=タッチ61900 で落とす(1円手前は武装)', () => {
+    expect(checkStaleLegs(range(BREAK_UP, BREAK_LO), 61999).armed?.range).toEqual({ upper: BREAK_UP, lower: BREAK_LO });
+    expect(checkStaleLegs(range(BREAK_UP, BREAK_LO), 61901).armed?.range).toEqual({ upper: BREAK_UP, lower: BREAK_LO });
+    for (const live of [62000, 62001]) {
+      const r = checkStaleLegs(range(BREAK_UP, BREAK_LO), live);
+      expect(r.legs).toEqual([
+        { name: 'upper', entry: 62000, stale: true }, { name: 'lower', entry: 61900, stale: false },
+      ]);
+      expect(r.armed?.range).toEqual({ lower: BREAK_LO });
+    }
+    for (const live of [61900, 61899]) {
+      const r = checkStaleLegs(range(BREAK_UP, BREAK_LO), live);
+      expect(r.legs).toEqual([
+        { name: 'upper', entry: 62000, stale: false }, { name: 'lower', entry: 61900, stale: true },
+      ]);
+      expect(r.armed?.range).toEqual({ upper: BREAK_UP });
+    }
+  });
+
+  it('片レッグしか無いブラケットが通過済み → armed=null(=ARM しない=見送り)', () => {
+    const limitOnlyBuy: ArmedBracket = { direction: 'buy', limitEntry: 61900, stopLossForLimit: 61850, rationale: 'r', at: 0 };
+    expect(checkStaleLegs(limitOnlyBuy, 61896).armed).toBe(limitOnlyBuy);
+    expect(checkStaleLegs(limitOnlyBuy, 61895).armed).toBeNull();
+    const stopOnlyBuy: ArmedBracket = { direction: 'buy', stopEntry: 62000, stopLossForStop: 61950, rationale: 'r', at: 0 };
+    expect(checkStaleLegs(stopOnlyBuy, 61999).armed).toBe(stopOnlyBuy);
+    expect(checkStaleLegs(stopOnlyBuy, 62000).armed).toBeNull();
+    const limitOnlySell: ArmedBracket = { direction: 'sell', limitEntry: 62000, stopLossForLimit: 62050, rationale: 'r', at: 0 };
+    expect(checkStaleLegs(limitOnlySell, 62004).armed).toBe(limitOnlySell);
+    expect(checkStaleLegs(limitOnlySell, 62005).armed).toBeNull();
+    const stopOnlySell: ArmedBracket = { direction: 'sell', stopEntry: 61900, stopLossForStop: 61850, rationale: 'r', at: 0 };
+    expect(checkStaleLegs(stopOnlySell, 61901).armed).toBe(stopOnlySell);
+    expect(checkStaleLegs(stopOnlySell, 61900).armed).toBeNull();
+    // 片面 range(下レッグのみ)も同様。
+    const lowerOnly: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { lower: FADE_LO } };
+    expect(checkStaleLegs(lowerOnly, 61896).armed).toBe(lowerOnly);
+    expect(checkStaleLegs(lowerOnly, 61895).armed).toBeNull();
+  });
+
+  it('落とすレッグが無ければ引数と同一参照を返す(=挙動 byte 不変)', () => {
+    const a = buyOco();
+    expect(checkStaleLegs(a, 61950).armed).toBe(a);
+    const r = range(FADE_UP, FADE_LO);
+    expect(checkStaleLegs(r, 61950).armed).toBe(r);
+  });
+
+  it('レッグを落としても付帯情報(planMeta/settings/doten/mode/rationale/at)は保つ', () => {
+    const a: ArmedBracket = {
+      ...buyOco(), planMeta: { regime: 'range', confidence: 0.7 },
+      settings: { lc: { mode: 'manual' } } as unknown as ArmedBracket['settings'], doten: true,
+    };
+    const r = checkStaleLegs(a, 61895);
+    expect(r.armed).toMatchObject({
+      direction: 'buy', rationale: 'r', at: 0, doten: true,
+      planMeta: { regime: 'range', confidence: 0.7 },
+    });
+    expect(r.armed?.settings).toBe(a.settings);
+    const rg = checkStaleLegs({ ...range(FADE_UP, FADE_LO), planMeta: { confidence: 0.4 } }, 62005);
+    expect(rg.armed).toMatchObject({ mode: 'range', planMeta: { confidence: 0.4 } });
+  });
+
+  it('type 欠落の range レッグは limit 扱い(=約定判定と同一規約): タッチでは落とさない', () => {
+    const noType = { side: 'sell', entry: 62000, stopLoss: 62050 } as unknown as RangeLeg;
+    const a: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper: noType } };
+    expect(checkStaleLegs(a, 62000).armed).toBe(a);
+    expect(checkStaleLegs(a, 62004).armed).toBe(a);
+    expect(checkStaleLegs(a, 62005).armed).toBeNull();
+  });
+
+  it('約定判定(detectFill/detectRangeFill)と 1円刻みで完全一致する(規約の二重定義が無いことの検査)', () => {
+    const cases: ArmedBracket[] = [buyOco(), sellOco(), range(FADE_UP, FADE_LO), range(BREAK_UP, BREAK_LO)];
+    for (const a of cases) {
+      for (let live = 61850; live <= 62050; live += 1) {
+        const isRange = a.mode === 'range';
+        const filled = isRange ? detectRangeFill(a, live) != null : detectFill(a, live) != null;
+        const r = checkStaleLegs(a, live);
+        // 「どれか1レッグでも即約定する」=「stale レッグが在る」と同値(=同じ規約を共有している)。
+        expect({ live, any: r.legs.some(l => l.stale) }).toEqual({ live, any: filled });
+      }
+    }
+  });
+});
+
+// ★不変条件の再証明(境界グリッド + fuzz)。stale plan veto が満たすべき性質を、約定判定(detectFill /
+//   detectRangeFill)を唯一の基準として全数検査する:
+//     I1 ゲート後のブラケットは live で即約定しない(=通過済みレッグが残らない)
+//     I2 誤抑止=0(live で約定しないレッグは絶対に落とさない)
+//     I3 抑止漏れ=0(live で約定するレッグは必ず落とす)
+//     + 引数(ArmedBracket)を破壊しない / legs[] の stale フラグが約定判定と一致する
+//   ★レッグ単独の約定可否で判定するので「同tick両成立は指値優先」という detectFill の規約に依存しない
+//     (=レッグごとの独立判定であることも同時に検査している)。
+describe('checkStaleLegs 不変条件の再証明(境界グリッド + fuzz)', () => {
+  const isRange = (a: ArmedBracket): boolean => a.mode === 'range' || a.range != null;
+  /** そのブラケットが live で(どれかのレッグで)即約定するか=約定判定そのもの。 */
+  const fills = (a: ArmedBracket, live: number): boolean =>
+    isRange(a) ? detectRangeFill(a, live) != null : detectFill(a, live) != null;
+  type LegName = 'limit' | 'stop' | 'upper' | 'lower';
+  /** ブラケットに在るレッグ名。 */
+  const presentLegs = (a: ArmedBracket): LegName[] => {
+    if (isRange(a)) {
+      const n: LegName[] = [];
+      if (a.range?.upper) n.push('upper');
+      if (a.range?.lower) n.push('lower');
+      return n;
+    }
+    const n: LegName[] = [];
+    if (a.limitEntry != null && a.stopLossForLimit != null) n.push('limit');
+    if (a.stopEntry != null && a.stopLossForStop != null) n.push('stop');
+    return n;
+  };
+  /** そのレッグだけを残したブラケット(レッグ単独の約定可否を約定判定に問うため)。 */
+  const single = (a: ArmedBracket, leg: LegName): ArmedBracket => {
+    if (leg === 'upper') return { ...a, range: { upper: a.range?.upper } };
+    if (leg === 'lower') return { ...a, range: { lower: a.range?.lower } };
+    if (leg === 'limit') return { ...a, stopEntry: undefined, stopLossForStop: undefined };
+    return { ...a, limitEntry: undefined, stopLossForLimit: undefined };
+  };
+  /** 1ケース検査して違反文言を返す(空配列=不変条件を満たす)。expect は最後に1回だけ叩く(高速化)。 */
+  const check = (a: ArmedBracket, live: number): string[] => {
+    const snapshot = JSON.stringify(a);
+    const r = checkStaleLegs(a, live);
+    const v: string[] = [];
+    if (JSON.stringify(a) !== snapshot) v.push('引数破壊');
+    const names = presentLegs(a);
+    const kept = r.armed ? presentLegs(r.armed) : [];
+    for (const n of names) {
+      const would = fills(single(a, n), live);
+      const rep = r.legs.find(l => l.name === n);
+      if (!rep) v.push(`legs[] に ${n} が無い`);
+      else if (rep.stale !== would) v.push(`stale フラグ不一致 ${n}(報告=${rep.stale} 約定判定=${would})`);
+      if (would && kept.includes(n)) v.push(`I3 抑止漏れ: 即約定する ${n} が残った`);
+      if (!would && !kept.includes(n)) v.push(`I2 誤抑止: 未到達の ${n} を落とした`);
+    }
+    if (r.legs.length !== names.length) v.push(`legs[] 件数不一致(${r.legs.length}≠${names.length})`);
+    if (r.armed && fills(r.armed, live)) v.push('I1 違反: ゲート後のブラケットが live で即約定する');
+    if (!r.armed && !names.every(n => fills(single(a, n), live))) v.push('null 化したが未到達レッグが在った');
+    return v.map(x => `${x} @live=${live} bracket=${snapshot}`);
+  };
+  const mkDir = (dir: 'buy' | 'sell', limit?: number, stop?: number): ArmedBracket => {
+    const a: ArmedBracket = { direction: dir, rationale: 'r', at: 0 };
+    if (limit != null) { a.limitEntry = limit; a.stopLossForLimit = dir === 'buy' ? limit - 50 : limit + 50; }
+    if (stop != null) { a.stopEntry = stop; a.stopLossForStop = dir === 'buy' ? stop - 50 : stop + 50; }
+    return a;
+  };
+  const mkRange = (upper?: RangeLeg, lower?: RangeLeg): ArmedBracket =>
+    ({ direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper, lower } });
+  const L = 61900, U = 62100;   // 下側レッグ / 上側レッグの基準価格
+  const UP_LIM: RangeLeg = { side: 'sell', type: 'limit', entry: U, stopLoss: U + 50 };
+  const LO_LIM: RangeLeg = { side: 'buy', type: 'limit', entry: L, stopLoss: L - 50 };
+  const UP_STP: RangeLeg = { side: 'buy', type: 'stop', entry: U, stopLoss: U - 50 };
+  const LO_STP: RangeLeg = { side: 'sell', type: 'stop', entry: L, stopLoss: L + 50 };
+  const NO_TYPE = { side: 'sell', entry: U, stopLoss: U + 50 } as unknown as RangeLeg;   // type 欠落(limit 扱い)
+  const BRACKETS: ArmedBracket[] = [
+    mkDir('buy', L, U), mkDir('sell', U, L),                 // OCO(両レッグ)
+    mkDir('buy', L), mkDir('buy', undefined, U),             // 片レッグ(指値のみ / 逆指値のみ)
+    mkDir('sell', U), mkDir('sell', undefined, L),
+    mkRange(UP_LIM, LO_LIM), mkRange(UP_STP, LO_STP),        // fade / breakout ストラドル
+    mkRange(UP_STP, LO_LIM), mkRange(UP_LIM, LO_STP),        // 混在
+    mkRange(UP_LIM, undefined), mkRange(undefined, LO_STP),  // 片面 range
+    mkRange(NO_TYPE, LO_LIM),                                // type 欠落
+  ];
+  const OFFSETS = [-6, -5, -4, -1, 0, 1, 4, 5, 6];           // ★境界(±0/±4/±5/±6)を必ず踏む
+
+  it('境界グリッド(各レッグ ±0/±4/±5/±6 + 1円刻み全掃引)で I1/I2/I3・引数不変を満たす', () => {
+    const violations: string[] = [];
+    let cases = 0;
+    for (const a of BRACKETS) {
+      const entries = presentLegs(a).map(n => (n === 'limit' ? a.limitEntry : n === 'stop' ? a.stopEntry
+        : n === 'upper' ? a.range?.upper?.entry : a.range?.lower?.entry) as number);
+      const prices = new Set<number>();
+      for (const e of entries) for (const o of OFFSETS) prices.add(e + o);
+      for (let p = Math.min(...entries) - 40; p <= Math.max(...entries) + 40; p += 1) prices.add(p);
+      for (const p of prices) { violations.push(...check(a, p)); cases++; }
+    }
+    expect(violations.slice(0, 5)).toEqual([]);
+    expect(cases).toBeGreaterThan(2000);
+  });
+
+  it('fuzz(乱択ブラケット × 乱択 live・境界に寄せた分布)で I1/I2/I3・引数不変を満たす', () => {
+    let seed = 20260730;   // 決定的 LCG(再現可能)
+    const rnd = (): number => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)]!;
+    const tick = (x: number): number => Math.round(x / 5) * 5;   // N225 の 5円刻み
+    const violations: string[] = [];
+    const N = 200_000;
+    for (let i = 0; i < N; i++) {
+      const base = tick(60_000 + rnd() * 4_000);
+      const d1 = tick(5 + rnd() * 200), d2 = tick(5 + rnd() * 200);
+      const kind = pick(['dir', 'dir', 'range', 'range'] as const);
+      let a: ArmedBracket;
+      if (kind === 'dir') {
+        const dir = pick(['buy', 'sell'] as const);
+        const lo = base - d1, hi = base + d2;
+        const limit = dir === 'buy' ? lo : hi, stop = dir === 'buy' ? hi : lo;
+        const legs = pick(['both', 'limit', 'stop'] as const);
+        a = mkDir(dir, legs === 'stop' ? undefined : limit, legs === 'limit' ? undefined : stop);
+      } else {
+        const mkLeg = (entry: number, side: 'buy' | 'sell'): RangeLeg => {
+          const type = pick(['limit', 'stop', undefined] as const);
+          const stopLoss = side === 'buy' ? entry - 50 : entry + 50;
+          return (type === undefined ? { side, entry, stopLoss } : { side, type, entry, stopLoss }) as RangeLeg;
+        };
+        const upper = mkLeg(base + d2, pick(['buy', 'sell'] as const));
+        const lower = mkLeg(base - d1, pick(['buy', 'sell'] as const));
+        const legs = pick(['both', 'upper', 'lower'] as const);
+        a = mkRange(legs === 'lower' ? undefined : upper, legs === 'upper' ? undefined : lower);
+      }
+      // live は 6割を「いずれかのレッグの境界近傍(±6)」に寄せる(境界の踏破率を上げる)。
+      const entries = presentLegs(a).map(n => (n === 'limit' ? a.limitEntry : n === 'stop' ? a.stopEntry
+        : n === 'upper' ? a.range?.upper?.entry : a.range?.lower?.entry) as number);
+      const live = rnd() < 0.6
+        ? pick(entries) + pick([-6, -5, -4, -1, 0, 1, 4, 5, 6] as const)
+        : tick(base - 250 + rnd() * 500);
+      violations.push(...check(a, live));
+      if (violations.length > 0) break;   // 最初の反例で止める(全件列挙は不要)
+    }
+    expect(violations).toEqual([]);
   });
 });
 
@@ -1053,7 +1468,7 @@ describe('advance: breakout ストラドルは反対節目=損側 → rangeTp �
     },
   };
   it('LONG(上抜け約定): rangeTp は据えない → 既存 phase-exit(下)へ落ちる', () => {
-    const { next } = advance({ phase: 'armed', armed: breakoutStraddle }, 66005, 1000);   // ★range 約定は 5円 行き過ぎ(detectRangeFill 一律マージン)
+    const { next } = advance({ phase: 'armed', armed: breakoutStraddle }, 66000, 1000);   // ★逆指値レッグはタッチ(66000)で約定
     expect(next.phase).toBe('filled');
     // ★breakout(逆指値=stop)レッグは成行約定=建値も不利+5円(66000→66005)。
     expect(next.position?.entryPrice).toBe(66005);
@@ -1063,6 +1478,27 @@ describe('advance: breakout ストラドルは反対節目=損側 → rangeTp �
     expect(r.next.phase).toBe('flat');
     expect(r.recorded?.exitPrice).toBe(65895);
     expect(r.recorded?.mode).toBe('range');   // タグは range 由来のまま
+  });
+});
+
+describe('advance: 混在ストラドル(上=逆指値/下=指値)はレッグ type ごとの条件で約定', () => {
+  // 上=買い逆指値66000(LC65900・breakout) / 下=買い指値65000(LC64900・fade)。
+  const mixed: ArmedBracket = {
+    direction: 'buy', rationale: 'range', at: 0, mode: 'range', range: {
+      upper: { side: 'buy', type: 'stop', entry: 66000, stopLoss: 65900 },
+      lower: { side: 'buy', type: 'limit', entry: 65000, stopLoss: 64900 },
+    },
+  };
+  it('上(逆指値)はタッチ66000で filled: ★旧実装では 66005 まで armed のままだった', () => {
+    const { next } = advance({ phase: 'armed', armed: mixed }, 66000, 1000);
+    expect(next.phase).toBe('filled');
+    expect(next.position).toMatchObject({ direction: 'buy', entryPrice: 66005, initialStop: 65900, mode: 'range' });
+  });
+  it('下(指値)はタッチ65000では armed のまま・64995(5円下抜け)で filled', () => {
+    expect(advance({ phase: 'armed', armed: mixed }, 65000, 1000).next.phase).toBe('armed');
+    const { next } = advance({ phase: 'armed', armed: mixed }, 64995, 1000);
+    expect(next.phase).toBe('filled');
+    expect(next.position).toMatchObject({ direction: 'buy', entryPrice: 65000, initialStop: 64900, mode: 'range' });
   });
 });
 
