@@ -668,7 +668,13 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   }
   // ★表示整合: 実際に採用したレッグを rationale 末尾に機械生成の注記として追記(directional のみ)。
   //   採用の有無は最終 plan から判定。AI が出したが検証で落ちたレッグは「不採用」タグを付す。none/range 経路は
-  //   触らない(上で return 済み)。rationale(元テキスト)は不変のまま、注記は1回だけ連結する=冪等。
+  //   触らない(上で return 済み)。
+  // ★★注記を足すのはこの1箇所だけ=「parseScalpPlan は AI の生応答に対して1回だけ呼ぶ」ことが前提(呼び出し側の責務)。
+  //   注記済みの plan を JSON 化して再度この関数に通すと、注記は当然もう1回付く(=二重)。実際 v0.9.46 まで
+  //   buildScalpPlan が「runScalpPlan(内部で parse 済) → JSON.stringify → parseScalpPlan」と2回通していたため、
+  //   画面の根拠文が『（実際の注文: 指値のみ…）（逆指値レッグは…不採用） （実際の注文: 指値のみ…）』と二重になっていた
+  //   (レンジ側も、既に落ちた脚が2回目には「AIが提示しなかった」と誤って追記されていた)。再 parse そのものを廃止して解消。
+  //   ここで文字列を見て「もう付いているか」を判定するような対症療法はしない(生 rationale を汚さない)。
   const legNote = buildLegNote({
     hasLimit: plan.limitEntry != null,
     hasStop: plan.stopEntry != null,
@@ -691,13 +697,16 @@ export function buildScalpUserContent(userPrompt: string, imageDataUrl?: string 
 }
 
 /** スキャルプラン生成の純ループ(LLM 非依存=テスト可能)。tool ループで回答→parse、失敗なら tools 無しで
- *  厳格に1回だけ再要求→再parse。成功で AiPlan、失敗で例外。create/handlers を注入してテストする。
+ *  厳格に1回だけ再要求→再parse。成功で **parse 結果まるごと**(plan + noneReason/noneLegs)、失敗で例外。
+ *  ★parseScalpPlan はこの関数の中でしか呼ばない=AI の生応答1つに対して parse は必ず1回(注記も1回)。
+ *   呼び出し側(buildScalpPlan)は戻り値をそのまま使い、plan を JSON 化して再 parse してはならない(v0.9.46 の
+ *   注記二重付与の真因)。create/handlers を注入してテストする。
  *  imageDataUrl を渡すと初回・再要求ともにチャート画像を添付する(ビジョン対応プロバイダ時のみ呼び出し側で渡す)。 */
-export async function runScalpPlan(
+export async function runScalpPlanResult(
   create: CreateFn, systemPrompt: string, userPrompt: string,
   tools: unknown[], handlers: ToolHandlers, refPrice: number,
   imageDataUrl?: string | null,
-): Promise<AiPlan> {
+): Promise<Extract<ScalpPlanResult, { ok: true }>> {
   const userContent = buildScalpUserContent(userPrompt, imageDataUrl);
   const baseMessages: any[] = [
     { role: 'system', content: systemPrompt },
@@ -705,7 +714,7 @@ export async function runScalpPlan(
   ];
   const first = await runChatWithTools(create, baseMessages, tools, handlers);
   const parsed = parseScalpPlan(first, refPrice);
-  if (parsed.ok) return parsed.plan;
+  if (parsed.ok) return parsed;
   // パース失敗 → 厳格に1回だけ再要求(tools 無し・JSON のみ)。
   const retry = await create({
     messages: [
@@ -717,8 +726,17 @@ export async function runScalpPlan(
   });
   const retryText = retry.choices?.[0]?.message?.content?.trim() ?? '';
   const parsed2 = parseScalpPlan(retryText, refPrice);
-  if (parsed2.ok) return parsed2.plan;
+  if (parsed2.ok) return parsed2;
   throw new Error(`parse failed after retry: ${parsed2.error}`);
+}
+
+/** runScalpPlanResult の薄いラッパ(後方互換)。plan だけを返す=既存の呼び出し/テストは不変。 */
+export async function runScalpPlan(
+  create: CreateFn, systemPrompt: string, userPrompt: string,
+  tools: unknown[], handlers: ToolHandlers, refPrice: number,
+  imageDataUrl?: string | null,
+): Promise<AiPlan> {
+  return (await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imageDataUrl)).plan;
 }
 
 export interface ScalpPlanInput {
@@ -1136,17 +1154,24 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, ceilingYen, rangeEnabled)}`;
 
   try {
+    // ★v0.9.46 修正: parse は runScalpPlanResult の中で1回だけ走らせ、その結果をここで受け取る。
+    //   以前は「plan を JSON 化 → callWithFallback の string 契約で受け取り → parseScalpPlan で再パース」して
+    //   おり、parse 段の機械生成注記(レッグ注記/レンジ脚の脱落理由)が2回連結されて画面に二重表示されていた。
+    //   採否ロジックは parse も enforce も一切変えていない(注記の連結回数だけが 2→1 に戻る)。
+    let planResult: Extract<ScalpPlanResult, { ok: true }> | null = null;
     const raw = await callWithFallback(async (p) => {
       const create: CreateFn = (params) => p.client!.chat.completions.create({
         model: p.config.chatModel, temperature: 0.4, max_tokens: 8000, ...params,
       } as any);
       // ビジョン非対応プロバイダに切り替わった場合は画像を外す(image_url をテキスト専用モデルへ送らない)。
       const imgForThis = img && isVisionCapableProvider(p.config.name, p.config.chatModel) ? img : null;
-      // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。
-      return JSON.stringify(await runScalpPlan(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis));
+      planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis);
+      // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。戻り値そのものは使わない。
+      return JSON.stringify(planResult.plan);
     }, 'scalp-plan');
-    // callWithFallback から返った plan JSON を再パースし、monitor 設定の LC 上限・バイアスをコードで最終保証してから返す。
-    const parsed = parseScalpPlan(raw, refPrice);
+    // task が一度も走らなかった場合(callWithFallback がプロバイダ不在の定型文を返す経路)だけ raw を読む。
+    // 通常は planResult が入っているので再パースは起きない。
+    const parsed: ScalpPlanResult = planResult ?? parseScalpPlan(raw, refPrice);
     if (!parsed.ok) return parsed;
     // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0=ai は現行挙動=veto なし)。
     const trend = trendVetoYen > 0 ? input.trend : undefined;
