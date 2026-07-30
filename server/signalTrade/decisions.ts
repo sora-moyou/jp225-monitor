@@ -41,6 +41,12 @@ export interface ArmedBracket {
   // ★ドテン(反転): このブラケットが保有中の反転評価で armed された「反対方向の反転建て」であることを示す。
   //   在るときだけ true(add-only)=非ドテンの armed は従来と byte 一致。armedToCurrentSignal / position / recorded へ持ち回る。
   doten?: true;
+  // ★遡り解析用(RECORD-ONLY・ADD-ONLY): ARM した瞬間に monitor が見ていた live 価格(新鮮値のみ)。
+  //   at(ARM 時刻)と対で position→recorded→signal_trades(armed_t/armed_price)へ持ち回る。
+  //   ★これが要る理由: 事後に prices_*.db の ticks で代用すると collector(別プロセス・別位相・AJAXキャッシュ)の
+  //     価格列になり monitor が feed した価格と一致しない=「武装時点で通過済みだったか」を誤判定する。
+  //   取れない/stale なら欠落(=記録は NULL)。engine が ARM の3経路(flat計画/ドテン反対建て/レンジ再評価差替え)で据える。
+  armedPrice?: number;
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -77,6 +83,8 @@ export interface OpenPosition {
   planMeta?: PlanMeta;   // v0.7.54: AI 自己レジーム/確信度 + veto 発火(決済 meta へ引き継ぐ)。
   settings?: SignalSettingsSnapshot;   // ★v0.7.56: 実効設定スナップショット(決済 meta へ引き継ぐ)。
   doten?: true;          // ★ドテン(反転)で建てた建玉(add-only)。決済記録(RecordedTrade)まで持ち回る。
+  armedAt?: number;      // ★遡り解析用: この建玉の ARM(武装)時刻(= armed.at)。at−armedAt = ARM→約定の経過。
+  armedPrice?: number;   // ★遡り解析用: ARM 時点で monitor が見ていた価格(取れない/stale は欠落)。
 }
 
 export interface EngineState {
@@ -107,6 +115,8 @@ export interface RecordedTrade {
   planMeta?: PlanMeta;   // v0.7.54: 決済時に signal_trades.meta へ JSON 保存する自己レジーム/確信度/veto。
   settings?: SignalSettingsSnapshot;   // ★v0.7.56: 決済時に signal_trades.meta へ保存する実効設定スナップショット。
   doten?: true;   // ★ドテン(反転)関連トレード(add-only)。P の反転決済 or 反転建玉の決済。meta.doten に残す。
+  armedAt?: number;      // ★遡り解析用: この建玉の ARM 時刻 → signal_trades.armed_t(entryT−armedAt=ARM→約定の経過)。
+  armedPrice?: number;   // ★遡り解析用: ARM 時点の価格 → signal_trades.armed_price(取れない/stale は欠落=NULL)。
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -250,6 +260,14 @@ export function checkStaleLegs(
   return { armed: next, legs };
 }
 
+/** ★遡り解析用(RECORD-ONLY): ARM 時刻/ARM 時点価格を次の段(armed→建玉→決済記録)へ引き継ぐ。
+ *  非有限/欠落はキーを作らない(=既存の記録と byte 一致・DB では NULL)。時刻は必ず「ARM 時刻」を明示的に
+ *  渡す契約にしてある(建玉の at=約定時刻 と取り違えると armed_t が約定時刻になり経過が常に0になるため)。 */
+function carryArmed(dst: { armedAt?: number; armedPrice?: number }, armedAt?: number, armedPrice?: number): void {
+  if (armedAt != null && Number.isFinite(armedAt)) dst.armedAt = armedAt;
+  if (armedPrice != null && Number.isFinite(armedPrice)) dst.armedPrice = armedPrice;
+}
+
 /** 含み損益(pt)。buy は上昇で+、sell は下落で+。 */
 export function unrealizedPt(direction: 'buy' | 'sell', entry: number, price: number): number {
   return direction === 'buy' ? price - entry : entry - price;
@@ -381,6 +399,7 @@ export function advance(
       }
       if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
       if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
+      carryArmed(position, st.armed.at, st.armed.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を建玉へ。
       return { next: { phase: 'filled', position, lastExit: st.lastExit } };
     }
     const fill = detectFill(st.armed, price);
@@ -398,6 +417,7 @@ export function advance(
     if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
     if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
     if (st.armed.doten) position.doten = true;   // ★ドテン建玉フラグを約定後の建玉へ持ち回る(add-only)。
+    carryArmed(position, st.armed.at, st.armed.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を建玉へ。
     return { next: { phase: 'filled', position, lastExit: st.lastExit } };
   }
 
@@ -418,6 +438,7 @@ export function advance(
         };
         if (pos.planMeta) r.planMeta = pos.planMeta;
         if (pos.settings) r.settings = pos.settings;
+        carryArmed(r, pos.armedAt, pos.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を決済記録へ。
         return r;
       };
       // 損側: 固定初期LC(ラチェットせず)。到達したらその逆指値で決済。両側が同 tick で満たす場合は損側優先(安全)。
@@ -456,6 +477,7 @@ export function advance(
     if (pos.planMeta) recorded.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
     if (pos.settings) recorded.settings = pos.settings;   // ★v0.7.56: 実効設定を決済記録へ。
     if (pos.doten) recorded.doten = true;   // ★ドテン建玉の決済記録にフラグ(add-only)。
+    carryArmed(recorded, pos.armedAt, pos.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を決済記録へ。
     return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded };
   }
 
@@ -670,6 +692,9 @@ export function reverseToDoten(
   if (p.mode === 'range') recorded.mode = 'range';
   if (p.planMeta) recorded.planMeta = p.planMeta;
   if (p.settings) recorded.settings = p.settings;
+  // ★遡り解析用: P の決済記録には P 自身の ARM 時刻/価格を残す(反対建ての新しい ARM を混ぜない)。
+  //   反対建て(armed)の ARM 時点価格は engine が livePrice() で据える(at は now=新しい ARM 時刻)。
+  carryArmed(recorded, p.armedAt, p.armedPrice);
   const next: EngineState = { phase: 'armed', armed, lastExit: { exitPrice: exitFill, pnl, at: now } };
   return { next, recorded, armed };
 }

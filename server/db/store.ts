@@ -73,6 +73,13 @@ export function initSchema(db: DatabaseSync): void {
   // ★検証(monitor2⇔trade2 突合)用: signal_id を1級列にして signals_<host>.db⇔forward_<host>.db を equijoin できるようにする。
   //   既存DBへ後付けマイグレーション(NULL 可=旧行/signalId 未采番の B 行)。RECORD-ONLY(決済ロジック不変)。
   if (!stCols.includes('signal_id')) db.exec('ALTER TABLE signal_trades ADD COLUMN signal_id INTEGER');
+  // ★遡り解析用(RECORD-ONLY): ARM(武装)時刻と「ARM 時点で monitor が見ていた価格」。
+  //   armed_t だけでは「武装時点でエントリー価格を通過済みだったか」を事後判定できない: 判定には武装時点の価格が
+  //   必要だが、prices_*.db の ticks は collector が別プロセス・別位相(+AJAXキャッシュ)で記録しており monitor が
+  //   実際に feed した価格列と一致しない(実測で誤検出多数)。よって ARM 時点の live 価格(新鮮値・stale/欠落は NULL)を
+  //   同じ行に残す。既存DBへ後付けマイグレーション(NULL 可=旧行/価格が取れなかった行)。
+  if (!stCols.includes('armed_t')) db.exec('ALTER TABLE signal_trades ADD COLUMN armed_t INTEGER');
+  if (!stCols.includes('armed_price')) db.exec('ALTER TABLE signal_trades ADD COLUMN armed_price REAL');
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
@@ -330,6 +337,8 @@ export interface SignalTradeRow {
   mode: string | null;   // 'range' / 'directional'(NULL は directional 扱い=後方互換)
   system: string | null; // ★v0.8.2: 'A'(実売買) / 'B'(紙専用)。NULL は 'A' 扱い(後方互換)。
   signal_id: number | null; // ★検証用: そのトレードの ARM 采番(trade2 の signal_id と join)。NULL=旧行/未采番。
+  armed_t: number | null;     // ★ARM(武装)時刻。entry_t − armed_t = ARM→約定の経過[ms]。NULL=旧行。
+  armed_price: number | null; // ★ARM 時点で monitor が見ていた価格(新鮮値)。NULL=旧行/取れない・stale。
 }
 
 export interface SignalTradeInsert {
@@ -339,6 +348,8 @@ export interface SignalTradeInsert {
   mode?: string | null;   // レンジ由来='range' / 単方向='directional'。未指定は NULL(=directional)。
   system?: 'A' | 'B' | null;   // ★v0.8.2: 系統タグ。A は NULL(=既存挙動と同一) / B は 'B'。
   signalId?: number | null;    // ★検証用: ARM 采番。trade2 側の signal_id と equijoin する結合キー。未指定は NULL。
+  armedT?: number | null;      // ★ARM(武装)時刻。未指定は NULL(=旧行と同じ)。
+  armedPrice?: number | null;  // ★ARM 時点で monitor が見ていた価格。取れない/stale は NULL。
 }
 
 // ★v0.8.2: 系統フィルタ。'A' は NULL 行も含む(既存/A の行)。'B' は 'B' 行のみ。未指定は全件。
@@ -351,10 +362,11 @@ function systemWhere(system: SignalSystemFilter | undefined): { clause: string; 
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
-    t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null);
+    t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null,
+    t.armedT ?? null, t.armedPrice ?? null);
 }
 
 /** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。

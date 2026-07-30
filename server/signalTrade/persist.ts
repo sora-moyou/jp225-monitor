@@ -77,6 +77,11 @@ export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | nul
   };
   // ★検証用: 結合キー。渡された時だけ載せる(未指定は従来どおり signal_id=NULL)。
   if (signalId != null) ins.signalId = signalId;
+  // ★遡り解析用: ARM(武装)時刻と ARM 時点で monitor が見ていた価格。在るときだけ載せる(旧行/取得不能は NULL)。
+  //   armed_t があれば entry_t − armed_t で「武装から約定までの経過」が、armed_price があれば
+  //   「武装時点でエントリー価格を通過済みだったか」が事後に判定できる(ticks 代用では一致しないため必須)。
+  if (t.armedAt != null) ins.armedT = t.armedAt;
+  if (t.armedPrice != null) ins.armedPrice = t.armedPrice;
   return ins;
 }
 

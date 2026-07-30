@@ -362,6 +362,9 @@ export class SignalEngine {
             if (armed) {
               // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
               armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+              // ★遡り解析用(RECORD-ONLY): ARM 時点で monitor が見ていた価格を armed に焼き付ける(ARM 経路①=flat計画)。
+              //   同じ live(stale plan veto と同一の新鮮値)を使う=事後の「通過済みだったか」判定と武装判定が同じ数値になる。
+              if (live != null) armed.armedPrice = live;
               this.state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
               this.planSuppressedAnchor = null;         // actionable で抑止解除。
               if (this.cfg.maintainsCurrentSignal) {
@@ -460,6 +463,8 @@ export class SignalEngine {
     if (this.currentSignal) this.lastExitedSignalId = this.currentSignal.signalId;
     // ② 反対ブラケットを arm(実効設定スナップショットを確定)。★新 signalId を1回だけ採番して currentSignal を更新する。
     armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+    // ★遡り解析用(RECORD-ONLY): ドテンの反対建ても「新しい ARM」= ARM 時刻(armed.at=now)と ARM 時点価格を焼き付ける(経路②)。
+    if (live != null) armed.armedPrice = live;
     this.state = { ...rev.next, armed };   // ★通過済みレッグを落とした後のブラケットを武装する。
     this.planSuppressedAnchor = null;
     this.signalIdCounter += 1;
@@ -591,6 +596,9 @@ export class SignalEngine {
     const armed = stale.armed;
     // 差替え: 実効設定スナップショットを確定 → armed 差替え → 新 signalId を1回采番 → currentSignal 更新 → broadcast。
     armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+    // ★遡り解析用(RECORD-ONLY): 差替えは「新しい ARM」= 新 armed の at(=now)と ARM 時点価格を焼き付ける(経路③)。
+    //   古い armed の時刻/価格は引き継がない(armed0 は planToArmed で新規生成=旧値は載っていない)。
+    if (live != null) armed.armedPrice = live;
     this.state = { phase: 'armed', armed, lastExit: this.state.lastExit };
     this.planSuppressedAnchor = null;
     const oldSignalId = identity.signalId;
