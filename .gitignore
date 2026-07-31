@@ -8,5 +8,15 @@ src-tauri/binaries/
 .env
 *.log
 .DS_Store
+# ── ▼▼ PRIVATE-BACKUP:BEGIN ▼▼ ───────────────────────────────────────────────
+# ここから下のマーカーまでが「秘密ファイル」の定義そのもの。
+#   * git 追跡されない = 消えたら復元できない
+#   * よって jp225-specs/private-backup/ に控えを置くことを **出荷の条件** にする
+# scripts/private-backup.mjs は対象を列挙せず、git check-ignore -v に
+# 「どの .gitignore 行が効いたか」を答えさせ、この区間の行だけを秘密と判定する。
+# → 秘密ファイルを増やすときは必ずこの区間に書くこと。書けば自動で照合対象になる。
+#   (区間外の ignore = ビルド成果物や .env はバックアップ対象にしない)
+#
 # トレードシグナルの非公開 phase-exit(数値・段階ルールは公開しない)
 server/signalTrade/exit/private.ts
+# ── ▲▲ PRIVATE-BACKUP:END ▲▲ ─────────────────────────────────────────────────

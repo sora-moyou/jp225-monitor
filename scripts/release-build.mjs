@@ -46,7 +46,10 @@ const password = ''; // 両鍵ともパスフレーズ無し(空)。
 // 直前の PRODUCT / 鍵の存在確認は副作用ゼロの即時チェックなので先に済ませてある
 // (鍵が無いのに数分のテストを待たされるのを避けるため)。ビルド(tauri build)を
 // 起動しうる経路はこの下だけで、そこへ到達するには必ず検査を通る必要がある。
+// private:verify を先頭に置くのは意図的: 1秒で終わるうえ、落ちたときの復旧
+// (バックアップ更新 → jp225-specs へ push)は数分のテストを待たせる意味がない。
 const PREFLIGHT = [
+  { label: '非公開ファイルのバックアップ照合 (private:verify)', args: ['run', 'private:verify'] },
   { label: '型検査 (tsc --noEmit)', args: ['run', 'typecheck'] },
   { label: 'テスト (vitest run)', args: ['run', 'test'] },
 ];

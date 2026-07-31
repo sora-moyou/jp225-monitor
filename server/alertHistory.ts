@@ -5,6 +5,7 @@ import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
 import { getCooldownMs } from './alertCooldown.js';
 import { classifySession, isWithinOpenGuard } from '../core/session.js';
+import { detectionKindLabel, isTechnicalKind } from '../core/detectionKinds.js';
 import { resolveOpenGuardBars, resolveHitThreshold } from './configStore.js';
 import type { AlertEventPayload } from './types.js';
 
@@ -29,25 +30,10 @@ export function kindLabel(windowSeconds: number | null): string {
   return '長期';
 }
 
-/** 履歴の種別ラベル。グランビルは検知種別で別扱い、それ以外は窓秒で 超短期/短期/長期。 */
+/** 履歴の種別ラベル。固有名を持つ種別は core/detectionKinds.ts の表から、持たない種別(旧 z-score 系)は窓秒で。
+ *  ★ラベルの手書き分岐はここに置かない: 種別を足したのにラベルだけ漏れる事故(v0.9.36 の nwave/dailyband)を防ぐ。 */
 export function rowKind(detectionKind: string | null, windowSeconds: number | null): string {
-  // v0.6.0 現行種別
-  if (detectionKind === 'crash') return '暴落';
-  if (detectionKind === 'shock') return '急変';
-  if (detectionKind === 'double') return 'ダブル天底';
-  if (detectionKind === 'ma_sr') return 'MAサポレジ';
-  if (detectionKind === 'level_sr') return '水準サポレジ';
-  if (detectionKind === 'break') return '水準ブレイク';
-  if (detectionKind === 'pivot') return 'スイング形成';
-  if (detectionKind === 'trend') return 'トレンド転換';
-  if (detectionKind === 'dailyband') return '日足バンド';
-  if (detectionKind === 'nwave') return 'N波動';
-  // 後方互換(過去履歴の旧種別)
-  if (detectionKind === 'granville') return 'グランビル';
-  if (detectionKind === 'dtb') return 'Wトップ/ボトム';
-  if (detectionKind === 'ma') return 'MA抜け';
-  if (detectionKind === 'swingdtb') return 'ダブル(大)';
-  return kindLabel(windowSeconds);
+  return detectionKindLabel(detectionKind) ?? kindLabel(windowSeconds);
 }
 
 // ═══ アラート DB 記録の「正の書き手(authoritative writer)」定義 — ここが唯一の権威 ═══
@@ -101,18 +87,28 @@ export function nearDuplicateWindowMs(): number {
   return Math.min(60_000, Math.max(0, getCooldownMs() - 1_000));
 }
 
-// L2(テクニカル状態)種別。①のテクニカル判定時に「直近の状況」を併記するために使う。
-const L2_KINDS = new Set(['double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dtb', 'swingdtb', 'granville', 'ma']);
+// L2(テクニカル状態)種別の判定は core/detectionKinds.ts(layer==='L2')が唯一の真実。
+// ★かつてここに手書きの L2_KINDS 集合があり、v0.9.36 で足した nwave / dailyband が入っていなかったため、
+//   N波動/日足バンドは AI へ渡す「直近の状況」から **永久に脱落** していた(無言の欠落=画面には出ない)。
+//   同じ集合の手書きコピーは web(バナー)/server(LLM プロンプト)にもあり、全て SSOT へ寄せてある。
+
+/** 直近 withinMs 以内の最新 L2 アラート行を選ぶ純関数(DB を持たないのでテスト可能)。 */
+export function pickRecentL2(rows: AlertRow[], now: number, withinMs: number): AlertRow | null {
+  return rows.find(a => isTechnicalKind(a.detection_kind) && now - a.triggered_at <= withinMs) ?? null;
+}
+
+/** L2 行の要約文「{種別} {価格} ▲/▼」(純関数)。 */
+export function formatL2Summary(r: AlertRow): string {
+  const arrow = r.direction === 'up' ? '▲' : '▼';
+  return `${rowKind(r.detection_kind, r.window_seconds)} ${Math.round(r.price ?? 0).toLocaleString('ja-JP')} ${arrow}`;
+}
 
 /** 直近 withinMs 以内の最新 L2 アラートを「{種別} {価格} ▲/▼」で要約。無ければ null。①の併記用。 */
 export function getRecentL2Summary(now: number, withinMs = 30 * 60_000): string | null {
   try {
     if (!db) db = openDb(resolveDbPath());
-    const r = getRecentAlerts(db, 20).find(a =>
-      L2_KINDS.has(a.detection_kind ?? '') && now - a.triggered_at <= withinMs);
-    if (!r) return null;
-    const arrow = r.direction === 'up' ? '▲' : '▼';
-    return `${rowKind(r.detection_kind, r.window_seconds)} ${Math.round(r.price ?? 0).toLocaleString('ja-JP')} ${arrow}`;
+    const r = pickRecentL2(getRecentAlerts(db, 20), now, withinMs);
+    return r ? formatL2Summary(r) : null;
   } catch { return null; }
 }
 

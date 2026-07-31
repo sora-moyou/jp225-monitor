@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   parseScalpPlan, parseRangeLeg, runScalpPlan, buildScalpPlan, isLLMEnabled,
   SCALP_QUESTION, SCALP_SYSTEM_PROMPT,
-  buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
+  buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, clampRequestedLcFloor, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
   lcLegExceeds, lcLegBelowFloor, lcEffectiveCeiling, buildDelegationNote, buildStrategySpec, buildLegNote,
@@ -808,6 +808,29 @@ describe('resolveLcRange(サニタイズ/クランプ)', () => {
     expect(resolveLcRange(120, 50)).toEqual({ floorYen: 50, ceilingYen: 50 });
     // ★フットガン: 呼び出し側 floor 未指定(=既定45)で ceiling を 20〜44 に締めても、上限が黙って緩まない。
     expect(resolveLcRange(undefined, 30)).toEqual({ floorYen: 30, ceilingYen: 30 });
+  });
+});
+
+describe('clampRequestedLcFloor(外部要求の LC 下限は設定値を下回れない)', () => {
+  // ★プロンプトの `【強制=委任対象外・コードで必ず適用】` が HTTP 境界で破れていた箇所の純関数版。
+  //   POST /api/scalp-plan の body/query は誰でも投げられるので、下限は「下げられない・上げるのは自由」。
+  it('設定値より低い要求は設定値まで引き上げる(緩められない)', () => {
+    expect(clampRequestedLcFloor(20, 45)).toBe(45);
+    expect(clampRequestedLcFloor(44, 45)).toBe(45);
+    expect(clampRequestedLcFloor(-1000, 45)).toBe(45);
+  });
+  it('設定値と同じ/より厳しい要求はそのまま通す(安全側なので許可)', () => {
+    expect(clampRequestedLcFloor(45, 45)).toBe(45);
+    expect(clampRequestedLcFloor(60, 45)).toBe(60);
+  });
+  it('要求なし/非有限は設定値', () => {
+    expect(clampRequestedLcFloor(undefined, 45)).toBe(45);
+    expect(clampRequestedLcFloor(NaN, 45)).toBe(45);
+    expect(clampRequestedLcFloor(Infinity, 45)).toBe(45);
+  });
+  it('設定値そのものが変われば床も動く(設定が唯一の真実)', () => {
+    expect(clampRequestedLcFloor(20, 20)).toBe(20);
+    expect(clampRequestedLcFloor(20, 80)).toBe(80);
   });
 });
 

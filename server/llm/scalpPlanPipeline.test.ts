@@ -353,3 +353,73 @@ describe('★初期LC下限の実強制(手動でも AI委任でも効く)', () 
     expect(r.plan.stopEntry).toBe(38350);
   });
 });
+
+// ─── 初期LC下限は「外部からの要求」で緩められない(HTTP 境界の不変条件) ───────────────────
+//
+// ★事故の形(v0.9.48 まで): プロンプトには下限を `【強制=委任対象外・コードで必ず適用】` と書いてあるのに、
+//   POST /api/scalp-plan は body/query の lcFloorYen をそのまま buildScalpPlan へ渡し、
+//   resolveLcRange は LC_YEN_MIN(=20)まで受理していた。つまり **呼び出し側が 20 を送れば床が 20 になり**、
+//   設定画面の 45 もプロンプトの「必ず適用」も嘘になっていた(委任対象外のはずの唯一の制約が外部から緩む)。
+//   ここは LLM だけをモックした実経路(プロンプト生成 → parse → enforce)で、床が設定値のまま効くことを見る。
+describe('初期LC下限: 外部要求で緩められない / 厳しくするのは許す', () => {
+  const RAT_NARROW = '押し目買い(初期LC 25円=設定の下限45円未満)';
+  // LC = |38200 − 38175| = 25円。設定の下限(45円)未満なので落ちるべきレッグ。
+  const NARROW_BUY = JSON.stringify({
+    direction: 'buy', rationale: RAT_NARROW, refPrice: 1,
+    limitEntry: 38200, stopLossForLimit: 38175,
+  });
+  // LC = |38200 − 38150| = 50円。設定の下限(45円)は満たすが、要求で 60円 に引き上げると落ちる。
+  const MID_BUY = JSON.stringify({
+    direction: 'buy', rationale: '押し目買い(初期LC 50円)', refPrice: 1,
+    limitEntry: 38200, stopLossForLimit: 38150,
+  });
+
+  /** LC override 付きで buildScalpPlan を1回走らせる。 */
+  async function planWith(raw: string, over: { lcFloorYen?: number; lcCeilingYen?: number }) {
+    createMock.mockReset();
+    createMock.mockResolvedValue({ choices: [{ message: { content: raw } }] });
+    const r = await buildScalpPlan({ symbol: 'NIY=F', prices: PRICES, news: [], ...over });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.error);
+    return r;
+  }
+
+  /** LLM へ実際に送られたプロンプト全文(system + user)。 */
+  function sentPrompt(): string {
+    return JSON.stringify(createMock.mock.calls[0]?.[0] ?? {});
+  }
+
+  it('★HTTP 越しに lcFloorYen=20 を要求されても、設定値 45円 の床が効いて 25円 のレッグは落ちる', async () => {
+    const r = await planWith(NARROW_BUY, { lcFloorYen: 20 });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('lcFloor');
+  });
+
+  it('★プロンプトにも要求値(20)ではなく設定値(45)が載る(「必ず適用」の文言と実強制が一致)', async () => {
+    await planWith(NARROW_BUY, { lcFloorYen: 20 });
+    const p = sentPrompt();
+    expect(p).toContain('下限45円【強制=委任対象外・コードで必ず適用】');
+    expect(p).not.toContain('下限20円');
+  });
+
+  it('設定どおりの 45 を要求するのは当然通る(挙動不変の確認)', async () => {
+    const r = await planWith(NARROW_BUY, { lcFloorYen: 45 });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('lcFloor');
+  });
+
+  it('厳しくする方向(60円)は受理する — より広い初期LCは決済ロジックの前提を壊さず安全側', async () => {
+    const loose = await planWith(MID_BUY, {});                    // 50円 は設定下限 45 を満たす
+    expect(loose.plan.direction).toBe('buy');
+    const strict = await planWith(MID_BUY, { lcFloorYen: 60 });   // 要求 60 まで引き上げ → 落ちる
+    expect(strict.plan.direction).toBe('none');
+    expect(strict.noneReason).toBe('lcFloor');
+  });
+
+  it('設定側が 20 なら 20 が床(外部要求ではなく設定が真の源であることの対照)', async () => {
+    floorMock = () => ({ mode: 'manual', value: 20 });
+    const r = await planWith(NARROW_BUY, { lcFloorYen: 20 });
+    expect(r.plan.direction).toBe('buy');   // 25円 > 設定下限 20円 → 通る
+    expect(r.plan.limitEntry).toBe(38200);
+  });
+});

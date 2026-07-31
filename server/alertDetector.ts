@@ -1,11 +1,16 @@
 import type { Bar } from './correlation.js';
+import type { DetectionKind as CoreDetectionKind } from '../core/detectionKinds.js';
 
 // v0.3.17: アラート検知を fixed-% から z-score 適応型へ全面置換。
 // 過去 60min の 1m return から σ を継続計算、|z| > 閾値 + 静寂前提 + 横断確認の三段で発火。
 // changeDetector (client side) は廃止、本モジュールがサーバ単一の発火源。
 
-export type DetectionKind = 'slope' | 'magnitude' | 'granville' | 'shock' | 'dtb' | 'break';  // 既存 LLM プロンプトとの互換維持。shock = 価格変化スコア急変(短期/長期の後継)。dtb = ダブルトップ/ボトム。break = 水準ブレイク
-                                                     // slope = 1m burst, magnitude = 5m trend
+// このモジュール(旧 z-score 検知器)が emit しうる種別だけの **部分集合**。名前は core/detectionKinds.ts に
+// 束ねてあるので、SSOT 側で改名/削除すればここが never になり tsc が落ちる(勝手にドリフトしない)。
+// 既存 LLM プロンプトとの互換維持。shock = 価格変化スコア急変(短期/長期の後継)。dtb = ダブルトップ/ボトム。
+// break = 水準ブレイク。slope = 1m burst, magnitude = 5m trend
+export type DetectionKind =
+  Extract<CoreDetectionKind, 'slope' | 'magnitude' | 'granville' | 'shock' | 'dtb' | 'break'>;
 export interface PriceAction { open: number; high: number; low: number; current: number; }
 
 export interface AlertEvent {

@@ -754,7 +754,9 @@ export interface ScalpPlanInput {
   technical?: string | null;
   /** チャート画像(data URL: `data:image/png;base64,<...>`)。渡されるとビジョン対応プロバイダに添付する。 */
   chartImageDataUrl?: string | null;
-  /** 初期 LC(損切り)幅の下限[円]。未指定は DEFAULT_LC_FLOOR_YEN(45)。プロンプトにのみ反映(数値強制はしない)。 */
+  /** 初期 LC(損切り)幅の下限[円]。未指定は monitor 設定(resolveScalpLcFloorYen・既定45)。
+   *  ★設定値より **低い値は受け付けない**(clampRequestedLcFloor で床止め)。厳しくする方向のみ有効。
+   *  プロンプトに反映され、かつ enforcePlanConstraints で実強制される(下限未満のレッグを落とす)。 */
   lcFloorYen?: number;
   /** 初期 LC(損切り)幅の上限[円]。未指定は monitor 設定(resolveScalpLcCeiling・既定65)。プロンプト指示＋コードで強制。 */
   lcCeilingYen?: number;
@@ -1155,6 +1157,26 @@ export function resolveLcRange(
   return { floorYen: floor, ceilingYen: ceiling };
 }
 
+/** 外部(HTTP `/api/scalp-plan` の body/query など)から要求された初期 LC 下限を、**設定値の下限で床止め**する純関数。
+ *
+ *  ★なぜ必要か: 下限はプロンプトに `【強制=委任対象外・コードで必ず適用】` と書いてあり、AI にも委任しない
+ *    唯一の制約になっている。にもかかわらず `/api/scalp-plan` は body/query の lcFloorYen をそのまま
+ *    buildScalpPlan へ渡しており、resolveLcRange は LC_YEN_MIN(=20)まで受理するので、
+ *    **呼び出し側(trade2 や curl)が 20 を送れば床が 20 に下がっていた**。設定画面には 45 と表示されたまま
+ *    実際の強制は 20 になる=文言が嘘になる形。
+ *
+ *  ★クランプの向き(下限側だけ・上げるのは許可):
+ *    - 下げる方向は禁止。下限の根拠は決済ロジック(含み益が一定に達して初めて利益ロックの床が発動する方式)で、
+ *      これより狭い初期 LC は床が働く前に被弾する=**戦略が構造的に成立しない**。緩められては意味がない。
+ *    - 上げる方向は許可。より広い初期 LC は上の前提を壊さず、効果は「下限未満のレッグをより多く落とす」=
+ *      提案が減るだけで安全側。呼び出し側が自分の口座事情でより慎重にするのを妨げる理由がない
+ *      (上限 lcCeilingYen 側で別途弾かれるので、無制限に広い建玉になるわけでもない)。
+ *  非数値/非有限は「要求なし」= 設定値をそのまま使う。 */
+export function clampRequestedLcFloor(requested: number | undefined, configFloorYen: number): number {
+  if (typeof requested !== 'number' || !Number.isFinite(requested)) return configFloorYen;
+  return Math.max(configFloorYen, requested);
+}
+
 /** 固定のスキャル質問で LLM を走らせ、構造化 AiPlan を返す。既存の chat と同じ tool ループ・プロバイダ選択・
  *  キー解決を再利用する。キー未設定は { ok:false, error:'LLM未設定' }。パース失敗は1回だけ厳格に再要求する。
  *  refPrice は monitor の現在 NIY=F 価格。 */
@@ -1192,7 +1214,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // バイアス/レンジ: manual は設定(override 優先)を適用 / ai は制約なし(bias='none'・range 許可)。
   const bias: ScalpBias = biasD.mode === 'manual' ? (input.bias ?? biasD.value) : 'none';
   const rangeEnabled = resolveEffectiveRangeEnabled(profile, input.rangeEnabled);
-  const { floorYen, ceilingYen } = resolveLcRange(input.lcFloorYen ?? floorD.value, ceilingInput);
+  // ★LC下限は【強制=委任対象外】= 設定値が絶対の床。外部要求(HTTP body/query)で **緩める(下げる)ことは許さない**。
+  //   厳しくする(上げる)方向だけ受理する(clampRequestedLcFloor の注記に根拠)。
+  const { floorYen, ceilingYen } = resolveLcRange(clampRequestedLcFloor(input.lcFloorYen, floorD.value), ceilingInput);
   // レジーム/トレンド veto の閾値[円](0=無効)。manual は閾値・ai は数値veto無効(=0)。プロンプト文言に反映し、
   // トレンド veto 自体は input.trend で駆動する(0 のとき trend を渡さない=veto なし)。
   const trendVetoYen = trendD.mode === 'manual' ? trendD.value : 0;

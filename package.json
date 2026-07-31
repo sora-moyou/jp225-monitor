@@ -1,6 +1,6 @@
 {
   "name": "finance-monitor",
-  "version": "0.9.48",
+  "version": "0.9.49",
   "private": true,
   "type": "module",
   "scripts": {
@@ -26,7 +26,9 @@
     "release:latest-json": "node scripts/make-latest-json.mjs",
     "basedata:publish": "tsx scripts/basedata-publish.mts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "private:verify": "node scripts/private-backup.mjs verify",
+    "private:backup": "node scripts/private-backup.mjs backup"
   },
   "pkg": {
     "scripts": [],

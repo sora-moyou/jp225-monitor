@@ -1,4 +1,5 @@
 import { INSTRUMENTS } from '../core/instruments.js';
+import { isTechnicalKind } from '../core/detectionKinds.js';
 import { connectStream } from './lib/stream.js';
 import { fetchExplanation } from './lib/api.js';
 import { renderPriceGrid, flashCard } from './components/priceGrid.js';
@@ -442,13 +443,10 @@ function callLLM(alert: import('./types.js').AlertEvent, banner: ReturnType<type
 
 // チャートパターン由来(グランビル/ダブルトップ・ボトム)はニュースAI説明ではなく固定文を表示。
 function isTechnicalPattern(alert: import('./types.js').AlertEvent): boolean {
-  const k = alert.detectionKind;
-  // ★暫定対応(第0層で回収): 検知種別リストの手書き二重化のうち web 側。v0.9.36 の nwave/dailyband が
-  //   ここに無かったため、テクニカル固定文ではなく callLLM に流れ、サーバ allowlist に弾かれて(HTTP 400)
-  //   常に「説明取得失敗」になっていた。恒久対策(種別の単一定義化)は第0層で行う。
-  return k === 'granville' || k === 'dtb' || k === 'break' || k === 'ma' || k === 'swingdtb'
-    || k === 'double' || k === 'ma_sr' || k === 'level_sr' || k === 'pivot' || k === 'trend'
-    || k === 'nwave' || k === 'dailyband';
+  // ★種別リストの手書きコピーは廃止(core/detectionKinds.ts の layer==='L2' が唯一の定義)。
+  //   v0.9.36 の nwave/dailyband がここのコピーに無かったため、テクニカル固定文ではなく callLLM に流れ、
+  //   サーバ allowlist に弾かれて(HTTP 400)常に「説明取得失敗」になっていた。
+  return isTechnicalKind(alert.detectionKind);
 }
 // テクニカル系の固定文。ダブル=「価格xxxでダブルトップ/ボトムの可能性あり」、
 // グランビル=「価格xxxで押し目買い/戻り売り/買い転換/売り転換」。それ以外は「テクニカル要因」。
@@ -474,16 +472,12 @@ function technicalExplanation(alert: import('./types.js').AlertEvent): string {
     // サーバ note が「ダブルボトム成立/形成 — ネック…」(長周期スイングのW/M反転)。
     return alert.note ?? UI.ja.technicalReason;
   }
-  // v0.6.0 再設計の現行種別はサーバ note が明確文(「{基準名}{動作}の可能性」)。そのまま表示。
-  // ★暫定(第0層で回収): nwave(「上昇N波を確認 目標V値 …」)/dailyband(「日足+1σ … を上抜け」)も
-  //   サーバ note が明確文なので、同じくそのまま表示する(固定文「テクニカル要因」に落とさない)。
-  if (alert.detectionKind === 'double' || alert.detectionKind === 'ma_sr'
-      || alert.detectionKind === 'level_sr' || alert.detectionKind === 'pivot'
-      || alert.detectionKind === 'trend'
-      || alert.detectionKind === 'nwave' || alert.detectionKind === 'dailyband') {
-    return alert.note ?? UI.ja.technicalReason;
-  }
-  return UI.ja.technicalReason;
+  // 上の特別扱い以外(v0.6.0 現行種別 double/ma_sr/level_sr/pivot/trend、および nwave/dailyband)は
+  // サーバ note が明確文(「{基準名}{動作}の可能性」「上昇N波を確認 目標V値 …」等)なのでそのまま表示。
+  // ★ここに種別の列挙を書かない: かつて列挙していたため nwave/dailyband が漏れ、
+  //   明確文を持っているのに固定文「テクニカル要因」へ落ちる取りこぼしが起きうる形だった。
+  //   note を持たない種別だけが最後の固定文に落ちる。
+  return alert.note ?? UI.ja.technicalReason;
 }
 
 function scheduleExplanation(alert: import('./types.js').AlertEvent, banner: ReturnType<typeof addBanner>) {

@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import type { AlertEventPayload } from '../../core/types.js';
+import { DETECTION_KINDS, isDetectionKind, type DetectionKind } from '../../core/detectionKinds.js';
 import { explain } from '../llm/openai.js';
 import { buildExplainInput } from '../llm/explainInput.js';
 import { getNews } from '../cache.js';
@@ -9,30 +9,11 @@ interface PriceActionBody {
   open: number; high: number; low: number; current: number;
 }
 
-// ★暫定対応(第0層で回収): 検知種別リストが core/types.ts の union と手書きで二重化しており、
-//   v0.9.36 で追加した nwave / dailyband がここに入っていなかったため、この allowlist が 400 を返し、
-//   バナーが常に「説明取得失敗」になっていた(出荷時からの故障)。
-//   恒久対策=「検知種別の単一定義化(全リストを1つの定義から導出)」は第0層で行う。ここではその暫定として
-//     ① 型は core/types.ts の union をそのまま参照する(手書きコピーを廃止)
-//     ② 実行時 allowlist は下の配列 1 箇所に集約し、union に対する漏れを型で検出する(_allKindsListed)
-//   としてある。種別を core/types.ts に足してこの配列に足し忘れると `npm run typecheck` が落ちる。
-type DetectionKind = AlertEventPayload['detectionKind'];
-
-export const DETECTION_KINDS = [
-  'slope', 'magnitude', 'granville', 'shock', 'dtb', 'break', 'ma', 'swingdtb',
-  'double', 'ma_sr', 'level_sr', 'pivot', 'trend', 'crash', 'dailyband', 'nwave',
-] as const;
-
-// core/types.ts の union に DETECTION_KINDS が追いついていない場合、この代入が型エラーになる。
-type _AllKindsListed = Exclude<DetectionKind, (typeof DETECTION_KINDS)[number]> extends never
-  ? true
-  : ['missing in DETECTION_KINDS:', Exclude<DetectionKind, (typeof DETECTION_KINDS)[number]>];
-const _allKindsListed: _AllKindsListed = true;
-void _allKindsListed;
-
-function isDetectionKind(v: unknown): v is DetectionKind {
-  return typeof v === 'string' && (DETECTION_KINDS as readonly string[]).includes(v);
-}
+// ★実行時 allowlist は core/detectionKinds.ts から導出する(手書きコピーはもう無い)。
+//   v0.9.36 で追加した nwave / dailyband がここのコピーに入っておらず、/api/explain が 400 を返して
+//   バナーが常に「説明取得失敗」になっていた(出荷時からの故障)。v0.9.48 の暫定(この場での配列＋型ガード)は
+//   種別の SSOT 化で回収済み。種別を足す=SSOT の表に1行足す、で自動的にここへ反映される。
+export { DETECTION_KINDS };
 
 interface ExplainBody {
   symbol?: string;

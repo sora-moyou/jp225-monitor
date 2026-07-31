@@ -1,5 +1,20 @@
 import type { AlertEvent } from '../types.js';
 import { UI } from '../lib/i18n.js';
+import { isTechnicalKind, detectionKindLabel } from '../../core/detectionKinds.js';
+
+/** バナーの種別タグ文言。種別名は core/detectionKinds.ts が唯一の真実。
+ *  固有名を持たない旧 z-score 系(magnitude 等)だけ「トレンド」に落ちる。 */
+export function bannerKindLabel(kind: string | null | undefined): string {
+  return detectionKindLabel(kind) ?? UI.ja.trend;
+}
+
+/** 種別タグ [○○] を出すか。
+ *  - テクニカル(L2)は説明文「価格xxxで…」が種別を語るので出さない。
+ *  - 急変(shock)/超短期(slope)は note 先頭の「急上昇/急落」で伝わる+「急変」「フラッシュ」の語は使わない(ユーザー指定)。
+ *  結果として実際に出るのは暴落(crash)と旧仕様(magnitude)だけ。 */
+export function showKindTag(kind: string | null | undefined): boolean {
+  return !isTechnicalKind(kind) && kind !== 'shock' && kind !== 'slope';
+}
 
 export interface BannerItem {
   alert: AlertEvent;
@@ -33,24 +48,21 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   if (items.has(id)) return items.get(id)!;
 
   const el = document.createElement('div');
-  // isTech は下で定義するが className に使うため先に判定。
+  // テクニカル(L2)判定は core/detectionKinds.ts の唯一の定義に従う。
+  // ★ここに手書きの種別リストを置かないこと: v0.9.36 の nwave/dailyband がこのコピーだけ漏れ、
+  //   N波動バナーが「[トレンド]」と誤表示され、15分変化率や🔄まで付いていた。
   const k0 = alert.detectionKind;
-  const isTechKind = k0 === 'granville' || k0 === 'dtb' || k0 === 'break' || k0 === 'ma' || k0 === 'swingdtb'
-    || k0 === 'double' || k0 === 'ma_sr' || k0 === 'level_sr' || k0 === 'pivot' || k0 === 'trend';
+  const isTechKind = isTechnicalKind(k0);
   el.className = `alert ${alert.direction}${isTechKind ? ' tech' : ''}`;
   el.dataset.triggeredAt = String(alert.triggeredAt);   // 並び替え用(時刻順で最新を最上段に)
-  const kindLabel = alert.detectionKind === 'granville' ? 'グランビル'
-    : alert.detectionKind === 'shock' ? '急変'
-    : alert.detectionKind === 'dtb' ? 'Wパターン'
-    : alert.detectionKind === 'slope' ? UI.ja.flash : UI.ja.trend;
+  const kindLabel = bannerKindLabel(k0);
   const arrow = alert.direction === 'up' ? '▲' : '▼';
   // 用語重複を避ける: グランビル/ダブルは固定説明文「価格xxxで…」が要点を伝えるので mid(note)を省略。
   // 急変/超短期は note が価格+方向(急上昇/急落)+値幅を伝えるので表示。symbolLabel はタグと重複するため非表示。
   const isTech = isTechKind;
   const mid = isTech ? '' : (alert.note ?? `${alert.changePercent.toFixed(2)}% / ${alert.windowSeconds}秒`);
-  // 種別タグは表示しない: テクニカルは説明文で、急変/超短期は note 先頭の「急上昇/急落」で種別が伝わる。
-  // 「急変」「フラッシュ」の語は使わない(ユーザー指定)。レガシー(magnitude/trend)のみタグを残す。
-  const showKindTag = !isTech && alert.detectionKind !== 'shock' && alert.detectionKind !== 'slope';
+  // 種別タグの要否は showKindTag(純関数)に集約。実際に出るのは暴落(crash)と旧仕様(magnitude)だけ。
+  const kindTagShown = showKindTag(k0);
   // 直近15分コンテキスト（参考、発火窓と分離）
   const ctx15 = alert.change15min !== null
     ? `<span class="ctx-15min">15分: ${alert.change15min >= 0 ? '+' : ''}${alert.change15min.toFixed(2)}%</span>`
@@ -63,7 +75,7 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     `<span class="alert-time">${time}</span> ` +
     `${arrow}${mid ? ' ' + mid : ''} ` +
     // テクニカル(グランビル/ダブル)は説明文「価格xxxで…」で種別が分かるので種別タグも15分も省き1行に。
-    `${showKindTag ? `<span class="kind-tag">[${kindLabel}]</span> ` : ''}` +
+    `${kindTagShown ? `<span class="kind-tag">[${kindLabel}]</span> ` : ''}` +
     `${isTech ? '' : ctx15 + ' '}` +
     `<span class="explanation">${isTech ? '' : UI.ja.explanationLoading}</span>`;
   const btnGroup = document.createElement('div');

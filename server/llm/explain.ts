@@ -1,5 +1,5 @@
 import type { NewsItem } from '../types.js';
-import type { AlertEventPayload } from '../../core/types.js';
+import { detectionKindPromptLabel, isTechnicalKind, type DetectionKind } from '../../core/detectionKinds.js';
 import {
   LLM_SYSTEM_PROMPT,
   NEWS_RECENT_WINDOW_MS, NEWS_RECENCY_DECAY_MIN,
@@ -14,10 +14,8 @@ export interface ExplainInput {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  // ★暫定対応(第0層で回収): 検知種別の手書きコピーは core/types.ts の union に一本化。
-  //   nwave / dailyband (v0.9.36) がここに無かったため、種別追加時に取りこぼしが起きていた。
-  //   恒久対策(検知種別の単一定義化)は第0層で行う。
-  detectionKind: AlertEventPayload['detectionKind'];
+  // ★検知種別は core/detectionKinds.ts が唯一の定義(手書きコピー禁止)。
+  detectionKind: DetectionKind;
   direction?: 'up' | 'down';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
@@ -87,21 +85,8 @@ export async function explain(input: ExplainInput): Promise<{ text: string; news
   // ①: 参照プールを一度だけ確定し、実提示ニュースの最大 publishedAt を呼び出し側へ返す(アンカー前進用)。
   const pool = selectNewsPool(input.news, now, input.newsSince ?? 0, input.newsWindowMs ?? NEWS_RECENT_WINDOW_MS);
   const newsMaxPublishedAt = pool.reduce((m, n) => Math.max(m, n.publishedAt), 0);
-  const kindLabel = input.detectionKind === 'slope' ? 'フラッシュ'
-    : input.detectionKind === 'shock' ? '急変'
-    : input.detectionKind === 'dtb' ? 'ダブル天井/大底'
-    : input.detectionKind === 'granville' ? 'グランビル'
-    : input.detectionKind === 'break' ? '水準ブレイク'
-    : input.detectionKind === 'ma' ? 'MA抜け'
-    : input.detectionKind === 'swingdtb' || input.detectionKind === 'double' ? 'ダブル天底'
-    : input.detectionKind === 'ma_sr' ? 'MAサポレジ'
-    : input.detectionKind === 'level_sr' ? '水準サポレジ'
-    : input.detectionKind === 'pivot' ? 'スイング形成'
-    : input.detectionKind === 'trend' ? 'トレンド転換'
-    // ★暫定(第0層で回収): 種別ごとの分岐も手書き二重化の一部。nwave/dailyband の取りこぼしを埋める。
-    : input.detectionKind === 'nwave' ? 'N波動(値幅観測)'
-    : input.detectionKind === 'dailyband' ? '日足バンド/MA'
-    : input.detectionKind === 'crash' ? '暴落' : 'トレンド';
+  // ★種別名は core/detectionKinds.ts(promptLabel)が唯一の定義。ここに分岐の手書きコピーを戻さないこと。
+  const kindLabel = detectionKindPromptLabel(input.detectionKind);
   // 方向は direction を真の源とし(dtb は changePercent=0 のため符号では判定不可)、無ければ符号で代替。
   const dir = input.direction ?? (input.changePercent >= 0 ? 'up' : 'down');
   const dirJa = dir === 'up' ? '上昇' : '下落';
@@ -118,14 +103,9 @@ export async function explain(input: ExplainInput): Promise<{ text: string; news
   const dirEmphasis = dir === 'up' ? '⬆ 上昇方向' : '⬇ 下落方向';
   // テクニカル系(dtb/granville/break)は値幅(%)ではなくパターン局面なので、
   // 急変文・ノイズ注記(急変幅判定)を出さない。
-  const isTechnicalPattern = input.detectionKind === 'dtb'
-    || input.detectionKind === 'granville' || input.detectionKind === 'break'
-    || input.detectionKind === 'ma' || input.detectionKind === 'swingdtb'
-    || input.detectionKind === 'double' || input.detectionKind === 'ma_sr'
-    || input.detectionKind === 'level_sr' || input.detectionKind === 'pivot'
-    || input.detectionKind === 'trend'
-    // ★暫定(第0層で回収): nwave/dailyband も値幅%ではなくパターン局面(changePercent=0)なので急変文にしない。
-    || input.detectionKind === 'nwave' || input.detectionKind === 'dailyband';
+  //   テクニカル(L2)判定は core/detectionKinds.ts が唯一の定義(nwave/dailyband も changePercent=0 の
+  //   パターン局面なので急変文にしない)。
+  const isTechnicalPattern = isTechnicalKind(input.detectionKind);
   const smallMag = !isTechnicalPattern && Math.abs(input.changePercent) <= 0.15;
   const ultraShort = input.detectionKind === 'slope' || input.windowSeconds <= 60;
   const noiseNotes = [

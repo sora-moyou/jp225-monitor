@@ -2,6 +2,10 @@
 // ここは core 境界の最下層: server/ や collector/ から何も import してはならない(非循環)。
 // これらの型は backend/frontend(web)双方が参照する「送受信スキーマ」なので core に置く。
 
+import type { DetectionKind } from './detectionKinds.js';
+
+export type { DetectionKind };
+
 // レンジ両面ストラドルの1レッグ(表示/連携用・engine/openai と同形)。
 export interface SignalRangeLeg {
   side: 'buy' | 'sell';
@@ -74,9 +78,9 @@ export interface AlertEventPayload {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  // v0.6.0 再設計: double/ma_sr/level_sr/break/pivot/trend が現行。dtb/swingdtb/granville/ma は履歴後方互換で残す。
-  detectionKind: 'slope' | 'magnitude' | 'granville' | 'shock' | 'dtb' | 'break' | 'ma' | 'swingdtb'
-    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash' | 'dailyband' | 'nwave';
+  // ★種別の定義は core/detectionKinds.ts が唯一の真実(union の手書きコピーはもう無い)。
+  //   v0.6.0 再設計: double/ma_sr/level_sr/break/pivot/trend が現行。dtb/swingdtb/granville/ma は履歴後方互換で残す。
+  detectionKind: DetectionKind;
   direction: 'up' | 'down';
   triggeredAt: number;
   change15min: number | null;

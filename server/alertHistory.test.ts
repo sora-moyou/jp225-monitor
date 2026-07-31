@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { initSchema, getRecentAlerts, insertAlert, type AlertRow } from './db/store.js';
-import { recordAlert, followupTick, summarize, kindLabel, rowKind, shouldPersistInMonitor } from './alertHistory.js';
+import { recordAlert, followupTick, summarize, kindLabel, rowKind, shouldPersistInMonitor,
+  pickRecentL2, formatL2Summary } from './alertHistory.js';
+import { DETECTION_KINDS, isTechnicalKind, detectionKindLabel } from '../core/detectionKinds.js';
 import type { AlertEventPayload } from './types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -96,7 +98,48 @@ describe('rowKind', () => {
     expect(rowKind('ma', null)).toBe('MA抜け');
     expect(rowKind('swingdtb', null)).toBe('ダブル(大)');
     expect(rowKind('crash', null)).toBe('暴落');
+    expect(rowKind('nwave', null)).toBe('N波動');
+    expect(rowKind('dailyband', null)).toBe('日足バンド');
     expect(rowKind('slope', 60)).toBe('短期');   // 専用ラベル無し → 窓秒基準
+  });
+
+  // 種別を足してラベルを決め忘れると、履歴一覧に「短期」等が混ざって別種別と区別できなくなる。
+  it('固有ラベルを持つ全種別が窓秒フォールバックに落ちない', () => {
+    for (const k of DETECTION_KINDS) {
+      const label = detectionKindLabel(k);
+      if (label === null) continue;
+      expect(rowKind(k, 60), k).toBe(label);
+      expect(rowKind(k, 60), k).not.toBe(kindLabel(60));
+    }
+  });
+});
+
+describe('pickRecentL2(AI へ渡す「直近の状況」)', () => {
+  const row = (over: Partial<AlertRow>): AlertRow => ({
+    id: 1, symbol: 'NIY=F', triggered_at: 1000, direction: 'up', detection_kind: 'break',
+    window_seconds: 60, change_percent: 0, price: 67455, session_date: '2026-06-05', session: 'Day',
+    ret5: null, ret15: null, ret30: null, reference_kind: null, reference_price: null,
+    ...over,
+  } as AlertRow);
+
+  // ★実害(v0.9.36〜v0.9.48): 手書きの L2_KINDS 集合に nwave / dailyband が入っておらず、
+  //   N波動/日足バンドのアラートは AI へ渡す「直近の状況」から永久に脱落していた(画面には出ない無言の欠落)。
+  it('L2 種別を全て拾う(nwave / dailyband を含む)', () => {
+    for (const k of DETECTION_KINDS.filter(isTechnicalKind)) {
+      expect(pickRecentL2([row({ detection_kind: k })], 1000, 60_000)?.detection_kind, k).toBe(k);
+    }
+  });
+
+  it('L1(価格変化)種別は拾わない — 「直近のテクニカル状況」の母集団ではない', () => {
+    for (const k of DETECTION_KINDS.filter(k => !isTechnicalKind(k))) {
+      expect(pickRecentL2([row({ detection_kind: k })], 1000, 60_000), k).toBeNull();
+    }
+  });
+
+  it('窓(withinMs)より古い行は拾わない / 要約は「{種別} {価格} ▲」', () => {
+    const nw = row({ detection_kind: 'nwave', triggered_at: 1000, price: 67455 });
+    expect(pickRecentL2([nw], 1000 + 61_000, 60_000)).toBeNull();
+    expect(formatL2Summary(nw)).toBe('N波動 67,455 ▲');
   });
 });
 

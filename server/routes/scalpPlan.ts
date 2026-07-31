@@ -13,14 +13,17 @@ import { runScalpPlanWithChart } from '../llm/scalpPlanRunner.js';
 
 interface Body {
   symbol?: string;
-  /** 初期 LC(損切り)幅の下限[円]。未指定は buildScalpPlan 側の既定(45)。数値化して optional で受理する。 */
+  /** 初期 LC(損切り)幅の下限[円]。未指定は monitor 設定(既定45)。数値化して optional で受理する。
+   *  ★これは「より厳しくする」要求としてのみ効く: buildScalpPlan(clampRequestedLcFloor)が設定値で床止めするので、
+   *    設定より小さい値を送っても下限は緩まない(下限は AI にも外部にも委任しない唯一の制約)。 */
   lcFloorYen?: number;
   /** 初期 LC(損切り)幅の上限[円]。未指定は buildScalpPlan 側の既定(65)。これを超える損切りは出さない。 */
   lcCeilingYen?: number;
 }
 
 /** body/query から数値を optional に受理する(文字列でも数値化)。非有限は undefined を返し、既定に委ねる。
- *  範囲/floor<=ceiling のクランプは buildScalpPlan 側 resolveLcRange が担う(単一責務)。 */
+ *  範囲/floor<=ceiling のクランプは buildScalpPlan 側 resolveLcRange が、
+ *  「設定値の下限を下回らせない」床止めは同 clampRequestedLcFloor が担う(単一責務)。 */
 function optionalNumber(v: unknown): number | undefined {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string' && v.trim() !== '') {
