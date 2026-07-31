@@ -46,7 +46,14 @@ function nodeSqliteExternalPlugin(): Plugin {
 export default defineConfig({
   plugins: [nodeSqliteExternalPlugin()],
   test: {
-    include: ['server/**/*.test.ts', 'web/**/*.test.ts', 'collector/**/*.test.ts'],
+    // core/** も含める: 共有の型/契約の置き場で、tsconfig の include には最初から
+    // 入っているのにテストだけ走らない状態だった(core にテストを置いても無音で無視される)。
+    include: [
+      'core/**/*.test.ts',
+      'server/**/*.test.ts',
+      'web/**/*.test.ts',
+      'collector/**/*.test.ts',
+    ],
     // Use forks (child_process) pool so that process.env mutations
     // (e.g. HOME/USERPROFILE overrides in configStore tests) are visible
     // to os.homedir() on Windows — worker_threads do not propagate them.

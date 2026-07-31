@@ -60,12 +60,27 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     expect($(hardMax).find(LITE_SCALP.modeSelect).length).toBe(0);   // A/B とも無い=安全弁は委任対象外
   });
 
+  // ★このテストは「文言が説明として揃っているか」しか見られない(DOM の静的検査なので、
+  //   コードが本当に強制しているかは検証できない)。実強制そのものは
+  //   server/llm/scalpPlanPipeline.test.ts「★初期LC下限の実強制」で実経路を通して固定している。
+  //   ここで文言を固定するのは、実装を直したあとに説明が実態から再びずれないようにするため。
   it('★lite 冒頭の説明に「手動/AI委任」の意味が書いてある', () => {
     const top = fieldset.children(LITE_SCALP.liteHint).first().text();
     expect(top).toContain('手動');
     expect(top).toContain('設定した数値を必ず守らせます');
     expect(top).toContain('AI委任');
     expect(top).toContain('AIが場面ごとに決めます');
+  });
+
+  it('★初期LC下限は「委任の対象外=AI委任でも強制」と書いてあり、旧来の「強制はしません」が残っていない', () => {
+    const floorRow = keepRows.toArray().find(r => labelOf(r) === '初期LC下限(円)')!;
+    const rowHint = $(floorRow).find(LITE_SCALP.liteHint).text();
+    const top = fieldset.children(LITE_SCALP.liteHint).first().text();
+    // 冒頭の説明と行の説明が、同じ結論(委任しても下限は強制される)を述べていること。
+    expect(top).toContain('委任の対象外');
+    expect(rowHint).toContain('必ず強制されます');
+    // ★同じ fieldset 内で正面から矛盾していた旧文言(「コードでの強制はしません」)は消えている。
+    expect(fieldset.text()).not.toContain('コードでの強制はしません');
   });
 
   it('lite 専用の説明(.lite-hint)は fieldset 冒頭 + 4項目それぞれに 1つずつあり、既定は hidden(=full に出ない)', () => {

@@ -170,6 +170,11 @@ export interface SignalTradeState {
   //   次の決済まで保持する(late-join の追従側も読める)。ADD-ONLY: 一度も決済していない state では欠落=
   //   既存 SSE JSON は不変(lastBroadcastJson の dedupe と既定挙動を保つ)。決済ロジック/紙損益には無影響。
   lastExitedSignalId?: number;
+  // ★未約定失効(armed-timeout)の累計(ADD-ONLY)。「武装したのに一度も約定せず15分で失効した」回数。
+  //   monitor が正規シグナルを出したのに trade2 が受信後ずっと拒否する乖離は、必ずここに終着する。
+  //   実測 sid=361(2026-07-30)は trade2 が147回拒否したが monitor 側には件数がどこにも残らず完全に無音だった。
+  //   count===0 のときは付与しない=既存 SSE JSON 不変(broadcast dedupe と旧クライアント互換を壊さない)。
+  armedTimeout?: { count: number; lastAt: number };
   updatedAt: number;
 }
 

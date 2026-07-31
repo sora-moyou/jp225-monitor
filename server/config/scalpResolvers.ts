@@ -32,7 +32,8 @@ export function resolveScalpRangeEnabled(profile?: SignalProfile): boolean {
   return typeof v === 'boolean' ? v : false;
 }
 
-// ★v0.7.56: AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(45)。プロンプトにのみ反映。
+// ★AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(45)。
+//   プロンプトに加えて **コードで強制**する(enforcePlanConstraints が下限未満のレッグを落とす)。
 export function resolveScalpLcFloorYen(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpLcFloorYen'); }
 
 // ★ドテン(反転)許可。ON=「AIが保有中に反転を判断してよい」(=AI判断)。OFF(既定)=ドテンを出さない=既定で挙動不変。
@@ -86,7 +87,9 @@ export function parseKnobSource(v: unknown): KnobSource {
 // ★v0.8.2: 各 directive も profile 対応。profile 省略/'A'=グローバル(既存挙動一致) /
 //   'B'=signalB の source/値を優先し、未設定はグローバルの source/値へフォールバック。
 
-/** 初期LC下限 directive。value=下限(円)。ai=下限を課さない。 */
+/** 初期LC下限 directive。value=下限(円)。
+ *  ★mode は下限の強制可否を変えない(委任対象外='ai' でもコードは下限を強制する。強制が委任に勝つ)。
+ *  'ai' で変わるのはプロンプトの文面だけ(「委任対象外で強制する」と明示する)。 */
 export function resolveScalpLcFloorDirective(profile?: SignalProfile): KnobDirective<number> {
   return { mode: parseKnobSource(readKnobRaw(profile, 'scalpLcFloorSource')), value: resolveScalpLcFloorYen(profile) };
 }

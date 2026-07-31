@@ -9,8 +9,12 @@
 //
 // consumer は 2 つ:
 //   ・server(levelsLoop): runLevelDetectors(sink=emitAlert)。levels の SSE broadcast は levelsLoop 側に残す。
-//   ・collector(alertCollector): runBarDetectors + runLevelDetectors(sink=DB 記録)。従来 collector が
-//     出していなかった break/level_sr/pivot/double/dailyband を **追加で** 記録する(意図した挙動変更)。
+//   ・collector(alertCollector): runBarDetectors + runLevelDetectors(sink=DB 記録)。
+//
+// ★DB への記録(alerts)は「両方の consumer が検知するが、書くのは1つだけ」。collector 稼働中は
+//   collector が authoritative writer で、monitor 側は SSE(バナー)だけ出して記録しない
+//   (判定は server/alertHistory.ts の monitorPersistMode / MONITOR_ONLY_KINDS が唯一の権威)。
+//   ここに検知種別を足すときは、それが monitor 専用でない限り MONITOR_ONLY_KINDS には足さないこと。
 //
 // crash は本モジュールに含めない: server(levelsLoop 内 inline)・collector(checkCrash)ともに独自の
 // セッション高値シード経路を持ち、既に別実装。二重 emit を避けるため crash は各 consumer 側に残す。

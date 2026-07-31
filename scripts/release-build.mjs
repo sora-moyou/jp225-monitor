@@ -40,6 +40,33 @@ if (!existsSync(keyPath)) {
 const key = readFileSync(keyPath, 'utf-8').trim();
 const password = ''; // 両鍵ともパスフレーズ無し(空)。
 
+// ── プリフライト検査(署名ビルドの入場券) ────────────────────────────────
+// 型検査とテストを **ビルドより前に** 走らせ、1つでも落ちたらここで中止する。
+// これが無かった頃は、型エラー/テスト赤のまま署名済みインストーラを作れてしまった。
+// 直前の PRODUCT / 鍵の存在確認は副作用ゼロの即時チェックなので先に済ませてある
+// (鍵が無いのに数分のテストを待たされるのを避けるため)。ビルド(tauri build)を
+// 起動しうる経路はこの下だけで、そこへ到達するには必ず検査を通る必要がある。
+const PREFLIGHT = [
+  { label: '型検査 (tsc --noEmit)', args: ['run', 'typecheck'] },
+  { label: 'テスト (vitest run)', args: ['run', 'test'] },
+];
+
+for (const step of PREFLIGHT) {
+  console.log('');
+  console.log(`🔎 preflight: ${step.label} ...`);
+  const r = spawnSync('npm', step.args, { stdio: 'inherit', shell: true });
+  if (r.status !== 0) {
+    console.error('');
+    console.error(`❌ preflight 失敗: ${step.label} (exit code ${r.status})`);
+    console.error('   検査が通らないため署名ビルドを中止しました。修正してからやり直してください。');
+    process.exit(r.status ?? 1);
+  }
+  console.log(`✅ preflight OK: ${step.label}`);
+}
+
+console.log('');
+console.log('✅ preflight 完了 — ビルドを開始します。');
+
 console.log(`📦 PRODUCT: ${PRODUCT}`);
 console.log(`🔐 Using private key: ${keyPath} (${key.length} chars)`);
 console.log(`🔐 Password length:   ${password.length} (0 = no password)`);

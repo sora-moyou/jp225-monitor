@@ -1,8 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, getLatestTick, insertAlert, getAlertsNeedingFollowup,
+import { openDb, resolveDbPath, getLatestTick, insertAlert, insertAlertIfNew, getAlertsNeedingFollowup,
   updateAlertReturns, getBarCloseNear, getRecentAlerts, type AlertRow } from './db/store.js';
 import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
+import { getCooldownMs } from './alertCooldown.js';
 import { classifySession, isWithinOpenGuard } from '../core/session.js';
 import { resolveOpenGuardBars, resolveHitThreshold } from './configStore.js';
 import type { AlertEventPayload } from './types.js';
@@ -49,19 +50,55 @@ export function rowKind(detectionKind: string | null, windowSeconds: number | nu
   return kindLabel(windowSeconds);
 }
 
-// collector が検知しない(=monitor だけが発火する)種別。collector が authoritative writer でも
-// これらは collector が一切 alerts に書かないため、monitor が単独で記録する必要がある。
-// levelsLoop 由来(double/level_sr/break/pivot)+ slope は monitor 専用(collector は levelsLoop を回さない)。
-// shock/ma_sr/trend は alertEngine 由来、crash は collector も検知 → monitor-only ではない(collector が authoritative)。
-// 旧 dtb/swingdtb も levelsLoop 由来だったため後方互換で残す。
-const MONITOR_ONLY_KINDS = new Set(['slope', 'break', 'double', 'level_sr', 'pivot', 'dtb', 'swingdtb', 'dailyband', 'nwave']);
+// ═══ アラート DB 記録の「正の書き手(authoritative writer)」定義 — ここが唯一の権威 ═══
+//
+// ★この集合が唯一 monitor 専用と言い切れる種別。collector(collector/alertCollector.ts)は
+//   ・runBarDetectors → shock / trend / ma_sr
+//   ・runLevelDetectors → break / level_sr / pivot / double / dailyband / nwave
+//   ・checkCrash → crash
+//   を **すべて** alerts に書く。したがって monitor 専用なのは slope(tickDetector・priceLoop 由来で
+//   collector は priceLoop を回さない)だけ。
+//
+// ★かつてこの集合には levelsLoop 由来(break/double/level_sr/pivot/dailyband/nwave/dtb/swingdtb)が
+//   入っていた。「collector は levelsLoop を回さない」という前提が STEP6 で collector 側に
+//   runLevelDetectors が追加された時点で崩れたのに、この集合が更新されなかった=二重記録の真因。
+//   両者の壁時計が違う(monitor=8秒周期 levelsLoop / 当時の collector=分境界 onMinute)ため
+//   UNIQUE 索引 idx_alerts_identity(triggered_at を含む)では衝突せず、両方が残っていた。
+//   ※現在は collector の level 検知も 8秒周期(collector/alertCollector.ts onLevelTick / LEVEL_TICK_MS)。
+//     記録の主体が collector に一本化された以上、この周期が「記録に残る検知の解像度」そのものになる。
+//   実測(alerts_kabu.db 2026-06-19〜07-31・4,181行の level 系): 分内秒の分布で monitor 由来は一様、
+//   collector 由来は 0〜10 秒に集中 → 超過分 ≈1,120 行(26.8%)、直近週は 43%。的中率の分母が
+//   種別により最大 1.4〜2 倍に膨らんでいた。
+//
+// ★collector/alertCollector.ts はこの集合を import し、この集合の種別を emit したら
+//   「二重記録の再発」として記録せず error ログを出す(片側だけが直る=無言のドリフト防止)。
+export const MONITOR_ONLY_KINDS: ReadonlySet<string> = new Set(['slope']);
 
+/** monitor 側の記録方針。
+ *  - 'insert'      : monitor が単独 writer(monitor 専用種別)。素で書く。超短期(slope)は
+ *                    クールダウン無視で連発するのが仕様なので近接重複ガードを掛けてはいけない。
+ *  - 'skip'        : collector が authoritative writer で稼働中 → monitor は書かない。
+ *  - 'insertIfNew' : collector 種別だが collector 停止中 → monitor がフォールバックで書く。
+ *                    ハートビート(45秒鮮度)の陳腐化窓で collector と重なりうるので近接重複ガード付き。 */
+export type MonitorPersistMode = 'insert' | 'skip' | 'insertIfNew';
 
-/** monitor 側で alerts に記録すべきか。collector 非稼働なら全種別記録。
- *  collector 稼働中でも monitor 専用種別(slope/dtb/break)は collector が書かないため記録する
- *  (二重書き込みにはならない: collector はこれらを一切検知・記録しない)。 */
+/** monitor 側で alerts にどう記録するか(純関数)。 */
+export function monitorPersistMode(detectionKind: string | null, collectorAlive: boolean): MonitorPersistMode {
+  if (MONITOR_ONLY_KINDS.has(detectionKind ?? '')) return 'insert';
+  return collectorAlive ? 'skip' : 'insertIfNew';
+}
+
+/** monitor 側で alerts に記録すべきか(= mode が 'skip' 以外)。 */
 export function shouldPersistInMonitor(detectionKind: string | null, collectorAlive: boolean): boolean {
-  return !collectorAlive || MONITOR_ONLY_KINDS.has(detectionKind ?? '');
+  return monitorPersistMode(detectionKind, collectorAlive) !== 'skip';
+}
+
+/** monitor⇔collector 交代の隙間で生じる「同一検知の双子」を潰す近接重複窓(ms)。
+ *  設定クールダウン(≥60s)より必ず短くするので、正当な同方向の再発火は絶対に消さない。
+ *  ★collector(AlertCollector)と monitor(recordAlert の insertIfNew)が同じ窓を使うための SSOT。
+ *    片側だけ別式にすると、また非対称(片方だけ重複排除)が生まれる。 */
+export function nearDuplicateWindowMs(): number {
+  return Math.min(60_000, Math.max(0, getCooldownMs() - 1_000));
 }
 
 // L2(テクニカル状態)種別。①のテクニカル判定時に「直近の状況」を併記するために使う。
@@ -79,15 +116,23 @@ export function getRecentL2Summary(now: number, withinMs = 30 * 60_000): string 
   } catch { return null; }
 }
 
-/** payload と発火価格から alerts に1行記録。 */
-export function recordAlert(database: DatabaseSync, p: AlertEventPayload, price: number): void {
+/** payload と発火価格から alerts に1行記録。
+ *  mode='insertIfNew' なら collector と同じ近接重複ガード(±dedup窓)を掛けて書く。
+ *  戻り値: 実際に行が入ったか(insert は常に true 扱い=UNIQUE 索引での無視は区別しない)。 */
+export function recordAlert(
+  database: DatabaseSync, p: AlertEventPayload, price: number,
+  mode: Exclude<MonitorPersistMode, 'skip'> = 'insert',
+): boolean {
   const s = classifySession(p.triggeredAt);
-  insertAlert(database, {
+  const row = {
     symbol: p.symbol, triggeredAt: p.triggeredAt, direction: p.direction,
     detectionKind: p.detectionKind, windowSeconds: p.windowSeconds, changePercent: p.changePercent,
     price, sessionDate: s?.sessionDate ?? null, session: s?.session ?? null,
     referenceKind: p.referenceKind ?? null, referencePrice: p.referencePrice ?? null,
-  });
+  };
+  if (mode === 'insertIfNew') return insertAlertIfNew(database, row, nearDuplicateWindowMs());
+  insertAlert(database, row);
+  return true;
 }
 
 /** broadcast + DB記録。アラート発火箇所はこれを呼ぶ(記録漏れ防止の単一経路)。記録失敗してもUIは止めない。 */
@@ -111,13 +156,16 @@ export function emitAlert(p: AlertEventPayload): void {
   broadcast({ type: 'alert', payload: p });
   try {
     if (!db) db = openDb(resolveDbPath());
-    // collector が authoritative writer だが、collector は shock/granville しか検知しない。
-    // slope/dtb/break は monitor 専用なので collector 稼働中でも monitor が記録しないと
-    // alerts に一切残らない(検証シートに出ない)。monitor 専用種別は collector-alive ゲートを抜ける。
-    if (!shouldPersistInMonitor(p.detectionKind, isCollectorAlive(db, Date.now()))) return;
+    // collector が稼働中は collector が authoritative writer。collector は bar/level/crash の
+    // 全種別を書く(MONITOR_ONLY_KINDS の注記を参照)ので、monitor が書いてよいのは
+    //   ・monitor 専用種別(slope) … 常に素で書く
+    //   ・collector 停止中のフォールバック … 近接重複ガード付きで書く
+    // だけ。SSE(UI バナー)は上の broadcast で既に出しているので、記録を譲っても表示は遅れない。
+    const mode = monitorPersistMode(p.detectionKind, isCollectorAlive(db, Date.now()));
+    if (mode === 'skip') return;
     const latest = getLatestTick(db, p.symbol);
     const price = latest ? latest.price : (p.pa15min ? p.pa15min.current : 0);
-    if (price > 0) recordAlert(db, p, price);
+    if (price > 0) recordAlert(db, p, price, mode);
   } catch (err) {
     console.warn('[alertHistory] record failed:', err instanceof Error ? err.message : err);
   }

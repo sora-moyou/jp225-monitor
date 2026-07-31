@@ -37,7 +37,7 @@ vi.mock('./dataTools.js', async (orig) => ({
 // knob は実ユーザー設定に依存させない(bias/LC/レンジ/トレンド veto を固定)。
 vi.mock('../configStore.js', async (orig) => ({
   ...(await orig() as Record<string, unknown>),
-  resolveScalpLcFloorDirective: () => ({ mode: 'manual', value: 45 }),
+  resolveScalpLcFloorDirective: () => floorMock(),
   resolveScalpLcCeilingDirective: () => ({ mode: 'manual', value: 65 }),
   resolveScalpTrendVetoDirective: () => ({ mode: 'manual', value: 100 }),
   resolveScalpCooldownDirective: () => ({ mode: 'manual', value: 90 }),
@@ -48,12 +48,17 @@ vi.mock('../configStore.js', async (orig) => ({
 }));
 
 let biasMock: () => 'long' | 'short' | 'none' = () => 'none';
+// ★初期LC下限の設定(mode/value)。既定は「手動・45円」= UI の既定表示と同じ。
+//   'ai'(AI委任)に倒したケースでも下限が効くこと(=強制が委任に勝つ)を同じ経路で確かめる。
+let floorMock: () => { mode: 'manual' | 'ai'; value: number } = () => ({ mode: 'manual', value: 45 });
 
 const { buildScalpPlan } = await import('./scalpPlan.js');
 
 const REF = 38250;
 const PRICES: Price[] = [
-  { symbol: 'NIY=F', price: REF, changePercent: 0, timestamp: 0, stale: false } as Price,
+  // ★timestamp は「今」でなければならない: buildScalpPlan は refPrice の鮮度(stale フラグ + 取得からの経過)を
+  //   検証するようになったため、epoch(0)のままだと「古すぎる現在値」として計画自体が作られない。
+  { symbol: 'NIY=F', price: REF, changePercent: 0, timestamp: Date.now(), stale: false } as Price,
 ];
 
 /** LLM が raw を返すようにして buildScalpPlan を1回走らせる。 */
@@ -79,6 +84,7 @@ const TAG_LIMIT_DROPPED = '（指値レッグは条件を満たさず不採用�
 
 beforeEach(() => {
   biasMock = () => 'none';
+  floorMock = () => ({ mode: 'manual', value: 45 });
 });
 
 describe('buildScalpPlan パイプライン: レッグ注記は1回だけ(directional)', () => {
@@ -253,5 +259,97 @@ describe('buildScalpPlan パイプライン: レンジ脚の脱落注記は1回�
     });
     const r = await planFrom(raw);
     expect(r.plan.rationale).toBe(RATIONALE);
+  });
+});
+
+// ─── ★初期LC「下限」の実強制(設定が実測で効いていなかった問題) ───────────────────
+//   実測(signal_trades 598件・2026-07-24〜07-31): lcFloor.mode=manual(設定値45/55)の 269 件のうち
+//   60 件(22.3%)が下限未満の初期LCで武装・約定していた。原因は下限を見る判定がコードに存在せず、
+//   プロンプト文字列にしか到達していなかったこと(UI/ガイドは「必ず守らせます」と表示していた)。
+//   ここは「文言が正しいか」ではなく「**設定した制約が実際にプランへ効くか**」を実経路で固定する。
+//   ※これは壊れたプランを止めるだけの修正であり、収益改善を保証するものではない。
+describe('★初期LC下限の実強制(手動でも AI委任でも効く)', () => {
+  const RAT = '押し目買い';
+
+  it('手動 下限45: 下限未満(LC=20)のレッグは落ちる/下限ちょうど(LC=45)は通る', async () => {
+    // 指値 LC=|38200-38180|=20(<45=下限未満→落ちる) / 逆指値 LC=|38350-38305|=45(=下限ちょうど→通る)。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: RAT, refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38180,
+      stopEntry: 38350, stopLossForStop: 38305,
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('buy');
+    expect(r.plan.limitEntry).toBeUndefined();      // 下限未満=落とす(クランプして広げない)
+    expect(r.plan.stopLossForLimit).toBeUndefined();
+    expect(r.plan.stopEntry).toBe(38350);            // 境界=許可
+    expect(r.plan.stopLossForStop).toBe(38305);
+  });
+
+  it('手動 下限45: 両レッグとも下限未満なら見送り(none)・理由は lcFloor で記録される', async () => {
+    // 実測で最も多かった壊れ方(LC=5 が 97件)を再現する。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: RAT, refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38195,   // LC=5
+      stopEntry: 38350, stopLossForStop: 38345,     // LC=5
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('none');
+    expect(r.plan.limitEntry).toBeUndefined();
+    expect(r.plan.stopEntry).toBeUndefined();
+    expect(r.noneReason).toBe('lcFloor');
+    expect(r.noneLegs?.legs).toHaveLength(2);       // 落とした生数値は記録に残る
+  });
+
+  it('手動 下限55(既定より厳しい設定): 45〜54 のレッグも落ちる=設定値がそのまま効く', async () => {
+    floorMock = () => ({ mode: 'manual', value: 55 });
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: RAT, refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38150,   // LC=50(旧既定45なら通るが、設定55では下限未満)
+      stopEntry: 38350, stopLossForStop: 38290,     // LC=60(通る)
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('buy');
+    expect(r.plan.limitEntry).toBeUndefined();
+    expect(r.plan.stopEntry).toBe(38350);
+  });
+
+  it('★AI委任(mode=ai)でも下限は効く=強制が委任に勝つ(下限は決済ロジックの前提条件)', async () => {
+    floorMock = () => ({ mode: 'ai', value: 45 });
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: RAT, refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38195,   // LC=5
+      stopEntry: 38350, stopLossForStop: 38345,     // LC=5
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('lcFloor');
+  });
+
+  it('range 各脚にも下限が効き、落ちた理由が根拠文に明記される', async () => {
+    const raw = JSON.stringify({
+      direction: 'range', rationale: '上下に反応帯があるレンジ', refPrice: 1,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38410 },   // LC=10 → 下限未満
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },     // LC=50 → 残る
+      },
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('range');
+    expect(r.plan.range?.upper).toBeUndefined();
+    expect(r.plan.range?.lower?.side).toBe('buy');
+    expect(countOf(r.plan.rationale, '※上部(売り指値)はLC下限未満のため除外')).toBe(1);
+  });
+
+  it('回帰: 下限以上・上限以下の正常プランは素通し(この修正で通る玉が減らない)', async () => {
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: RAT, refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38150,   // LC=50
+      stopEntry: 38350, stopLossForStop: 38300,     // LC=50
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('buy');
+    expect(r.plan.limitEntry).toBe(38200);
+    expect(r.plan.stopEntry).toBe(38350);
   });
 });

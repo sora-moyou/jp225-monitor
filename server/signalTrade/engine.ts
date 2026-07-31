@@ -17,7 +17,7 @@ import { loadExitImpl } from './exit/index.js';
 import { checkSanity } from './sanity.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
-import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, getSignalIdCounter, setSignalIdCounter } from '../db/store.js';
+import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, getSignalIdCounter, setSignalIdCounter, getArmedTimeoutStats, bumpArmedTimeout } from '../db/store.js';
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
@@ -32,6 +32,7 @@ import {
   type OpenPosition, type HeldIdentity, type ArmedBracket, type ArmedIdentity, type StaleLegReport,
 } from './decisions.js';
 import type { ScalpPlanResult } from '../llm/openai.js';
+import { checkRefDrift, recheckArmedSanity } from './armGate.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
 
 // 純粋な決定コア(型/純関数)と永続化ビルダーは従来どおり engine.js から公開する(import 元を変えない)。
@@ -114,6 +115,9 @@ export class SignalEngine {
   private fillDurations: number[] = [];
   // ★レンジ再評価の最終要求時刻(過度な差替えを抑えるクールダウン。held-eval と同じ長間隔を共有)。
   private lastRangeReevalAt = 0;
+  // ★未約定失効(armed-timeout)の累計と最終発生時刻。start() で DB(signal_meta)からシードし、発生ごとに
+  //   加算+永続し、SSE(SignalTradeState.armedTimeout)へ載せる。0件のあいだは SSE に出ない(既存 JSON 不変)。
+  private armedTimeouts: { count: number; lastAt: number | null } = { count: 0, lastAt: null };
 
   constructor(private readonly cfg: EngineConfig) {}
 
@@ -128,11 +132,29 @@ export class SignalEngine {
   private loadSignalIdCounter(): void {
     try {
       const db = openDb(resolveDbPath());
-      try { this.signalIdCounter = getSignalIdCounter(db, this.counterKey); } finally { db.close(); }
+      try {
+        this.signalIdCounter = getSignalIdCounter(db, this.counterKey);
+        // ★未約定失効の累計も同じ契機でシード(再起動で件数が 0 に戻ると「無音の失敗」が数えられなくなる)。
+        this.armedTimeouts = getArmedTimeoutStats(db, this.counterKey);
+      } finally { db.close(); }
     } catch (e) {
       console.warn(`${this.logTag} signalId seed failed:`, e instanceof Error ? e.message : String(e));
     }
   }
+
+  /** ★未約定失効を1件記録する(永続 + in-memory)。失敗しても致命的にしない(件数は落ちるがログは残る)。 */
+  private recordArmedTimeout(at: number): void {
+    this.armedTimeouts = { count: this.armedTimeouts.count + 1, lastAt: at };
+    try {
+      const db = openDb(resolveDbPath());
+      try { this.armedTimeouts = bumpArmedTimeout(db, this.counterKey, at); } finally { db.close(); }
+    } catch (e) {
+      console.warn(`${this.logTag} armed-timeout persist failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** テスト用: 未約定失効の累計を覗く。 */
+  _peekArmedTimeouts(): { count: number; lastAt: number | null } { return this.armedTimeouts; }
 
   /** ARM で採番するたびに、最後に採番した signalId を永続する(再起動後のシード元)。失敗は握りつぶす。 */
   private persistSignalIdCounter(): void {
@@ -146,7 +168,11 @@ export class SignalEngine {
 
   /** 履歴消去に合わせて in-memory の signalId カウンタを 0 に戻す(永続側は clearSignalTrades が 0 化)。
    *  次の ARM は 1 から採番される。テスト/リセットの reset() と違い、この経路だけが実運用のリセット。 */
-  resetSignalIdCounter(): void { this.signalIdCounter = 0; }
+  resetSignalIdCounter(): void {
+    this.signalIdCounter = 0;
+    // ★未約定失効カウンタも同時に 0(DB 側は resetSignalIdCounter(store) が 0 化する=in-memory と食い違わせない)。
+    this.armedTimeouts = { count: 0, lastAt: null };
+  }
 
   /** テスト用: 現在の signalId カウンタ(=最後に採番した signalId)を覗く。 */
   _peekSignalIdCounter(): number { return this.signalIdCounter; }
@@ -196,7 +222,7 @@ export class SignalEngine {
   /** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
   getState(now = Date.now()): SignalTradeState {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-    return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId);
+    return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts);
   }
 
   /** 現在シグナル(trade2 追従用)。A のみ。B は常に null(=露出しない)。 */
@@ -223,6 +249,7 @@ export class SignalEngine {
     this.lastExitedSignalId = undefined;
     this.fillDurations = [];
     this.lastRangeReevalAt = 0;
+    this.armedTimeouts = { count: 0, lastAt: null };
   }
 
   // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。系統タグ(A=null/B='B')を付与する。
@@ -339,6 +366,17 @@ export class SignalEngine {
             const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
             console.log(`${this.logTag} plan-suppress サニティ不通過(${sanity.reason})→ 正規シグナルにしない anchor=${Math.round(anchorPrice)} 根拠=${why || '(なし)'}`);
           } else {
+            // ★作業2(refPrice 鮮度): checkStaleLegs より **前** に判定する。refPrice が壊れている/古い計画は
+            //   レッグの通過判定を出す前に丸ごと落としたい(「通過済み」ログが出て原因を取り違えるのを防ぐ)。
+            //   live が取れない時は判定しない(=従来どおり先へ進む)。
+            const liveForGate = this.livePrice();
+            const drift = checkRefDrift(result.plan.refPrice, liveForGate);
+            if (!drift.ok) {
+              this.planSuppressedAnchor = anchorPrice;
+              console.log(`${this.logTag} plan-suppress ${drift.reason} → 正規シグナルにしない `
+                + `anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=refstale`);
+              return;   // ★finally で planning=false に戻る(この IIFE を抜けるだけ)。
+            }
             const armed0 = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
             // ★stale plan veto: ARM 時点の live 価格で「もう通過した価格」のレッグは武装しない。
             //   checkSanity は plan.refPrice(撮影時価格)基準のまま(上のコメントの設計判断=不変)。ここは別観点の
@@ -346,7 +384,9 @@ export class SignalEngine {
             //   そのまま武装して次tickで即約定する事故を防ぐ(=現実に執行できない取引が紙の成績に混ざるのを止める)。
             //   判定は checkStaleLegs=detectFill/detectRangeFill の再利用(約定条件と同一規約)。
             //   live 価格が取れない/非有限なら checkStaleLegs は素通し=従来どおり ARM(安全側)。
-            const live = this.livePrice();
+            //   ★drift ゲートと **同じ1回の読み取り** を使う(livePrice() は可変キャッシュを読むので2度読むと
+            //     ゲート間で値が食い違い、どの価格で落としたのかが記録から追えなくなる)。
+            const live = liveForGate;
             const stale = armed0 ? checkStaleLegs(armed0, live) : { armed: null, legs: [] as StaleLegReport[] };
             if (stale.legs.some(l => l.stale)) {
               this.logStaleLegs('plan-stale', result.plan.direction, result.plan.refPrice, live, stale.legs);
@@ -358,6 +398,24 @@ export class SignalEngine {
               const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
               console.log(`${this.logTag} plan-suppress 見送り(none) anchor=${Math.round(anchorPrice)} `
                 + `ref=${Math.round(result.plan.refPrice)} reason=stale veto=${result.vetoFired ? 'y' : 'n'} 根拠=${why || '(なし)'}`);
+            }
+            // ★作業1(単レッグ化の再検証): checkStaleLegs で脚が落ちた **後** の形を ARM 時 live 価格で再検証する。
+            //   2レッグ時の checkSanity は距離上限を課さないため、片脚が落ちて単レッグ化した瞬間に
+            //   「単レッグ ≤200円」が無検査で素通りしていた(実測 sid=361: 残った指値が live から315円・trade2 が147回拒否)。
+            //   ★脚が落ちた時だけ再検証する(checkStaleLegs は何も落ちなければ引数と同一参照を返す)。
+            //     形が変わっていないなら refPrice 基準の checkSanity は既に通っており、価格側の観点は
+            //     checkStaleLegs(=約定条件と同一規約・指値は5円の行き過ぎマージン)が受け持つ。ここで無条件に
+            //     再検証すると、そのマージンの内側(現値が指値を数円だけ跨いだだけ)の健全なブラケットまで落ちる。
+            //     実測でも trade2 の同型の一時的な拒否は6秒後の再送で自然に解消しており(9件/4日)、
+            //     解消しない持続的な不整合は「単レッグ化して距離上限を超えた」sid=361 だけだった。
+            if (armed && armed !== armed0) {
+              const recheck = recheckArmedSanity(armed, result.plan.refPrice, live);
+              if (!recheck.ok) {
+                this.planSuppressedAnchor = anchorPrice;
+                console.log(`${this.logTag} plan-suppress ${recheck.reason} → 正規シグナルにしない `
+                  + `anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=recheck`);
+                return;   // ★finally で planning=false に戻る。
+              }
             }
             if (armed) {
               // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
@@ -447,6 +505,12 @@ export class SignalEngine {
     // 反対ブラケットのサニティ(trade2 と同一・新反対ブラケットの妥当性)。不通過なら反転しない(保有継続)。
     const sanity = checkSanity(plan, plan.refPrice);
     if (!sanity.ok) return 'reject';
+    // ★作業2(refPrice 鮮度・ARM 経路②): 計画時価格が ARM 時 live からかけ離れていたら反転しない(保有継続)。
+    const drift = checkRefDrift(plan.refPrice, live);
+    if (!drift.ok) {
+      console.log(`${this.logTag} doten-reject ${drift.reason} ref=${Math.round(plan.refPrice)} reason=refstale`);
+      return 'reject';
+    }
     const rev = reverseToDoten(this.state, plan, price, now, { vetoFired: result.vetoFired });
     if (!rev) return 'reject';
     // ★stale plan veto(反対ブラケットにも同一規約で適用): ARM 時点の live 価格でもう通過しているレッグは武装しない。
@@ -456,6 +520,16 @@ export class SignalEngine {
     if (stale.legs.some(l => l.stale)) this.logStaleLegs('doten-stale', plan.direction, plan.refPrice, live, stale.legs);
     if (!stale.armed) return 'reject';
     const armed = stale.armed;   // 生き残ったレッグだけの反対ブラケット(何も落ちなければ rev.armed と同一参照)。
+    // ★作業1(単レッグ化の再検証・ARM 経路②): 脚が落ちた後の形を ARM 時 live 価格で再検証する。
+    //   ここまで engine 状態は未変更(reverseToDoten は純関数)なので、落ちればそのまま保有継続=無害。
+    //   ★脚が落ちた時だけ(armed !== rev.armed)。理由は flat 経路の同じ注記を参照。
+    if (armed !== rev.armed) {
+      const recheck = recheckArmedSanity(armed, plan.refPrice, live);
+      if (!recheck.ok) {
+        console.log(`${this.logTag} doten-reject ${recheck.reason} ref=${Math.round(plan.refPrice)} reason=recheck`);
+        return 'reject';
+      }
+    }
     // ① 現保有 P を決済(pnl を signal_trades に記録)。この時点の currentSignal は P の ARM 采番=P の signalId で結合。
     this.persistTrade(rev.recorded);
     this.lastSignalExitAt = now;
@@ -585,6 +659,12 @@ export class SignalEngine {
     // 妥当性(trade2 と同一の checkSanity/checkRangeSanity)。不通過は現状維持(差替えない)。
     const sanity = checkSanity(plan, plan.refPrice);
     if (!sanity.ok) return 'reject';
+    // ★作業2(refPrice 鮮度・ARM 経路③): 計画時価格が ARM 時 live からかけ離れていたら差替えない(現状維持)。
+    const drift = checkRefDrift(plan.refPrice, live);
+    if (!drift.ok) {
+      console.log(`${this.logTag} reeval-reject ${drift.reason} ref=${Math.round(plan.refPrice)} reason=refstale`);
+      return 'reject';
+    }
     const armed0 = planToArmed(plan, now, { vetoFired: result.vetoFired });
     if (!armed0) return 'reject';
     if (sameBracketShape(cur, armed0)) return 'keep';   // 実質同じ fade(=反発継続の維持)→ 何もしない。
@@ -594,6 +674,16 @@ export class SignalEngine {
     if (stale.legs.some(l => l.stale)) this.logStaleLegs('reeval-stale', plan.direction, plan.refPrice, live, stale.legs);
     if (!stale.armed) return 'reject';
     const armed = stale.armed;
+    // ★作業1(単レッグ化の再検証・ARM 経路③): 脚が落ちた後の形を ARM 時 live 価格で再検証する。
+    //   まだ engine 状態は未変更なので、落ちればそのまま現状維持=無害。
+    //   ★脚が落ちた時だけ(armed !== armed0)。理由は flat 経路の同じ注記を参照。
+    if (armed !== armed0) {
+      const recheck = recheckArmedSanity(armed, plan.refPrice, live);
+      if (!recheck.ok) {
+        console.log(`${this.logTag} reeval-reject ${recheck.reason} ref=${Math.round(plan.refPrice)} reason=recheck`);
+        return 'reject';
+      }
+    }
     // 差替え: 実効設定スナップショットを確定 → armed 差替え → 新 signalId を1回采番 → currentSignal 更新 → broadcast。
     armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
     // ★遡り解析用(RECORD-ONLY): 差替えは「新しい ARM」= 新 armed の at(=now)と ARM 時点価格を焼き付ける(経路③)。
@@ -614,7 +704,7 @@ export class SignalEngine {
   // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-    const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId);
+    const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts);
     const json = JSON.stringify(s);
     if (json !== this.lastBroadcastJson) {
       this.lastBroadcastJson = json;
@@ -630,6 +720,7 @@ export class SignalEngine {
       // ★レンジ再評価: 約定(armed→filled)所要を測るため、遷移前の armed 武装時刻を控える(advance は不変=純関数)。
       const prevPhase = this.state.phase;
       const prevArmedAt = this.state.armed?.at;
+      const prevArmed = this.state.armed;   // ★未約定失効の診断ログ用(advance 後は消えるのでここで控える)。
       const { next, recorded, armedTimedOut } = advance(this.state, price, now);
       this.state = next;
       // ★fill latency: armed→filled に遷移したら position.at−armed.at を移動平均サンプルへ記録(平均約定所要=再評価閾値の元)。
@@ -638,8 +729,23 @@ export class SignalEngine {
       }
       if (armedTimedOut) {
         // ★未約定ブラケットの取消。以降 phase=flat で maybeRequestPlan が再計画できる(固着解除)。
+        // ★作業3(無音の失敗を潰す): 件数を永続カウンタに刻み、SSE へ載せ、**なぜ届かなかったか** を1行で残す。
+        //   monitor が武装 → trade2 が受信後ずっと拒否 → 15分で黙って失効、という乖離の終着点がここ。
+        //   実測 sid=361(2026-07-30 23:45)は trade2 が6秒おきに147回拒否したのに、monitor 側にも trade2 側にも
+        //   警告もカウンタも一切無かった。ログには「各レッグが現在値からどれだけ離れていたか」を必ず添える。
+        this.recordArmedTimeout(now);
+        const legDesc: string[] = [];
+        const dist = (v: number): string => `${Math.round(v)}(現値差${Math.round(Math.abs(v - price))}円)`;
+        if (prevArmed?.limitEntry != null) legDesc.push(`limit=${dist(prevArmed.limitEntry)}`);
+        if (prevArmed?.stopEntry != null) legDesc.push(`stop=${dist(prevArmed.stopEntry)}`);
+        if (prevArmed?.range?.upper) legDesc.push(`upper=${dist(prevArmed.range.upper.entry)}`);
+        if (prevArmed?.range?.lower) legDesc.push(`lower=${dist(prevArmed.range.lower.entry)}`);
         console.log(`${this.logTag} armed-timeout 未約定ブラケットを取消→FLAT`
-          + `(${Math.round(ARMED_TIMEOUT_MS / 60_000)}分 未約定・再計画へ)`);
+          + `(${Math.round(ARMED_TIMEOUT_MS / 60_000)}分 未約定・再計画へ) `
+          + `signalId=${this.currentSignal?.signalId ?? '-'} dir=${prevArmed?.direction ?? '-'} `
+          + `armedPrice=${prevArmed?.armedPrice != null ? Math.round(prevArmed.armedPrice) : '-'} `
+          + `price=${Math.round(price)} ${legDesc.join(' ') || '(レッグ不明)'} `
+          + `累計未約定失効=${this.armedTimeouts.count}回`);
       }
       if (recorded) {
         this.persistTrade(recorded);

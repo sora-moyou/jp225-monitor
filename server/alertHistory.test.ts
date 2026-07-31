@@ -63,24 +63,27 @@ describe('shouldPersistInMonitor', () => {
       expect(shouldPersistInMonitor(k, false)).toBe(true);
     }
   });
-  it('collector 稼働中: monitor 専用種別(slope/dtb/break)は記録、collector検知種別(shock/granville)は記録しない', () => {
-    // collector が検知しない種別 → monitor が単独 writer なので記録する
+  // ★旧テストはここで break/double/level_sr/pivot/dtb/swingdtb を「collector 非検知」として
+  //   true に固定していた。STEP6 で collector が runLevelDetectors を回すようになった時点で
+  //   その前提は事実と食い違っており、テストが二重記録を「正しい挙動」として守っていた。
+  it('collector 稼働中に monitor が記録するのは monitor 専用種別(slope)だけ', () => {
+    // monitor 専用 = collector が検知経路を持たない(tickDetector は priceLoop 由来 = monitor のみ)
     expect(shouldPersistInMonitor('slope', true)).toBe(true);
-    expect(shouldPersistInMonitor('dtb', true)).toBe(true);
-    expect(shouldPersistInMonitor('break', true)).toBe(true);
-    expect(shouldPersistInMonitor('swingdtb', true)).toBe(true);   // levelsLoop専用(collector非検知)
     // collector が検知・記録する種別 → 二重書き込み防止のため monitor は記録しない
-    expect(shouldPersistInMonitor('shock', true)).toBe(false);
-    expect(shouldPersistInMonitor('granville', true)).toBe(false);
-    // ma(25MA抜け)は evaluateBarsNiy 内で検知=collector も記録する → monitor は記録しない(二重書き防止)
-    expect(shouldPersistInMonitor('ma', true)).toBe(false);
-    // v0.6.0: levelsLoop専用(collector非検知)→ monitor が記録する
-    for (const k of ['double', 'level_sr', 'pivot']) expect(shouldPersistInMonitor(k, true)).toBe(true);
-    // alertEngine由来(evaluateBarsNiy)/ crash(collectorも検知)→ monitor は記録しない(authoritative=collector)
-    for (const k of ['ma_sr', 'trend', 'crash']) expect(shouldPersistInMonitor(k, true)).toBe(false);
-    // null / legacy magnitude は monitor 専用集合外 → collector 稼働中は記録しない
-    expect(shouldPersistInMonitor(null, true)).toBe(false);
-    expect(shouldPersistInMonitor('magnitude', true)).toBe(false);
+    // (bar 検知)
+    for (const k of ['shock', 'trend', 'ma_sr', 'granville', 'ma']) {
+      expect(shouldPersistInMonitor(k, true)).toBe(false);
+    }
+    // (level 検知: STEP6 で collector も回すようになった = 二重記録の真因だった種別)
+    for (const k of ['break', 'double', 'level_sr', 'pivot', 'dailyband', 'nwave']) {
+      expect(shouldPersistInMonitor(k, true)).toBe(false);
+    }
+    // crash は collector も検知(独自シード)→ collector が authoritative
+    expect(shouldPersistInMonitor('crash', true)).toBe(false);
+    // null / legacy(dtb/swingdtb/magnitude)も monitor 専用集合外 → collector 稼働中は記録しない
+    for (const k of [null, 'dtb', 'swingdtb', 'magnitude']) {
+      expect(shouldPersistInMonitor(k, true)).toBe(false);
+    }
   });
 });
 

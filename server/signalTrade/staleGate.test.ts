@@ -205,7 +205,10 @@ describe('stale plan veto(A・flat→ARM): 通過済みレッグを武装しな�
     const rangePlan: AiPlan = {
       direction: 'range', rationale: 'r', refPrice: REF, range: {
         upper: { side: 'sell', type: 'limit', entry: 38100, stopLoss: 38150 },
-        lower: { side: 'buy', type: 'limit', entry: 37900, stopLoss: 37850 },
+        // ★下レッグは live(38105)から 200円以内 に置く。上が落ちて単レッグ化した後は
+        //   ARM 時再検証(=trade2 と同じ MAX_ENTRY_DISTANCE_YEN=200円)が効くため、
+        //   37900(=205円)では「脚が落ちる」以外の理由で落ちてしまい、このテストの意図(片面 range の ARM)を検証できない。
+        lower: { side: 'buy', type: 'limit', entry: 37950, stopLoss: 37850 },
       },
     };
     mockRunner.mockResolvedValue({ ok: true, plan: rangePlan });
@@ -218,7 +221,7 @@ describe('stale plan veto(A・flat→ARM): 通過済みレッグを武装しな�
     const sig = eng.getCurrentSignal()!;
     expect(sig.mode).toBe('range');
     expect(sig.range?.upper).toBeUndefined();
-    expect(sig.range?.lower).toMatchObject({ side: 'buy', entry: 37900 });
+    expect(sig.range?.lower).toMatchObject({ side: 'buy', entry: 37950 });
   });
 });
 
@@ -331,9 +334,12 @@ describe('stale plan veto(レンジ再評価の差替え先)', () => {
     upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38450 },
     lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 } } });
   const id: ArmedIdentity = { armedAt: 500, signalId: 1, mode: 'range' };
+  // ★下レッグは live(38400)から 200円以内 に置く。上が落ちて単レッグ化した後は ARM 時再検証
+  //   (=trade2 と同じ MAX_ENTRY_DISTANCE_YEN=200円)が効くため、38100(=300円)では「脚が落ちる」以外の
+  //   理由で差替えが拒否され、このテストの意図(生き残ったレッグだけで差替える)を検証できない。
   const breakoutResult = { ok: true as const, plan: { direction: 'range' as const, rationale: 'breakout', refPrice: 38250, range: {
     upper: { side: 'buy' as const, type: 'stop' as const, entry: 38400, stopLoss: 38350 },
-    lower: { side: 'sell' as const, type: 'stop' as const, entry: 38100, stopLoss: 38150 } } } };
+    lower: { side: 'sell' as const, type: 'stop' as const, entry: 38230, stopLoss: 38280 } } } };
 
   it('差替え先の片レッグが通過済み(live=38400 タッチ)→ 生き残ったレッグだけで差替え', () => {
     const eng = newEngineA();
@@ -342,7 +348,7 @@ describe('stale plan veto(レンジ再評価の差替え先)', () => {
     const sig = eng.getCurrentSignal()!;
     expect(sig.signalId).toBe(2);
     expect(sig.range?.upper).toBeUndefined();
-    expect(sig.range?.lower).toMatchObject({ type: 'stop', entry: 38100 });
+    expect(sig.range?.lower).toMatchObject({ type: 'stop', entry: 38230 });
   });
 
   it('差替え先の唯一のレッグが通過済み → 差替えない(reject・現状維持)', () => {
@@ -387,13 +393,13 @@ describe('stale plan veto(レンジ再評価の差替え先)', () => {
       setLive(38400);
       const eng = await runReeval();
       expect(eng.getCurrentSignal()?.range?.upper).toBeUndefined();
-      expect(eng.getCurrentSignal()?.range?.lower).toMatchObject({ type: 'stop', entry: 38100 });
+      expect(eng.getCurrentSignal()?.range?.lower).toMatchObject({ type: 'stop', entry: 38230 });
     });
     it('★stale な 38400(フィード断の持ち越し)→ 判定せず両レッグで差替え', async () => {
       setStaleLive(38400);
       const eng = await runReeval();
       expect(eng.getCurrentSignal()?.range?.upper).toMatchObject({ type: 'stop', entry: 38400 });
-      expect(eng.getCurrentSignal()?.range?.lower).toMatchObject({ type: 'stop', entry: 38100 });
+      expect(eng.getCurrentSignal()?.range?.lower).toMatchObject({ type: 'stop', entry: 38230 });
     });
   });
 });

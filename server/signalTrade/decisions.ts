@@ -491,6 +491,7 @@ export function advance(
 export function toSignalTradeState(
   st: EngineState, price: number | null, now: number, signal?: CurrentSignal | null,
   lastExitedSignalId?: number,
+  armedTimeout?: { count: number; lastAt: number | null } | null,
 ): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
@@ -554,6 +555,10 @@ export function toSignalTradeState(
   }
   // ★直近決済シグナルID(ADD-ONLY): 在るときだけ露出(初回決済まで欠落=既存 JSON 不変)。
   if (lastExitedSignalId != null) s.lastExitedSignalId = lastExitedSignalId;
+  // ★未約定失効の累計(ADD-ONLY): 1件以上あるときだけ露出(0件=欠落=既存 JSON 不変=dedupe を壊さない)。
+  if (armedTimeout && armedTimeout.count > 0) {
+    s.armedTimeout = { count: armedTimeout.count, lastAt: armedTimeout.lastAt ?? 0 };
+  }
   return s;
 }
 

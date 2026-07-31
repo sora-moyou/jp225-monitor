@@ -5,10 +5,10 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
-  lcLegExceeds, buildDelegationNote, buildStrategySpec, buildLegNote,
+  lcLegExceeds, lcLegBelowFloor, lcEffectiveCeiling, buildDelegationNote, buildStrategySpec, buildLegNote,
   pickNoneReason, enforceRangeEnabled,
   buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote,
-  DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN,
+  DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN, LC_YEN_MAX,
   type ToolHandlers, type AiPlan, type KnobModes,
 } from './openai.js';
 import { describeRangeAnomaly } from '../signalTrade/rangeShape.js';
@@ -1638,13 +1638,122 @@ describe('lcLegExceeds(LC上限 mode 分岐 + 安全網)', () => {
     expect(lcLegExceeds(200, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } })).toBe(true);
     expect(lcLegExceeds(120, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } })).toBe(false);
   });
-  it('lcHardMax 無効時はハード上限なし(ai 完全自由)', () => {
-    expect(lcLegExceeds(500, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(false);
+  // ★変更(上限の穴塞ぎ): 旧テストは「ai + hardMax 無効 = 上限が完全消滅(LC500 も通る)」を固定していた。
+  //   委任は「設定した上限(65)を外す」意味であって「どんな幅でも通す」意味ではないので、
+  //   安全網が無効なときは LC_YEN_MAX(=設定として受理しうる LC 幅の絶対上限)を背骨として残す。
+  it('lcHardMax 無効 + ai: 設定上限(65)は外れるが LC_YEN_MAX が背骨として残る(上限は完全消滅しない)', () => {
+    expect(lcLegExceeds(200, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(false);
+    expect(lcLegExceeds(LC_YEN_MAX, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(false);  // 境界=許可
+    expect(lcLegExceeds(LC_YEN_MAX + 1, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(true);
+    expect(lcLegExceeds(500, { ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(true);
+  });
+  it('lcEffectiveCeiling: 手動=設定上限と背骨の厳しい方 / 委任=背骨', () => {
+    expect(lcEffectiveCeiling({ ceilingYen: 65 })).toBe(65);
+    expect(lcEffectiveCeiling({ ceilingYen: 65, ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } })).toBe(65);
+    expect(lcEffectiveCeiling({ ceilingYen: 200, ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } })).toBe(150);
+    expect(lcEffectiveCeiling({ ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: true, value: 150 } })).toBe(150);
+    expect(lcEffectiveCeiling({ ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 } })).toBe(LC_YEN_MAX);
   });
   it('★既定 hardMax(enabled150)+manual65 は 65 超のみ=ceiling が支配(回帰なし)', () => {
     // 150 有効でも 65<150 なので、ceiling で既に落ちる=hardMax は追加ドロップしない=従来挙動と一致。
     expect(lcLegExceeds(66, { ceilingYen: 65, ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } })).toBe(true);
     expect(lcLegExceeds(50, { ceilingYen: 65, ceilingMode: 'manual', lcHardMax: { enabled: true, value: 150 } })).toBe(false);
+  });
+});
+
+// ─── ★初期LC「下限」の実強制(純関数) ───
+//   これまで下限はプロンプト文字列にしか到達しておらず、コードの判定が存在しなかった。
+//   下限は「AI に委任できる好み」ではなく、決済ロジック(含み益が一定に達して初めて利益ロックの床が
+//   発動する)が成立するための前提条件なので、委任モードの分岐を持たない=常に強制する。
+describe('lcLegBelowFloor(LC下限・委任の分岐を持たない)', () => {
+  it('floorYen 省略なら常に false(=旧挙動・直呼びの既存経路は不変)', () => {
+    expect(lcLegBelowFloor(5, {})).toBe(false);
+    expect(lcLegBelowFloor(5, { floorYen: undefined })).toBe(false);
+  });
+  it('下限未満は true / 境界(ちょうど下限)と超過は false', () => {
+    expect(lcLegBelowFloor(44, { floorYen: 45 })).toBe(true);
+    expect(lcLegBelowFloor(5, { floorYen: 45 })).toBe(true);
+    expect(lcLegBelowFloor(45, { floorYen: 45 })).toBe(false);   // 境界=許可
+    expect(lcLegBelowFloor(60, { floorYen: 45 })).toBe(false);
+  });
+  it('非有限/0以下の floorYen は無効扱い(誤設定で全レッグが消えない)', () => {
+    expect(lcLegBelowFloor(5, { floorYen: NaN })).toBe(false);
+    expect(lcLegBelowFloor(5, { floorYen: Infinity })).toBe(false);
+    expect(lcLegBelowFloor(5, { floorYen: 0 })).toBe(false);
+    expect(lcLegBelowFloor(5, { floorYen: -10 })).toBe(false);
+  });
+});
+
+describe('enforcePlanConstraints floorYen(下限未満のレッグを落とす)', () => {
+  // buy: 指値LC=|38200-38195|=5(下限未満) / 逆指値LC=|38350-38300|=50(下限以上)。
+  const narrow: AiPlan = {
+    direction: 'buy',
+    limitEntry: 38200, stopLossForLimit: 38195,
+    stopEntry: 38350, stopLossForStop: 38300,
+    rationale: '押し目買い', refPrice: REF,
+  };
+
+  it('floorYen 省略=下限判定なし(既存の呼び出し/テストは不変)', () => {
+    const r = enforcePlanConstraints(narrow, { ceilingYen: 65, bias: 'none' });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBe(38200);   // LC=5 でも落ちない=旧挙動
+  });
+
+  it('floorYen=45: 下限未満のレッグだけ落ちる(クランプせず落とす=上限側と同じ扱い)', () => {
+    const r = enforcePlanConstraints(narrow, { ceilingYen: 65, bias: 'none', floorYen: 45 });
+    expect(r.direction).toBe('buy');
+    expect(r.limitEntry).toBeUndefined();
+    expect(r.stopLossForLimit).toBeUndefined();
+    // ★クランプ(損切りを下限まで広げる)はしない=価格は書き換えられない。
+    expect(r.stopEntry).toBe(38350);
+    expect(r.stopLossForStop).toBe(38300);
+  });
+
+  it('両レッグとも下限未満 → none・noneReason=lcFloor・落とした生数値は記録される', () => {
+    const p: AiPlan = { ...narrow, stopEntry: 38350, stopLossForStop: 38345 };   // 両方 LC=5
+    const r = enforcePlanConstraintsReport(p, { ceilingYen: 65, bias: 'none', floorYen: 45 });
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('lcFloor');
+    expect(r.noneLegs?.legs).toHaveLength(2);
+    expect(r.plan.rationale).toBe('押し目買い');
+  });
+
+  it('★委任(ceilingMode=ai)でも下限は効く=強制が委任に勝つ', () => {
+    const r = enforcePlanConstraints(narrow, {
+      ceilingYen: 65, bias: 'none', floorYen: 45, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 150 },
+    });
+    expect(r.limitEntry).toBeUndefined();   // 上限を委任しても下限は残る
+    expect(r.stopEntry).toBe(38350);
+  });
+
+  it('range: 下限未満の脚だけ落ち、rationale に「LC下限未満」を明記(1回だけ)', () => {
+    const p: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38410 },   // LC=10
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 38050 },     // LC=50
+      },
+    };
+    const r = enforcePlanConstraints(p, { ceilingYen: 65, bias: 'none', floorYen: 45 });
+    expect(r.direction).toBe('range');
+    expect(r.range?.upper).toBeUndefined();
+    expect(r.range?.lower?.side).toBe('buy');
+    expect(countOf(r.rationale, '※上部(売り指値)はLC下限未満のため除外')).toBe(1);
+  });
+
+  it('上限超と下限未満は別々の理由として記録される(混同しない)', () => {
+    const p: AiPlan = {
+      direction: 'range', rationale: 'レンジ', refPrice: REF,
+      range: {
+        upper: { side: 'sell', type: 'limit', entry: 38400, stopLoss: 38410 },   // LC=10 → 下限未満
+        lower: { side: 'buy', type: 'limit', entry: 38100, stopLoss: 37900 },     // LC=200 → 上限超
+      },
+    };
+    const r = enforcePlanConstraintsReport(p, { ceilingYen: 65, bias: 'none', floorYen: 45 });
+    expect(r.plan.direction).toBe('none');
+    // 代表理由は優先順位で 'lc'(上限超)が先だが、両方が観測されていること自体は noneLegs で担保。
+    expect(r.noneReason).toBe('lc');
+    expect(r.noneLegs?.legs).toHaveLength(2);
   });
 });
 

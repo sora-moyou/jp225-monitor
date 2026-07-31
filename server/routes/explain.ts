@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import type { AlertEventPayload } from '../../core/types.js';
 import { explain } from '../llm/openai.js';
 import { buildExplainInput } from '../llm/explainInput.js';
 import { getNews } from '../cache.js';
@@ -8,13 +9,37 @@ interface PriceActionBody {
   open: number; high: number; low: number; current: number;
 }
 
+// ★暫定対応(第0層で回収): 検知種別リストが core/types.ts の union と手書きで二重化しており、
+//   v0.9.36 で追加した nwave / dailyband がここに入っていなかったため、この allowlist が 400 を返し、
+//   バナーが常に「説明取得失敗」になっていた(出荷時からの故障)。
+//   恒久対策=「検知種別の単一定義化(全リストを1つの定義から導出)」は第0層で行う。ここではその暫定として
+//     ① 型は core/types.ts の union をそのまま参照する(手書きコピーを廃止)
+//     ② 実行時 allowlist は下の配列 1 箇所に集約し、union に対する漏れを型で検出する(_allKindsListed)
+//   としてある。種別を core/types.ts に足してこの配列に足し忘れると `npm run typecheck` が落ちる。
+type DetectionKind = AlertEventPayload['detectionKind'];
+
+export const DETECTION_KINDS = [
+  'slope', 'magnitude', 'granville', 'shock', 'dtb', 'break', 'ma', 'swingdtb',
+  'double', 'ma_sr', 'level_sr', 'pivot', 'trend', 'crash', 'dailyband', 'nwave',
+] as const;
+
+// core/types.ts の union に DETECTION_KINDS が追いついていない場合、この代入が型エラーになる。
+type _AllKindsListed = Exclude<DetectionKind, (typeof DETECTION_KINDS)[number]> extends never
+  ? true
+  : ['missing in DETECTION_KINDS:', Exclude<DetectionKind, (typeof DETECTION_KINDS)[number]>];
+const _allKindsListed: _AllKindsListed = true;
+void _allKindsListed;
+
+function isDetectionKind(v: unknown): v is DetectionKind {
+  return typeof v === 'string' && (DETECTION_KINDS as readonly string[]).includes(v);
+}
+
 interface ExplainBody {
   symbol?: string;
   symbolLabel?: string;
   changePercent?: number;
   windowSeconds?: number;
-  detectionKind?: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb'
-    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash';
+  detectionKind?: DetectionKind;
   direction?: 'up' | 'down';
   change15min?: number | null;
   pa15min?: PriceActionBody | null;
@@ -27,12 +52,7 @@ export async function explainHandler(req: Request, res: Response): Promise<void>
       || typeof body.symbolLabel !== 'string'
       || typeof body.changePercent !== 'number'
       || typeof body.windowSeconds !== 'number'
-      || (body.detectionKind !== 'magnitude' && body.detectionKind !== 'slope' && body.detectionKind !== 'shock'
-          && body.detectionKind !== 'dtb' && body.detectionKind !== 'granville' && body.detectionKind !== 'break'
-          && body.detectionKind !== 'ma' && body.detectionKind !== 'swingdtb'
-          && body.detectionKind !== 'double' && body.detectionKind !== 'ma_sr'
-          && body.detectionKind !== 'level_sr' && body.detectionKind !== 'pivot'
-          && body.detectionKind !== 'trend' && body.detectionKind !== 'crash')) {
+      || !isDetectionKind(body.detectionKind)) {
     res.status(400).json({ error: 'invalid body' });
     return;
   }

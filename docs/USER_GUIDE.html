@@ -940,7 +940,7 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
         <tbody>
           <tr>
             <td><strong>初期LC下限(円)</strong></td>
-            <td>損切り幅の下限の目安。これより狭い損切りを狙わないよう AI に指示します(コードでの強制はしません)。狭すぎるとダマシの往復で切られやすくなります。</td>
+            <td>損切り幅の下限。<code>|エントリー価格 − 損切り価格|</code> がこれより狭い計画は出しません(狭かったその注文は見送り)。狭すぎるとダマシの往復で切られやすく、利益を段階的にロックする決済が働き出す前に切られます。<strong>この下限は「AI 委任」にしても必ず強制されます</strong>(決済ロジックが成立するための前提条件のため)。</td>
             <td>45 円</td>
           </tr>
           <tr>
@@ -964,7 +964,17 @@ table.ref-table td code, .ref-body code { background: var(--bg-0); padding: 2px 
   </div>
 
   <div class="callout" style="margin-top:16px;">
-    <strong>手動 / AI 委任</strong> — 上の 3 項目(初期LC下限・最大初期LC・バイアス)は、値の決め方を選べます。<strong>手動</strong> = 設定した数値を必ず守らせます。<strong>AI 委任</strong> = その項目は AI が場面ごとに決めます(設定値は使いません)。LC安全上限は安全網なので、常に有効/無効と上限値のみです。
+    <strong>手動 / AI 委任</strong> — 上の 3 項目(初期LC下限・最大初期LC・バイアス)は、値の決め方を選べます。<strong>手動</strong> = 設定した数値を必ず守らせます(コードで判定し、外れた注文は出しません)。<strong>AI 委任</strong> = その項目は AI が場面ごとに決めます(設定値は使いません)。LC安全上限は安全網なので、常に有効/無効と上限値のみです。
+  </div>
+
+  <div class="callout" style="margin-top:16px;">
+    <strong>★ 初期LC下限は委任の対象外</strong> — 初期LC下限だけは「AI 委任」を選んでもコードが必ず強制します(設定より強制が優先)。<code>|エントリー価格 − 損切り価格|</code> が下限より狭いレッグは落とし、両方落ちればその回は見送りになります。<br>
+    理由: 決済は「含み益が一定に達して初めて利益をロックしていく」方式なので、下限より狭い初期LCは利益ロックが働き出す前に切られ、決済ロジックが構造的に成立しません。<br>
+    <span style="color:var(--text-muted);">※これは前提の壊れた計画を止めるためのガードであり、成績の改善を意味するものではありません。</span>
+  </div>
+
+  <div class="callout" style="margin-top:16px;">
+    <strong>★ 最大初期LCを「AI 委任」にしても上限は完全には消えません</strong> — 委任すると設定した上限値(既定 65 円)は外れますが、LC安全上限が有効ならその値、無効でも 300 円(設定として指定できる LC 幅の上限)を実効上限として残します。
   </div>
 
 </section>

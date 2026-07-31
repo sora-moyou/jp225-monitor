@@ -54,6 +54,10 @@ export interface SignalTradeState {
   };
   // 直近決済 (保有枠に「決済79000」を一時表示するため)
   lastExit?: { exitPrice: number; pnl: number; at: number };
+  // ★未約定失効(armed-timeout)の累計。「武装したのに一度も約定せず15分で失効した」回数。
+  //   monitor が武装 → trade2 が受信後ずっと拒否 → 15分で黙って失効、という乖離の終着点。
+  //   件数が伸びていること自体が異常のサインなので、待機表示に必ず出す(0件では欠落=表示も従来どおり)。
+  armedTimeout?: { count: number; lastAt: number };
   updatedAt: number;
 }
 
@@ -104,15 +108,21 @@ export interface PanelView {
 /** 純関数: シグナル枠の表示モデル。現在シグナル(s.signal)を優先し、無ければ armed の entry、
  *  それも無ければ「シグナル待機」。★保有(filled)でも s.signal がある限りシグナルを描き続ける。 */
 export function buildSignalView(s: SignalTradeState | null): PanelView {
+  // ★待機表示の文言。未約定失効(=武装したのに約定せず失効)が起きていれば必ず件数を出す。
+  //   件数 0(=フィールド欠落)では従来と完全に同じ文字列=既存表示は不変。
+  const waitMain = (): string => {
+    const n = s?.armedTimeout?.count ?? 0;
+    return n > 0 ? `シグナル待機（未約定失効 ${n}回）` : 'シグナル待機';
+  };
   const sig: SignalCurrent | undefined = s?.signal ?? (s?.entry ? { ...s.entry } : undefined);
-  if (!sig) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
+  if (!sig) return { cls: 'flat', main: waitMain(), rationale: '' };
 
   // ★A案: 決済で即クリア。直近決済(lastExit)がこのシグナル発生後(sig.at <= lastExit.at)なら、
   //   その建玉は既に決済済み=シグナルは役目を終えたので「シグナル待機」に戻す。
   //   armed/filled 中は lastExit が前トレードの古いもの(sig.at > lastExit.at)なので描き続ける。
   //   決済後に来る新シグナル(sig.at > lastExit.at)は再び描く。sig.at 欠落時は抑制しない(安全側=表示)。
   if (s?.lastExit && sig.at != null && s.lastExit.at != null && sig.at <= s.lastExit.at) {
-    return { cls: 'flat', main: 'シグナル待機', rationale: '' };
+    return { cls: 'flat', main: waitMain(), rationale: '' };
   }
 
   // ★レンジ両面ストラドル: 上下の各レッグを side/type/entry で明示表示。
@@ -122,7 +132,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
     const parts: string[] = [];
     if (sig.range.upper) parts.push(legStr(sig.range.upper, '上'));
     if (sig.range.lower) parts.push(legStr(sig.range.lower, '下'));
-    if (parts.length === 0) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
+    if (parts.length === 0) return { cls: 'flat', main: waitMain(), rationale: '' };
     return { cls: 'armed', bias: 'レンジ', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: sig.rationale ?? '' };
   }
 
@@ -130,7 +140,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   const legs: string[] = [];
   if (sig.limitEntry != null) legs.push(`${dirJa(sig.direction)} ${fmtPrice(sig.limitEntry)} 指値${lcTag(sig.stopLossForLimit)}`);
   if (sig.stopEntry != null) legs.push(`${dirJa(sig.direction)} ${fmtPrice(sig.stopEntry)} 逆指値${lcTag(sig.stopLossForStop)}`);
-  if (legs.length === 0) return { cls: 'flat', main: 'シグナル待機', rationale: '' };
+  if (legs.length === 0) return { cls: 'flat', main: waitMain(), rationale: '' };
   // ★ドテン(反転)シグナルは目線行に明示(通常の決済→別の新規と区別できるように)。
   const dirBias = sig.direction === 'buy' ? '買い目線' : '売り目線';
   const bias = sig.doten ? `🔃 ドテン(反転)・${dirBias}` : dirBias;

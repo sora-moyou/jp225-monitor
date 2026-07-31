@@ -60,13 +60,14 @@ export interface AiPlan {
  *  - 'geometry'      : エントリーが refPrice の反対側(売りなのに指値が現在値の下 等)で両レッグ落ち
  *  - 'stopSide'      : 損切りがエントリーの内側/反対側で両レッグ落ち
  *  - 'lc'            : 初期LC幅が上限超で両レッグ落ち
+ *  - 'lcFloor'       : ★初期LC幅が下限未満で両レッグ落ち(下限は委任対象外=常に強制)
  *  - 'bias'          : バイアス veto(long なのに sell / short なのに buy)
  *  - 'trend'         : トレンド veto(強上昇に逆行する sell / 強下降に逆行する buy)
  *  - 'rangeDisabled' : レンジ無効設定なのに range が返った(防御多重化)
  *  - 'missing'       : AI がレッグを出さなかった / 壊れた形だった
  *  - 'stale'         : ★ARM 時点の live 価格では既にエントリーを通過していて全レッグ落ち(engine の
  *                      stale plan veto=checkStaleLegs。plan 段では起きない=engine のログ専用の値) */
-export type NoneReason = 'ai' | 'geometry' | 'stopSide' | 'lc' | 'bias' | 'trend' | 'rangeDisabled' | 'missing' | 'stale';
+export type NoneReason = 'ai' | 'geometry' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'trend' | 'rangeDisabled' | 'missing' | 'stale';
 
 /** 見送り(none)時に「AI が出したが最終プランに残らなかった」レッグの生数値(記録専用)。
  *  ログ1行に出すことで、根拠文(rationale)から価格を推定する必要を無くす。 */
@@ -92,7 +93,7 @@ export type ScalpPlanResult =
 // トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
 // 'stale' は plan 段では発生しない(engine の ARM 直前ガード=最下流)ため末尾に置く。
 const NONE_REASON_PRIORITY: NoneReason[] =
-  ['trend', 'bias', 'lc', 'geometry', 'stopSide', 'missing', 'rangeDisabled', 'ai', 'stale'];
+  ['trend', 'bias', 'lc', 'lcFloor', 'geometry', 'stopSide', 'missing', 'rangeDisabled', 'ai', 'stale'];
 
 /** 2レッグ分の脱落理由から、ログに載せる代表理由を1つ選ぶ純関数(記録専用)。両方 null なら undefined。 */
 export function pickNoneReason(a: NoneReason | null, b: NoneReason | null): NoneReason | undefined {
@@ -400,7 +401,14 @@ export function buildDelegationNote(
     );
   }
   if (modes.lcFloor === 'ai') {
-    lines.push('初期LC下限: 下限は課さない。ただし狭すぎるLCは往復のダマシで負けやすいので、その点も踏まえて幅を決めること。');
+    // ★下限は委任できない(決済ロジックの前提条件)。設定が 'ai' でもコードは下限を強制するので、
+    //   「自由に決めてよい」と誤解させないよう、委任の対象外であることをここで明示する。
+    lines.push(
+      `初期LC下限: ★これは委任の対象外です。設定が「AI委任」でも下限${ctx.floorYen}円はコードで必ず強制し、` +
+      `|エントリー − 損切り| が ${ctx.floorYen}円 未満のレッグは自動で落とします(両方落ちれば見送り)。` +
+      `理由: 決済は「含み益が一定に達して初めて利益ロックの床が発動する」方式なので、下限より狭い初期LCは床が働く前に被弾し、決済ロジックが構造的に成立しないため。` +
+      `幅を決めるときは必ず下限以上にし、下限を満たせない節目では そのレッグを出さないこと。`,
+    );
   }
   if (modes.trendVeto === 'ai') {
     lines.push(
@@ -805,6 +813,8 @@ export interface StrategySpecInput {
 function knobTag(mode: KnobSource): string {
   return mode === 'ai' ? '【AI委任=あなたが決めてよい】' : '【手動=固定・厳守】';
 }
+/** ★LC下限のタグ。下限は委任対象外(常にコードで強制)なので mode を取らない固定文にする。 */
+const LC_FLOOR_TAG = '【強制=委任対象外・コードで必ず適用】';
 export function buildStrategySpec(i: StrategySpecInput): string {
   const cap = i.hardMax.enabled ? `安全上限 ${i.hardMax.value}円(有効=手動でもAIでも絶対に超えない)` : '安全上限 無効';
   const biasLabel = i.bias.value === 'long' ? '買い中心(売り新規は見送り)' : i.bias.value === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
@@ -812,7 +822,10 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     '',
     '【戦略ロジック仕様(完全版・定数込み)】以下のロジックと数値をすべて理解した上で計画すること。各項目末尾の【】は現在の委任設定(手動=固定・厳守 / AI=あなたが決めてよい)。AI委任の項目はその値を自分で決め、手動の項目は記載の値・ルールを厳守する。',
     '■ エントリー',
-    `- 初期LC(損切り)幅: 下限${i.floor.value}円${knobTag(i.floor.mode)} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`,
+    `- 初期LC(損切り)幅: 下限${i.floor.value}円${LC_FLOOR_TAG} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`,
+    `- ★初期LC下限は例外なく強制する: |エントリー − 損切り| が ${i.floor.value}円 未満のレッグはコードが自動で落とす(両方落ちれば見送り)。`
+      + `理由: この建玉の決済は「含み益が一定に達して初めて利益ロックの床が発動する」方式なので、下限より狭い初期LCは床が働く前に被弾し、決済ロジックが構造的に成立しない。`
+      + `節目までの距離が近すぎて下限を満たせないなら、そのレッグは出さずに別の節目を選ぶこと(幅だけ機械的に広げた損切りは置き直さない)。`,
     '- 損切りは本来のストップ幅に +5円 加える(往復のダマシ緩衝)',
     '- 指値/ブレイク新規は現在値からそれぞれ最低 50円 離す(この最低距離は buy/sell のみ。range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)',
     // ★v0.9.44: 語彙は system prompt / question と統一する(stopEntry=ブレイク新規 / stopLossFor*=損切り)。
@@ -840,14 +853,19 @@ export function buildStrategySpec(i: StrategySpecInput): string {
 }
 
 /** enforce の opts。ceilingMode/lcHardMax は v0.7.56 の追加(いずれも省略時は現状=manual/上限なし)。
- *  - ceilingMode: 'manual'(既定)→従来の超過レッグ落とし / 'ai'→LC上限では落とさない。
- *  - lcHardMax: 有効時は ceilingMode に関係なく |entry−SL| が value 超のレッグを落とす(最後の安全網)。 */
+ *  - ceilingMode: 'manual'(既定)→設定した上限で落とす / 'ai'→設定上限は外すが、実効上限は
+ *    lcHardMax(有効時)、無効なら LC_YEN_MAX まで残る(★上限が完全消滅することはない)。
+ *  - lcHardMax: 有効時は ceilingMode に関係なく |entry−SL| が value 超のレッグを落とす(最後の安全網)。
+ *  - floorYen: ★初期LC幅の**下限**(円)。渡すと下限未満のレッグを落とす。**委任(scalpLcFloorSource)の
+ *    対象外**=AI委任でも必ず効く(下限は設定の好みではなく、決済ロジックが成立するための前提条件)。
+ *    省略すると下限判定は一切行わない(=旧挙動。直呼びの既存テスト/呼び出しは不変)。 */
 export interface EnforceOpts {
   ceilingYen: number;
   bias: ScalpBias;
   trend?: TrendHint;
   ceilingMode?: KnobSource;
   lcHardMax?: LcHardMax;
+  floorYen?: number;
 }
 
 export function enforcePlanConstraints(plan: AiPlan, opts: EnforceOpts): AiPlan {
@@ -855,20 +873,36 @@ export function enforcePlanConstraints(plan: AiPlan, opts: EnforceOpts): AiPlan 
   return enforcePlanConstraintsReport(plan, opts).plan;
 }
 
-/** ★v0.7.56: レッグの初期LC幅 w がドロップ対象か。
- *  - ceilingMode!=='ai'(=manual) かつ w>ceilingYen なら落とす(従来の LC 上限)。
- *  - lcHardMax.enabled かつ w>lcHardMax.value なら落とす(mode 無関係の安全網)。
- *  既定(ceilingMode 省略=manual・lcHardMax 省略)では w>ceilingYen のみ=従来と完全一致。 */
+/** ★実効上限[円](純関数)。「委任すると上限がゼロになる」穴を塞ぐための単一の真実。
+ *  - 安全網(lcHardMax)が有効ならその値、無効なら **LC_YEN_MAX(=設定として受理しうる LC 幅の絶対上限)** を背骨に使う。
+ *  - ceilingMode==='ai'(委任): 設定した上限は外す(委任の意味は保つ)が、上の背骨は残す=上限は完全には消えない。
+ *  - ceilingMode!=='ai'(手動・既定): 設定上限と背骨の **厳しい方**。
+ *  既定(mode 省略=manual・lcHardMax 省略)では ceilingYen(≤LC_YEN_MAX)そのもの=従来と完全一致。 */
+export function lcEffectiveCeiling(opts: { ceilingYen: number; ceilingMode?: KnobSource; lcHardMax?: LcHardMax }): number {
+  const backstop = opts.lcHardMax?.enabled ? opts.lcHardMax.value : LC_YEN_MAX;
+  return opts.ceilingMode === 'ai' ? backstop : Math.min(opts.ceilingYen, backstop);
+}
+
+/** ★v0.7.56: レッグの初期LC幅 w が「広すぎ」でドロップ対象か(境界=ちょうどは許可)。
+ *  実効上限は lcEffectiveCeiling に一本化した(委任時も背骨が残る)。 */
 export function lcLegExceeds(w: number, opts: { ceilingYen: number; ceilingMode?: KnobSource; lcHardMax?: LcHardMax }): boolean {
-  const overCeiling = opts.ceilingMode !== 'ai' && w > opts.ceilingYen;
-  const overHard = !!opts.lcHardMax?.enabled && w > opts.lcHardMax.value;
-  return overCeiling || overHard;
+  return w > lcEffectiveCeiling(opts);
+}
+
+/** ★レッグの初期LC幅 w が「狭すぎ」(下限未満)でドロップ対象か(境界=ちょうど下限は許可)。
+ *  floorYen 未指定/非有限/0以下では常に false(=下限判定なし・旧挙動)。
+ *  ★この判定に委任(mode)の分岐は無い。下限は「AI に委任できる好み」ではなく、決済ロジック
+ *  (含み益が一定に達して初めて利益ロックの床が発動する)が成立するための前提条件だから。
+ *  下限より狭い初期LCは床が発動する前に被弾しやすく、決済ロジックが構造的に働かない。 */
+export function lcLegBelowFloor(w: number, opts: { floorYen?: number }): boolean {
+  const f = opts.floorYen;
+  return typeof f === 'number' && Number.isFinite(f) && f > 0 && w < f;
 }
 
 /** レンジ脚がコード側で落とされた理由(rationale 明記用)。
  *  trend/lc/bias は enforcePlanConstraints(制約適用)由来、geometry/missing は parseScalpPlan(AI応答の検証)由来、
  *  stopSide は両方で起きうる(parse で落ちた脚は enforce では既に無いので注記は重複しない)。 */
-type RangeDropReason = 'trend' | 'stopSide' | 'lc' | 'bias' | 'geometry' | 'missing';
+type RangeDropReason = 'trend' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'geometry' | 'missing';
 
 /** 脱落したレンジ脚の位置(上部/下部)・side・理由から、rationale へ追記する注記文を組み立てる。
  *  例: `※下部(買い指値)はバイアス(売り優先)のため除外` / `※上部(売り指値)はLC上限超のため除外`。
@@ -888,6 +922,7 @@ export function rangeDropNote(
     case 'stopSide': reasonLabel = 'SL向き不正'; break;
     case 'geometry': reasonLabel = '現在値との上下関係が不正'; break;
     case 'lc': reasonLabel = 'LC上限超'; break;
+    case 'lcFloor': reasonLabel = 'LC下限未満'; break;
     case 'bias':
       reasonLabel = bias === 'long' ? 'バイアス(買い優先)'
         : bias === 'short' ? 'バイアス(売り優先)'
@@ -906,9 +941,17 @@ export function enforcePlanConstraintsReport(
   opts: EnforceOpts,
 ): { plan: AiPlan; vetoFired: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs } {
   if (plan.direction === 'none') return { plan, vetoFired: false };
-  const { ceilingYen, bias, trend, ceilingMode, lcHardMax } = opts;
+  const { ceilingYen, bias, trend, ceilingMode, lcHardMax, floorYen } = opts;
   // ★v0.7.56: レッグの LC 幅ドロップ判定(mode 分岐 + 安全網)。既定(引数省略)は従来と完全一致。
   const lcExceeds = (w: number): boolean => lcLegExceeds(w, { ceilingYen, ceilingMode, lcHardMax });
+  // ★LC 下限の実強制。floorYen 省略なら常に false=旧挙動。委任(mode)の分岐は無い=強制が委任に勝つ。
+  const lcBelow = (w: number): boolean => lcLegBelowFloor(w, { floorYen });
+  // 上限超(広すぎ)/下限未満(狭すぎ)の判定を1つにまとめる。落とし方は上限側と同じ=**そのレッグを落とす**。
+  //   クランプ(下限まで損切りを広げる)にしない理由: AI が選んだ損切り位置は「節目/スイングの外側」という
+  //   根拠に紐づく。機械的に広げると、誰も検証していない価格に損切りを置き直すことになり、しかも
+  //   下限未満のレッグは「節目からの距離の見立てそのものが崩れている」= 幅だけ直しても前提は直らない。
+  const lcReason = (w: number): 'lc' | 'lcFloor' | null =>
+    lcExceeds(w) ? 'lc' : lcBelow(w) ? 'lcFloor' : null;
 
   // ★トレンド veto(最優先ステージ): 生きた強トレンドに逆行する side を落とす。
   //   up→sell を落とす / down→buy を落とす。trend 未指定 or !strong なら null=無効(現行挙動と完全一致)。
@@ -941,10 +984,17 @@ export function enforcePlanConstraintsReport(
     //      これはトレンド veto ではないので vetoFired には計上しない(veto の効き目だけを計測する)。
     if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) { upper = undefined; upperReason = 'stopSide'; }
     if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) { lower = undefined; lowerReason = 'stopSide'; }
-    // (a) 初期LC幅 |entry−stopLoss| が上限超のレッグを落とす(境界=ちょうどは許可)。
-    //     ★v0.7.56: manual→ceilingYen 超 / ai→ceiling では落とさない。ただし lcHardMax 有効時は mode 無関係に安全網。
-    if (upper && lcExceeds(Math.abs(upper.entry - upper.stopLoss))) { upper = undefined; upperReason = 'lc'; }
-    if (lower && lcExceeds(Math.abs(lower.entry - lower.stopLoss))) { lower = undefined; lowerReason = 'lc'; }
+    // (a) 初期LC幅 |entry−stopLoss| が上限超 or 下限未満のレッグを落とす(境界=ちょうどは許可)。
+    //     ★v0.7.56: 上限は manual→ceilingYen 超 / ai→実効上限(安全網 or LC_YEN_MAX)まで緩む。
+    //     ★下限は委任に関係なく常に強制(floorYen を渡した時のみ=直呼びの既存経路は不変)。
+    if (upper) {
+      const r = lcReason(Math.abs(upper.entry - upper.stopLoss));
+      if (r) { upper = undefined; upperReason = r; }
+    }
+    if (lower) {
+      const r = lcReason(Math.abs(lower.entry - lower.stopLoss));
+      if (r) { lower = undefined; lowerReason = r; }
+    }
     // (b) バイアス veto: long→sell レッグ落とし / short→buy レッグ落とし。
     if (bias === 'long') {
       if (upper?.side === 'sell') { upper = undefined; upperReason = 'bias'; }
@@ -992,22 +1042,23 @@ export function enforcePlanConstraintsReport(
   //    (parse で落ちている想定=冪等)。既に向きが正しい正常プランには影響しない。
   const limitOk =
     out.limitEntry != null && out.stopLossForLimit != null &&
-    !lcExceeds(Math.abs(out.limitEntry - out.stopLossForLimit)) &&
+    lcReason(Math.abs(out.limitEntry - out.stopLossForLimit)) === null &&
     stopSideOk(plan.direction, out.limitEntry, out.stopLossForLimit);
   const stopOk =
     out.stopEntry != null && out.stopLossForStop != null &&
-    !lcExceeds(Math.abs(out.stopEntry - out.stopLossForStop)) &&
+    lcReason(Math.abs(out.stopEntry - out.stopLossForStop)) === null &&
     stopSideOk(plan.direction, out.stopEntry, out.stopLossForStop);
   if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; }
   if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; }
 
   // 両レッグ落ちたら見送り(価格を持たない none)。
   if (out.limitEntry == null && out.stopEntry == null) {
-    // ★v0.9.44(記録専用): レッグ不在=missing / SL 向き違反=stopSide / それ以外は LC 上限超=lc。
+    // ★v0.9.44(記録専用): レッグ不在=missing / SL 向き違反=stopSide / それ以外は LC 幅(上限超=lc / 下限未満=lcFloor)。
     const dir = plan.direction;   // クロージャ内では絞り込みが効かないので const に束ねる。
     const legReason = (entry?: number, sl?: number): NoneReason =>
       entry == null || sl == null ? 'missing'
-      : !stopSideOk(dir, entry, sl) ? 'stopSide' : 'lc';
+      : !stopSideOk(dir, entry, sl) ? 'stopSide'
+      : lcReason(Math.abs(entry - sl)) ?? 'lc';
     return {
       plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false,
       noneReason: pickNoneReason(legReason(plan.limitEntry, plan.stopLossForLimit), legReason(plan.stopEntry, plan.stopLossForStop)),
@@ -1047,6 +1098,46 @@ export function enforceRangeEnabled(
 export const LC_YEN_MIN = 20;
 export const LC_YEN_MAX = 300;
 
+// ─── refPrice(計画の基準価格)の鮮度ゲート ─────────────────────────────
+//
+// ★これが無いと何が起きたか(実測 2026-07-23):
+//     21:42:01→21:56:52 sell 指値@66725(その時の実勢 65795・乖離 930円)= trade2 が131回連続で拒否・一度も約定せず。
+//     22:44:35→22:59:30 sell 指値@66990(その時の実勢 65995・乖離 995円)= 130回連続で拒否。
+//   bars_1m では 66,725 の最終到達は同日 14:45、66,990 は 10:16 = **7〜12時間前の水準** だった。
+//   従来の実装は `prices.find(...)?.price ?? 0` で、(a) stale フラグを見ない (b) 取得失敗を静かに 0 にする
+//   の二重の穴があった。0 は checkSanity で弾かれるが、「古いまま持ち越された価格」は素通りして
+//   その価格を中心にプランが組まれ、そのまま武装される。
+//
+// ★stale フラグだけでは塞がらない実在の穴:
+//   priceLoop.tick() は取引時間外に **setPrices を呼ばずに** 早期 return する。つまり時間外はキャッシュに
+//   「最後の場中価格が stale:false のまま」残り続ける。engine 経路は inPollWindow でゲートされるが、
+//   POST /api/scalp-plan(trade2 が叩く)は時間外でも到達する。よって **経過時間の上限** も要る。
+//
+/** refPrice として許容する価格の最大経過時間[ms]。
+ *  根拠: 価格取得間隔 pricePollMs の設定上限が 60,000ms、全滅時のバックオフ PRICE_BACKOFF_MS の最大も
+ *  60,000ms。つまり **正常に回っている限り 60秒より古い非 stale 価格は存在しない**。これを超える値は
+ *  「ループが止まっている/時間外のキャッシュが凍っている」ことの証拠なので、計画の基準にしない。 */
+export const REF_PRICE_MAX_AGE_MS = 60_000;
+
+export type RefPriceResult = { ok: true; refPrice: number } | { ok: false; reason: string };
+
+/** 計画の基準価格(refPrice)を解決する純関数。使えない時は **理由付きで失敗** する(0 へ黙って落ちない)。
+ *  条件: ①その銘柄の見積りが在る ②stale でない ③有限かつ正 ④取得から REF_PRICE_MAX_AGE_MS 以内。 */
+export function resolveRefPrice(prices: Price[], symbol: string, now: number): RefPriceResult {
+  const q = prices.find(p => p.symbol === symbol);
+  if (!q) return { ok: false, reason: `${symbol} の現在値がキャッシュに無い` };
+  if (q.stale) return { ok: false, reason: `${symbol} の現在値が stale(フィード断で前回値を持ち越し中)` };
+  if (!Number.isFinite(q.price) || q.price <= 0) return { ok: false, reason: `${symbol} の現在値が不正(${q.price})` };
+  const age = now - q.timestamp;
+  if (!(age <= REF_PRICE_MAX_AGE_MS)) {
+    return {
+      ok: false,
+      reason: `${symbol} の現在値が古い(取得から${Math.round(age / 1000)}秒経過・上限${Math.round(REF_PRICE_MAX_AGE_MS / 1000)}秒)`,
+    };
+  }
+  return { ok: true, refPrice: q.price };
+}
+
 /** lcFloorYen/lcCeilingYen をサニタイズ・クランプして [floor, ceiling] を返す。
  *  非数値/非有限、LC_YEN_MIN..LC_YEN_MAX の範囲外、floor>ceiling のいずれかなら既定(45/65)へフォールバック。 */
 export function resolveLcRange(
@@ -1076,7 +1167,14 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const symbol = typeof input.symbol === 'string' && input.symbol ? input.symbol : NIKKEI_SYMBOL;
   const prices = input.prices ?? getPrices();
   const news = input.news ?? [];
-  const refPrice = prices.find(p => p.symbol === symbol)?.price ?? 0;
+  // ★refPrice の鮮度ゲート(resolveRefPrice)。従来の `?? 0` は stale を見ず取得失敗を静かに 0 にしていた。
+  //   古い/壊れた基準価格で計画を組ませない=ここで失敗させる。失敗は必ず1行ログに残す(無言で見送りにしない)。
+  const refResolved = resolveRefPrice(prices, symbol, now);
+  if (!refResolved.ok) {
+    console.warn(`[scalp-plan] refPrice 不採用: ${refResolved.reason} → 計画を作らない`);
+    return { ok: false, error: `現在値が使えない(${refResolved.reason})` };
+  }
+  const refPrice = refResolved.refPrice;
   // ★v0.7.56: 各 knob の directive(manual/ai)を解決。既定は全て manual=現状の挙動を一切変えない。
   //   manual は数値/enum を強制(従来どおり)/ ai は該当制約を課さず AI に委任する。LC安全上限は独立の安全系。
   // ★v0.8.2: プロファイル(A|B)で knob を解決。未指定=A=グローバル(現行と byte 一致)。
@@ -1175,10 +1273,12 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     if (!parsed.ok) return parsed;
     // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0=ai は現行挙動=veto なし)。
     const trend = trendVetoYen > 0 ? input.trend : undefined;
-    // ★v0.7.56: LC上限は ceilingMode(manual→落とす / ai→落とさない)で分岐し、LC安全上限(hardMax)は
-    //   mode 無関係に常時適用(有効時)。バイアスは ai なら 'none'(上で解決済)=veto なし。
+    // ★v0.7.56: LC上限は ceilingMode(manual→設定上限 / ai→実効上限=安全網 or LC_YEN_MAX)で分岐し、
+    //   LC安全上限(hardMax)は mode 無関係に常時適用(有効時)。バイアスは ai なら 'none'(上で解決済)=veto なし。
+    // ★LC下限(floorYen)は **委任設定 scalpLcFloorSource に関係なく常に渡す**=強制が委任に勝つ(安全側)。
+    //   下限は「設定の好み」ではなく決済ロジック(利益ロックの床)が成立するための前提条件のため。
     const enforced = enforcePlanConstraintsReport(parsed.plan, {
-      ceilingYen, bias, trend, ceilingMode, lcHardMax: hardMax,
+      ceilingYen, bias, trend, ceilingMode, lcHardMax: hardMax, floorYen,
     });
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
     const guarded = enforceRangeEnabled(enforced.plan, rangeEnabled);

@@ -86,6 +86,9 @@ async function main(): Promise<void> {
           alerts.onPrice(p.symbol, p.price, p.timestamp);
         }
         alerts.onMinute(Date.now());
+        // level 検知は bar 検知と別周期(8秒・monitor の levelsLoop と同じ)。毎ポール(2秒)呼んでよく、
+        // 8秒スロットの重複は onLevelTick 内で弾く。bar 検知/crash/followup/prune の周期は不変。
+        alerts.onLevelTick(Date.now());
       } catch (err) {
         console.error('[collector] poll error:', err instanceof Error ? err.message : err);
       }

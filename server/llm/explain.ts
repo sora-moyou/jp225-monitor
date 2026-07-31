@@ -1,4 +1,5 @@
 import type { NewsItem } from '../types.js';
+import type { AlertEventPayload } from '../../core/types.js';
 import {
   LLM_SYSTEM_PROMPT,
   NEWS_RECENT_WINDOW_MS, NEWS_RECENCY_DECAY_MIN,
@@ -13,8 +14,10 @@ export interface ExplainInput {
   symbolLabel: string;
   changePercent: number;
   windowSeconds: number;
-  detectionKind: 'magnitude' | 'slope' | 'shock' | 'dtb' | 'granville' | 'break' | 'ma' | 'swingdtb'
-    | 'double' | 'ma_sr' | 'level_sr' | 'pivot' | 'trend' | 'crash';
+  // ★暫定対応(第0層で回収): 検知種別の手書きコピーは core/types.ts の union に一本化。
+  //   nwave / dailyband (v0.9.36) がここに無かったため、種別追加時に取りこぼしが起きていた。
+  //   恒久対策(検知種別の単一定義化)は第0層で行う。
+  detectionKind: AlertEventPayload['detectionKind'];
   direction?: 'up' | 'down';
   change15min: number | null;
   pa15min: { open: number; high: number; low: number; current: number } | null;
@@ -95,6 +98,9 @@ export async function explain(input: ExplainInput): Promise<{ text: string; news
     : input.detectionKind === 'level_sr' ? '水準サポレジ'
     : input.detectionKind === 'pivot' ? 'スイング形成'
     : input.detectionKind === 'trend' ? 'トレンド転換'
+    // ★暫定(第0層で回収): 種別ごとの分岐も手書き二重化の一部。nwave/dailyband の取りこぼしを埋める。
+    : input.detectionKind === 'nwave' ? 'N波動(値幅観測)'
+    : input.detectionKind === 'dailyband' ? '日足バンド/MA'
     : input.detectionKind === 'crash' ? '暴落' : 'トレンド';
   // 方向は direction を真の源とし(dtb は changePercent=0 のため符号では判定不可)、無ければ符号で代替。
   const dir = input.direction ?? (input.changePercent >= 0 ? 'up' : 'down');
@@ -117,7 +123,9 @@ export async function explain(input: ExplainInput): Promise<{ text: string; news
     || input.detectionKind === 'ma' || input.detectionKind === 'swingdtb'
     || input.detectionKind === 'double' || input.detectionKind === 'ma_sr'
     || input.detectionKind === 'level_sr' || input.detectionKind === 'pivot'
-    || input.detectionKind === 'trend';
+    || input.detectionKind === 'trend'
+    // ★暫定(第0層で回収): nwave/dailyband も値幅%ではなくパターン局面(changePercent=0)なので急変文にしない。
+    || input.detectionKind === 'nwave' || input.detectionKind === 'dailyband';
   const smallMag = !isTechnicalPattern && Math.abs(input.changePercent) <= 0.15;
   const ultraShort = input.detectionKind === 'slope' || input.windowSeconds <= 60;
   const noiseNotes = [

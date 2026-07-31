@@ -60,7 +60,7 @@ export interface UserConfig {
   scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
   scalpRangeEnabled?: boolean;       // AIエントリー: レンジ判断時の両面ストラドル(実験)。★v0.7.53で実験終了=未設定は false(OFF)。true で再有効化可。
   scalpTrendVetoYen?: number;        // AIエントリー: 直近10分でこの円以上動いたらトレンドと見なし逆行フェード新規を禁止。未設定は 100。0で無効。
-  scalpLcFloorYen?: number;          // ★v0.7.56: AIエントリー 初期LC幅の下限[円](プロンプトにのみ反映)。未設定は 45。
+  scalpLcFloorYen?: number;          // ★AIエントリー 初期LC幅の下限[円]。プロンプト + **コードで強制**(下限未満のレッグを落とす)。未設定は 45。
   dotenEnabled?: boolean;            // ★ドテン(反転)許可。ON=AIが保有中に反転を判断してよい / 未設定/false=OFF(既定・挙動不変)。monitor2 専用UIで設定。
   rangeReevalEnabled?: boolean;      // ★レンジ両指値が平均以上未約定→ブレイク(両逆指値)再評価。未設定/true=ON(既定・ただしレンジ自体が既定OFFなのでレンジ使用時のみ実効) / false=OFF。monitor2 専用UIで設定。
   indicatorsEnabled?: boolean;       // ★テクニカル指標(RSI/SMA/BB)のパネル表示 + AI文脈供給。未設定/true=ON(既定) / false=OFF。表示/文脈のみ(検知は不変)。
@@ -68,7 +68,9 @@ export interface UserConfig {
   scalpChartFallbackText?: boolean;  // ★チャート撮影失敗(ws-error等)時の縮退。未設定/true=ON(2回失敗ならテキストのみでAI継続=全停止防止) / false=ストリクトvision(撮影不可なら見送り)。グローバル(A/B共有)。
   // ★v0.7.56: 委任可能な各 knob の source。'ai'=AIに委任(該当制約を課さない) / それ以外/未設定='manual'(現状の強制)。
   //   既定は全て 'manual'=現状の挙動を一切変えない。ユーザーが1つずつ AI へ倒す枠組み。
-  scalpLcFloorSource?: KnobSource;     // 初期LC下限: manual→プロンプトに下限 / ai→下限を課さない
+  // ★初期LC下限だけは委任の対象外: source が 'ai' でもコードは下限を強制する(強制が委任に勝つ)。
+  //   この設定自体の廃止は別途。当面は「値は使うが mode は下限の強制可否を変えない」意味になる。
+  scalpLcFloorSource?: KnobSource;     // 初期LC下限: mode に関係なくコードで強制(下限未満レッグ落とし)。ai はプロンプト文面だけが変わる
   scalpLcCeilingSource?: KnobSource;   // 最大初期LC: manual→超過レッグ落とし / ai→上限で落とさない(hardMax は別)
   scalpTrendVetoSource?: KnobSource;   // トレンドveto: manual→数値veto / ai→数値veto無効(AI自己判断)
   scalpCooldownSource?: KnobSource;    // クールダウン: manual→ゲート / ai→ゲート無効
@@ -174,7 +176,7 @@ export const PARAM_BOUNDS = {
   scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
   scalpCooldownSec:       { min: 0, max: 3600, default: 90 },   // AIエントリー: 決済後の再ARM抑止秒数。0で無効。
   scalpTrendVetoYen:      { min: 0, max: 1000, default: 100 },  // AIエントリー: トレンド veto 閾値(円)。直近10分でこの円以上動いたら逆行フェードを禁止。0で無効。
-  scalpLcFloorYen:        { min: 20, max: 300, default: 45 },   // ★v0.7.56: AIエントリー 初期LC幅の下限(円)。プロンプトにのみ反映。
+  scalpLcFloorYen:        { min: 20, max: 300, default: 45 },   // ★AIエントリー 初期LC幅の下限(円)。プロンプト + コードで強制(委任でも効く)。
   scalpLcHardMaxYen:      { min: 20, max: 500, default: 150 },  // ★v0.7.56: LC安全上限(円)。有効時は手動/AIとも超過レッグを落とす。
 } as const;
 

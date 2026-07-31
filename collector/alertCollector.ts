@@ -3,8 +3,7 @@ import { feedRealtimePrice, getRealtimeBars } from '../server/feedBars.js';
 import { type AlertSink } from '../server/alertEngine.js';
 import { INSTRUMENTS } from '../server/config.js';
 import { getLatestTick, insertAlertIfNew, getSessionOHLC, type AlertInsert } from '../server/db/store.js';
-import { followupTick } from '../server/alertHistory.js';
-import { getCooldownMs } from '../server/alertCooldown.js';
+import { followupTick, MONITOR_ONLY_KINDS, nearDuplicateWindowMs } from '../server/alertHistory.js';
 import { crashDrawdown, CRASH_DRAWDOWN_PCT, CRASH_HYSTERESIS_PCT } from '../server/crash.js';
 import { classifySession, isWithinOpenGuard } from '../core/session.js';
 import { resolveOpenGuardBars } from '../server/configStore.js';
@@ -19,6 +18,18 @@ import type { AlertEventPayload } from '../server/types.js';
 const NIY = 'NIY=F';
 const META = INSTRUMENTS.find(i => i.symbol === NIY)!;
 
+/** level 検知(break/level_sr/pivot/double/dailyband/nwave)のサンプリング周期。
+ *  ★monitor の levelsLoop(server/loops/levelsLoop.ts の POLL_MS)と同じ 8秒。記録の主体が collector に
+ *    一本化されたので、ここが粗いとそのまま「記録される検知の解像度」が粗くなる。
+ *    実測(実 tick 102,853件・本番検知器のリプレイ・72時間): 60秒格子は 8秒格子の 0.86 倍しか発火せず、
+ *    内訳は break 0.88 / level_sr 0.83 / dailyband 0.80(pivot 1.05・nwave 1.04 は誤差)。
+ *    真に 8秒感度を持つのは「毎サンプル評価する検知器」= break / level_sr / dailyband。
+ *    内部に CHECK_MS=60_000 を持つ double / nwave は外格子を上げても頻度が変わらない(位相が変わるだけ)。
+ *  ★コスト: 1サンプル ≈110ms(実測)→ 8秒周期でデューティ ≈1.4%。同一マシンで monitor が同じ処理を
+ *    既に 8秒で回しているので新規リスクは無い。
+ *  ★bar 検知(shock/trend/ma_sr)と crash はこの周期に巻き込まない(下の onMinute / checkCrash のまま)。 */
+const LEVEL_TICK_MS = 8_000;
+
 /** Collector-side alert driver. One per process; holds the DB handle and a DB-only sink.
  *  Detection runs ONLY from the per-process feedBars realtime buffer (always a continuous,
  *  live-built or freshness-seeded series) — never from raw DB bars, which may contain a gap
@@ -26,10 +37,12 @@ const META = INSTRUMENTS.find(i => i.symbol === NIY)!;
  *  done by the existing freshness-gated `warmFromDb()` in collector/index.ts before the loop. */
 export class AlertCollector {
   private lastMinute = -1;
-  // Near-duplicate guard window. Kept under the configured cooldown so it can NEVER suppress a
-  // legitimate same-direction re-fire (which requires the full cooldown, ≥60s, to elapse), while
-  // still collapsing a realtime-vs-bar twin (≤60s apart) during a brief monitor/collector overlap.
-  private readonly dedupWindowMs = Math.min(60_000, Math.max(0, getCooldownMs() - 1_000));
+  private lastLevelSlot = -1;
+  // Near-duplicate guard window. Shared SSOT with the monitor's fallback path
+  // (server/alertHistory.ts `nearDuplicateWindowMs`) so the two writers can never end up with
+  // different (or one-sided) de-duplication again. Kept under the configured cooldown so it can
+  // NEVER suppress a legitimate same-direction re-fire (which requires the full cooldown, ≥60s).
+  private readonly dedupWindowMs = nearDuplicateWindowMs();
   // 暴落(crash)検知の状態。collector も検知して 24/7 記録する(夜間に監視アプリを閉じていても拾う)。
   private crashSessionKey = '';
   private crashSessionHigh = 0;
@@ -48,6 +61,16 @@ export class AlertCollector {
       return;
     }
     if (isWithinOpenGuard(e.triggeredAt, resolveOpenGuardBars())) return;   // 寄りから3本は collector 側記録も抑制
+    // ★二重記録ドリフトの再発ガード。MONITOR_ONLY_KINDS(server/alertHistory.ts)は「monitor が
+    //   collector 稼働中でも無条件で書く」種別。そこへ collector が書くと、両者の壁時計が違うため
+    //   idx_alerts_identity で衝突せず二重行になる(= v0.6.0 以降ずっと起きていた欠陥そのもの)。
+    //   黙って重複させるより、記録せず大声で落とす(無言の失敗は欠陥)。
+    if (MONITOR_ONLY_KINDS.has(e.detectionKind ?? '')) {
+      console.error(`[alertCollector] ERROR: monitor 専用種別 '${e.detectionKind}' を collector が emit した `
+        + `— 二重記録になるため記録しない。server/alertHistory.ts の MONITOR_ONLY_KINDS と `
+        + `collector の検知器のどちらかが古い(要修正)。`);
+      return;
+    }
     const latest = getLatestTick(this.db, e.symbol);
     const price = latest ? latest.price : (e.pa15min ? e.pa15min.current : 0);
     if (!(price > 0)) return;
@@ -106,17 +129,26 @@ export class AlertCollector {
     }
   }
 
-  /** Run bar-confirmed detection (shock/trend/ma_sr) at most once per minute boundary, then the
-   *  level detectors (break/level_sr/pivot/double + dailyband). Both route through server/detect/registry
-   *  with this collector's OWN per-consumer state. crash stays in checkCrash (independent seeding). */
+  /** Run bar-confirmed detection (shock/trend/ma_sr) at most once per minute boundary.
+   *  確定1分足からの検知なので分境界より細かく回す意味は無い(周期は据え置き)。
+   *  ★level 検知はここから切り離してある(onLevelTick / 8秒)。crash は checkCrash(独自シード)。 */
   onMinute(now: number): void {
     const minute = Math.floor(now / 60_000);
     if (minute === this.lastMinute) return;
     this.lastMinute = minute;
-    // bar 検知(従来どおり): shock/trend/ma_sr。realtime バッファのみ。
     runBarDetectors(this.barsForNiy(), META, now, this.sink, this.barState);
-    // level 検知(v0.x STEP6 追加): 従来 collector が出していなかった break/level_sr/pivot/double/dailyband を
-    // registry 経由で同じロジックで記録する。stale 価格では発火しない(levelsLoop と同じ鮮度ゲート)。
+  }
+
+  /** level 検知(break/level_sr/pivot/double/dailyband/nwave)を LEVEL_TICK_MS(8秒)ごとに1回実行する。
+   *  呼び出し側はポーリング周期(2秒)ごとに毎回呼んでよい — 8秒スロットの重複実行はここで弾く。
+   *  registry 経由で levelsLoop と同じロジック。stale 価格では発火しない(levelsLoop と同じ鮮度ゲート)。
+   *  ★これらは monitor(levelsLoop)も検知するが、alerts に書くのは collector 稼働中は collector だけ
+   *    (monitor 側は server/alertHistory.ts の monitorPersistMode が 'skip' を返す)。だからこの周期が
+   *    そのまま「記録に残る検知の解像度」になる = monitor と同じ 8秒に揃える必要がある。 */
+  onLevelTick(now: number): void {
+    const slot = Math.floor(now / LEVEL_TICK_MS);
+    if (slot === this.lastLevelSlot) return;
+    this.lastLevelSlot = slot;
     try {
       const a = computeLevelAnalytics(this.db, now, this.levelState);
       if (a && now - a.latest.t <= DETECT_FRESH_MS) runLevelDetectors(this.db, a, now, this.levelState, this.sink);

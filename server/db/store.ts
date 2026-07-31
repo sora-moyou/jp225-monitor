@@ -80,6 +80,12 @@ export function initSchema(db: DatabaseSync): void {
   //   同じ行に残す。既存DBへ後付けマイグレーション(NULL 可=旧行/価格が取れなかった行)。
   if (!stCols.includes('armed_t')) db.exec('ALTER TABLE signal_trades ADD COLUMN armed_t INTEGER');
   if (!stCols.includes('armed_price')) db.exec('ALTER TABLE signal_trades ADD COLUMN armed_price REAL');
+  // ★武装したのに一度も約定せず armed-timeout で失効した回数(系統別・永続)。
+  //   これが無いと「monitor は武装 → trade2 が拒否し続ける → 15分後に黙って失効」が完全に無音になる
+  //   (実測 sid=361 は trade2 が147回拒否したが monitor 側にカウンタも警告も無かった)。
+  const smCols = (db.prepare('PRAGMA table_info(signal_meta)').all() as Array<{ name: string }>).map(c => c.name);
+  if (!smCols.includes('armed_timeouts')) db.exec('ALTER TABLE signal_meta ADD COLUMN armed_timeouts INTEGER NOT NULL DEFAULT 0');
+  if (!smCols.includes('last_armed_timeout_at')) db.exec('ALTER TABLE signal_meta ADD COLUMN last_armed_timeout_at INTEGER');
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
@@ -238,20 +244,47 @@ export function insertAlert(db: DatabaseSync, a: AlertInsert): void {
     a.referenceKind ?? null, a.referencePrice ?? null);
 }
 
+/** 近接重複とみなす基準価格(reference_price)の許容差(円)。
+ *
+ *  ★この値は検知器側の「同じ水準」の定義(server/detect/registry.ts の LEVEL_MERGE_YEN)と同一でなければ
+ *    ならない。理由:
+ *    ①検知器は hlLevels を作るとき互いに ±LEVEL_MERGE_YEN 以内の水準を1本に畳む。したがって
+ *      **1つの writer が同時に出す基準価格は必ず 40円より離れている**(= 40円以内の2件は同じ水準)。
+ *    ②emit のクールダウンキーも `${direction}@${round(price/40)*40}`(zone/dailyband/dailyMa 共通)で、
+ *      同一 writer は同じ 40円ゾーンを 20〜30分は再発火しない。よって ±40円で潰しても
+ *      「検知器が別物として出した水準」を消すことは原理的に無い。
+ *    ③一方 dailyband/dailyMa の基準価格は現値を終値系列に足して毎ティック再計算する(MA5 なら
+ *      現値変動の 1/5 が直接乗る)ため、monitor と collector の数秒差でも数円〜十数円ずれる。
+ *      完全一致にすると、この種別の「双子」だけ重複排除をすり抜ける。
+ *  → 完全一致でもゾーン無しでもなく、検知器と同じ 40円ゾーンで判定する。
+ *    server/db/insertAlertIfNew.test.ts が registry の LEVEL_MERGE_YEN との一致を検査する。 */
+export const ALERT_DEDUP_PRICE_YEN = 40;
+
 /** Insert an alert only if no row with the same symbol+direction+detection_kind+window_seconds
- *  exists within [triggeredAt - dedupWindowMs, triggeredAt + dedupWindowMs]. Cross-process
- *  near-duplicate guard (monitor + collector overlap). Returns true if inserted. */
+ *  **and the same reference level** exists within [triggeredAt - dedupWindowMs, triggeredAt +
+ *  dedupWindowMs]. Cross-process near-duplicate guard (monitor + collector overlap).
+ *
+ *  ★reference_price を含めるのが要点。含めないと「60秒以内の別水準の同種同方向」(例: 64,200 の
+ *    上抜けと 64,500 の上抜け)が重複扱いで消える = 重複排除ではなくデータ損失だった。
+ *    collector の level 検知が 8秒周期になり本関数の呼び出しが 7.5倍になるため、キーの正しさが
+ *    そのまま記録の正しさになる。
+ *  ★NULL の扱い: 「両方 NULL」だけを同一とみなす(片方だけ NULL は別物)。基準価格を持つ種別と
+ *    持たない種別は別経路なので、双子は必ず同じ NULL 性で来る。 */
 export function insertAlertIfNew(db: DatabaseSync, a: AlertInsert, dedupWindowMs: number): boolean {
+  const ref = a.referencePrice ?? null;
   const dup = db.prepare(`
     SELECT 1 FROM alerts
     WHERE symbol = ? AND direction = ? AND detection_kind = ?
       AND (window_seconds IS ? OR window_seconds = ?)
       AND triggered_at >= ? AND triggered_at <= ?
+      AND ( (reference_price IS NULL AND ? IS NULL)
+         OR (reference_price IS NOT NULL AND ? IS NOT NULL AND ABS(reference_price - ?) <= ?) )
     LIMIT 1
   `).get(
     a.symbol, a.direction, a.detectionKind,
     a.windowSeconds, a.windowSeconds,
     a.triggeredAt - dedupWindowMs, a.triggeredAt + dedupWindowMs,
+    ref, ref, ref, ALERT_DEDUP_PRICE_YEN,
   );
   if (dup) return false;
   insertAlert(db, a);
@@ -406,10 +439,38 @@ export function setSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter,
     .run(system, value);
 }
 
-/** signalId 永続カウンタを 0 へリセットする(履歴消去時のみ)。未指定=全系統をリセット。 */
+/** signalId 永続カウンタを 0 へリセットする(履歴消去時のみ)。未指定=全系統をリセット。
+ *  ★未約定失効カウンタも同じ契機で 0 に戻す(履歴と食い違わせない)。 */
 export function resetSignalIdCounter(db: DatabaseSync, system?: SignalSystemFilter): void {
-  if (system) db.prepare('INSERT INTO signal_meta(system, last_signal_id) VALUES(?, 0) ON CONFLICT(system) DO UPDATE SET last_signal_id = 0').run(system);
-  else db.exec('UPDATE signal_meta SET last_signal_id = 0');
+  if (system) {
+    db.prepare('INSERT INTO signal_meta(system, last_signal_id) VALUES(?, 0) ON CONFLICT(system) DO UPDATE SET last_signal_id = 0, armed_timeouts = 0, last_armed_timeout_at = NULL').run(system);
+  } else {
+    db.exec('UPDATE signal_meta SET last_signal_id = 0, armed_timeouts = 0, last_armed_timeout_at = NULL');
+  }
+}
+
+// ─── 未約定失効(armed-timeout)カウンタ ───────────────────────────────
+// 「武装したが一度も約定せず ARMED_TIMEOUT_MS で失効した」回数。monitor が正規シグナルを出したのに
+// trade2 が受け取ってから拒否し続ける(=乖離)と、その終着点が必ずここになる。実測 sid=361(2026-07-30)は
+// trade2 が6秒おきに147回拒否したのに monitor 側の記録は1行ログのみ・件数はどこにも残らなかった。
+// 系統別(A=実売買 / B=紙専用)に永続し、履歴消去でのみ 0 に戻る。
+
+export interface ArmedTimeoutStats { count: number; lastAt: number | null }
+
+/** 指定系統の未約定失効の累計と最終発生時刻(未発生は {0, null})。 */
+export function getArmedTimeoutStats(db: DatabaseSync, system: SignalSystemFilter): ArmedTimeoutStats {
+  const row = db.prepare('SELECT armed_timeouts, last_armed_timeout_at FROM signal_meta WHERE system = ?').get(system) as
+    { armed_timeouts: number | null; last_armed_timeout_at: number | null } | undefined;
+  return { count: row?.armed_timeouts ?? 0, lastAt: row?.last_armed_timeout_at ?? null };
+}
+
+/** 未約定失効を1件加算し、発生時刻を記録する。加算後の累計を返す。 */
+export function bumpArmedTimeout(db: DatabaseSync, system: SignalSystemFilter, at: number): ArmedTimeoutStats {
+  db.prepare(
+    'INSERT INTO signal_meta(system, last_signal_id, armed_timeouts, last_armed_timeout_at) VALUES(?, 0, 1, ?) '
+    + 'ON CONFLICT(system) DO UPDATE SET armed_timeouts = signal_meta.armed_timeouts + 1, last_armed_timeout_at = excluded.last_armed_timeout_at',
+  ).run(system, at);
+  return getArmedTimeoutStats(db, system);
 }
 
 // ─── トレードシグナルの決済逆指値(exit-stop)遷移履歴(検証用・RECORD-ONLY) ───
