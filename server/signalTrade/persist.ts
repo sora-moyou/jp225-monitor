@@ -82,6 +82,12 @@ export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | nul
   //   「武装時点でエントリー価格を通過済みだったか」が事後に判定できる(ticks 代用では一致しないため必須)。
   if (t.armedAt != null) ins.armedT = t.armedAt;
   if (t.armedPrice != null) ins.armedPrice = t.armedPrice;
+  // ★決済パラメータ分析用(RECORD-ONLY): 決済理由 / 約定レッグの初期LC / 決済時点の含み益ピーク。
+  //   RecordedTrade 側では必須(型で記録漏れを禁止)だが、ここでは非有限を弾いて NULL に落とす
+  //   (壊れた数値を列に入れて後の集計を汚さない。理由は union なので常に載る)。
+  ins.exitReason = t.exitReason;
+  if (Number.isFinite(t.exitInitialStop)) ins.exitInitialStop = t.exitInitialStop;
+  if (Number.isFinite(t.peakProfit)) ins.peakProfit = t.peakProfit;
   return ins;
 }
 

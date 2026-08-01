@@ -181,7 +181,12 @@ describe('advance', () => {
     expect(next.phase).toBe('flat');
     // 逆指値トリガ=37950 だが成行決済で不利−5円=37945 で約定・pnl=37945−38000=−55(ロング決済スリップ)。
     expect(next.lastExit).toEqual({ exitPrice: 37945, pnl: -55, at: 2000 });
-    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37945, pnl: -55, qty: 1, rationale: 'r' });
+    // ★記録専用(決済パラメータ分析用): 決済記録に必須3点(理由/約定レッグ初期LC/含み益ピーク)が加わった。
+    //   決済の判断・価格・タイミング(exitPrice/pnl/exitT)は上と同じで一切変わっていない。
+    expect(recorded).toEqual({
+      entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37945, pnl: -55, qty: 1, rationale: 'r',
+      exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
+    });
   });
 
   it('filled → 含み益が乗るだけでは決済せず peakProfit を更新', () => {
@@ -1289,6 +1294,8 @@ describe('buildSettingsSnapshot(config から実効設定)', () => {
 describe('buildSignalTradeInsert(系統タグ)', () => {
   const base: RecordedTrade = {
     entryT: 1000, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 38050, pnl: 50, qty: 1, rationale: 'x',
+    // ★決済記録の必須3点(記録専用)。この describe の検証対象は系統タグ/signalId なので固定値。
+    exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
   };
   it('A(null)は system 省略(=既存挙動)・mode=directional', () => {
     const ins = buildSignalTradeInsert(base, null);
@@ -1554,7 +1561,11 @@ describe('directional は range 変更の影響を受けない(byte 互換)', ()
     expect(next.phase).toBe('flat');
     // 逆指値トリガ=37950・成行決済で不利−5円=37945 約定・pnl=37945−38000=−55(mode/rangeTp は付かない)。
     expect(next.lastExit).toEqual({ exitPrice: 37945, pnl: -55, at: 2000 });
-    expect(recorded).toEqual({ entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37945, pnl: -55, qty: 1, rationale: 'r' });
+    expect(recorded).toEqual({
+      entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37945, pnl: -55, qty: 1, rationale: 'r',
+      // ★記録専用(決済パラメータ分析用): 必須3点。決済の判断・価格・タイミングは不変(mode/rangeTp は付かないまま)。
+      exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
+    });
     expect(recorded?.mode).toBeUndefined();
   });
   it('computeHold は従来どおり(exitStop=restingStopOf・rangeTp/tpTrigger 無し)', () => {

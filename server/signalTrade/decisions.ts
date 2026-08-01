@@ -8,6 +8,7 @@
 import type { SignalTradeState, SignalSettingsSnapshot } from '../types.js';
 import type { RangeLeg, AiPlan } from '../llm/openai.js';
 import { computeExitStop } from './exit/index.js';
+import type { ExitReason } from '../../core/exitReasons.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
 
@@ -117,6 +118,18 @@ export interface RecordedTrade {
   doten?: true;   // ★ドテン(反転)関連トレード(add-only)。P の反転決済 or 反転建玉の決済。meta.doten に残す。
   armedAt?: number;      // ★遡り解析用: この建玉の ARM 時刻 → signal_trades.armed_t(entryT−armedAt=ARM→約定の経過)。
   armedPrice?: number;   // ★遡り解析用: ARM 時点の価格 → signal_trades.armed_price(取れない/stale は欠落=NULL)。
+  // ── ★決済パラメータ分析用(RECORD-ONLY・必須3点)。決済の判断/価格/タイミングには一切関与しない ──────
+  //   ★必須(optional にしない)理由: 決済経路が増えたときに「記録だけ忘れる」ことを型で不可能にするため。
+  //     RecordedTrade を作る = この3つを埋める、以外の道が無い(core/exitReasons.ts の契約を参照)。
+  /** R1: 決済理由。どの経路で建玉が閉じたか(core/exitReasons.ts の表のキー)。 */
+  exitReason: ExitReason;
+  /** R2: **約定したレッグ**の初期LC(絶対価格)= OpenPosition.initialStop。
+   *   ★meta.settings の LC は「代表レッグ(指値優先)」の幅であり、2レッグのブラケットでは実際に約定した
+   *     レッグと食い違う。反実仮想(初期LCを変えていたら)には約定レッグの実値でなければ再現できない。 */
+  exitInitialStop: number;
+  /** R3: 決済時点の含み益ピーク[pt]= OpenPosition.peakProfit(エンジンがラチェット床の決定に使っている値そのもの)。
+   *   これで「床の何段目が効いたか」が設定値から逆算でき、各エントリーの MFE が価格再生なしで分かる。 */
+  peakProfit: number;
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -431,10 +444,16 @@ export function advance(
     //   directional / rangeTp 無しの建玉はこの分岐に入らず、既存の phase-exit(下)へ落ちる=byte 不変。
     if (pos.mode === 'range' && pos.rangeTp != null) {
       // 決済記録の共通組み立て(range タグ + planMeta/settings 引き継ぎ)。
-      const mkRecorded = (exitPrice: number, pnl: number): RecordedTrade => {
+      //   ★RECORD-ONLY: 決済理由(reason)は「どちらの条件で閉じたか」を呼び出し側が渡す(判断は下の分岐のまま=不変)。
+      const mkRecorded = (exitPrice: number, pnl: number, reason: ExitReason): RecordedTrade => {
         const r: RecordedTrade = {
           entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
           exitT: now, exitPrice, pnl, qty: pos.qty, rationale: pos.rationale, mode: 'range',
+          // ★記録3点: 約定レッグの初期LC(レンジ建玉は固定=ラチェットしない)と、この建玉の含み益ピーク。
+          //   ★レンジ建玉は peakProfit を約定時から更新しない(下の「peak 更新は range 決済に不要」参照)。
+          //     つまりここに載るのは「約定 tick 時点のピーク」であって MFE ではない。エンジンが持っている値を
+          //     そのまま残す(記録のために保有中の状態更新を足すと、それは挙動変更になるため足さない)。
+          exitReason: reason, exitInitialStop: pos.initialStop, peakProfit: pos.peakProfit,
         };
         if (pos.planMeta) r.planMeta = pos.planMeta;
         if (pos.settings) r.settings = pos.settings;
@@ -446,7 +465,7 @@ export function advance(
       if (stopHit != null) {
         const exitFill = withExitSlip(stopHit, pos.direction);   // 成行決済=不利1tick
         const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
-        return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl) };
+        return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl, 'range_stop') };
       }
       // 利側: 反対側レンジ節目の手前(RANGE_TP_OFFSET_YEN 内側)に達したら成行(=現在値)で決済。
       const trigger = rangeTpTrigger(pos.direction, pos.rangeTp);
@@ -454,7 +473,7 @@ export function advance(
       if (tpHit) {
         const exitFill = withExitSlip(price, pos.direction);   // 成行決済=不利1tick
         const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
-        return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl) };
+        return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl, 'range_tp') };
       }
       // どちらも未到達 → 保有継続(peak 更新は range 決済に不要)。
       return { next: { phase: 'filled', position: pos, lastExit: st.lastExit } };
@@ -471,6 +490,13 @@ export function advance(
     const recorded: RecordedTrade = {
       entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
       exitT: now, exitPrice: exitFill, pnl, qty: pos.qty, rationale: pos.rationale,
+      // ★R1(RECORD-ONLY): ヒットした逆指値が初期LC そのものなら「初期LC」、そうでなければ「ラチェット床」。
+      //   computeExitStop(非公開 phase-exit)は床が未発動/初期LC より不利なとき initialStop を **そのまま返す**
+      //   契約なので、この同値比較で両者を判別できる(非公開の閾値/段数をここに持ち込まない=公開リポは不変)。
+      //   ★簡易フォールバック(公開ビルド=ラチェット無し)では常に initialStop → 常に 'initial_stop' で正しい。
+      exitReason: stop === pos.initialStop ? 'initial_stop' : 'ratchet_floor',
+      // ★R2: 約定レッグの初期LC(建玉に載っている実値)。R3: この tick で更新済みの含み益ピーク(=床の決定に使った値)。
+      exitInitialStop: pos.initialStop, peakProfit: peak,
     };
     // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
     if (pos.mode === 'range') recorded.mode = 'range';
@@ -693,6 +719,9 @@ export function reverseToDoten(
   const recorded: RecordedTrade = {
     entryT: p.at, entryPrice: p.entryPrice, dir: p.direction,
     exitT: now, exitPrice: exitFill, pnl, qty: p.qty, rationale: p.rationale, doten: true,
+    // ★記録3点(RECORD-ONLY): ドテンは逆指値ではなく成行クローズなので理由は 'doten'。
+    //   初期LC/ピークは「もし決済せず持っていたら」の反実仮想に要るので、P 自身の値をそのまま残す。
+    exitReason: 'doten', exitInitialStop: p.initialStop, peakProfit: p.peakProfit,
   };
   if (p.mode === 'range') recorded.mode = 'range';
   if (p.planMeta) recorded.planMeta = p.planMeta;

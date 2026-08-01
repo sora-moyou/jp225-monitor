@@ -109,6 +109,8 @@ describe('planToArmed: ARM 時点価格は載せない(engine が live 価格を
 describe('buildSignalTradeInsert: armedT / armedPrice を挿入行へ', () => {
   const base: RecordedTrade = {
     entryT: 2_000, entryPrice: 38000, dir: 'buy', exitT: 3_000, exitPrice: 38050, pnl: 50, qty: 1, rationale: 'r',
+    // ★決済記録の必須3点(記録専用)。この describe の検証対象は armed_t/armed_price なので固定値。
+    exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
   };
   it('在れば載せる', () => {
     const ins = buildSignalTradeInsert({ ...base, armedAt: 1_000, armedPrice: 37990 }, null, 5);

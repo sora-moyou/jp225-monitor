@@ -80,6 +80,18 @@ export function initSchema(db: DatabaseSync): void {
   //   同じ行に残す。既存DBへ後付けマイグレーション(NULL 可=旧行/価格が取れなかった行)。
   if (!stCols.includes('armed_t')) db.exec('ALTER TABLE signal_trades ADD COLUMN armed_t INTEGER');
   if (!stCols.includes('armed_price')) db.exec('ALTER TABLE signal_trades ADD COLUMN armed_price REAL');
+  // ★決済パラメータ分析用(RECORD-ONLY): 実際の決済を後から再現するための3点。
+  //   exit_reason       … どの経路で閉じたか(core/exitReasons.ts の表のキー)。従来は決済理由が一切残らず、
+  //                       rationale はエントリー時の文言の使い回しだったため「初期LCで切られたのか床で利確したのか」
+  //                       すら事後に判別できなかった。
+  //   exit_initial_stop … **約定したレッグ** の初期LC(絶対価格)。meta.settings の LC は代表レッグ(指値優先)の
+  //                       幅であり、2レッグのブラケットでは実際に約定したレッグと食い違う(監査で確認済み)。
+  //   peak_profit       … 決済時点の含み益ピーク[pt](ラチェット床の決定に使っている値そのもの)。床の何段目が
+  //                       効いたかが設定値から逆算でき、各エントリーの MFE も価格再生なしで分かる。
+  //   既存DBへ後付けマイグレーション(NULL 可=旧行)。決済ロジックには一切関与しない。
+  if (!stCols.includes('exit_reason')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_reason TEXT');
+  if (!stCols.includes('exit_initial_stop')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_initial_stop REAL');
+  if (!stCols.includes('peak_profit')) db.exec('ALTER TABLE signal_trades ADD COLUMN peak_profit REAL');
   // ★武装したのに一度も約定せず armed-timeout で失効した回数(系統別・永続)。
   //   これが無いと「monitor は武装 → trade2 が拒否し続ける → 15分後に黙って失効」が完全に無音になる
   //   (実測 sid=361 は trade2 が147回拒否したが monitor 側にカウンタも警告も無かった)。
@@ -372,6 +384,9 @@ export interface SignalTradeRow {
   signal_id: number | null; // ★検証用: そのトレードの ARM 采番(trade2 の signal_id と join)。NULL=旧行/未采番。
   armed_t: number | null;     // ★ARM(武装)時刻。entry_t − armed_t = ARM→約定の経過[ms]。NULL=旧行。
   armed_price: number | null; // ★ARM 時点で monitor が見ていた価格(新鮮値)。NULL=旧行/取れない・stale。
+  exit_reason: string | null;       // ★決済理由(core/exitReasons.ts のキー)。NULL=旧行。
+  exit_initial_stop: number | null; // ★約定レッグの初期LC(絶対価格)。NULL=旧行。
+  peak_profit: number | null;       // ★決済時点の含み益ピーク[pt]。NULL=旧行。
 }
 
 export interface SignalTradeInsert {
@@ -383,6 +398,9 @@ export interface SignalTradeInsert {
   signalId?: number | null;    // ★検証用: ARM 采番。trade2 側の signal_id と equijoin する結合キー。未指定は NULL。
   armedT?: number | null;      // ★ARM(武装)時刻。未指定は NULL(=旧行と同じ)。
   armedPrice?: number | null;  // ★ARM 時点で monitor が見ていた価格。取れない/stale は NULL。
+  exitReason?: string | null;       // ★決済理由(core/exitReasons.ts のキー)。未指定は NULL。
+  exitInitialStop?: number | null;  // ★約定レッグの初期LC(絶対価格)。未指定/非有限は NULL。
+  peakProfit?: number | null;       // ★決済時点の含み益ピーク[pt]。未指定/非有限は NULL。
 }
 
 // ★v0.8.2: 系統フィルタ。'A' は NULL 行も含む(既存/A の行)。'B' は 'B' 行のみ。未指定は全件。
@@ -395,11 +413,12 @@ function systemWhere(system: SignalSystemFilter | undefined): { clause: string; 
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
     t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null,
-    t.armedT ?? null, t.armedPrice ?? null);
+    t.armedT ?? null, t.armedPrice ?? null,
+    t.exitReason ?? null, t.exitInitialStop ?? null, t.peakProfit ?? null);
 }
 
 /** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。
