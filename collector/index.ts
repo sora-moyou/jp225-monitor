@@ -2,6 +2,19 @@
 // v0.5.00: デーモン単独でアラート検知→DB記録(単一ライター・ハートビート調停)。アプリ閉でも24/7記録。
 // v0.7.20: 価格源を公開 HTTP のみに統一(socket / Yahoo backfill を全廃)。
 import { openDb, resolveDbPath, pruneTicks } from '../server/db/store.js';
+// ★ティック長期保管(将来の分析用・RECORD-ONLY)。共有DB(jp225.db)とは別ファイルに NIY=F だけを溜め、
+//   自動削除は一切置かない。理由と設計は server/db/tickArchive.ts の冒頭コメント参照。
+import {
+  openTickArchiveDb, resolveTickArchiveDbPath, archiveTicks,
+  resolveTickExportDir, runDailyTickExport,
+} from '../server/db/tickArchive.js';
+// ★保管の健全性を **共有DB(jp225.db)の meta** に書く。専用DBは trade2 の 30分スナップショット
+//   (prices_<host>.db = jp225.db 全体の VACUUM INTO)に含まれないため、状態だけを共有DB側に置いて
+//   既存の書き出し経路にそのまま乗せる。設計と理由は server/db/tickArchiveHeartbeat.ts の冒頭参照。
+import {
+  writeTickArchiveHeartbeat, formatTickArchiveStatus, TICK_ARCHIVE_HEARTBEAT_MS,
+  type TickArchiveExportInfo, type TickArchiveErrorInfo,
+} from '../server/db/tickArchiveHeartbeat.js';
 import { recordFeedPrices } from './record.js';
 // v0.7.20(全銘柄 HTTP 化): 価格の主経路を monitor の priceLoop と同一にする。socket / Yahoo realtime を全廃し、
 // 監視 4 銘柄すべてを公開 HTTP から取る: ajax_cme.js(NIY=F/YM=F/NQ=F)+ ajax_fx.js(JPY=X)。両者とも毎 GET
@@ -25,6 +38,8 @@ process.noDeprecation = true;
 export const COLLECTOR_VERSION = '0.5.00';
 const POLL_MS = 2000;
 const IDLE_MS = 30_000;
+/** 日次ティック書き出しの点検間隔。対象は1日1回しか増えないので1時間で十分。 */
+const TICK_EXPORT_CHECK_MS = 60 * 60_000;
 
 // 公開 HTTP(ajax_cme/ajax_fx)へのポライトネス: collector は 2s ポールだが、monitor の priceLoop も同じ
 // エンドポイントを叩くため、collector 側の GET は ~4s に間引く(直近取得をキャッシュ)。
@@ -50,7 +65,14 @@ async function main(): Promise<void> {
   if (!acquireLock()) { console.log('[collector] another instance is running — exiting'); return; }
   const dbPath = resolveDbPath();
   const db = openDb(dbPath);
+  const archivePath = resolveTickArchiveDbPath();
+  const archiveDb = openTickArchiveDb(archivePath);
+  const tickExportDir = resolveTickExportDir();
   console.log(`[collector ${COLLECTOR_VERSION}] db=${dbPath}`);
+  console.log(`[collector] tick archive=${archivePath} (NIY=F only, no auto-prune)`);
+  console.log(tickExportDir
+    ? `[collector] tick daily export -> ${tickExportDir}`
+    : '[collector] tick daily export DISABLED (no export dir configured — ticks still accumulate in the archive DB)');
   console.log(`[collector] started ${new Date().toISOString()} (node ${process.version})`);
 
   // v0.7.20(全銘柄 HTTP 化 / no-Yahoo): 起動時 Yahoo backfill を全廃した。全 4 銘柄(NIY=F/YM=F/NQ=F/JPY=X)の
@@ -67,6 +89,13 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { running = false; });
 
   let lastPrune = 0;
+  let lastTickExport = 0;   // 0 = 起動直後に1回走らせる(取りこぼした過去日を拾う)
+  // ★ティック保管の健全性ハートビート用の状態。失敗と最終書き出しは「最後に分かっている事実」を
+  //   持ち回り、ハートビートに毎回渡す(渡さない回は前回の値が meta 側で引き継がれる)。
+  let lastTickHeartbeat = 0;   // 0 = 起動直後に1回書く(起動した瞬間から状態が見える)
+  let lastTickExportInfo: TickArchiveExportInfo | null = null;
+  let lastTickArchiveError: TickArchiveErrorInfo | null = null;
+  let lastTickArchiveState = '';
   while (running) {
     const start = Date.now();
     let wait = IDLE_MS;
@@ -77,6 +106,12 @@ async function main(): Promise<void> {
         // fetchAjaxThrottled は既に fresh(stale:false)のみを返す(mergeSources 済み)。
         const prices = await fetchAjaxThrottled(start);
         recordFeedPrices(db, prices);
+        // ★長期保管(別ファイル・NIY=F のみ)。共有DBへの記録とは独立=既存の記録経路は一切変えない。
+        try { archiveTicks(archiveDb, prices); } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          lastTickArchiveError = { at: Date.now(), where: 'archive', message };
+          console.error('[collector] tick archive error:', message);
+        }
         // Feed the realtime detector for the SAME set the monitor's priceLoop feeds: all fresh
         // (non-stale) prices, no session gate here. The sink stamps session metadata per alert;
         // the engine only fires for NIY=F. recordFeedPrices already handles DB persistence + its
@@ -96,14 +131,57 @@ async function main(): Promise<void> {
     }
     if (start - lastFollowup > 30_000) { try { alerts.followup(start); } catch { /* ignore */ } lastFollowup = start; }
     // 1分に1回、3日より古い tick を間引く (bars_1m は長期保持)
+    // ★共有DB(jp225.db)側の保持方針は **一切変えない**: 4銘柄とも従来どおり3日で消す。
+    //   長期保管は別ファイル(ticks_archive.db)の役目で、そちらには prune を置かない。
+    //   共有DBを太らせると trade2 の 30分ごとの `VACUUM INTO`(実測 102MB で約1.3秒の同期ブロック)が
+    //   重くなり、実弾のフィード/発注/約定検知を止めてしまう。
     if (Date.now() - lastPrune > 60_000) {
       pruneTicks(db, Date.now() - 3 * 24 * 60 * 60 * 1000);
       lastPrune = Date.now();
+    }
+    // ★確定済みの過去日を1日1ファイルで同期フォルダへ書き出す(append-only・冪等・既存ファイルは触らない)。
+    //   1時間に1回で十分(1日1回しか対象が増えない)。失敗しても収集は止めない。
+    if (tickExportDir && Date.now() - lastTickExport > TICK_EXPORT_CHECK_MS) {
+      lastTickExport = Date.now();
+      try {
+        for (const r of runDailyTickExport(archiveDb, Date.now(), tickExportDir)) {
+          if (r.skipped) continue;
+          lastTickExportInfo = { at: Date.now(), sessionDate: r.sessionDate, file: r.file, rows: r.rows };
+          console.log(`[collector] tick export ${r.file} rows=${r.rows} bytes=${r.bytes}`);
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        lastTickArchiveError = { at: Date.now(), where: 'export', message };
+        console.error('[collector] tick export error:', message);
+      }
+    }
+    // ★ティック保管の健全性を共有DB(jp225.db)の meta に書く。**inPollWindow の外でも必ず書く**:
+    //   場外で更新が止まると「収集が死んだ」と区別がつかなくなる(場外は idle として記録する)。
+    //   保管は「1年後に効く」機構で、最悪の失敗形は「書けていないのに1年間気づかない」ことなので、
+    //   状態は常時・自動で書き出しに乗せる。取引経路(signalTrade)からは一切呼ばない。
+    if (Date.now() - lastTickHeartbeat >= TICK_ARCHIVE_HEARTBEAT_MS) {
+      lastTickHeartbeat = Date.now();
+      try {
+        const hb = writeTickArchiveHeartbeat(db, archiveDb, {
+          now: lastTickHeartbeat, exportDir: tickExportDir,
+          lastExport: lastTickExportInfo, lastError: lastTickArchiveError,
+        });
+        // 状態が変わった時だけログに出す(毎分出すと誰も読まなくなる = 実質的な無音)。
+        if (hb.state !== lastTickArchiveState) {
+          lastTickArchiveState = hb.state;
+          const line = `[collector] tick archive: ${formatTickArchiveStatus(hb)}`;
+          if (hb.state === 'stalled' || hb.state === 'error') console.error(line); else console.log(line);
+        }
+      } catch (e) {
+        // ここが失敗すると健全性そのものが無音になるので、必ず声を出す。
+        console.error('[collector] tick archive heartbeat FAILED:', e instanceof Error ? e.message : e);
+      }
     }
     await new Promise(r => setTimeout(r, Math.max(0, wait - (Date.now() - start))));
   }
   releaseLock();
   db.close();
+  try { archiveDb.close(); } catch { /* ignore */ }
   console.log('[collector] stopped');
 }
 

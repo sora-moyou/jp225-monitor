@@ -34,6 +34,7 @@ import {
 import type { ScalpPlanResult } from '../llm/openai.js';
 import { checkRefDrift, recheckArmedSanity } from './armGate.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
+import { exitConfigStamp, warmExitConfigHash } from './exitConfigVersion.js';
 
 // 純粋な決定コア(型/純関数)と永続化ビルダーは従来どおり engine.js から公開する(import 元を変えない)。
 export * from './decisions.js';
@@ -210,6 +211,9 @@ export class SignalEngine {
     if (!engineEnabled()) { console.log(`${this.logTag} disabled (SIGNAL_TRADE=0)`); return; }
     if (this.cfg.profile === 'B' && !engineBEnabled()) { console.log('[signalTradeB] disabled (SIGNAL_TRADE_B=0)'); return; }
     const kind = await loadExitImpl();
+    // ★決済設定の指紋を起動時に1回だけ温める(RECORD-ONLY)。実装が確定した直後のここで計算しておけば、
+    //   決済確定時の記録経路には残らない(実測 10.7ms/回・以後はキャッシュ)。取引の判断には一切使わない。
+    warmExitConfigHash();
     // ★signalId を永続値からシード(再起動を跨いで継続=1 へ戻らない)。reset() は in-memory 0 化だが
     //   実運用の起動はここで必ず永続から復元する(履歴消去でのみ 0 になった値を尊重)。
     this.loadSignalIdCounter();
@@ -258,7 +262,10 @@ export class SignalEngine {
     try {
       const db = openDb(resolveDbPath());
       try {
-        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag, this.currentSignal?.signalId));
+        // ★決済設定の版(RECORD-ONLY): この取引がどの決済設定で閉じられたかを後から特定できるようにする。
+        //   値は載せない(整数版番号 + 振る舞いハッシュのみ)。取得に失敗しても null で記録は続行する。
+        const exitCfg = exitConfigStamp(db, t.exitT);
+        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag, this.currentSignal?.signalId, exitCfg));
       } finally { db.close(); }
     } catch (e) {
       console.warn(`${this.logTag} persist failed:`, e instanceof Error ? e.message : String(e));

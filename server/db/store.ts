@@ -92,6 +92,14 @@ export function initSchema(db: DatabaseSync): void {
   if (!stCols.includes('exit_reason')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_reason TEXT');
   if (!stCols.includes('exit_initial_stop')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_initial_stop REAL');
   if (!stCols.includes('peak_profit')) db.exec('ALTER TABLE signal_trades ADD COLUMN peak_profit REAL');
+  // ★決済設定の「版」(RECORD-ONLY): この取引がどの決済設定で閉じられたかを後から特定するための2列。
+  //   exit_cfg_version … 単調増加の整数版番号(初出順に 1,2,3…)。ハッシュだけでは順序が読めないため別に持つ。
+  //   exit_cfg_hash    … 決済関数の振る舞い指紋(16桁hex)。**値そのものは記録しない**(記録は同期フォルダ
+  //                      経由で機外に出るため。決済ラダーの実数値は非公開)。
+  //   値が固定の今から記録を始める(今日から version=1)。後から始めると、それ以前の行が「版が不明」なのか
+  //   「版1」なのか区別できなくなる。既存DBへ後付けマイグレーション(NULL 可=記録開始前の旧行)。
+  if (!stCols.includes('exit_cfg_version')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_cfg_version INTEGER');
+  if (!stCols.includes('exit_cfg_hash')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_cfg_hash TEXT');
   // ★武装したのに一度も約定せず armed-timeout で失効した回数(系統別・永続)。
   //   これが無いと「monitor は武装 → trade2 が拒否し続ける → 15分後に黙って失効」が完全に無音になる
   //   (実測 sid=361 は trade2 が147回拒否したが monitor 側にカウンタも警告も無かった)。
@@ -387,6 +395,8 @@ export interface SignalTradeRow {
   exit_reason: string | null;       // ★決済理由(core/exitReasons.ts のキー)。NULL=旧行。
   exit_initial_stop: number | null; // ★約定レッグの初期LC(絶対価格)。NULL=旧行。
   peak_profit: number | null;       // ★決済時点の含み益ピーク[pt]。NULL=旧行。
+  exit_cfg_version: number | null;  // ★決済設定の版番号(単調増加)。NULL=記録開始前の旧行。
+  exit_cfg_hash: string | null;     // ★決済設定の振る舞い指紋(16桁hex・値は含まない)。NULL=旧行。
 }
 
 export interface SignalTradeInsert {
@@ -401,6 +411,8 @@ export interface SignalTradeInsert {
   exitReason?: string | null;       // ★決済理由(core/exitReasons.ts のキー)。未指定は NULL。
   exitInitialStop?: number | null;  // ★約定レッグの初期LC(絶対価格)。未指定/非有限は NULL。
   peakProfit?: number | null;       // ★決済時点の含み益ピーク[pt]。未指定/非有限は NULL。
+  exitCfgVersion?: number | null;   // ★決済設定の版番号。未指定は NULL(=既存挙動と byte 一致)。
+  exitCfgHash?: string | null;      // ★決済設定の振る舞い指紋。未指定は NULL。
 }
 
 // ★v0.8.2: 系統フィルタ。'A' は NULL 行も含む(既存/A の行)。'B' は 'B' 行のみ。未指定は全件。
@@ -413,12 +425,13 @@ function systemWhere(system: SignalSystemFilter | undefined): { clause: string; 
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit, exit_cfg_version, exit_cfg_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
     t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null,
     t.armedT ?? null, t.armedPrice ?? null,
-    t.exitReason ?? null, t.exitInitialStop ?? null, t.peakProfit ?? null);
+    t.exitReason ?? null, t.exitInitialStop ?? null, t.peakProfit ?? null,
+    t.exitCfgVersion ?? null, t.exitCfgHash ?? null);
 }
 
 /** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。

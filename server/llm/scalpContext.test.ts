@@ -207,7 +207,9 @@ function trade(over: Partial<SignalTradeRow>): SignalTradeRow {
     rationale: null, meta: null, mode: null, system: null, signal_id: null,
     armed_t: null, armed_price: null,
     // ★記録専用(決済パラメータ分析用): 決済理由/約定レッグ初期LC/含み益ピーク列。この文脈組立は参照しない(既定は旧行と同じ NULL)。
-    exit_reason: null, exit_initial_stop: null, peak_profit: null, ...over,
+    exit_reason: null, exit_initial_stop: null, peak_profit: null,
+    // ★記録専用(決済設定の版): この文脈組立は参照しない(既定は記録開始前の旧行と同じ NULL)。
+    exit_cfg_version: null, exit_cfg_hash: null, ...over,
   };
 }
 

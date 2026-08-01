@@ -62,8 +62,13 @@ export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalPr
 /** ★v0.8.2: RecordedTrade + 系統タグ(A=null/B='B')から DB 挿入行を組み立てる純関数(テスト可能)。
  *  A(system=null)は従来と byte 一致の行を作る。mode/meta の付与規約も従来どおり。
  *  ★検証用: signalId(ARM 采番)を渡すと signal_id 列に載せる(trade2 と equijoin する結合キー)。
- *    A のみ非 null / B(currentSignal 無し)は undefined→NULL。省略時も従来と byte 一致(signalId 未指定=NULL)。 */
-export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | null, signalId?: number | null): SignalTradeInsert {
+ *    A のみ非 null / B(currentSignal 無し)は undefined→NULL。省略時も従来と byte 一致(signalId 未指定=NULL)。
+ *  ★決済設定の版(exitCfg): 渡された時だけ exit_cfg_version/exit_cfg_hash に載せる(未指定=従来と byte 一致)。
+ *    値そのものは決して載せない(ハッシュと整数版番号だけ)。 */
+export function buildSignalTradeInsert(
+  t: RecordedTrade, system: 'A' | 'B' | null, signalId?: number | null,
+  exitCfg?: { version: number; hash: string } | null,
+): SignalTradeInsert {
   const ins: SignalTradeInsert = {
     entryT: t.entryT, entryPrice: t.entryPrice, dir: t.dir,
     exitT: t.exitT, exitPrice: t.exitPrice, pnl: t.pnl, qty: t.qty,
@@ -88,6 +93,8 @@ export function buildSignalTradeInsert(t: RecordedTrade, system: 'A' | 'B' | nul
   ins.exitReason = t.exitReason;
   if (Number.isFinite(t.exitInitialStop)) ins.exitInitialStop = t.exitInitialStop;
   if (Number.isFinite(t.peakProfit)) ins.peakProfit = t.peakProfit;
+  // ★決済設定の版(RECORD-ONLY)。渡された時だけ載せる。値は含まない(整数版番号 + 一方向ハッシュのみ)。
+  if (exitCfg) { ins.exitCfgVersion = exitCfg.version; ins.exitCfgHash = exitCfg.hash; }
   return ins;
 }
 
