@@ -14,6 +14,7 @@ import {
 } from '../configStore.js';
 import { normalizeCaller } from '../llm/caller.js';
 import { resolveVariant } from '../variant.js';
+import { isAnalysisEnabled } from '../analysisGate.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
 import { openDb, resolveDbPath, getMeta } from '../db/store.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
@@ -115,6 +116,21 @@ function readAutoLastRun(): string {
 
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
+  // ★公開版(lite)は提案生成器(分析用)を持たない=2つ目の API キーの欄も日次予算の欄も出さない。
+  //   画面から消すだけでなく **応答からも落とす**(残っていると「隠しただけ」で、次に UI を触った人が
+  //   また出してしまう)。full では isAnalysisEnabled()===true なので従来と同じ4フィールドが返る。
+  const generator = isAnalysisEnabled()
+    ? {
+      // ★提案生成器(分析用・実弾 A とは別プール)。
+      //   generatorKeySources は **キーの値ではなく「どのキーを使うか」** を返す
+      //   ('own'/'env'=専用キー / 'shared'=共通キーへフォールバック中=上流クォータは A と共有 / 'none'=キー無し)。
+      //   フォールバックしていることが画面から見えないと「分離したつもりで分離できていない」が無音で成立する。
+      generatorKeySources: resolveGeneratorKeySources(),
+      generatorDailyBudget: resolveGeneratorDailyBudget(),   // 実効値(config → env → 既定・クランプ済み)
+      generatorDailyBudgetDefault: GENERATOR_DAILY_BUDGET_DEFAULT,
+      generatorDailyBudgetMax: GENERATOR_DAILY_BUDGET_MAX,
+    }
+    : {};
   res.json({
     kimiSet: !!config.kimiKey,
     geminiSet: !!config.geminiKey,
@@ -140,14 +156,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     indicatorsEnabled: resolveIndicatorsEnabled(),   // ★テクニカル指標(RSI/SMA/BB)パネル + AI文脈供給(既定ON・表示/文脈のみ)。
     aiTechnicalEnabled: resolveScalpAiTechnicalEnabled(),   // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う・既定ON)。決済は既定ロジック。
     scalpChartFallbackText: resolveScalpChartFallbackText(),   // ★チャート撮影失敗時のテキスト縮退(既定ON=全停止防止)。
-    // ★提案生成器(分析用・実弾 A とは別プール)。
-    //   generatorKeySources は **キーの値ではなく「どのキーを使うか」** を返す
-    //   ('own'/'env'=専用キー / 'shared'=共通キーへフォールバック中=上流クォータは A と共有 / 'none'=キー無し)。
-    //   フォールバックしていることが画面から見えないと「分離したつもりで分離できていない」が無音で成立する。
-    generatorKeySources: resolveGeneratorKeySources(),
-    generatorDailyBudget: resolveGeneratorDailyBudget(),   // 実効値(config → env → 既定・クランプ済み)
-    generatorDailyBudgetDefault: GENERATOR_DAILY_BUDGET_DEFAULT,
-    generatorDailyBudgetMax: GENERATOR_DAILY_BUDGET_MAX,
+    ...generator,
     doubleFormingEnabled: resolveDoubleFormingEnabled(),   // ★検知チューニング: double 形成通知(既定OFF=breakout のみ)。breakScore/slopeConfluenceBonus は数値展開に含まれる。
     nwaveEnabled: resolveNwaveEnabled(),   // ★N波動の節目/アラート(既定ON)。nwaveMinSwingYen は数値展開に含まれる。
     // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
@@ -456,8 +465,16 @@ export function postSettingsHandler(req: Request, res: Response): void {
   // ★v0.8.2: System B(紙専用)の設定を組み立てる(未指定=変更なし・数値/bias 検証込み)。
   const signalBValue = buildSignalB(existing.signalB, body.signalB, errors);
   // ★提案生成器: 専用キー(秘密・空欄=変更なし / null=消去)と日次予算(範囲検証)。
-  const generatorKeysValue = buildGeneratorKeys(existing.generatorKeys, body.generatorKeys);
-  const generatorBudget = applyGeneratorBudget(existing.generatorDailyBudget, bodyRec.generatorDailyBudget);
+  //   ★公開版(lite)は生成器を持たない=**既存値を据え置き、body を一切見ない**。
+  //     lite と full は同じ config ファイルを共有するので、ここを素通しにすると
+  //     lite の保存が monitor2 側の生成器設定(2つ目のキー/日次予算)を黙って消す。
+  const analysis = isAnalysisEnabled();
+  const generatorKeysValue = analysis
+    ? buildGeneratorKeys(existing.generatorKeys, body.generatorKeys)
+    : existing.generatorKeys;
+  const generatorBudget = analysis
+    ? applyGeneratorBudget(existing.generatorDailyBudget, bodyRec.generatorDailyBudget)
+    : { value: existing.generatorDailyBudget, error: null };
   if (generatorBudget.error) errors.push(generatorBudget.error);
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });

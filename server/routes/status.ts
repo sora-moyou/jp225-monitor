@@ -7,6 +7,7 @@ import { loadExitImpl } from '../signalTrade/exit/index.js';
 import { exitVariantImplKindAll, type ExitImplKind } from '../signalTrade/exitVariantImpl.js';
 import { exitConfigHash, lookupExitConfigVersion } from '../signalTrade/exitConfigVersion.js';
 import { openDb, resolveDbPath } from '../db/store.js';
+import { isAnalysisEnabled } from '../analysisGate.js';
 
 // ─── ★決済実装の「実態」を外から観測できるようにする ────────────────────────
 //
@@ -76,16 +77,21 @@ export async function exitStatus(now: number = Date.now()): Promise<ExitStatus |
 }
 
 export async function statusHandler(_req: Request, res: Response): Promise<void> {
+  // ★公開版(lite)は提案生成器を持たない=その状況を返しても意味が無い(存在しない機構の
+  //   予算・従属停止・腕別消費が並ぶだけ)。**唯一のゲート** で丸ごと落とす。
+  //   full では isAnalysisEnabled()===true なので従来と同じ全フィールドが返る(byte 不変)。
+  const generator = isAnalysisEnabled()
+    // ★提案生成器の予算/従属停止/backpressure の状況。
+    //   「飛ばしたことを必ず記録する」= ログだけでなく画面/HTTP からも見えるようにする。API キーは含まない。
+    //   ★予算は **腕ごと** に独立しているので、腕別の消費も出す(合計だけでは
+    //     どの腕が枯れかけているか読めない)。回数のみでキーも決済値も含まない。
+    ? { generator: generatorGateSnapshot(), generatorArms: generatorArmUsage() }
+    : {};
   res.json({
     yahoo: getYahooStatus(),
     // ★既存フィールドは不変: llm は従来どおり **default プール**(実弾につながる経路)の状態。
     llm: getProviderStatus(),
-    // ★追加(additive): 提案生成器の予算/従属停止/backpressure の状況。
-    //   「飛ばしたことを必ず記録する」= ログだけでなく画面/HTTP からも見えるようにする。API キーは含まない。
-    generator: generatorGateSnapshot(),
-    // ★追加(additive): 予算は **腕ごと** に独立しているので、腕別の消費も出す(合計だけでは
-    //   どの腕が枯れかけているか読めない)。回数のみでキーも決済値も含まない。
-    generatorArms: generatorArmUsage(),
+    ...generator,
     // ★追加(additive): 決済実装の実態(種別・版・指紋)。実数値は含まない。
     exit: await exitStatus(),
   });

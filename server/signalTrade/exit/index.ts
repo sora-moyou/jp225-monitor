@@ -106,11 +106,22 @@ export interface ShadowExitSpec {
   exit: ExitFn;
 }
 
+/** 変種名 → その変種と **全域一致** する影 spec の名前(不透明な識別子のみ・数値は含まない)。
+ *
+ *  ★なぜ記録するか: 生成器②は「候補の決済仕様を教えた AI」の提案を作り、影ラダーは「候補の決済仕様で
+ *    測った結末」を作る。この2つを突き合わせるには「候補 = どの spec か」が要る。人間が覚える運用だと
+ *    格子や候補が動いた瞬間に黙って嘘になるので、**引き当てた結果を epoch と一緒に記録に残す**
+ *    (1年後の分析者が対応を再導出しなくて済む)。 */
+export type VariantSpecMap = Readonly<Record<ExitVariant, string>>;
+
 /** 影の決済仕様の一覧 + その一覧自体の版(epoch)。epoch が変われば name↔実数値の対応も変わりうる
  *  =記録には必ず epoch を添える(後から「sh07 は何だったか」を取り違えないため)。 */
 export interface ShadowExitLadder {
   epoch: string;
   specs: readonly ShadowExitSpec[];
+  /** 変種 ↔ spec の対応(不透明名のみ)。**影が1本も無い公開フォールバックでは存在しない**ので任意。
+   *  private が在るときは必ず入る(非公開側が全域一致で引き当てる)。 */
+  variantSpecs?: VariantSpecMap;
 }
 
 /** 公開フォールバック: **影を1本も作らない**。
@@ -148,9 +159,19 @@ export async function loadExitImpl(): Promise<'private' | 'simple'> {
       shadowExitLadderPrivate?: () => ShadowExitLadder;
     };
     // 分析用「影」の決済仕様(名前と純関数だけ受け取る。数値はこちらへ来ない)。無ければ空のまま=影を作らない。
-    if (typeof mod.shadowExitLadderPrivate === 'function') {
-      const l = mod.shadowExitLadderPrivate();
-      if (l && Array.isArray(l.specs)) shadowLadder = { epoch: String(l.epoch), specs: l.specs };
+    // ★ここだけ独立した try で囲う理由: 非公開側は「変種と格子が食い違う」等の規約違反で **意図的に throw** する。
+    //   外側の catch へ抜けると impl の差し替え(=実運用の決済)まで巻き添えで簡易版に落ちる。
+    //   影(記録専用)の不具合が実弾につながる決済を変えてはならないので、影の失敗は影だけで閉じる。
+    try {
+      if (typeof mod.shadowExitLadderPrivate === 'function') {
+        const l = mod.shadowExitLadderPrivate();
+        if (l && Array.isArray(l.specs)) {
+          shadowLadder = { epoch: String(l.epoch), specs: l.specs, variantSpecs: l.variantSpecs };
+        }
+      }
+    } catch (e) {
+      // 影は作らない(空のまま)。無音にはしない=記録が止まっていることが分かるように必ず出す。
+      console.warn(`[shadow] 決済ラダーを読み込めませんでした(影の記録は行いません): ${e instanceof Error ? e.message : String(e)}`);
     }
     // 実数値つきの決済ロジック説明も private から取り込む(AI へ完全なロジックを渡すため)。無ければ定性版のまま。
     if (typeof mod.describeExitLogicPrivate === 'function') describeImpl = mod.describeExitLogicPrivate;

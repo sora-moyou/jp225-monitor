@@ -30,6 +30,11 @@ import { writeHeartbeat } from '../server/collectorHeartbeat.js';
 import { setCooldownMs } from '../server/alertCooldown.js';
 import { resolveCooldownMin } from '../server/configStore.js';
 import { warmFromDb } from '../server/warmup.js';
+// ★ティック長期保管は **分析専用**。公開版(lite)では一切開始しない(DBを作らない・書き出さない・
+//   ハートビートも書かない)。判定は単一ゲート isAnalysisEnabled() に集約する。
+//   variant は Rust が collector にも MONITOR_VARIANT で渡す(src-tauri/src/lib.rs)。
+//   ★従来どおりの3日削除の短期ティック(共有DB)は **両 variant で維持** する。
+import { isAnalysisEnabled } from '../server/analysisGate.js';
 
 // バンドルした依存(express/rss-parser/https-proxy-agent 等)が出す非推奨警告(DEP0169 url.parse 等)を抑制。
 // 自前コードは url.parse 不使用。これは deprecation 種別のみを抑え、他の警告は残す。
@@ -65,14 +70,22 @@ async function main(): Promise<void> {
   if (!acquireLock()) { console.log('[collector] another instance is running — exiting'); return; }
   const dbPath = resolveDbPath();
   const db = openDb(dbPath);
-  const archivePath = resolveTickArchiveDbPath();
-  const archiveDb = openTickArchiveDb(archivePath);
-  const tickExportDir = resolveTickExportDir();
+  // ★分析(=ティック長期保管)を走らせるかの唯一の判断。lite では archiveDb を **開かない**
+  //   (=専用DBファイルを作らない)。以降の保管/書き出し/ハートビートは全て archiveDb の有無で分岐する。
+  const analysis = isAnalysisEnabled();
+  const archivePath = analysis ? resolveTickArchiveDbPath() : null;
+  const archiveDb = archivePath !== null ? openTickArchiveDb(archivePath) : null;
+  const tickExportDir = analysis ? resolveTickExportDir() : '';   // '' = 書き出し無効(既存の「未設定」と同じ表現)
   console.log(`[collector ${COLLECTOR_VERSION}] db=${dbPath}`);
-  console.log(`[collector] tick archive=${archivePath} (NIY=F only, no auto-prune)`);
-  console.log(tickExportDir
-    ? `[collector] tick daily export -> ${tickExportDir}`
-    : '[collector] tick daily export DISABLED (no export dir configured — ticks still accumulate in the archive DB)');
+  if (archivePath !== null) {
+    console.log(`[collector] tick archive=${archivePath} (NIY=F only, no auto-prune)`);
+    console.log(tickExportDir
+      ? `[collector] tick daily export -> ${tickExportDir}`
+      : '[collector] tick daily export DISABLED (no export dir configured — ticks still accumulate in the archive DB)');
+  } else {
+    // 無音にしない: 「保管していない」ことが起動ログから読めるようにする。
+    console.log('[collector] tick archive DISABLED (lite/公開版 — 分析用の長期保管は走らせない)');
+  }
   console.log(`[collector] started ${new Date().toISOString()} (node ${process.version})`);
 
   // v0.7.20(全銘柄 HTTP 化 / no-Yahoo): 起動時 Yahoo backfill を全廃した。全 4 銘柄(NIY=F/YM=F/NQ=F/JPY=X)の
@@ -107,10 +120,13 @@ async function main(): Promise<void> {
         const prices = await fetchAjaxThrottled(start);
         recordFeedPrices(db, prices);
         // ★長期保管(別ファイル・NIY=F のみ)。共有DBへの記録とは独立=既存の記録経路は一切変えない。
-        try { archiveTicks(archiveDb, prices); } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          lastTickArchiveError = { at: Date.now(), where: 'archive', message };
-          console.error('[collector] tick archive error:', message);
+        //   archiveDb===null(lite)なら丸ごとスキップ。
+        if (archiveDb) {
+          try { archiveTicks(archiveDb, prices); } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            lastTickArchiveError = { at: Date.now(), where: 'archive', message };
+            console.error('[collector] tick archive error:', message);
+          }
         }
         // Feed the realtime detector for the SAME set the monitor's priceLoop feeds: all fresh
         // (non-stale) prices, no session gate here. The sink stamps session metadata per alert;
@@ -141,7 +157,7 @@ async function main(): Promise<void> {
     }
     // ★確定済みの過去日を1日1ファイルで同期フォルダへ書き出す(append-only・冪等・既存ファイルは触らない)。
     //   1時間に1回で十分(1日1回しか対象が増えない)。失敗しても収集は止めない。
-    if (tickExportDir && Date.now() - lastTickExport > TICK_EXPORT_CHECK_MS) {
+    if (archiveDb && tickExportDir && Date.now() - lastTickExport > TICK_EXPORT_CHECK_MS) {
       lastTickExport = Date.now();
       try {
         for (const r of runDailyTickExport(archiveDb, Date.now(), tickExportDir)) {
@@ -159,7 +175,8 @@ async function main(): Promise<void> {
     //   場外で更新が止まると「収集が死んだ」と区別がつかなくなる(場外は idle として記録する)。
     //   保管は「1年後に効く」機構で、最悪の失敗形は「書けていないのに1年間気づかない」ことなので、
     //   状態は常時・自動で書き出しに乗せる。取引経路(signalTrade)からは一切呼ばない。
-    if (Date.now() - lastTickHeartbeat >= TICK_ARCHIVE_HEARTBEAT_MS) {
+    //   ★lite(archiveDb===null)では保管そのものを走らせないので、健全性も書かない。
+    if (archiveDb && Date.now() - lastTickHeartbeat >= TICK_ARCHIVE_HEARTBEAT_MS) {
       lastTickHeartbeat = Date.now();
       try {
         const hb = writeTickArchiveHeartbeat(db, archiveDb, {
@@ -181,7 +198,7 @@ async function main(): Promise<void> {
   }
   releaseLock();
   db.close();
-  try { archiveDb.close(); } catch { /* ignore */ }
+  if (archiveDb) { try { archiveDb.close(); } catch { /* ignore */ } }
   console.log('[collector] stopped');
 }
 

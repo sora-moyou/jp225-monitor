@@ -9,6 +9,7 @@ import {
 import { exitVariantImplKind } from '../signalTrade/exitVariantImpl.js';
 import { checkGeneratorGate } from '../llm/generatorGate.js';
 import { inPollWindow } from '../../core/session.js';
+import { isAnalysisEnabled } from '../analysisGate.js';
 
 // ★実際の呼び出し元(2026-08-02 に実確認):
 //   - **trade2 は叩いていない**。trade2 は monitor のシグナルを SSE / `/api/current-signal` で追従するだけで、
@@ -110,9 +111,38 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
   return out;
 }
 
+/** ★公開版(lite)で受け付けてはいけない要求か(純関数・テスト対象)。
+ *  caller='generator' も exitVariant も **決済パラメータの分析専用** の入口なので、
+ *  分析を持たないビルドでは受理せず 400 で落とす(黙って現行に倒すと、実験のつもりの
+ *  要求が実弾と同じプール・同じ予算で走ってしまう=このゲートが守るものが壊れる)。
+ *  ★caller 省略/'default' かつ exitVariant 省略 = 既存の全経路。lite でも素通し(挙動不変)。 */
+export function analysisOnlyRequestField(body: unknown, query: unknown): 'caller' | 'exitVariant' | null {
+  const b = (body ?? {}) as Body;
+  const q = (query ?? {}) as Record<string, unknown>;
+  const rawCaller = b.caller ?? q.caller;
+  const rawVariant = b.exitVariant ?? q.exitVariant;
+  const specified = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
+  if (specified(rawCaller) && rawCaller !== DEFAULT_CALLER) return 'caller';
+  if (specified(rawVariant)) return 'exitVariant';
+  return null;
+}
+
 export async function scalpPlanHandler(req: Request, res: Response): Promise<void> {
   const body = (req.body ?? {}) as Body;
   const query = (req.query ?? {}) as Record<string, unknown>;
+
+  // ── ★分析用の入口を公開版(lite)で閉じる。**唯一のゲート** isAnalysisEnabled() で判断する。
+  //    full では isAnalysisEnabled()===true なので、このブロックは1度も入らない(挙動は byte 不変)。
+  if (!isAnalysisEnabled()) {
+    const field = analysisOnlyRequestField(body, query);
+    if (field !== null) {
+      const error = `${field} はこのビルドでは指定できません(分析用の経路を持たない公開版です)`;
+      console.warn(`[scalp-plan] 400: ${error}`);
+      res.status(400).json({ ok: false, error });
+      return;
+    }
+  }
+
   const symbol = typeof body.symbol === 'string' && body.symbol ? body.symbol : undefined;
   // 初期 LC 幅の下限/上限を optional で受理(body 優先・なければ query)。範囲/整合クランプは buildScalpPlan 側。
   const lcFloorYen = optionalNumber(body.lcFloorYen ?? query.lcFloorYen);

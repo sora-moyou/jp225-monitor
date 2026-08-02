@@ -8,8 +8,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   openShadowDb, insertShadowRows, countShadowRows, shadowOutcomeCounts, resolveShadowDbPath,
+  recordShadowLadderMeta, readShadowLadderMeta,
 } from './shadowStore.js';
 import type { ShadowRow } from '../signalTrade/shadow/sim.js';
+import { EMPTY_SHADOW_LADDER, type ShadowExitLadder } from '../signalTrade/exit/index.js';
 
 const base: ShadowRow = {
   epoch: 'e1', source: 'generator', proposalId: 'p1', spec: 'sh01', paramClass: 'ratchet', dir: 'buy',
@@ -68,6 +70,42 @@ describe('影の記録(専用DB)', () => {
     const r = insertShadowRows(db, [base]);
     expect(r).toEqual({ inserted: 0, skipped: 1 });
     expect(countShadowRows(db)).toBe(1);
+    db.close();
+  });
+
+  // ★このファイルは公開リポにも載る。決済の実数値は一切書かない・一切 assert しない。
+  //   ここで見るのは「epoch と一緒に、変種↔spec の **不透明名の対応** が残ること」という構造だけ。
+  it('変種↔spec の対応を epoch と一緒に残す(1年後の分析者が対応を再導出しなくて済む)', () => {
+    const db = openShadowDb(':memory:');
+    const ladder: ShadowExitLadder = {
+      epoch: 'e1', specs: [],
+      variantSpecs: { 'current': 'sh01', 'candidate-a': 'sh02' },
+    };
+    expect(recordShadowLadderMeta(db, ladder)).toEqual({ written: true });
+    expect(readShadowLadderMeta(db, 'e1')).toEqual({ 'candidate-a': 'sh02', 'current': 'sh01' });
+    // 冪等(同じ内容の再実行で二重に書かない)
+    expect(recordShadowLadderMeta(db, ladder)).toEqual({ written: false });
+    expect(readShadowLadderMeta(db, 'other-epoch')).toBeNull();
+    db.close();
+  });
+
+  it('★同じ epoch に **違う対応** を書こうとしたら throw(版を上げずに定義を変えた=集計が壊れる)', () => {
+    const db = openShadowDb(':memory:');
+    recordShadowLadderMeta(db, { epoch: 'e1', specs: [], variantSpecs: { 'current': 'sh01', 'candidate-a': 'sh02' } });
+    expect(() => recordShadowLadderMeta(db, {
+      epoch: 'e1', specs: [], variantSpecs: { 'current': 'sh01', 'candidate-a': 'sh07' },
+    })).toThrow();
+    // 別の epoch なら共存できる(版が違えば対応も違ってよい)
+    expect(recordShadowLadderMeta(db, {
+      epoch: 'e2', specs: [], variantSpecs: { 'current': 'sh01', 'candidate-a': 'sh07' },
+    })).toEqual({ written: true });
+    db.close();
+  });
+
+  it('対応を持たないラダー(公開フォールバック=影0本)は何も書かない', () => {
+    const db = openShadowDb(':memory:');
+    expect(recordShadowLadderMeta(db, EMPTY_SHADOW_LADDER)).toEqual({ written: false, skipped: 'no-variant-specs' });
+    expect((db.prepare('SELECT COUNT(*) AS n FROM meta').get() as { n: number }).n).toBe(0);
     db.close();
   });
 

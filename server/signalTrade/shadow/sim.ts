@@ -31,6 +31,7 @@ import {
   type ShadowExitLadder, type ShadowExitSpec, type ShadowParamClass,
 } from '../exit/index.js';
 import type { ExitReason } from '../../../core/exitReasons.js';
+import { isAnalysisEnabled } from '../../analysisGate.js';
 
 /** 観測地平[ms]。**この時間を過ぎた影は「決済した」ことにせず、打ち切り(censored)として記録する。**
  *
@@ -324,7 +325,13 @@ export class ShadowSim {
   private counters = { opened: 0, finished: 0, rejected: 0, errors: 0 };
   private bufferWarned = false;
 
+  /** ★公開版(lite)では **入口を閉じる**(分析専用の機構なので構築させない)。
+   *  現時点でこのクラスは取引経路から配線されていないため lite が今日壊れることは無い。
+   *  将来うっかり配線されたときに、公開版で黙って模擬が回り続けるより開発中に落ちる方が良い。 */
   constructor(opts: ShadowSimOptions = {}) {
+    if (!isAnalysisEnabled()) {
+      throw new Error('影の決済模擬は分析専用です(公開版では構築できません) — server/analysisGate.ts');
+    }
     this.ladder = opts.ladder ?? getShadowExitLadder;
     this.horizonMs = opts.horizonMs ?? SHADOW_HORIZON_MS;
     this.maxOpen = opts.maxOpenShadows ?? MAX_OPEN_SHADOWS;

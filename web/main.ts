@@ -418,6 +418,9 @@ fetch(apiUrl('/api/version'))
       dataFieldset: document.getElementById('data-fieldset'),
       // ★基礎データ公開(225labo)は monitor2 メンテナ専用=lite で非表示。
       basedataPublishFieldset: document.getElementById('basedata-publish-fieldset'),
+      // ★lite: 提案生成器(分析用)の fieldset = 2つ目の API キー欄 + 日次予算欄。lite は生成器を
+      //   走らせない(server の analysisGate が拒否する)ので、キーを入れる場所も出さない。
+      generatorKeysFieldset: document.getElementById('generator-keys-fieldset'),
       // ★lite: 詳細設定の右カラム(ポーリング/急変閾値/節目/データ)は丸ごと非表示。
       paramsOtherCol: document.getElementById('params-col2'),
       // ★lite: AIエントリーは 4項目(data-lite="1")だけ残し、他の行と B系統/Aタグを隠す。

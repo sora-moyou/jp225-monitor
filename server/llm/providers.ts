@@ -4,6 +4,7 @@ import type { LLMProvider } from '../config.js';
 import { resolveApiKeyForPool } from '../configStore.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { notifyDefaultQuota } from './generatorGate.js';
+import { isAnalysisEnabled } from '../analysisGate.js';
 
 // ─── プロバイダ状態は「プール別」(default / generator) ───────────────────
 //
@@ -77,8 +78,12 @@ function buildPool(pool: PoolKey): ProviderState[] {
   return LLM_PROVIDERS.map(c => buildProvider(c, pool));
 }
 
-/** プールを取得(未構築なら構築)。default は必ず構築済みなので遅延ログは出ない=起動ログは従来と同一。 */
+/** プールを取得(未構築なら構築)。default は必ず構築済みなので遅延ログは出ない=起動ログは従来と同一。
+ *  ★公開版(lite)では **分析用の generator プールを構築しない**(2つ目の API キーを持たない)。
+ *    空配列を返すと callWithFallback は「キー未設定」と同じ扱いになり、外部へは1回も出ない。
+ *    full では isAnalysisEnabled()===true なのでこの分岐は無く、挙動は従来と完全に同一。 */
 function poolOf(pool: PoolKey): ProviderState[] {
+  if (pool !== DEFAULT_CALLER && !isAnalysisEnabled()) return [];
   let s = pools.get(pool);
   if (!s) {
     s = buildPool(pool);

@@ -45,6 +45,10 @@ export interface VariantElements {
   dataFieldset?: ToggleableEl | null;           // 設定「データ」fieldset(#data-fieldset)
   // ★基礎データ公開(225labo)fieldset は monitor2 メンテナ専用=lite で非表示(#basedata-publish-fieldset)。
   basedataPublishFieldset?: ToggleableEl | null;
+  // ★提案生成器(分析用)の fieldset = **2つ目の API キー欄と日次予算欄**(#generator-keys-fieldset)。
+  //   lite は生成器そのものを走らせない(server 側 analysisGate)ので、キーを入れる場所も出さない。
+  //   server も /api/settings から generator* を返さないため、隠すのは「見せない」だけでなく整合でもある。
+  generatorKeysFieldset?: ToggleableEl | null;
   // ★lite(ユーザー指示): 詳細設定(🎛️)は開けるようにし、「AIエントリー」の 4項目だけを A系統で見せる。
   //   ボタン(#params-btn)と fieldset(#ai-entry-fieldset)自体は隠さない=ここでは触らない。
   paramsOtherCol?: ToggleableEl | null;   // 詳細設定の右カラム(#params-col2: ポーリング/急変閾値/節目/データ)
@@ -75,6 +79,7 @@ export function applyVariantVisibility(variant: Variant, els: VariantElements): 
     els.signalTradesSystem,   // 履歴の A/B セレクタを lite で非表示。
     els.webSearchModelFieldset, els.dataFieldset,   // ★v0.8.2(ユーザー指示): モデル設定 と データ を lite で非表示。
     els.basedataPublishFieldset,   // ★基礎データ公開(225labo)は monitor2 メンテナ専用=lite で非表示。
+    els.generatorKeysFieldset,     // ★提案生成器(分析用)の2つ目の API キー欄/日次予算欄は lite で非表示。
     els.paramsOtherCol,   // ★lite: 詳細設定の右カラム(ポーリング/急変閾値/節目/データ)は見せない。
   ];
   for (const el of targets) hide(el);

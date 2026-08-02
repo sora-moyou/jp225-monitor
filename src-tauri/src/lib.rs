@@ -188,8 +188,11 @@ pub fn run() {
             // 収集デーモンをデタッチ起動。SidecarState に入れない=Exit で kill しない→
             // モニター「通常終了」後も生存しバックグラウンド収集を続ける。collector 側が
             // PID ロックで単一インスタンスを保証するので毎起動 spawn して良い。
+            // ★collector にも variant を渡す(サイドカーと同じ環境変数)。渡さないと collector は
+            //   自分が公開版(lite)か monitor2(full)かを判別できず、分析専用のティック長期保管を
+            //   公開版でも回してしまう(ディスクを永久に食う)。
             match app.shell().sidecar("jp225-collector") {
-                Ok(cmd) => match cmd.spawn() {
+                Ok(cmd) => match cmd.env("MONITOR_VARIANT", variant).spawn() {
                     Ok((mut crx, _child)) => {
                         // _child は kill せず drop に任せる(=生存)。stderr のみログ。
                         tauri::async_runtime::spawn(async move {
