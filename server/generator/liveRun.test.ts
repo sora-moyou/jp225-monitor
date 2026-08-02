@@ -99,7 +99,9 @@ describe('偽 monitor を立てて実走(実 HTTP + 実 SQLite・外部 LLM は�
     // epoch(凍結設定 + 決済指紋 + 生成器設定)
     const epochInput = buildEpochInput(pre.settings, pre.exit, epochGeneratorConfig(cfg));
     const epoch = computeEpoch(epochInput);
-    expect(epoch).toMatch(/^g1:[0-9a-f]{16}$/);
+    // ★接頭辞は意図的に literal。方式(epoch の計算)を変えたらここが落ちるのが正しい
+    //   (EPOCH_SCHEMA を参照すると、無自覚な方式変更を誰も検知できなくなる)。
+    expect(epoch).toMatch(/^g2:[0-9a-f]{16}$/);
 
     const dbPath = join(dir, 'generator_proposals.db');
     const db = openGeneratorDb(dbPath);

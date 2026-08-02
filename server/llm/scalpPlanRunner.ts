@@ -17,9 +17,29 @@ import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 // 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
 const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
 
+/** ★生成器(caller!=='default')のプロンプトから **外した** 文脈ブロックの名前(記録専用の不透明な識別子)。
+ *  値は HTTP 応答 → 生成器の台帳(proposals.context_omitted)へそのまま流れる。
+ *
+ *  なぜ外すか(母集団の独立性):
+ *    紙成績の履歴は **A の建玉列** で、A の決済設定の関数になっている。これを両腕に見せると、
+ *    ②(候補の決済仕様を教えた腕)は「候補で建てろ」と言われながら **現行決済で決済された成績表** を
+ *    読むことになり、①vs② の対比が汚染される(しかも②の適応を弱める=帰無側へ倒す方向)。
+ *    この実験で一番使いたい結論が帰無側(「①と②で提案がほとんど変わらない」)である以上、
+ *    帰無側へ倒す既知のバイアスをこれ以上増やさない。
+ *  なぜ **両腕から等しく** 外すか:
+ *    片腕だけ外すと不公平な対比になる。等しく外せば ①vs② の対比は清潔になる。
+ *    代償(提案が A の見るものと更に違う)は承知の上で、記録に残して1年後の分析者へ渡す。
+ *  ★A/B(caller='default'・実弾につながる経路)では **一切外さない**(従来どおり履歴を入れる)。 */
+export const GENERATOR_OMITTED_CONTEXT: readonly string[] = ['paper-trade-history'];
+
 /** 構造化データ(数値主軸)＋自分の紙トレード成績を組み立てる(DB 読み・欠損は各ブロック省略)。
- *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。 */
-function buildRichScalpContext(symbol: string, currentPrice: number, now: number, profile?: SignalProfile): string {
+ *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。
+ *  ★caller!=='default'(生成器)のときだけ紙成績ブロックを外す(理由は GENERATOR_OMITTED_CONTEXT)。
+ *  ★export しているのは負荷の実測(1要求あたりのイベントループ停止時間)を **本物の関数で** 測るため。
+ *    呼び出し元は増やさない(この経路の唯一の呼び出しは下の runScalpPlanWithChartInner)。 */
+export function buildRichScalpContext(
+  symbol: string, currentPrice: number, now: number, profile?: SignalProfile, caller: LlmCaller = DEFAULT_CALLER,
+): string {
   if (!(typeof currentPrice === 'number' && currentPrice > 0)) return '';
   // ★DB が開けなくても止めない: メモリ内ライブ足だけで足/ボラ/スイング/テクニカルは組める。
   //   indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で AI 文脈をゼロにしない。
@@ -38,10 +58,15 @@ function buildRichScalpContext(symbol: string, currentPrice: number, now: number
     const session = db ? (getSessionOHLC(db, symbol, 1)[0] ?? null) : null;
     // ★v0.8.2: 自系統の紙成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
     //   A は自分の履歴だけを見る=B の紙トレードに汚染されない(=A の提案が B の存在で変わらない)。
-    const trades = db ? getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A') : [];
+    // ★生成器(caller!=='default')は **両腕とも** 紙成績を読まない(DB も引かない)。理由は
+    //   GENERATOR_OMITTED_CONTEXT。A/B(default)は従来どおり=1ミリも変わらない。
+    const omitHistory = caller !== DEFAULT_CALLER;
+    const trades = db && !omitHistory ? getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A') : [];
     // ★テクニカル指標(ブロックG)は indicatorsEnabled=false のとき省略(AIへ供給しない)。
     const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: resolveIndicatorsEnabled() });
-    const history = buildScalpTradeHistory(trades, now);
+    // 外した回は buildScalpTradeHistory を呼ばない(空配列で呼んで '' を得るのと結果は同じだが、
+    // 「読んでいない」ことをコード上でも一意にする)。
+    const history = omitHistory ? '' : buildScalpTradeHistory(trades, now);
     return [marketData, history].filter(Boolean).join('\n\n');
   } catch (e) {
     console.warn('[scalp-plan] rich context 構築失敗(省略):', e instanceof Error ? e.message : String(e));
@@ -183,13 +208,18 @@ async function runScalpPlanWithChartInner(
   const baseTech = buildNikkeiTechnical(undefined, price);
   // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
   //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
-  const rich = buildRichScalpContext(symbol, price ?? 0, Date.now(), overrides.profile);
+  //   ★caller を渡す: 生成器では紙成績の履歴ブロックを外す(母集団の独立性)。default は不変。
+  const rich = buildRichScalpContext(symbol, price ?? 0, Date.now(), overrides.profile, caller);
+  if (caller !== DEFAULT_CALLER) {
+    // 外したことは server.log にも残す(台帳が読めない状況でも「いつから外したか」が追える)。
+    console.log(`[scalp-plan] ${caller}: 文脈から除外=${GENERATOR_OMITTED_CONTEXT.join(',')}(母集団の独立性・両腕とも同一)`);
+  }
   const technical = `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime, rangeEnabled)}${rich ? `\n\n${rich}` : ''}`;
   // veto 無効(0)は trend を渡さない=現行挙動(veto なし)。>0 のときだけ {dir,strong} を渡してコード veto を効かせる。
   const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
 
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
-  return attachChartShot(await buildScalpPlan({
+  return attachGeneratorRecord(await buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
@@ -207,13 +237,18 @@ async function runScalpPlanWithChartInner(
   }), caller, chartShot);
 }
 
-/** ★画像の同一性を結果に additive で載せる(記録専用)。
+/** ★生成器の記録専用フィールドを結果に additive で載せる。
  *  caller==='default'(実弾 A につながる既存の全経路)では **元のオブジェクトをそのまま返す**
  *  =フィールドが1つも増えない=engine/route/既存テストから見て byte 不変。
- *  生成器(caller!=='default')のときだけ、その提案がどの1枚を見たかを載せる。 */
-function attachChartShot(
+ *  生成器(caller!=='default')のときだけ:
+ *    ・chartShot      … その提案がどの1枚を見たか(identity が取れた時だけ)
+ *    ・contextOmitted … ★プロンプトから外した文脈ブロック(母集団の独立性のため外した事実の記録)。
+ *      これが応答に無い版で記録された標本は「外していない(＝A の紙成績を見ている)」ことを意味する。 */
+function attachGeneratorRecord(
   result: ScalpPlanResult, caller: LlmCaller, identity: ChartShotIdentity | null,
 ): ScalpPlanResult {
-  if (caller === DEFAULT_CALLER || identity === null || !result.ok) return result;
-  return { ...result, chartShot: identity };
+  if (caller === DEFAULT_CALLER || !result.ok) return result;
+  const out: ScalpPlanResult = { ...result, contextOmitted: GENERATOR_OMITTED_CONTEXT };
+  if (identity === null) return out;
+  return { ...out, chartShot: identity };
 }

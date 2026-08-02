@@ -192,6 +192,9 @@ export function toProposalRow(
     shotId: str(shot?.shotId),
     shotAgeMs: typeof shot?.ageMs === 'number' ? shot.ageMs : null,
     shotOrigin: str(shot?.origin),
+    // ★monitor が「プロンプトから外した文脈ブロック」をそのまま台帳へ写す(推測しない)。
+    //   応答に無ければ NULL = 外していない版の monitor と話した = 紙成績を見せた標本。
+    contextOmittedJson: Array.isArray(b?.contextOmitted) ? JSON.stringify(b.contextOmitted) : null,
     createdAt: outcome.respondedAt,
   };
 }

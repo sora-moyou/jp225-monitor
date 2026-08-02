@@ -111,6 +111,9 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
   // ★画像の同一性(撮影の識別子と齢)。①と②が同じ1枚を見たことを、仮定ではなく **記録** にするため。
   //   1サイクルが撮影キャッシュの TTL を超えれば②は別の画像を見るが、これが無いと誰にも分からない。
   if (r.chartShot !== undefined) out.chartShot = r.chartShot;
+  // ★プロンプトから外した文脈ブロック(生成器のみ)。1年後の分析者が「この標本は A の紙成績を
+  //   見ていない」ことを台帳から読めるように、応答へそのまま載せて生成器に記録させる。
+  if (r.contextOmitted !== undefined) out.contextOmitted = r.contextOmitted;
   return out;
 }
 

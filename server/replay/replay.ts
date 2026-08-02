@@ -92,8 +92,22 @@ export interface DayResult {
   windowFrom: number;
   windowTo: number;
   coverage: CoverageRow[];
+  /** ★打ち切り(censoring)の件数。**0 件でも必ず出す**(「今日は0件だった」と「数えていない」を区別する)。
+   *  母集団を「打ち切りでないもの」で切ると spec 依存の選択バイアスが入るので、切る前の数を毎日残す。 */
+  censored: { horizon: number; ticksExhausted: number };
   /** 既に再生済みで飛ばした(=再開)。 */
   skipped: boolean;
+}
+
+/** 影の行から打ち切りを数える純関数(理由別)。 */
+export function countCensored(rows: readonly ShadowRow[]): { horizon: number; ticksExhausted: number } {
+  let horizon = 0, ticksExhausted = 0;
+  for (const r of rows) {
+    if (!r.censored) continue;
+    if (r.censorReason === 'horizon') horizon += 1;
+    else if (r.censorReason === 'ticks_exhausted') ticksExhausted += 1;
+  }
+  return { horizon, ticksExhausted };
 }
 
 /** 覆域の集計器(提案1件を必ずどれか1つの理由に落とす=取りこぼしを作らない)。 */
@@ -157,7 +171,8 @@ export function replayDay(dep: ReplayDeps, sessionDate: string, opts: { force?: 
   const liveMaxAgeMs = dep.liveMaxAgeMs ?? LIVE_MAX_AGE_MS;
   const empty = (skipped: boolean): DayResult => ({
     sessionDate, ladderEpoch: ladder.epoch, proposals: 0, opened: 0, rows: 0, inserted: 0,
-    ticks: 0, windowFrom: 0, windowTo: 0, coverage: [], skipped,
+    ticks: 0, windowFrom: 0, windowTo: 0, coverage: [],
+    censored: { horizon: 0, ticksExhausted: 0 }, skipped,
   });
   if (ladder.specs.length === 0) {
     // 影が1本も作れない = 非公開ラダーが読み込まれていない。黙って0件を積まない。
@@ -265,12 +280,18 @@ export function replayDay(dep: ReplayDeps, sessionDate: string, opts: { force?: 
   }, { replace: force });
   const stats = sim.stats();
   if (stats.errors > 0) dep.log(`★${sessionDate}: 影の内部エラー ${stats.errors} 件(記録が欠けている可能性)`);
+  // ★打ち切りは **毎日必ず** 出す(0 件でも)。事前登録は打ち切りでないもので母集団を切るが、
+  //   打ち切り率は spec に依存するので、切る前の数が無いと選択バイアスの大きさを後から測れない。
+  //   spec 別 × 時間帯別の内訳は shadow_exits の行から出せる(db/shadowStore.ts の shadowCensorByHour)。
+  const censored = countCensored(rows);
+  dep.log(`${sessionDate} 打ち切り: horizon=${censored.horizon} ticks_exhausted=${censored.ticksExhausted}`
+    + `(影の行 ${rows.length} 件中 / 地平 ${Math.round(horizonMs / 60_000)}分)`);
   return {
     sessionDate, ladderEpoch: ladder.epoch,
     proposals: targets.length, opened: openedIds.size,
     rows: rows.length, inserted: ins.inserted,
     ...(force ? { replaced: ins.replaced, changed: ins.changed, coverageChanged: covRes.changed } : {}),
-    ticks: ticks.length, windowFrom, windowTo, coverage: covRows, skipped: false,
+    ticks: ticks.length, windowFrom, windowTo, coverage: covRows, censored, skipped: false,
   };
 }
 

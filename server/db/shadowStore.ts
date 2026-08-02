@@ -254,6 +254,86 @@ export function countShadowRows(db: DatabaseSync): number {
   return (db.prepare('SELECT COUNT(*) AS n FROM shadow_exits').get() as { n: number }).n;
 }
 
+// ─── ★打ち切り(censoring)を後から必ず検定できるようにする ───────────────────────────
+//
+// ■ なぜ集計の入口をここに置くか
+//   事前登録は「観測地平以内に決済へ到達したもの(=打ち切りでない)」で母集団を切る。ところが
+//   **打ち切り率は spec に依存する**(床が緩いほど長く生きる)。地平480分を選んだ理由がまさにそれなのに、
+//   結末で母集団を条件付けると、そこに選択バイアスが戻ってくる。
+//   さらに 'ticks_exhausted'(価格の供給が尽きた)は時間帯に依存する: 再生は取引日単位なので、
+//   夜間終盤に武装した提案の地平は 06:00〜08:45 の空白帯を跨ぐ。長く生きる spec ほど当たりやすく、
+//   **spec × 時間帯** の交絡になる。時間帯は過去の検証で判明した最大の効果軸なので、無音にできない。
+//   → 「打ち切りを **除いた** 集計」と「**含めた** 集計」の両方を、いつでも同じ DB から出せるようにする。
+//     (行そのものは既に必要な値を全部持っている: censored / censor_reason / unrealized / mfe / mae /
+//      elapsed_ms / hold_ms。ここに置くのは **数え方の入口** だけで、新しい記録は増やさない。)
+//
+// ■ 時間帯の表し方
+//   armed_t の **JST 時(0-23)** で返す。セッションの区切り(Day 08:45 / 夕方 17:00 / NY 前後)は
+//   時から作れるので、ここでセッション判定を書き写さない(core/session.ts を再実装しない)。
+
+/** JST の「時」を armed_t から出す SQL 断片(+9時間して 1時間で割った余り)。 */
+const JST_HOUR_SQL = "CAST(((armed_t + 32400000) / 3600000) AS INTEGER) % 24";
+
+/** spec × 時間帯(JST 時)× 打ち切り理由 の件数。**打ち切っていない行も含む**(censorReason=null)。
+ *  ★これ1つで「spec 別 × 時間帯別の打ち切り率」も「ticks_exhausted だけの分布」も出せる。 */
+export interface ShadowCensorCell {
+  spec: string;
+  /** 武装時刻の JST 時(0-23)。 */
+  jstHour: number;
+  /** 'horizon' / 'ticks_exhausted' / null(=打ち切っていない)。 */
+  censorReason: string | null;
+  n: number;
+}
+
+export function shadowCensorByHour(db: DatabaseSync, epoch?: string): ShadowCensorCell[] {
+  const sql = `SELECT spec, ${JST_HOUR_SQL} AS jstHour, censor_reason AS censorReason, COUNT(*) AS n
+                 FROM shadow_exits ${epoch ? 'WHERE epoch = ?' : ''}
+                GROUP BY spec, jstHour, censorReason
+                ORDER BY spec, jstHour, censorReason`;
+  const stmt = db.prepare(sql);
+  return (epoch ? stmt.all(epoch) : stmt.all()) as unknown as ShadowCensorCell[];
+}
+
+/** spec × 打ち切りの有無 の集計。**打ち切りを除いた集計と含めた集計の両方** をこの1表から作る。
+ *  - 除いた集計 … censored=0 の行だけを使う(pnl は必ずある)。
+ *  - 含めた集計 … censored=1 の行を、決済していない事実(pnl は無く unrealized がある)ごと足す。
+ *  ★両者の差そのものを見るために、母数(n)と各合計の **個数** を必ず一緒に返す
+ *    (平均を返してしまうと、いくつの行から作った平均かが消える)。 */
+export interface ShadowSpecTotals {
+  spec: string;
+  /** 1=打ち切り(観測を打ち切った) / 0=終わった(決済 or 未約定失効)。 */
+  censored: number;
+  n: number;
+  /** 決済した行の数と損益合計(打ち切り行の pnl は NULL なので入らない)。 */
+  nPnl: number;
+  sumPnl: number;
+  /** 打ち切り時点の含み損益(打ち切り行だけが持つ)。 */
+  nUnrealized: number;
+  sumUnrealized: number;
+  /** 約定した行だけが持つ MFE / MAE / 保有時間。 */
+  nMfe: number; sumMfe: number;
+  nMae: number; sumMae: number;
+  nHold: number; sumHoldMs: number;
+  /** 武装からの経過(全行が持つ)。 */
+  sumElapsedMs: number;
+}
+
+export function shadowSpecTotals(db: DatabaseSync, epoch?: string): ShadowSpecTotals[] {
+  const sql = `SELECT spec, censored,
+                      COUNT(*) AS n,
+                      COUNT(pnl) AS nPnl, COALESCE(SUM(pnl), 0) AS sumPnl,
+                      COUNT(unrealized) AS nUnrealized, COALESCE(SUM(unrealized), 0) AS sumUnrealized,
+                      COUNT(mfe) AS nMfe, COALESCE(SUM(mfe), 0) AS sumMfe,
+                      COUNT(mae) AS nMae, COALESCE(SUM(mae), 0) AS sumMae,
+                      COUNT(hold_ms) AS nHold, COALESCE(SUM(hold_ms), 0) AS sumHoldMs,
+                      COALESCE(SUM(elapsed_ms), 0) AS sumElapsedMs
+                 FROM shadow_exits ${epoch ? 'WHERE epoch = ?' : ''}
+                GROUP BY spec, censored
+                ORDER BY spec, censored`;
+  const stmt = db.prepare(sql);
+  return (epoch ? stmt.all(epoch) : stmt.all()) as unknown as ShadowSpecTotals[];
+}
+
 /** 集計の入口(分析用)。**打ち切りは決済と混ぜない** ので outcome 別に数える。 */
 export function shadowOutcomeCounts(db: DatabaseSync, epoch?: string): Array<{ spec: string; outcome: string; n: number }> {
   const sql = epoch

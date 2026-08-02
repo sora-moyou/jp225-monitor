@@ -88,6 +88,13 @@ export interface ProposalRow {
   shotId: string | null;
   shotAgeMs: number | null;
   shotOrigin: string | null;
+  /** ★プロンプトから **外した** 文脈ブロックの JSON 配列(monitor の応答 contextOmitted をそのまま)。
+   *  現在は両腕とも ["paper-trade-history"](=A の紙成績を見せていない=母集団の独立性)。
+   *  ★NULL の意味: 「まだこの列を持たない版の monitor/生成器で記録された」= **紙成績を見せていた** 標本。
+   *    値が無いことと「外していない」を混同しないよう、ここに明記しておく。
+   *  ★型上は optional(省略= NULL)。既存の呼び出し/テストが作る行をそのまま受け付けるため。
+   *    実際の生成器(cycle.ts)は **常に** 明示的に値(または null)を入れる。 */
+  contextOmittedJson?: string | null;
   createdAt: number;
 }
 
@@ -136,6 +143,9 @@ export function initGeneratorSchema(db: DatabaseSync): void {
       shot_id       TEXT,
       shot_age_ms   INTEGER,
       shot_origin   TEXT,
+      -- ★プロンプトから外した文脈ブロック(JSON 配列)。NULL = この列を持たない版で記録された
+      --   = **紙成績(A の履歴)を見せていた** 標本(値が無いことと「外していない」を混同しない)。
+      context_omitted TEXT,
       created_at    INTEGER NOT NULL,
       UNIQUE (epoch, cycle_id, arm)
     );
@@ -177,6 +187,11 @@ export function initGeneratorSchema(db: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
   `);
+  // ★既に走っている台帳(実売買PCには数日ぶんの行がある)へ列を足す。冪等に足すのは
+  //   server/db/store.ts と同じ作法。既存行は NULL のまま = 「紙成績を見せていた版で記録された」。
+  //   ここで足さないと、旧DBに対する INSERT が列不一致で毎回失敗して記録が丸ごと止まる。
+  const cols = (db.prepare('PRAGMA table_info(proposals)').all() as Array<{ name: string }>).map(r => r.name);
+  if (!cols.includes('context_omitted')) db.exec('ALTER TABLE proposals ADD COLUMN context_omitted TEXT');
 }
 
 /** 台帳 DB を開く(書き込み用)。
@@ -214,8 +229,8 @@ const INSERT_SQL = `
     retried, retry_count, pre_retry_reason,
     direction, plan_json, ref_price, regime, confidence,
     none_reason, none_legs_json, veto_fired, range_anomaly_json,
-    shot_id, shot_age_ms, shot_origin, created_at
-  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?)
+    shot_id, shot_age_ms, shot_origin, context_omitted, created_at
+  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)
 `;
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
@@ -233,7 +248,7 @@ export function insertProposal(db: DatabaseSync, r: ProposalRow): boolean {
     r.retried, r.retryCount, r.preRetryReason,
     r.direction, r.planJson, num(r.refPrice), r.regime, num(r.confidence),
     r.noneReason, r.noneLegsJson, r.vetoFired, r.rangeAnomalyJson,
-    r.shotId, num(r.shotAgeMs), r.shotOrigin, r.createdAt,
+    r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null, r.createdAt,
   );
   return countProposals(db) > before;
 }

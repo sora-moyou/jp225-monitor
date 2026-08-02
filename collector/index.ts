@@ -15,6 +15,9 @@ import {
   writeTickArchiveHeartbeat, formatTickArchiveStatus, TICK_ARCHIVE_HEARTBEAT_MS,
   type TickArchiveExportInfo, type TickArchiveErrorInfo,
 } from '../server/db/tickArchiveHeartbeat.js';
+// ★台帳(提案生成器/影)の同期フォルダへの書き出し。ティックの日次書き出しと同じ置き場所・同じ間隔で、
+//   状態も同じ共有DB(jp225.db)の meta に残す。設計は server/db/ledgerExport.ts の冒頭参照。
+import { runLedgerExport, writeLedgerExportStatus, formatLedgerExportStatus } from '../server/db/ledgerExport.js';
 import { recordFeedPrices } from './record.js';
 // v0.7.20(全銘柄 HTTP 化): 価格の主経路を monitor の priceLoop と同一にする。socket / Yahoo realtime を全廃し、
 // 監視 4 銘柄すべてを公開 HTTP から取る: ajax_cme.js(NIY=F/YM=F/NQ=F)+ ajax_fx.js(JPY=X)。両者とも毎 GET
@@ -169,6 +172,20 @@ async function main(): Promise<void> {
         const message = e instanceof Error ? e.message : String(e);
         lastTickArchiveError = { at: Date.now(), where: 'export', message };
         console.error('[collector] tick export error:', message);
+      }
+      // ★台帳(提案生成器・影)も同じ機会に同期フォルダへスナップショットする。
+      //   1年分の標本がこの PC の1ファイルにしか無い状態を作らない(過去に「別PCの書き出しが空」の実事故)。
+      //   原本は readOnly で開き、一時ファイル → rename。結末(件数つき)は共有DBの meta に残すので、
+      //   trade2 の 30分スナップショット経由で **別PCからでも** 成否が読める。
+      try {
+        const now = Date.now();
+        const results = runLedgerExport(tickExportDir, now);
+        writeLedgerExportStatus(db, results, now, tickExportDir);
+        const line = `[collector] ledger export: ${formatLedgerExportStatus(results, now, tickExportDir)}`;
+        if (results.some(r => r.state === 'error')) console.error(line); else console.log(line);
+      } catch (e) {
+        // ここが失敗すると書き出しの成否そのものが無音になるので、必ず声を出す。
+        console.error('[collector] ledger export FAILED:', e instanceof Error ? e.message : String(e));
       }
     }
     // ★ティック保管の健全性を共有DB(jp225.db)の meta に書く。**inPollWindow の外でも必ず書く**:

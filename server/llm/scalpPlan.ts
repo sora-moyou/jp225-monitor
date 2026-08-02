@@ -91,8 +91,12 @@ export interface NoneLegs { dir: 'buy' | 'sell' | 'range'; legs: NoneLeg[]; }
 // chartShot(v0.9.51): ★①と②が **同じ画像を見たか** を仮定でなく記録にするための識別子と齢。
 //   scalpPlanRunner が caller!=='default' のときだけ載せる(既存の呼び出し元のオブジェクトは byte 不変)。
 //   記録専用で、判定にも決済にも一切影響しない。型は撮影側(chart/chartShot.ts)が SSOT。
+// contextOmitted: ★プロンプトから **外した** 文脈ブロックの名前(記録専用)。
+//   scalpPlanRunner が caller!=='default'(生成器)のときだけ載せる=既存の呼び出し元は byte 不変。
+//   生成器では両腕とも紙成績の履歴を外している(母集団の独立性。理由は scalpPlanRunner.ts の
+//   GENERATOR_OMITTED_CONTEXT)。この情報が無い記録は「外していない版で取った標本」を意味する。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity }
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[] }
   | { ok: false; error: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。

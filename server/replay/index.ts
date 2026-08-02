@@ -21,7 +21,9 @@
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { resolveGeneratorDbPath } from '../db/generatorStore.js';
 import { resolveTickArchiveDbPath, ARCHIVED_SYMBOLS } from '../db/tickArchive.js';
-import { openShadowDb, resolveShadowDbPath, readShadowLadderMeta } from '../db/shadowStore.js';
+import {
+  openShadowDb, resolveShadowDbPath, readShadowLadderMeta, shadowCensorByHour,
+} from '../db/shadowStore.js';
 import { loadExitImpl, getShadowExitLadder } from '../signalTrade/exit/index.js';
 import { openReadOnly, countProposalsByDirection } from './source.js';
 import { runReplay, type ReplayDeps } from './replay.js';
@@ -94,6 +96,23 @@ async function main(): Promise<void> {
       // ★台帳の session_date は要求時刻から付く。武装時刻(応答時刻)が取引日に入るものは上の日で覆われて
       //   いるので、これは「取引日の列が空の提案の数」であって、そのまま欠測件数ではない。
       log(`台帳の取引日が空の提案 ${res.withoutSessionDate}件(武装時刻が取引日に入るものは上の日で覆われている)`);
+    }
+    // ★打ち切り(censoring)を **必ず** 出す。0件でも「0件」と言う(数えていないのではない)。
+    //   打ち切り率は spec に依存し(床が緩いほど長く生きる)、ticks_exhausted は時間帯に依存する
+    //   (夜間終盤の武装は 06:00〜08:45 の空白帯を跨ぐ)= spec × 時間帯の交絡になりうる。
+    //   ここは要約だけ出し、spec 別 × 時間帯別の全内訳は shadowCensorByHour(shadow, epoch) で取れる。
+    const cells = shadowCensorByHour(shadow, res.ladderEpoch);
+    const censoredCells = cells.filter(c => c.censorReason !== null);
+    const byReason = new Map<string, number>();
+    for (const c of censoredCells) byReason.set(c.censorReason!, (byReason.get(c.censorReason!) ?? 0) + c.n);
+    const allRows = cells.reduce((n, c) => n + c.n, 0);
+    log(`打ち切り(この影ラダーの版の累計): `
+      + (byReason.size === 0 ? '0件' : [...byReason].map(([r, n]) => `${r}=${n}`).join(' '))
+      + ` / 影の行 ${allRows}件 | spec別×時間帯別の内訳=shadowCensorByHour(spec×JST時×理由)`);
+    if (censoredCells.length > 0) {
+      const top = [...censoredCells].sort((a, b) => b.n - a.n).slice(0, 8)
+        .map(c => `${c.spec}@${c.jstHour}時:${c.censorReason}=${c.n}`).join(' ');
+      log(`打ち切りの偏り(上位): ${top}`);
     }
     const totals = coverageTotals(shadow, res.ladderEpoch);
     log(`覆域(この影ラダーの版の累計): ${totals.map(t => `${t.reason}=${t.n}`).join(' ') || '(なし)'}`);
