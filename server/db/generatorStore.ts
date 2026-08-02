@@ -287,14 +287,30 @@ export function appendDailyTally(db: DatabaseSync, at: number, sessionDate?: str
   return rows.length;
 }
 
+/** 死活を判定する窓[ms]。1サイクル=2分なので、1時間 ≒ 30サイクル ≒ 標本60〜90件。 */
+export const LIVENESS_WINDOW_MS = 60 * 60_000;
+
 /** /api/status に出す死活情報。**読むだけ**(採番も作成もしない)。 */
 export interface GeneratorLedgerStatus {
   /** 台帳ファイルが在るか。false=生成器はこの PC で一度も動いていない。 */
   available: boolean;
   /** 最後に1行記録した時刻(epoch ms)。 */
   lastRecordAt: number | null;
-  /** ★「最終記録 N 分前」。生成器側だけの死活監視は生成器が死ぬと一緒に死ぬので、ここに出す。 */
+  /** 「最終記録 N 分前」。★これは **プロセスが生きているか** しか言わない(下の planLastHour を見ること)。 */
   ageMin: number | null;
+  /** ★死活の本体: 直近1時間に **標本が取れた**(status='plan')件数。
+   *
+   *  なぜ ageMin では足りないか: 生成器はゲートに弾かれている間も2分ごとに status='skipped' を
+   *  書き続ける。だから「最後の記録が何分前か」は **止まっている間も新しいまま** で、画面は緑のままになる。
+   *  実売買PCの実ログでは従属停止でセッションの 91〜100% が止まっていたのに、この指標は一度も
+   *  警告に変わらなかった(=無音の失敗)。溜めたいのは提案であって行数ではないので、
+   *  **溜まっているか** を直接数える。
+   *  ★台帳が読めない環境では **フィールドごと無い**(「0件」と「観測できない」を混同しない)。 */
+  planLastHour?: number;
+  /** 直近1時間に **取引時間内に**(session_date が付いた状態で)投げた要求の件数。
+   *  0 なら「そもそも標本を取る時間帯ではない」= planLastHour が 0 でも異常ではない。
+   *  取引時間外の常態を警告色にすると、警告そのものが読まれなくなる。 */
+  inSessionLastHour?: number;
   /** 直近の取引日(セッション外は '(closed)')の腕別件数。 */
   today: Array<{ sessionDate: string; arm: string; n: number }>;
   total: number;
@@ -311,6 +327,14 @@ export function readGeneratorLedgerStatus(path: string, now: number): GeneratorL
   try {
     const last = (db.prepare('SELECT MAX(requested_at) AS t FROM proposals').get() as { t: number | null }).t;
     const total = (db.prepare('SELECT COUNT(*) AS n FROM proposals').get() as { n: number }).n;
+    // ★死活は「標本が溜まっているか」で測る(行が増えているか、ではない)。
+    const since = now - LIVENESS_WINDOW_MS;
+    const planLastHour = (db.prepare(
+      "SELECT COUNT(*) AS n FROM proposals WHERE status = 'plan' AND requested_at >= ?",
+    ).get(since) as { n: number }).n;
+    const inSessionLastHour = (db.prepare(
+      'SELECT COUNT(*) AS n FROM proposals WHERE session_date IS NOT NULL AND requested_at >= ?',
+    ).get(since) as { n: number }).n;
     const day = (db.prepare(`SELECT COALESCE(session_date, '(closed)') AS d FROM proposals
                              ORDER BY requested_at DESC LIMIT 1`).get() as { d: string } | undefined)?.d ?? null;
     const today = day === null ? [] : (db.prepare(
@@ -322,6 +346,8 @@ export function readGeneratorLedgerStatus(path: string, now: number): GeneratorL
       available: true,
       lastRecordAt: last,
       ageMin: last == null ? null : Math.max(0, Math.round((now - last) / 60_000)),
+      planLastHour,
+      inSessionLastHour,
       today,
       total,
     };

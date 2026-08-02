@@ -25,6 +25,7 @@ import {
 import { resolveGeneratorConfig, epochGeneratorConfig } from './config.js';
 import { buildEpochInput, computeEpoch, canonicalJson } from './epoch.js';
 import { runPreflight } from './preflight.js';
+import { recheck, epochInputDiffKeys } from './recheck.js';
 import { makeCycleId, runCycle, type CycleDeps } from './cycle.js';
 
 /** 400(caller/exitVariant の拒否)が続いたら止める回数。1回目は一過性の可能性があるが、
@@ -58,14 +59,20 @@ async function main(): Promise<void> {
   console.log(`[generator] 接続先 ${cfg.monitorUrl} / 間隔 ${cfg.intervalMs / 1000}s / 対照 ${cfg.controlEvery || '(なし)'}サイクルに1回`);
 
   // ── ① 起動時の検証。満たさなければ走らない。
+  //    ★起動時は unreachable でも走らない(接続先が居ないまま空回りしない)。
+  //      稼働中の再検証(下のループ)だけは unreachable を「止める理由」にしない。
   const pre = await runPreflight(cfg.monitorUrl, fetch, 10_000);
   if (!pre.ok) die(pre.reason);
   console.log(`[generator] 前提OK: 決済実装=${pre.exit.impl} 変種実装=${pre.exit.variantImpl} `
     + `決済設定 版=${pre.exit.configVersion ?? '(未採番)'} 指紋=${pre.exit.configHash}`);
 
   // ── epoch。凍結設定 + 決済指紋 + 生成器設定のハッシュ。★入力が動けば自動で変わる。
+  //    ★「動けば変わる」を本当にするために、**サイクルごとに取り直す**(主ループの先頭)。
+  //      起動時1回だと、バイアスや LC 安全上限をライブで切り替えた瞬間から
+  //      別条件の標本が同じ期のラベルで積まれ続ける(=静かに嘘になる)。
   const epochInput = buildEpochInput(pre.settings, pre.exit, epochGeneratorConfig(cfg));
-  const epoch = computeEpoch(epochInput);
+  let epoch = computeEpoch(epochInput);
+  let currentEpochInput: Record<string, unknown> = epochInput;
   console.log(`[generator] epoch=${epoch}`);
 
   const dbPath = resolveGeneratorDbPath();
@@ -118,6 +125,40 @@ async function main(): Promise<void> {
   for (;;) {
     if (stopping) return;
     const cycleStart = Date.now();
+
+    // ── ★サイクルごとの再検証(前提 + 期)。起動時1回では、設定を変えた瞬間から静かに嘘になる。
+    const rc = await recheck(cfg, fetch, 10_000, epoch);
+    if (rc.kind === 'violated') {
+      // 前提が崩れた(専用キーが外れた/決済実装が公開フォールバックに落ちた等)。
+      // 測っていない標本を溜め続けるより止める(起動時の判断と同じ規律を稼働中にも適用する)。
+      tally(Date.now(), true);
+      try { db.close(); } catch { /* ignore */ }
+      die(`稼働中に前提が崩れました: ${rc.reason}`, '停止します');
+    } else if (rc.kind === 'unreachable') {
+      // monitor の再起動でも起きる。前提が崩れた証拠が無いので **止めない**(期も変えない)。
+      // サイクル自体は走らせる=結末は network-error として台帳に残り、欠測が無音にならない。
+      console.warn(`[generator] 再検証できず(期は据え置き ${epoch}): ${rc.reason}`);
+    } else if (rc.kind === 'epoch-changed') {
+      // ★止めるのではなく **期を分ける**。ここから先の標本は新しい epoch で積む。
+      const changed = epochInputDiffKeys(currentEpochInput, rc.epochInput);
+      console.log(`[generator] ★期が変わりました ${rc.prevEpoch} → ${rc.epoch}(変化した入力: ${changed.join(' ') || '(不明)'})`);
+      epoch = rc.epoch;
+      currentEpochInput = rc.epochInput;
+      // 新しい期の開始を台帳(runs)に残す。★1年後に「いつ何が変わって期が割れたか」が差分で読める。
+      try {
+        insertRun(db, {
+          startedAt: Date.now(), epoch, monitorUrl: cfg.monitorUrl,
+          exitImpl: rc.pre.exit.impl, exitVariantImpl: rc.pre.exit.variantImpl,
+          exitConfigVersion: rc.pre.exit.configVersion, exitConfigHash: rc.pre.exit.configHash,
+          settingsJson: JSON.stringify(rc.pre.settings),
+          epochInputJson: canonicalJson(rc.epochInput),
+          generatorConfigJson: JSON.stringify(cfg),
+        });
+      } catch (e) {
+        console.error('[generator] 期の切替を台帳に残せませんでした:', e instanceof Error ? e.message : String(e));
+      }
+    }
+
     const cycleId = makeCycleId(prefix, cycleStart, cycleIndex);
     let rows: ProposalRow[];
     try {

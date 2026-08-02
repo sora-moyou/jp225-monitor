@@ -3,13 +3,23 @@
 // パッケージ化(SEA)されたサイドカーからも動く(バイナリ自身は Node、Chrome はOS側)。
 // すべての失敗経路(Chrome 不在・タイムアウト・撮影失敗)は null を返し、呼び出し側はテキストのみへフォールバックする。
 
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { mkdir, writeFile, stat, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
+import { promisify } from 'node:util';
 import { loadConfig } from '../configStore.js';
 import { DEFAULT_CALLER, type LlmCaller } from '../llm/caller.js';
+
+// ★同期の外部プロセス起動はイベントループを止める(= SSE・価格ループ・A の約定判定が全停止する)。
+//   実測(この開発PC・実撮影 n=5): 撮影1回あたり 307ms の停止が必ず1回。実売買PCでは 2.24s。
+//   停止の中身は「後始末が全部同期」= reg 照会 + Desktop 書込 + taskkill + rmSync が
+//   await を1つも挟まず1本の同期ブロックになっていたこと。
+//   → 外部プロセス起動もファイル操作も **すべて非同期版**に置き換える。
+//     非同期にしても「殺す→消す」の順序は await の直列で保たれ、失敗は必ずログに出す。
+const execFileAsync = promisify(execFile);
 
 // TradingView ウィジェット(tv.js + iframe + ローソク描画)はネット依存で 12〜15 秒かかる。
 // 旧方式(--headless --screenshot --virtual-time-budget)は widget が描画される前に撮影して
@@ -25,8 +35,15 @@ const READY_POLL_INTERVAL_MS = 500;      // __chartReady ポーリング間隔
 const SETTLE_AFTER_READY_MS = 1500;      // ready 後の追加待ち(描画確定用)
 const WINDOW = '1280,760';
 // CDP デバッグポート: 撮影用サーバのポートと衝突しないよう、固定の高位ポートから派生する。
-// 同時撮影は想定しないが、user-data-dir は毎回隔離するので衝突しても致命的でない。
+// ★旧実装は「サーバのポートから派生」= 同じサーバなら **毎回同じデバッグポート** だった。
+//   「同時撮影は想定しない」という前提が崩れると(A と生成器が別プールになった時点で崩れていた)、
+//   後から起動した Chrome はポートを bind できず、CDP 照会が **先に起きた別の Chrome に当たる**。
+//   実測(修正中の overlap 実験): 割込んだ A が中断中の生成器の Chrome に接続し、
+//   その Chrome が死んだ後 __chartReady を 30 秒待って chart-ready-timeout。
+//   → 撮影ごとにポートをずらし、さらに「掴んだターゲットが自分の URL か」を照合する。
 const DEBUG_PORT_BASE = 47800;
+const DEBUG_PORT_SPAN = 100;          // 47800..47899 を巡回(直前の撮影と必ず別ポートになる)
+let debugPortSeq = 0;
 
 /** '%USERPROFILE%\\OneDrive\\Desktop' のような文字列の %ENV% を展開する。 */
 function expandEnv(s: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -38,18 +55,21 @@ function expandEnv(s: string, env: NodeJS.ProcessEnv = process.env): string {
  * %USERPROFILE%\OneDrive\Desktop になっている環境)に対応するため、まず User Shell Folders
  * レジストリの Desktop 値を見る。ダメなら OneDrive/通常の候補を順に試し、存在する最初のものを返す。
  */
-function resolveDesktopDir(env: NodeJS.ProcessEnv = process.env): string {
+// ★非同期化: この関数の reg 照会(execFileSync)と存在確認は、直後の書込・後始末と合わせて
+//   1本の同期ブロックになっていた(実測でその塊が 307ms 停止の一部)。挙動・ログ文言・採用順序は不変のまま
+//   外部プロセス起動とファイル I/O を非同期版へ置き換える。
+async function resolveDesktopDir(env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const candidates: string[] = [];
   let regVal = '(none)';
   // 1) レジストリの User Shell Folders → Desktop(REG_EXPAND_SZ・%USERPROFILE% 等を含む)。
   if (process.platform === 'win32') {
     try {
-      const out = execFileSync(
+      const { stdout } = await execFileAsync(
         'reg',
         ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Desktop'],
-        { encoding: 'utf-8', timeout: 3000 },
+        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
       );
-      const m = out.match(/Desktop\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
+      const m = String(stdout).match(/Desktop\s+REG_(?:EXPAND_)?SZ\s+(.+)/i);
       if (m && m[1]) { regVal = expandEnv(m[1].trim(), env); candidates.push(regVal); }
     } catch { /* レジストリ取得不可 → 候補で代替 */ }
   }
@@ -62,11 +82,14 @@ function resolveDesktopDir(env: NodeJS.ProcessEnv = process.env): string {
   candidates.push(join(up, 'Desktop'));
   candidates.push(join(homedir(), 'Desktop'));
   // 判断過程をログ(自己診断): レジストリ値 + 各候補の存在。
-  const detail = candidates.map(c => { let ex = false; try { ex = existsSync(c); } catch { /* noop */ } return `${ex ? '○' : '×'}${c}`; }).join(' | ');
+  const exists = await Promise.all(candidates.map(async (c) => {
+    try { await stat(c); return true; } catch { return false; }
+  }));
+  const detail = candidates.map((c, i) => `${exists[i] ? '○' : '×'}${c}`).join(' | ');
   console.log(`[chart-shot] Desktop解決 reg=${regVal} 候補=[${detail}]`);
-  // 存在する最初のディレクトリを採用。
-  for (const c of candidates) {
-    try { if (existsSync(c)) { console.log(`[chart-shot] Desktop採用(既存): ${c}`); return c; } } catch { /* 次へ */ }
+  // 存在する最初のディレクトリを採用(判定は上の一括 stat と同一=順序は従来どおり)。
+  for (let i = 0; i < candidates.length; i++) {
+    if (exists[i]) { console.log(`[chart-shot] Desktop採用(既存): ${candidates[i]}`); return candidates[i]!; }
   }
   // どれも無ければ homedir\Desktop を作成対象として返す(=幻フォルダになりうるので明示ログ)。
   const fb = join(homedir(), 'Desktop');
@@ -76,17 +99,18 @@ function resolveDesktopDir(env: NodeJS.ProcessEnv = process.env): string {
 
 // 撮影した最新1枚を実デスクトップに上書き保存する(確認用)。実弾ロジックには無関係。
 // 書込の実パスと成否を必ずログに出す(サイレント失敗の撲滅=自己診断)。失敗しても throw しない。
-function saveShotToDesktop(buf: Buffer): void {
+// ★非同期化: ログ文言・判定・失敗時の握りつぶしはすべて従来どおり(await を挟むだけ)。
+async function saveShotToDesktop(buf: Buffer): Promise<void> {
   let target = '(unresolved)';
   try {
-    const dir = resolveDesktopDir();
-    try { mkdirSync(dir, { recursive: true }); } catch { /* 既存 or 作成不可 → 書込側で判定 */ }
+    const dir = await resolveDesktopDir();
+    try { await mkdir(dir, { recursive: true }); } catch { /* 既存 or 作成不可 → 書込側で判定 */ }
     target = join(dir, 'jp225-chart-shot.png');
-    writeFileSync(target, buf);
+    await writeFile(target, buf);
     // 書込直後にファイルを stat して「本当にディスク上に存在するか+サイズ」を確認する。
-    // writeFileSync が例外なしでも、リダイレクト/同期/AV 等で直後に消えるケースを捕捉する。
+    // 書込が例外なしでも、リダイレクト/同期/AV 等で直後に消えるケースを捕捉する。
     let onDisk = -1;
-    try { onDisk = statSync(target).size; } catch { /* stat 不可 = 直後に実在せず */ }
+    try { onDisk = (await stat(target)).size; } catch { /* stat 不可 = 直後に実在せず */ }
     if (onDisk >= 0) {
       console.log(`[chart-shot] Desktop 保存OK: ${target} (書込 ${buf.length}B / 実在 ${onDisk}B)`);
     } else {
@@ -237,24 +261,58 @@ export interface CaptureResult {
   reason: string | null;   // null=成功 / それ以外=フォールバック理由
 }
 
-/** 単純な sleep(deadline は呼び出し側で管理)。 */
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+// ─── 撮影の中断(preempt)シグナル ──────────────────────────────────────────
+// generator の撮影中に default(A)が来たとき、generator は **譲る**。
+// 待ち(sleep)と CDP 応答待ちを即座に解くための最小のシグナル。
+// ★default の撮影では fire() されない = default の経路は1バイトも挙動が変わらない。
+interface AbortRef {
+  aborted: boolean;
+  reason: string | null;
+  promise: Promise<void>;
+  fire(reason: string): void;
+}
+function makeAbortRef(): AbortRef {
+  let wake!: () => void;
+  const promise = new Promise<void>((r) => { wake = r; });
+  const ref: AbortRef = {
+    aborted: false, reason: null, promise,
+    fire(reason: string) { if (ref.aborted) return; ref.aborted = true; ref.reason = reason; wake(); },
+  };
+  return ref;
 }
 
-/** GET http://127.0.0.1:port/json/list をポーリングし、type==='page' のターゲットの ws URL を得る。 */
-async function findPageWebSocketUrl(debugPort: number, deadline: number): Promise<string | null> {
+/** 単純な sleep(deadline は呼び出し側で管理)。abort 付きなら中断で即座に解ける。 */
+function sleep(ms: number, abort?: AbortRef): Promise<void> {
+  if (!abort) return new Promise((r) => setTimeout(r, ms));
+  if (abort.aborted) return Promise.resolve();
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    void abort.promise.then(() => { clearTimeout(t); r(); });
+  });
+}
+
+/** GET http://127.0.0.1:port/json/list をポーリングし、type==='page' のターゲットの ws URL を得る。
+ *  ★expectUrlMark: 自分が起動した Chrome かを照合する印(URL のクエリ)。
+ *    デバッグポートに別の(=前の撮影の)Chrome が残っていた場合に、その Chrome を掴んで
+ *    「他人のページで __chartReady を待ち続ける」事故を防ぐ。仮定でなく照合にする。 */
+async function findPageWebSocketUrl(
+  debugPort: number, deadline: number, abort?: AbortRef, expectUrlMark?: string,
+): Promise<string | null> {
   const stepDeadline = Math.min(deadline, Date.now() + WS_TARGET_TIMEOUT_MS);
   while (Date.now() < stepDeadline) {
+    if (abort?.aborted) return null;
     try {
       const res = await fetch(`http://127.0.0.1:${debugPort}/json/list`, { signal: AbortSignal.timeout(2000) });
       if (res.ok) {
-        const list = (await res.json()) as Array<{ type?: string; webSocketDebuggerUrl?: string }>;
-        const page = Array.isArray(list) ? list.find((t) => t.type === 'page' && !!t.webSocketDebuggerUrl) : undefined;
+        const list = (await res.json()) as Array<{ type?: string; url?: string; webSocketDebuggerUrl?: string }>;
+        const page = Array.isArray(list)
+          ? list.find((t) => t.type === 'page' && !!t.webSocketDebuggerUrl
+              && (!expectUrlMark || (t.url ?? '').includes(expectUrlMark)))
+          : undefined;
         if (page?.webSocketDebuggerUrl) return page.webSocketDebuggerUrl;
       }
     } catch { /* Chrome 起動直後は接続拒否 → リトライ */ }
-    await sleep(300);
+    await sleep(300, abort);
   }
   return null;
 }
@@ -290,13 +348,15 @@ class CdpClient {
     this.pending.clear();
   }
 
-  static connect(wsUrl: string, deadline: number): Promise<CdpClient | null> {
+  static connect(wsUrl: string, deadline: number, abort?: AbortRef): Promise<CdpClient | null> {
     return new Promise((resolve) => {
       let ws: WebSocket;
       try { ws = new WebSocket(wsUrl); } catch { resolve(null); return; }
       const timer = setTimeout(() => { try { ws.close(); } catch { /* ignore */ } resolve(null); }, Math.max(0, deadline - Date.now()));
       ws.addEventListener('open', () => { clearTimeout(timer); resolve(new CdpClient(ws)); }, { once: true });
       ws.addEventListener('error', () => { clearTimeout(timer); resolve(null); }, { once: true });
+      // 中断(default への譲り)が来たら接続待ちを即座に打ち切る。
+      if (abort) void abort.promise.then(() => { clearTimeout(timer); try { ws.close(); } catch { /* ignore */ } resolve(null); });
     });
   }
 
@@ -323,57 +383,404 @@ class CdpClient {
   close(): void { try { this.ws.close(); } catch { /* ignore */ } }
 }
 
+// ═══ ★Chrome 起動スロット: 実際の Chrome 起動を **プロセス全体で直列化** する ═══════════
+//
+// なぜキャッシュのプール分離だけでは足りないか:
+//   キャッシュ/相乗りは caller ごとに分けてある(v0.9.51・実弾の入力汚染を実際に塞いでいるので維持)。
+//   しかし「同時2起動で Chrome が資源逼迫し ws-error/クラッシュを誘発する」という実際に起きた問題は
+//   **プール間**ではなく **Chrome プロセス間** で起きる。プールを分けた結果、A(default)と生成器は
+//   別プールなので同時に Chrome を起動しうる = プール分離が保護を回避していた。
+//   → 起動そのものをここで直列化する。キャッシュのプール分離には一切触らない(直交)。
+//
+// 優先規約(★A を待たせない):
+//   ・default(A/B) は **絶対に待たない**。要求した瞬間にスロットを取る。
+//     「A が撮りたいときに生成器の撮影(最大42秒)を待つ」のでは、実弾を遅らせる元の問題に戻る。
+//   ・generator は **待つ / 譲る**。
+//       - 起動前: スロットが空くまで待つ(上限 CHROME_SLOT_WAIT_TIMEOUT_MS。超えたら諦めて縮退)。
+//       - 起動後に default が来たら: 即座に中断(preempt)して Chrome を落とし、default に明け渡す。
+//   ・default 同士(A/B)は従来どおり **キャッシュ側の相乗り** が同時起動を防ぐ(ここでは待たせない)。
+const CHROME_SLOT_WAIT_TIMEOUT_MS = 45_000;   // generator がスロットを待つ上限(撮影1回の上限42秒+α)。
+
+// 撮影1回(=Chrome 起動1回)の識別子。★画像の同一性 shotId とは **別の連番**にする:
+// shotId の採番に割り込むと「同じ画像か」の記録が読みにくくなるため、ログ用は独立させる。
+let captureSeq = 0;
+function nextCaptureId(): string { return `cap${++captureSeq}-${SHOT_ID_RUN}`; }
+
+interface ChromeSlotState {
+  caller: LlmCaller;
+  id: string;
+  preempted: boolean;
+  onPreempt: ((reason: string) => void) | null;
+}
+
+/** 取得済みスロット。release() するまで「Chrome が生きている」とみなされる。 */
+export interface ChromeSlotTicket {
+  readonly caller: LlmCaller;
+  readonly id: string;
+  /** スロット取得までに待った時間[ms](default は常に 0)。 */
+  readonly waitedMs: number;
+  /** default に割り込まれたか。 */
+  readonly preempted: boolean;
+  /** 中断されたときに呼ばれるコールバックを登録する(撮影側が Chrome を畳むのに使う)。 */
+  onPreempt(cb: (reason: string) => void): void;
+  /** 後始末まで終わってから呼ぶ。ここで初めて次の generator が起動できる。 */
+  release(): void;
+}
+
+export type ChromeSlotResult =
+  | { ok: true; ticket: ChromeSlotTicket }
+  | { ok: false; reason: string };
+
+const activeSlots = new Set<ChromeSlotState>();
+const slotWaiters = new Set<() => void>();
+
+/** テスト/診断用: いま Chrome を起動している撮影の一覧。 */
+export function chromeSlotSnapshot(): Array<{ caller: LlmCaller; id: string; preempted: boolean }> {
+  return [...activeSlots].map((s) => ({ caller: s.caller, id: s.id, preempted: s.preempted }));
+}
+
+/** テスト用: スロット状態を初期化。 */
+export function resetChromeSlots(): void {
+  activeSlots.clear();
+  for (const w of [...slotWaiters]) w();
+  slotWaiters.clear();
+}
+
+function wakeSlotWaiters(): void {
+  const waiters = [...slotWaiters];
+  slotWaiters.clear();
+  for (const w of waiters) w();
+}
+
+/** default が来たので、いま走っている generator の撮影に「譲れ」と伝える。 */
+function preemptGeneratorsFor(byId: string): void {
+  for (const s of activeSlots) {
+    if (s.caller === DEFAULT_CALLER || s.preempted) continue;
+    s.preempted = true;
+    console.warn(`[chart-shot] ★生成器の撮影を中断(A に譲る) 中断された撮影=${s.id} / 割込んだ撮影=${byId}`);
+    try { s.onPreempt?.('preempted-by-default'); } catch { /* 中断通知の失敗で本流を壊さない */ }
+  }
+}
+
+function makeTicket(caller: LlmCaller, id: string, waitedMs: number): ChromeSlotTicket {
+  const state: ChromeSlotState = { caller, id, preempted: false, onPreempt: null };
+  activeSlots.add(state);
+  let released = false;
+  return {
+    caller, id, waitedMs,
+    get preempted() { return state.preempted; },
+    onPreempt(cb) {
+      state.onPreempt = cb;
+      // 登録前に中断されていた場合の取りこぼしを防ぐ。
+      if (state.preempted) { try { cb('preempted-by-default'); } catch { /* ignore */ } }
+    },
+    release() {
+      if (released) return;
+      released = true;
+      activeSlots.delete(state);
+      if (activeSlots.size === 0) wakeSlotWaiters();
+    },
+  };
+}
+
+/**
+ * Chrome 起動スロットを取る。
+ * default … 即時取得(await で1ターンも待たない)。走っている generator は中断させる。
+ * generator … 空くまで待つ(上限あり)。取れなければ ok:false で撮影せず縮退。
+ */
+export async function acquireChromeSlot(
+  caller: LlmCaller,
+  id: string,
+  now: () => number = Date.now,
+  waitTimeoutMs: number = CHROME_SLOT_WAIT_TIMEOUT_MS,
+): Promise<ChromeSlotResult> {
+  if (caller === DEFAULT_CALLER) {
+    // ★A は待たない。走っている generator を蹴ってから、その場でスロットを取る。
+    preemptGeneratorsFor(id);
+    return { ok: true, ticket: makeTicket(caller, id, 0) };
+  }
+  const t0 = now();
+  let announced = false;
+  while (activeSlots.size > 0) {
+    const remain = waitTimeoutMs - (now() - t0);
+    if (remain <= 0) {
+      const busy = [...activeSlots].map((s) => `${s.caller}:${s.id}`).join(',');
+      console.warn(`[chart-shot] 生成器の撮影を見送り(${(waitTimeoutMs / 1000).toFixed(0)}秒待っても Chrome スロットが空かず) 使用中=${busy}`);
+      return { ok: false, reason: 'chrome-slot-busy' };
+    }
+    if (!announced) {   // 待機中は1秒ごとに起きるので、告知は最初の1回だけ(ログを埋めない)。
+      announced = true;
+      const busy = [...activeSlots].map((s) => `${s.caller}:${s.id}`).join(',');
+      console.log(`[chart-shot] 生成器は Chrome スロット待ち id=${id} 使用中=${busy} (実弾側の撮影を優先)`);
+    }
+    await new Promise<void>((resolve) => {
+      const wake = () => { slotWaiters.delete(wake); clearTimeout(timer); resolve(); };
+      const timer = setTimeout(wake, Math.max(1, Math.min(remain, 1000)));
+      slotWaiters.add(wake);
+    });
+    // ★ここから activeSlots.add(=makeTicket) まで await を挟まない = 取得は不可分。
+  }
+  return { ok: true, ticket: makeTicket(caller, id, Math.max(0, now() - t0)) };
+}
+
+// ═══ ★Chrome の始末: 非同期にしても「確実に殺す」保証を弱めない ═══════════════════════
+//
+// 弱めないための3点:
+//   ① 順序   … 「プロセスツリー kill → user-data-dir 削除」の順を await の直列で保つ
+//                (逆だと掴まれているファイルを消せない)。
+//   ② 失敗は声を出す … kill/削除の失敗は必ず warn。無音で取り残さない。
+//                     kill に失敗した Chrome は登録簿に残し、プロセス終了時にもう一度始末する。
+//   ③ プロセス終了時 … 撮影中に落ちても取り残さない(process 'exit' で同期的に一掃)。
+//                     'exit' はイベントループが終わった後なので同期 API しか使えない=ここは execFileSync が正解。
+interface LiveChrome {
+  pid: number;
+  tmpDir: string;
+  id: string;
+  /** spawn した子が既に自然終了したか(taskkill の「見つからない」を誤警報にしないため)。 */
+  exited: boolean;
+}
+const liveChromes = new Map<number, LiveChrome>();
+
+let exitSweeperInstalled = false;
+function installExitSweeper(): void {
+  if (exitSweeperInstalled) return;
+  exitSweeperInstalled = true;
+  process.on('exit', () => {
+    if (liveChromes.size === 0) return;
+    for (const e of liveChromes.values()) {
+      try {
+        if (process.platform === 'win32') {
+          execFileSync('taskkill', ['/F', '/T', '/PID', String(e.pid)], { stdio: 'ignore', timeout: 5000 });
+        } else {
+          process.kill(e.pid, 'SIGKILL');
+        }
+        console.warn(`[chart-shot] 終了時掃除: 撮影中の Chrome を始末 pid=${e.pid} id=${e.id}`);
+      } catch (err) {
+        console.warn(`[chart-shot] ★終了時掃除に失敗 pid=${e.pid} id=${e.id} — ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try { rmSync(e.tmpDir, { recursive: true, force: true, maxRetries: 1 }); } catch { /* 掃除失敗は起動時の temp 掃除に委ねる */ }
+    }
+    liveChromes.clear();
+  });
+}
+
+/** テスト/診断用: いま始末待ちの Chrome。 */
+export function liveChromeSnapshot(): Array<{ pid: number; id: string }> {
+  return [...liveChromes.values()].map((e) => ({ pid: e.pid, id: e.id }));
+}
+
+/** テスト用: 登録簿を空にする(実運用では呼ばない=取り残しを忘れることになるため)。 */
+export function clearLiveChromesForTest(): void { liveChromes.clear(); }
+
+/** 後始末の依存(テスト注入点)。既定は実プロセス kill / 実ディレクトリ削除。 */
+export interface CleanupDeps {
+  killTree(pid: number): Promise<void>;
+  removeDir(dir: string): Promise<void>;
+  /** kill 後に「本当に死んだか」を確かめる(exit code を信用しない)。 */
+  isAlive(pid: number): boolean;
+}
+
+/** PID がまだ生きているか。Windows/POSIX とも signal 0 は「存在確認だけ」。
+ *  EPERM は「居るが触れない」= 生存扱い(安全側)。 */
+export function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+export const defaultCleanupDeps: CleanupDeps = {
+  async killTree(pid: number): Promise<void> {
+    // ★重要(ws-error 根治): child.kill() は Windows では spawn した親しか殺さず、Chrome が切り離す
+    //   子プロセス(レンダラ/GPU/utility/crashpad)が生き残ってリーク蓄積→資源枯渇→次回撮影でレンダラ
+    //   クラッシュ(=ws-error)を誘発する。この Chrome インスタンスの **PID ツリーだけ** を taskkill /T で
+    //   落とす(/PID 指定なのでユーザーの Chrome は無傷)。非 Windows は従来どおり SIGKILL。
+    //   ★同期→非同期にしたのは「起動の仕方」だけで、殺す対象と手段(/F /T /PID)は1バイトも変えていない。
+    if (process.platform === 'win32') {
+      await execFileAsync('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 5000, windowsHide: true });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+  },
+  async removeDir(dir: string): Promise<void> {
+    // 非同期なので待ちがタダ = リトライを厚くできる(Windows は kill 直後にファイルが掴まれたままのことがある)。
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  },
+  isAlive: isProcessAlive,
+};
+
+export interface CleanupOutcome {
+  /** 実行順(必ず kill → rm)。 */
+  order: string[];
+  killError: string | null;
+  rmError: string | null;
+  /** kill 未確認のまま残った(=終了時掃除に託した)か。 */
+  stillRegistered: boolean;
+}
+
+/**
+ * 撮影1回分の後始末。**非同期だがイベントループを止めない**。
+ * 順序(kill→rm)を保ち、失敗は必ず warn し、kill 未確認なら登録簿に残して終了時掃除に託す。
+ */
+export async function runCaptureCleanup(
+  target: { pid: number | null; tmpDir: string; id: string },
+  deps: CleanupDeps = defaultCleanupDeps,
+): Promise<CleanupOutcome> {
+  const order: string[] = [];
+  let killError: string | null = null;
+  let rmError: string | null = null;
+  const entry = target.pid == null ? undefined : liveChromes.get(target.pid);
+
+  if (target.pid != null) {
+    order.push('kill');
+    // ★「exit code が 0 か」ではなく「本当に死んだか」で判定する。
+    //   taskkill /T はツリーの途中の子が先に消えているだけでも非0で終わる(実測で遭遇)。
+    //   exit code だけを見ると健全なケースを誤警報し、逆に本物の残留を見落とす。
+    //   1回目が非0なら間を置いて **もう一度殺し**、それでも駄目なら生存確認して結論を出す。
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await deps.killTree(target.pid);
+        killError = null;
+        break;
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException & { stderr?: string };
+        killError = `${err.message ?? String(e)}${err.stderr ? ` | ${String(err.stderr).trim()}` : ''}`;
+        if (attempt === 1) await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    const alive = deps.isAlive(target.pid);
+    if (!alive) {
+      liveChromes.delete(target.pid);
+      if (killError) {
+        // 死んではいる(ツリーの子が先に消えていた等)。無音にはしないが警告でもない。
+        console.log(`[chart-shot] Chrome 停止を確認 pid=${target.pid} id=${target.id} `
+          + `(taskkill は非0で終了: ${killError.split('\n')[0]}${entry?.exited ? ' / 親は既に自然終了' : ''})`);
+      }
+    } else {
+      // ★無音にしない: 取り残した Chrome が溜まると資源逼迫でクラッシュを誘発する(過去に発生)。
+      console.warn(`[chart-shot] ★Chrome を始末できず生存中 pid=${target.pid} id=${target.id} — `
+        + `${(killError ?? 'taskkill は成功を返したが生存').split('\n')[0]} `
+        + `(登録簿に残して終了時に再度始末する)`);
+      // 登録簿に残す = プロセス終了時にもう一度始末される。
+      if (!liveChromes.has(target.pid)) {
+        liveChromes.set(target.pid, { pid: target.pid, tmpDir: target.tmpDir, id: target.id, exited: entry?.exited ?? false });
+        installExitSweeper();
+      }
+    }
+  }
+
+  order.push('rm');
+  try {
+    await deps.removeDir(target.tmpDir);
+  } catch (e) {
+    rmError = e instanceof Error ? e.message : String(e);
+    console.warn(`[chart-shot] 作業ディレクトリの削除に失敗 ${target.tmpDir} — ${rmError.split('\n')[0]}`);
+  }
+
+  return {
+    order, killError, rmError,
+    stillRegistered: target.pid != null && liveChromes.has(target.pid),
+  };
+}
+
 /**
  * /chart-shot を撮影して PNG バッファを返す。失敗時は reason 付きで buffer=null。
  * CDP(Chrome DevTools Protocol)で実時間 window.__chartReady を待ってから撮影する。
  * どの段階の失敗/タイムアウトでも throw せず null を返す(呼び出し側はテキストのみへフォールバック)。
  * port: サーバが実際に待ち受けているポート。
  */
-export async function captureChartPng(port: number): Promise<CaptureResult> {
+export async function captureChartPng(port: number, caller: LlmCaller = DEFAULT_CALLER): Promise<CaptureResult> {
+  // ★問題③: これまで「終わったこと」しかログに無く、Chrome 起動〜撮影完了の全体所要が測れなかった。
+  //   開始/完了をペアで出し、完了行に段階別の内訳を載せる(後から実測できるようにする)。
+  const runId = nextCaptureId();
+  const tStart = Date.now();
+  const mark: Record<string, number> = {};
+  const lap = (name: string, from: number): number => { const d = Date.now() - from; mark[name] = d; return d; };
+  console.log(`[chart-shot] 撮影開始 id=${runId} caller=${caller} port=${port}`);
+
+  const finish = (buf: Buffer | null, why: string | null, chromePathV: string | null, verV: string | null): CaptureResult => {
+    const total = ((Date.now() - tStart) / 1000).toFixed(1);
+    const parts = Object.entries(mark).map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}s`).join(' ');
+    if (buf) {
+      // 既存文言(「TradingView 撮影 ok (NNKB)」)は前方一致で保つ。内訳を追記するだけ。
+      console.log(`[chart-shot] TradingView 撮影 ok (${(buf.length / 1024).toFixed(0)}KB) id=${runId} 所要=${total}s [${parts}]`);
+    } else {
+      console.warn(`[chart-shot] TradingView 撮影 失敗: ${why ?? 'unknown'} → テキストのみへフォールバック `
+        + `id=${runId} 所要=${total}s [${parts}]`);
+    }
+    return { buffer: buf, chromePath: chromePathV, chromeVersion: verV, reason: buf ? null : why };
+  };
+
   const chromePath = resolveChromePath();
-  if (!chromePath) {
-    return { buffer: null, chromePath: null, chromeVersion: null, reason: 'chrome-not-found' };
-  }
+  if (!chromePath) return finish(null, 'chrome-not-found', null, null);
   const ver = chromeVersion(chromePath);
 
   // グローバル WebSocket が無い Node ではフォールバック(テキストのみ)。
-  if (typeof WebSocket === 'undefined') {
-    return { buffer: null, chromePath, chromeVersion: ver, reason: 'no-websocket' };
-  }
+  if (typeof WebSocket === 'undefined') return finish(null, 'no-websocket', chromePath, ver);
+
+  // ★問題②: 実際の Chrome 起動をプロセス全体で直列化する(キャッシュのプール分離とは独立)。
+  //   default は待たない / generator は待つ・譲る。
+  const slot = await acquireChromeSlot(caller, runId);
+  if (!slot.ok) return finish(null, slot.reason, chromePath, ver);
+  const ticket = slot.ticket;
+  mark['スロット待ち'] = ticket.waitedMs;
 
   let tmpDir: string;
   try {
     tmpDir = mkdtempSync(join(tmpdir(), 'jp225-shot-'));
   } catch (e) {
-    return { buffer: null, chromePath, chromeVersion: ver, reason: `tmpdir: ${e instanceof Error ? e.message : String(e)}` };
+    ticket.release();
+    return finish(null, `tmpdir: ${e instanceof Error ? e.message : String(e)}`, chromePath, ver);
   }
   const userDataDir = join(tmpDir, 'ud');
-  const debugPort = DEBUG_PORT_BASE + (port % 100);   // 撮影サーバのポートから派生(隔離 user-data-dir なので衝突許容)。
-  const url = `http://127.0.0.1:${port}/chart-shot`;
+  // ★撮影ごとに別ポート + 自分のページを見分ける印(cap=<runId>)。前の撮影の Chrome を掴まない。
+  const debugPort = DEBUG_PORT_BASE + (debugPortSeq++ % DEBUG_PORT_SPAN);
+  const urlMark = `cap=${runId}`;
+  const url = `http://127.0.0.1:${port}/chart-shot?${urlMark}`;
   const args = buildChromeArgs(url, debugPort, userDataDir);
 
+  // ★デッドラインはスロット取得**後**に張る(待ち時間で撮影の持ち時間を食い潰さない)。
   const deadline = Date.now() + CAPTURE_TIMEOUT_MS;   // 全 await を縛る全体デッドライン。
   let child: ReturnType<typeof spawn> | null = null;
   let cdp: CdpClient | null = null;
   let buffer: Buffer | null = null;
   let reason: string | null = null;
 
+  // 中断(generator が default に譲る)シグナル。default では絶対に fire されない。
+  const abort = makeAbortRef();
+  ticket.onPreempt((r) => {
+    abort.fire(r);
+    // 進行中の CDP 待ちを即座に解く(ws を閉じると pending は ws-closed で reject される)。
+    try { cdp?.close(); } catch { /* ignore */ }
+  });
+
   try {
     // (a) launch
     try {
+      const tLaunch = Date.now();
       child = spawn(chromePath, args, { windowsHide: true });
       child.on('error', () => { /* 監視するが throw させない。以降の CDP 接続失敗で reason 化。 */ });
+      if (child.pid != null) {
+        // ★起動した瞬間に登録簿へ。以降どこで落ちても(例外・強制終了)始末の対象になる。
+        installExitSweeper();
+        const entry: LiveChrome = { pid: child.pid, tmpDir, id: runId, exited: false };
+        liveChromes.set(child.pid, entry);
+        child.on('exit', () => { entry.exited = true; });
+      }
+      lap('起動', tLaunch);
     } catch (e) {
       reason = `spawn: ${e instanceof Error ? e.message : String(e)}`;
       throw new Error(reason);
     }
 
     // (b) get ws target(~10s cap)
-    const wsUrl = await findPageWebSocketUrl(debugPort, deadline);
+    const tWs = Date.now();
+    const wsUrl = await findPageWebSocketUrl(debugPort, deadline, abort, urlMark);
     if (!wsUrl) { reason = 'ws-target'; throw new Error(reason); }
 
-    cdp = await CdpClient.connect(wsUrl, deadline);
+    cdp = await CdpClient.connect(wsUrl, deadline, abort);
     if (!cdp) { reason = 'ws-connect'; throw new Error(reason); }
+    // 接続確立と中断通知が競合した場合の取りこぼしを防ぐ(既に中断済みなら即閉じる)。
+    if (abort.aborted) { try { cdp.close(); } catch { /* ignore */ } }
+    lap('ws接続', tWs);
 
     // (c) Page.enable / Runtime.enable
     try {
@@ -382,9 +789,10 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
     } catch { reason = 'cdp-enable'; throw new Error(reason); }
 
     // (d) wait window.__chartReady(実時間・~18s cap)
+    const tReady = Date.now();
     const readyDeadline = Math.min(deadline, Date.now() + CHART_READY_TIMEOUT_MS);
     let ready = false;
-    while (Date.now() < readyDeadline) {
+    while (!abort.aborted && Date.now() < readyDeadline) {
       try {
         const r = await cdp.send<{ result?: { value?: unknown } }>(
           'Runtime.evaluate',
@@ -393,12 +801,14 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
         );
         if (r?.result?.value === true) { ready = true; break; }
       } catch { /* 評価失敗は次のポーリングで再試行 */ }
-      await sleep(READY_POLL_INTERVAL_MS);
+      await sleep(READY_POLL_INTERVAL_MS, abort);
     }
+    lap('ready待ち', tReady);
     if (!ready) { reason = 'chart-ready-timeout'; throw new Error(reason); }
 
     // (e) settle
-    await sleep(SETTLE_AFTER_READY_MS);
+    const tShot = Date.now();
+    await sleep(SETTLE_AFTER_READY_MS, abort);
 
     // (f) screenshot
     try {
@@ -407,7 +817,8 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
       const buf = Buffer.from(shot.data, 'base64');
       if (buf.length === 0) { reason = 'empty-png'; throw new Error(reason); }
       buffer = buf;
-      saveShotToDesktop(buffer);   // 確認用: 最新1枚を Desktop に上書き保存。
+      await saveShotToDesktop(buffer);   // 確認用: 最新1枚を Desktop に上書き保存(非同期=ループを止めない)。
+      lap('撮影', tShot);
     } catch (e) {
       if (!reason) reason = `screenshot: ${e instanceof Error ? e.message : String(e)}`;
       throw new Error(reason);
@@ -415,34 +826,24 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
   } catch (e) {
     // 全経路 null フォールバック。reason 未設定なら例外メッセージから。
     if (!reason) reason = e instanceof Error ? e.message : String(e);
+    // 中断されていたなら真の理由はそれ(ws-closed 等の派生メッセージで覆い隠さない)。
+    if (abort.aborted) reason = abort.reason ?? reason;
     buffer = null;
   } finally {
-    // 後始末(失敗は無視)。ws → chrome プロセスツリー kill → user-data-dir 掃除。
+    // ★後始末(問題①)。順序は従来どおり ws → chrome プロセスツリー kill → user-data-dir 掃除。
+    //   変えたのは「同期で待つ」のをやめたことだけ。await の直列なので順序は保たれ、
+    //   その間イベントループは回り続ける(SSE・価格ループ・A の約定判定が止まらない)。
+    //   失敗は runCaptureCleanup が必ずログに出し、kill 未確認なら登録簿に残して終了時掃除へ託す。
+    const tClean = Date.now();
     try { cdp?.close(); } catch { /* ignore */ }
-    // ★重要(ws-error 根治): child.kill() は Windows では spawn した親しか殺さず、Chrome が切り離す
-    //   子プロセス(レンダラ/GPU/utility/crashpad)が生き残ってリーク蓄積→資源枯渇→次回撮影でレンダラ
-    //   クラッシュ(=ws-error)を誘発する。この Chrome インスタンスの **PID ツリーだけ** を taskkill /T で
-    //   落とす(/PID 指定なのでユーザーの Chrome は無傷)。非 Windows は従来どおり SIGKILL。
-    try {
-      if (child?.pid != null) {
-        if (process.platform === 'win32') {
-          execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', timeout: 5000 });
-        } else {
-          child.kill('SIGKILL');
-        }
-      }
-    } catch { /* 既に終了/権限等は無視 */ }
-    try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 2 }); } catch { /* ignore */ }
+    await runCaptureCleanup({ pid: child?.pid ?? null, tmpDir, id: runId });
+    lap('後始末', tClean);
+    // Chrome が完全に片付いてから初めてスロットを解放する(次の generator が起動できる)。
+    ticket.release();
   }
 
   // TradingView チャートが実際に描画・撮影できたかを明示ログ(トレード PC のログで自己診断)。
-  if (buffer) {
-    console.log(`[chart-shot] TradingView 撮影 ok (${(buffer.length / 1024).toFixed(0)}KB)`);
-  } else {
-    console.warn(`[chart-shot] TradingView 撮影 失敗: ${reason ?? 'unknown'} → テキストのみへフォールバック`);
-  }
-
-  return { buffer, chromePath, chromeVersion: ver, reason: buffer ? null : reason };
+  return finish(buffer, reason, chromePath, ver);
 }
 
 // ─── A/B(+連続サイクル)でチャート撮影を共有するキャッシュ ───────────────────────
@@ -519,7 +920,10 @@ function poolFor(caller: LlmCaller): ChartCachePool {
  *  now/capture はテスト注入用。caller 省略は 'default' = 従来と完全に同一経路。 */
 export async function captureChartPngCached(
   port: number,
-  capture: (p: number) => Promise<CaptureResult> = captureChartPng,
+  // ★caller を撮影関数へも渡す: 実際の Chrome 起動の直列化(スロット)は撮影側で効かせる必要がある
+  //   (キャッシュを迂回する直接呼び出し=起動時の1枚 も同じ規約に乗せるため)。
+  //   テストが注入するモックは引数を無視するだけで、呼び出し回数の意味は変わらない。
+  capture: (p: number, c?: LlmCaller) => Promise<CaptureResult> = captureChartPng,
   now: () => number = Date.now,
   caller: LlmCaller = DEFAULT_CALLER,
 ): Promise<TrackedCaptureResult> {
@@ -546,7 +950,7 @@ export async function captureChartPngCached(
   console.log(`[chart-shot] 新規撮影 caller=${caller} (キャッシュ無効/期限切れ)`);
   pool.inFlight = (async () => {
     try {
-      const r = await capture(port);
+      const r = await capture(port, caller);
       const at = now();
       if (r.buffer) {
         const shotId = nextShotId();

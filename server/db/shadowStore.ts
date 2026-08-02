@@ -92,8 +92,32 @@ export function openShadowDb(path: string): DatabaseSync {
   return db;
 }
 
-const INSERT_SQL = `
-  INSERT OR IGNORE INTO shadow_exits (
+// ─── ★「強制再計算」が本当に置き換わること ──────────────────────────────────
+//
+// UNIQUE(epoch, source, proposal_id, spec) の鍵には **結果の値が1つも入っていない**。
+// つまり INSERT OR IGNORE だけを持っていると、実装を直して再生し直しても
+//   「鍵が同じ → 無視 → 報告は inserted:0 → DB の中身は古い結果のまま」
+// になる。しかも報告の 0 は「変わらなかった」と読めるので、**バグを直してもデータが直らず、
+// しかも成功に見える**。これが一番危ない形なので、置き換える経路を明示的に持つ。
+//
+// ★通常の再生(force なし)は従来どおり INSERT OR IGNORE(冪等・二重計上しない)。
+// ★force のときだけ INSERT OR REPLACE にして、**結果が変わった行数(changed)を数えて返す**。
+//   行数そのものは増減しない(鍵が同じなら1行のまま)ので、「増えなかった=何もしていない」ではない。
+
+/** 置き換え前に「その行の結末が今と同じか」を見るための問い合わせ。
+ *  ★結末を決める列だけを見る(NULL 安全な IS で比較する)。ここが全部一致していれば
+ *    再計算しても答えは変わらなかった、と言ってよい。 */
+const SAME_OUTCOME_SQL = `
+  SELECT 1 AS x FROM shadow_exits
+   WHERE epoch = ? AND source = ? AND proposal_id = ? AND spec = ?
+     AND outcome IS ? AND censored IS ? AND censor_reason IS ?
+     AND exit_t IS ? AND exit_price IS ? AND exit_reason IS ? AND pnl IS ?
+`;
+
+/** 行を書く SQL。衝突時の振る舞いだけが違う(列と順序は1か所に置く=食い違いを作らない)。 */
+function insertSql(conflict: 'IGNORE' | 'REPLACE'): string {
+  return `
+  INSERT OR ${conflict} INTO shadow_exits (
     epoch, source, proposal_id, spec, param_class, dir,
     armed_t, armed_price, entry_t, entry_price, entry_leg, initial_stop,
     exit_t, exit_price, exit_reason, pnl,
@@ -101,23 +125,53 @@ const INSERT_SQL = `
     hold_ms, elapsed_ms, horizon_ms, concurrent, ticks, created_at
   ) VALUES (?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?,?)
 `;
+}
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
 function num(v: number | null | undefined): number | null {
   return v != null && Number.isFinite(v) ? v : null;
 }
 
+export interface ShadowInsertResult {
+  /** 新しく増えた行数。 */
+  inserted: number;
+  /** 既にあったので入らなかった行数(replace のときは 0 にならず replaced に出る)。 */
+  skipped: number;
+  /** ★replace のときだけ: 既存行を **上書きした** 行数。 */
+  replaced?: number;
+  /** ★replace のときだけ: 上書きした結果、**結末が実際に変わった** 行数。
+   *  0 なら「再計算したが答えは同じ」、>0 なら「古い結果が残っていた」。
+   *  どちらも「何もしていない」ではないことが読み手に分かる。 */
+  changed?: number;
+}
+
 /** 影の行をまとめて追記する(1トランザクション)。挿入できた件数を返す。
  *  ★重複(同 epoch/source/proposal/spec)は静かに無視ではなく、戻り値の差で分かるようにする。
+ *  ★opts.replace=true(=強制再計算)のときは **上書きする**。一意鍵に結果の値が入っていない以上、
+ *    IGNORE のままでは「実装を直して再生し直しても DB は古い結果のまま・報告は inserted:0」になる。
  *  ★フラッシュ経路を作る人へ: **行を書く前に recordShadowLadderMeta(db, ladder) を1回呼ぶこと**。
  *    行には spec(不透明名)と epoch しか載らないので、対応表が無いと1年後に「候補はどれか」が読めない。 */
-export function insertShadowRows(db: DatabaseSync, rows: readonly ShadowRow[]): { inserted: number; skipped: number } {
-  if (rows.length === 0) return { inserted: 0, skipped: 0 };
-  const stmt = db.prepare(INSERT_SQL);
+export function insertShadowRows(
+  db: DatabaseSync, rows: readonly ShadowRow[], opts: { replace?: boolean } = {},
+): ShadowInsertResult {
+  if (rows.length === 0) return opts.replace ? { inserted: 0, skipped: 0, replaced: 0, changed: 0 } : { inserted: 0, skipped: 0 };
+  const stmt = db.prepare(insertSql(opts.replace ? 'REPLACE' : 'IGNORE'));
+  const same = opts.replace ? db.prepare(SAME_OUTCOME_SQL) : null;
   const before = countShadowRows(db);
+  /** 既存行と結末まで完全に一致していた件数(=再計算しても答えが同じだった行)。 */
+  let identical = 0;
   db.exec('BEGIN');
   try {
     for (const r of rows) {
+      if (same) {
+        // ★上書きする **前** に「結末が今と同じか」を見る(上書き後では差が読めない)。
+        const hit = same.get(
+          r.epoch, r.source, r.proposalId, r.spec,
+          r.outcome, r.censored ? 1 : 0, r.censorReason,
+          num(r.exitT), num(r.exitPrice), r.exitReason, num(r.pnl),
+        );
+        if (hit) identical += 1;
+      }
       stmt.run(
         r.epoch, r.source, r.proposalId, r.spec, r.paramClass, r.dir,
         r.armedT, num(r.armedPrice), num(r.entryT), num(r.entryPrice), r.entryLeg, num(r.initialStop),
@@ -132,7 +186,12 @@ export function insertShadowRows(db: DatabaseSync, rows: readonly ShadowRow[]): 
     throw e;
   }
   const inserted = countShadowRows(db) - before;
-  return { inserted, skipped: rows.length - inserted };
+  if (!opts.replace) return { inserted, skipped: rows.length - inserted };
+  // ★force のときは「入らなかった」ではなく「上書きした」と数える。
+  //   行数は増えない(鍵が同じなら1行のまま)ので、inserted:0 だけを見せると
+  //   「何もしていない/変わらなかった」と読めてしまう。置換件数と、そのうち **結末が変わった** 件数を返す。
+  const replaced = rows.length - inserted;
+  return { inserted, skipped: 0, replaced, changed: replaced - identical };
 }
 
 // ─── 版(epoch)と「変種 ↔ spec」の対応をメタに残す ──────────────────────────────

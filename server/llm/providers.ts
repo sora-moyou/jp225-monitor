@@ -223,9 +223,6 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
   const kind = classifyLLMError(msg);
   if (!kind) return false;
   const now = Date.now();
-  // ★従属規則(作業4-2)の発火点: **default プールが quota を踏んだ瞬間**だけ生成器を止める。
-  //   transient(5xx)/config(401/403/404)/oversize(413) では発火しない(枠の枯渇ではない)。
-  if (kind === 'quota' && p.pool === DEFAULT_CALLER) notifyDefaultQuota(p.config.name, now);
   if (kind === 'oversize') {
     // この要求だけがモデル上限(TPM/コンテキスト)を超過。プロバイダ自体は健全なので
     // ポーズしない(小さい chat/explain は同プロバイダで通り続ける)。より大きいモデルへ流すだけ。
@@ -243,6 +240,13 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     p.circuitOpenUntil = now + pause;
     const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
     console.warn(`${logPrefix(p)}429 #${p.consecutiveFails + 1} — paused for ${human}`);
+    // ★従属規則(作業4-2)の発火点: **default プールが quota を踏んだ瞬間**だけ生成器を止める。
+    //   transient(5xx)/config(401/403/404)/oversize(413) では発火しない(枠の枯渇ではない)。
+    //   ★停止の長さは **A が実際に入れたポーズ(pause)と同じ**。危険なのは「A がポーズしている間に
+    //     生成器が同じ上流を食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば
+    //     停止も自動で深くなる(=保護の目的は弱まらない)。旧実装のようにセッションの残り全部は捨てない。
+    //   ★default 経路の挙動はこの呼び出しで1ミリも変わらない(このカウンタを読むのは生成器だけ)。
+    if (p.pool === DEFAULT_CALLER) notifyDefaultQuota(p.config.name, now, pause);
   } else if (kind === 'config') {
     // 設定不備(401/403/404): 再試行しても直らないので長くポーズ(30分)して次へフォールバック。
     //   これで Kimi 404 等の誤設定プロバイダを避けて他プロバイダで継続できる(連鎖全滅を防ぐ)。

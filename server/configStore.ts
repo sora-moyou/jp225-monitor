@@ -298,13 +298,22 @@ export type GeneratorProviderName = typeof GENERATOR_PROVIDERS[number];
 
 /** ★生成器プールのキー解決を1か所に集約する内部ヘルパ(値と出どころを同時に返す)。
  *  resolveApiKeyForPool(実際に使うキー)と resolveGeneratorKeySource(画面の表示)が
- *  同じ関数を通ることで、「表示は専用キーなのに実際は共通キー」という食い違いが起こり得なくなる。 */
+ *  同じ関数を通ることで、「表示は専用キーなのに実際は共通キー」という食い違いが起こり得なくなる。
+ *
+ *  ★出どころは「どの欄に入っていたか」ではなく **値** で決める。
+ *    共通キーと同じ文字列を生成器キー欄に貼っても上流のクォータは 100% 共有されたままで、
+ *    「A が429を踏んで最大8時間ポーズする」危険は1ミリも減っていない。それを 'own' と呼ぶと、
+ *    その出どころだけを見る生成器の起動時検証(server/generator/preflight.ts)が通ってしまい、
+ *    **検証が守ろうとしている当のものを守れない**。だから値が同じなら 'shared' と呼ぶ。 */
 function resolveGeneratorKey(provider: ProviderName): { source: GeneratorKeySource; key?: string } {
-  const own = loadConfig().generatorKeys?.[provider];
-  if (own && own.trim()) return { source: 'own', key: own.trim() };
-  const env = process.env[GENERATOR_ENV[provider]]?.trim();
-  if (env) return { source: 'env', key: env };
   const shared = resolveApiKey(provider);
+  /** 専用欄の値が共通キーと同一なら、欄がどこであれ **共有** として扱う(上流クォータは分かれていない)。 */
+  const classify = (key: string, source: 'own' | 'env'): { source: GeneratorKeySource; key: string } =>
+    ({ source: shared !== undefined && key === shared ? 'shared' : source, key });
+  const own = loadConfig().generatorKeys?.[provider];
+  if (own && own.trim()) return classify(own.trim(), 'own');
+  const env = process.env[GENERATOR_ENV[provider]]?.trim();
+  if (env) return classify(env, 'env');
   return shared ? { source: 'shared', key: shared } : { source: 'none' };
 }
 

@@ -12,9 +12,10 @@
 //                     ★モードを書き換えたり無音で縮退したりしない(「上限50回で無音の dryrun 化」が
 //                       保護注文を消した過去の事故と同じ轍を踏まない)。
 //   default-quota   … 作業4-2(★従属規則): default プールが quota(429/枯渇)を踏んだら、
-//                     生成器は **そのセッションの残りを停止**。自分の429ではなく **A の429で止まる**。
+//                     生成器は **A のポーズが明けるまで停止**。自分の429ではなく **A の429で止まる**。
 //                     同一APIキーだと上流のクォータは共有されたままなので、プール分離だけでは足りない。
 //                     「実験系は本番の枠を食い残さない」を実装するとこうなる。
+//                     ★停止は **時限**(セッション単位ではない)。理由は下の HALT の節。
 //
 // 状態はプロセス内メモリ(providers.ts の circuitOpenUntil と同じ寿命)。再起動でリセットされる。
 
@@ -48,14 +49,37 @@ type ArmKey = ExitVariant;
 /** 腕ごとの消費カウンタ。腕が増えたら自動で増える(初出は 0)。 */
 type ArmUsage = Partial<Record<ArmKey, number>>;
 
+// ─── ★従属停止は「時限」であって「セッション単位」ではない ────────────────────────
+//
+// 旧実装は default プールが429を1回踏んだ瞬間に **そのセッションの残り全部** を止めていた。
+// 実売買PCの実ログ(4日・20,585行)で測ると、完全な8セッションすべてで開始 0〜70分以内に初回429が来て、
+// セッションの 91〜100% が停止していた。設計上 約600提案/取引日 のところ実際に取れたのは数十件で、
+// 事前登録した標本数には到底届かない。
+//
+// しかも **その429で A は困っていない**: 実ログの典型は `gemini 429 → groq 429 → openai 成功` で、
+// A はフォールバックで普通にプランを得ている。守るべき対象が無傷の事象で実験だけが1日単位で死ぬ。
+//
+// ★では何が本当の危険かというと「A が429を踏んで **ポーズしている間** に、生成器が同じ上流の枠を
+//   さらに食って、A のポーズが伸びる/深いラダー(最大8時間)へ進む」こと。危険が続くのは
+//   **A のポーズが明けるまで** であって、セッションの終わりまでではない。
+//   → 停止の長さを **A が実際に入れたポーズと同じ長さ** にする(providers.ts が実測値を渡す)。
+//     ラダーが深くなれば停止も自動で長くなる=保護の目的は弱まらず、むしろ危険度に比例する。
+//     429が浅い(1発だけ・60秒)なら停止も60秒で、セッションを丸ごと捨てない。
+
+/** 停止の長さが渡されなかったときの既定[ms]。providers.ts の PAUSE_LADDER_MS の最短段と同じ。
+ *  ★「分からないから止めない」ではなく「分からないなら最短段のぶんは止める」に倒す。 */
+export const DEFAULT_HALT_MS = 60_000;
+
 interface GateState {
   keys: Keys;
   /** 当該取引日に生成器へ許可した回数の **合計**(全腕の和・診断表示用)。 */
   used: number;
   /** ★当該取引日に **腕ごと** に許可した回数。予算判定はこちらを見る(=腕は互いに枯らし合わない)。 */
   usedByArm: ArmUsage;
-  /** 従属停止中のセッションキー(null=停止していない)。 */
-  haltedSessionKey: string | null;
+  /** ★従属停止の期限[epoch ms]。0=停止していない。now < haltedUntil の間だけ停止する。 */
+  haltedUntil: number;
+  /** 停止が発火した時点のセッションキー(診断表示用。停止していないときは null)。 */
+  haltedAtSessionKey: string | null;
   /** 停止理由の記録用カウンタ(無音にしないための最小の可視化)。 */
   skipped: { busy: number; budget: number; defaultQuota: number; disabled: number };
   /** 進行中の scalp-plan 生成数(A/B エンジン・route を問わず全経路が計上する)。 */
@@ -63,7 +87,7 @@ interface GateState {
 }
 
 function freshState(keys: Keys): GateState {
-  return { keys, used: 0, usedByArm: {}, haltedSessionKey: null, skipped: { busy: 0, budget: 0, defaultQuota: 0, disabled: 0 }, inFlight: 0 };
+  return { keys, used: 0, usedByArm: {}, haltedUntil: 0, haltedAtSessionKey: null, skipped: { busy: 0, budget: 0, defaultQuota: 0, disabled: 0 }, inFlight: 0 };
 }
 
 let state: GateState = freshState(BOOT_KEYS);
@@ -75,28 +99,41 @@ function keysFor(now: number): Keys {
   return { dayKey: s.sessionDate, sessionKey: `${s.sessionDate}|${s.session}` };
 }
 
-/** 取引日が変わっていれば予算カウンタを、セッションが変わっていれば従属停止を、それぞれ解除する。
- *  ★inFlight は境界で触らない(進行中の生成は日付をまたいでも進行中のまま)。 */
+/** 取引日が変わっていれば予算カウンタを解除する。
+ *  ★inFlight は境界で触らない(進行中の生成は日付をまたいでも進行中のまま)。
+ *  ★従属停止(haltedUntil)も境界で触らない: 期限は **A のポーズ** で決まるので、
+ *    取引日/セッションが変わったからといって早く明けてよい理由が無い(保護を弱めない)。 */
 function roll(now: number): void {
   const k = keysFor(now);
   if (k.dayKey !== state.keys.dayKey) {
     const prev = state;
     state = freshState(k);
     state.inFlight = prev.inFlight;
+    state.haltedUntil = prev.haltedUntil;
+    state.haltedAtSessionKey = prev.haltedAtSessionKey;
     if (prev.used > 0 || prev.skipped.busy + prev.skipped.budget + prev.skipped.defaultQuota + prev.skipped.disabled > 0) {
       const perArm = Object.entries(prev.usedByArm).map(([k, v]) => `${k}=${v}`).join(' ');
       console.log(`[llm:generator] 取引日 ${prev.keys.dayKey} 終了 — 使用 ${prev.used}${perArm ? `(腕別 ${perArm})` : ''} / 見送り `
         + `busy=${prev.skipped.busy} budget=${prev.skipped.budget} default-quota=${prev.skipped.defaultQuota} disabled=${prev.skipped.disabled}`);
     }
-    return;
-  }
-  if (k.sessionKey !== state.keys.sessionKey) {
+  } else if (k.sessionKey !== state.keys.sessionKey) {
     state.keys = k;
-    if (state.haltedSessionKey && state.haltedSessionKey !== k.sessionKey) {
-      console.log(`[llm:generator] 従属停止を解除(セッション ${state.haltedSessionKey} → ${k.sessionKey})`);
-      state.haltedSessionKey = null;
-    }
   }
+  expireHalt(now);
+}
+
+/** 従属停止の期限が来ていたら解除する(★解除は無音にしない=いつ再開したかがログに残る)。 */
+function expireHalt(now: number): void {
+  if (state.haltedUntil !== 0 && now >= state.haltedUntil) {
+    console.log(`[llm:generator] 従属停止を解除(A のポーズ相当の時限が明けました / 発火時 ${state.haltedAtSessionKey})`);
+    state.haltedUntil = 0;
+    state.haltedAtSessionKey = null;
+  }
+}
+
+/** 従属停止中か(★時限)。 */
+function isHalted(now: number): boolean {
+  return now < state.haltedUntil;
 }
 
 export type GeneratorSkipReason = 'busy' | 'budget' | 'default-quota' | 'disabled';
@@ -123,11 +160,13 @@ export function checkGeneratorGate(now: number = Date.now(), arm: ArmKey = DEFAU
     return { allowed: false, reason: 'disabled', detail };
   }
 
-  // ② ★従属規則: default が quota を踏んだセッションでは、生成器は残りを停止する。
+  // ② ★従属規則: default が quota を踏んだら、**A のポーズが明けるまで** 生成器を止める。
   //    自分の429ではなく A の429で止まる。プール分離の後に残る「同一キー=上流クォータ共有」への答え。
-  if (state.haltedSessionKey !== null) {
+  //    ★時限なので、浅い429(60秒ポーズ)でセッションを丸ごと捨てることはない。残り時間も必ず記録する。
+  if (isHalted(now)) {
     state.skipped.defaultQuota += 1;
-    const detail = `default プールが quota を踏んだためセッション ${state.haltedSessionKey} の残りを停止中`;
+    const detail = `default プールが quota を踏んだため停止中(A のポーズ相当・残り ${Math.ceil((state.haltedUntil - now) / 1000)}秒`
+      + `/ 発火 ${state.haltedAtSessionKey})`;
     console.warn(`[llm:generator] 見送り(default-quota): ${detail} — 通算 ${state.skipped.defaultQuota} 回`);
     return { allowed: false, reason: 'default-quota', detail };
   }
@@ -157,13 +196,21 @@ export function checkGeneratorGate(now: number = Date.now(), arm: ArmKey = DEFAU
 
 /** ★従属規則の発火点。**default プールのプロバイダが quota(429/枯渇)を踏んだ瞬間**に providers.ts から呼ばれる。
  *  transient(5xx)・config(401/403/404)・oversize(413)では発火しない(枠の枯渇ではないため)。
- *  発火するとそのセッションの残りは生成器を停止する。 */
-export function notifyDefaultQuota(providerName: string, now: number = Date.now()): void {
+ *
+ *  @param pauseMs A(default プール)がそのプロバイダに実際に入れたポーズの長さ[ms]。
+ *    **これがそのまま生成器の停止時間**になる: 危険なのは「A がポーズしている間に生成器が同じ上流を
+ *    さらに食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば(最大8時間)停止も
+ *    自動で深くなる=保護は弱まらない。省略時は最短段 DEFAULT_HALT_MS。
+ *  ★既により長い停止中なら短くしない(max を取る)。停止を **縮める** 経路は作らない。 */
+export function notifyDefaultQuota(providerName: string, now: number = Date.now(), pauseMs?: number): void {
   roll(now);
-  if (state.haltedSessionKey === state.keys.sessionKey) return;   // 同一セッション内は1回だけログ
-  state.haltedSessionKey = state.keys.sessionKey;
+  const ms = typeof pauseMs === 'number' && Number.isFinite(pauseMs) && pauseMs > 0 ? pauseMs : DEFAULT_HALT_MS;
+  const until = now + ms;
+  if (until <= state.haltedUntil) return;   // 既に同等以上の停止中(ログも増やさない)
+  state.haltedUntil = until;
+  state.haltedAtSessionKey = state.keys.sessionKey;
   console.warn(`[llm:generator] ★従属停止: default プール(${providerName})が quota を踏みました — `
-    + `セッション ${state.keys.sessionKey} の残りは生成器を止めます(A の枠を食わない)`);
+    + `${Math.round(ms / 1000)}秒(A のポーズと同じ長さ)生成器を止めます(A の枠を食わない)`);
 }
 
 /** scalp-plan 生成の開始/終了。**全経路(A/B エンジン・route)が計上する**。
@@ -180,7 +227,9 @@ export function generatorArmUsage(now: number = Date.now()): Record<string, numb
 }
 
 /** 診断用スナップショット(/api/status 等)。キーは一切含めない。
- *  ★budget は **腕1本あたり** の上限、used は **全腕の合計**(腕別は generatorArmUsage)。 */
+ *  ★budget は **腕1本あたり** の上限、used は **全腕の合計**(腕別は generatorArmUsage)。
+ *  ★haltedSessionKey は「停止中なら、その停止が発火した時のセッションキー」。停止は時限なので、
+ *    期限が明けていれば null になる(=停止していない)。残り時間は checkGeneratorGate の detail に載る。 */
 export function generatorGateSnapshot(now: number = Date.now()) {
   roll(now);
   return {
@@ -188,10 +237,17 @@ export function generatorGateSnapshot(now: number = Date.now()) {
     sessionKey: state.keys.sessionKey,
     budget: resolveGeneratorDailyBudget(),
     used: state.used,
-    haltedSessionKey: state.haltedSessionKey,
+    haltedSessionKey: isHalted(now) ? state.haltedAtSessionKey : null,
     inFlight: state.inFlight,
     skipped: { ...state.skipped },
   };
+}
+
+/** ★従属停止の残り時間[ms](0=停止していない)。スナップショットの形(=既存の契約)を変えずに
+ *  「あと何秒止まるか」を出すための別入口。キーも決済値も含まない。 */
+export function generatorHaltRemainingMs(now: number = Date.now()): number {
+  roll(now);
+  return Math.max(0, state.haltedUntil - now);
 }
 
 /** テスト専用: 全状態を初期化する。 */

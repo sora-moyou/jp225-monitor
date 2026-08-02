@@ -13,7 +13,10 @@
 //   JP225_GENERATOR_DB / JP225_TICK_ARCHIVE_DB / JP225_SHADOW_DB … 各DBのパス
 //   REPLAY_MAX_DAYS  … 1回の実行で再生する取引日の上限(既定=無制限)
 //   REPLAY_ONLY_DAY  … その取引日だけ再生(検証用)
-//   REPLAY_FORCE=1   … 完了印を無視して再生し直す(行は INSERT OR IGNORE なので二重計上しない)
+//   REPLAY_FORCE=1   … ★完了印を無視して **本当に再計算して置き換える**。行数は増えない
+//                      (一意鍵が同じなら1行のまま)が、中身は新しい計算結果で上書きされる。
+//                      何行を上書きし、そのうち何行の結末が変わったかを必ず出す
+//                      (「新規0件」だけを出して成功に見せない)。
 
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { resolveGeneratorDbPath } from '../db/generatorStore.js';
@@ -76,7 +79,10 @@ async function main(): Promise<void> {
     for (const d of res.days) {
       if (d.skipped) continue;
       const cov = d.coverage.map(c => `${c.reason}=${c.n}`).join(' ');
-      log(`${d.sessionDate} 提案=${d.proposals} 影を開いた提案=${d.opened} 行=${d.rows}(新規${d.inserted}) `
+      // ★force のときは「新規0件」で終わらせない。上書きした数と、そのうち結末が変わった数を必ず出す。
+      const forced = d.replaced === undefined ? ''
+        : ` 上書き${d.replaced}(★結末が変わった行=${d.changed} / 覆域の件数が変わった行=${d.coverageChanged})`;
+      log(`${d.sessionDate} 提案=${d.proposals} 影を開いた提案=${d.opened} 行=${d.rows}(新規${d.inserted})${forced} `
         + `tick=${d.ticks} | ${cov || '(なし)'}`);
     }
     // ★覆えなかった範囲を必ず出す。

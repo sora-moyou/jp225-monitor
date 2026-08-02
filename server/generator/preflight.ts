@@ -32,48 +32,55 @@ export interface PreflightOk {
   settings: Record<string, unknown>;
 }
 
-export type PreflightResult = PreflightOk | { ok: false; reason: string };
+/** 失敗の種別。★稼働中の再検証(server/generator/recheck.ts)がこれで処置を分ける。
+ *  - 'violated'    … **前提そのものが崩れた**(専用キーが外れた/決済実装が公開フォールバックに落ちた等)。
+ *                    測っていない標本を溜め続けないために **止める**。
+ *  - 'unreachable' … monitor に届かなかった/JSON でなかった。monitor の再起動でも起きるので、
+ *                    これを止める理由にはしない(前提が崩れた証拠が無い)。★起動時は従来どおり走らない。 */
+export type PreflightFailKind = 'violated' | 'unreachable';
+
+export type PreflightResult = PreflightOk | { ok: false; kind: PreflightFailKind; reason: string };
 
 /** 取得済みの応答から前提を判定する純関数(ネットワークを触らない=テストで全経路を通せる)。 */
 export function evaluatePreflight(statusJson: unknown, settingsJson: unknown): PreflightResult {
   if (!statusJson || typeof statusJson !== 'object') {
-    return { ok: false, reason: '/api/status の応答が JSON オブジェクトではありません' };
+    return { ok: false, kind: 'unreachable', reason: '/api/status の応答が JSON オブジェクトではありません' };
   }
   const exitRaw = (statusJson as Record<string, unknown>).exit;
   if (!exitRaw || typeof exitRaw !== 'object') {
-    return { ok: false, reason: '/api/status に exit ブロックがありません(monitor が古い可能性)' };
+    return { ok: false, kind: 'violated', reason: '/api/status に exit ブロックがありません(monitor が古い可能性)' };
   }
   const exit = exitRaw as Record<string, unknown>;
   if (typeof exit.error === 'string') {
-    return { ok: false, reason: `monitor が決済実装を観測できていません(exit.error=${exit.error})` };
+    return { ok: false, kind: 'violated', reason: `monitor が決済実装を観測できていません(exit.error=${exit.error})` };
   }
   if (exit.impl !== 'private') {
     return {
-      ok: false,
+      ok: false, kind: 'violated',
       reason: `決済実装が非公開実装ではありません(exit.impl=${String(exit.impl)})。`
         + '公開フォールバックはラチェット無しの別物なので、この実験は何も測りません',
     };
   }
   if (exit.variantImpl !== 'private') {
     return {
-      ok: false,
+      ok: false, kind: 'violated',
       reason: `決済仕様の変種が実体を持ちません(exit.variantImpl=${String(exit.variantImpl)})。`
         + '候補の説明文が現行とほぼ同一になり、①と②が同じ質問を投げます',
     };
   }
   const configHash = typeof exit.configHash === 'string' ? exit.configHash : null;
   if (!configHash) {
-    return { ok: false, reason: '/api/status の exit.configHash が取得できません(決済設定の指紋が無い期は作らない)' };
+    return { ok: false, kind: 'violated', reason: '/api/status の exit.configHash が取得できません(決済設定の指紋が無い期は作らない)' };
   }
 
   if (!settingsJson || typeof settingsJson !== 'object') {
-    return { ok: false, reason: '/api/settings の応答が JSON オブジェクトではありません' };
+    return { ok: false, kind: 'unreachable', reason: '/api/settings の応答が JSON オブジェクトではありません' };
   }
   const settings = settingsJson as Record<string, unknown>;
   const sources = settings.generatorKeySources;
   if (!sources || typeof sources !== 'object') {
     return {
-      ok: false,
+      ok: false, kind: 'violated',
       reason: '/api/settings に generatorKeySources がありません'
         + '(分析用の入口を持たない公開版 lite の monitor に繋いでいる可能性)',
     };
@@ -85,7 +92,7 @@ export function evaluatePreflight(statusJson: unknown, settingsJson: unknown): P
   }
   if (shared.length > 0) {
     return {
-      ok: false,
+      ok: false, kind: 'violated',
       reason: `生成器専用キーが未設定のプロバイダがあります(${shared.join(' ')})。`
         + '共通キーへフォールバックしたまま走らせると、生成器が上流クォータを食い潰して'
         + '実弾(A)が429を踏み、最大8時間ポーズします(従属規則は事後的で A が最初の一発を必ず食う)',
@@ -118,7 +125,7 @@ export async function runPreflight(
     statusJson = await get('/api/status');
     settingsJson = await get('/api/settings');
   } catch (e) {
-    return { ok: false, reason: `monitor(${monitorUrl})に到達できません: ${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, kind: 'unreachable', reason: `monitor(${monitorUrl})に到達できません: ${e instanceof Error ? e.message : String(e)}` };
   }
   return evaluatePreflight(statusJson, settingsJson);
 }

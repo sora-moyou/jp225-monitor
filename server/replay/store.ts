@@ -7,6 +7,13 @@
 //   ここの2表も同じ規律にする(UNIQUE + INSERT OR IGNORE)。時刻の列は UNIQUE に **入れない**
 //   (入れると走らせるたびに行が増え、冪等性が壊れる)。
 //
+// ■ ★ただし「強制再計算(force)」は本当に置き換えること
+//   replay_coverage の一意鍵は (session_date, ladder_epoch, epoch, reason) で、**件数 n が入っていない**。
+//   だから IGNORE のままだと、実装を直して再生し直しても覆域の件数は初回のまま固定され、
+//   報告は「inserted:0(=変わらなかった)」に見える。影の行と同じ危険な形なので、
+//   force のときだけ REPLACE にして **上書きした件数と、実際に値が変わった件数** を返す。
+//   replay_days も同様(ticks/proposals/opened/rows_written が鍵に入っていない)。
+//
 // ■ ★再開カーソルを「日」にする理由
 //   影は提案をまたいで重なる(2分ごとに提案が来るのに地平は480分)ので、途中の任意の tick で
 //   中断・再開すると同時生存本数(concurrent)が通しの結果と食い違う。
@@ -95,10 +102,13 @@ export function isDayReplayed(db: DatabaseSync, sessionDate: string, ladderEpoch
   return r != null;
 }
 
-/** 取引日1件ぶんの完了印を **追記** する。既にあれば false(=二重に書かない)。 */
-export function recordReplayDay(db: DatabaseSync, r: ReplayDayRow): boolean {
+/** 取引日1件ぶんの完了印を **追記** する。既にあれば false(=二重に書かない)。
+ *  ★opts.replace=true(強制再計算)のときは既存の印を **上書き** する。
+ *    上書きしないと、再計算後の tick 数/提案数/書けた行数が古いまま残り、
+ *    「再生し直したのに完了印だけ前回の数字」という食い違いが静かに残る。 */
+export function recordReplayDay(db: DatabaseSync, r: ReplayDayRow, opts: { replace?: boolean } = {}): boolean {
   const before = countReplayDays(db);
-  db.prepare(`INSERT OR IGNORE INTO replay_days
+  db.prepare(`INSERT OR ${opts.replace ? 'REPLACE' : 'IGNORE'} INTO replay_days
     (session_date, ladder_epoch, window_from, window_to, ticks, proposals, opened, rows_written, done_at)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(
     r.sessionDate, r.ladderEpoch, r.windowFrom, r.windowTo, r.ticks, r.proposals, r.opened, r.rowsWritten, r.doneAt,
@@ -106,22 +116,46 @@ export function recordReplayDay(db: DatabaseSync, r: ReplayDayRow): boolean {
   return countReplayDays(db) > before;
 }
 
-/** 覆域(理由ごとの件数)を **追記** する。挿入できた件数を返す(重複は無視=冪等)。 */
-export function recordCoverage(db: DatabaseSync, rows: readonly CoverageRow[], now: number): { inserted: number; skipped: number } {
-  if (rows.length === 0) return { inserted: 0, skipped: 0 };
+export interface CoverageWriteResult {
+  inserted: number;
+  skipped: number;
+  /** ★replace のときだけ: 既存行を上書きした件数。 */
+  replaced?: number;
+  /** ★replace のときだけ: 上書きの結果 **件数 n が実際に変わった** 行数。 */
+  changed?: number;
+}
+
+/** 覆域(理由ごとの件数)を **追記** する。挿入できた件数を返す(重複は無視=冪等)。
+ *  ★opts.replace=true(強制再計算)のときは上書きし、n が変わった件数まで返す。
+ *    一意鍵に n が入っていないので、IGNORE のままでは覆域の件数が初回のまま固定される。 */
+export function recordCoverage(
+  db: DatabaseSync, rows: readonly CoverageRow[], now: number, opts: { replace?: boolean } = {},
+): CoverageWriteResult {
+  if (rows.length === 0) return opts.replace ? { inserted: 0, skipped: 0, replaced: 0, changed: 0 } : { inserted: 0, skipped: 0 };
   const before = countCoverage(db);
-  const stmt = db.prepare(`INSERT OR IGNORE INTO replay_coverage
+  const stmt = db.prepare(`INSERT OR ${opts.replace ? 'REPLACE' : 'IGNORE'} INTO replay_coverage
     (session_date, ladder_epoch, epoch, reason, n, detail, created_at) VALUES (?,?,?,?,?,?,?)`);
+  const same = opts.replace
+    ? db.prepare(`SELECT 1 AS x FROM replay_coverage
+        WHERE session_date = ? AND ladder_epoch = ? AND epoch = ? AND reason = ? AND n IS ? AND detail IS ?`)
+    : null;
+  /** 既存行と件数まで一致していた行(=再計算しても答えが同じだった)。 */
+  let identical = 0;
   db.exec('BEGIN');
   try {
-    for (const r of rows) stmt.run(r.sessionDate, r.ladderEpoch, r.epoch, r.reason, r.n, r.detail, now);
+    for (const r of rows) {
+      if (same && same.get(r.sessionDate, r.ladderEpoch, r.epoch, r.reason, r.n, r.detail)) identical += 1;
+      stmt.run(r.sessionDate, r.ladderEpoch, r.epoch, r.reason, r.n, r.detail, now);
+    }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
   const inserted = countCoverage(db) - before;
-  return { inserted, skipped: rows.length - inserted };
+  if (!opts.replace) return { inserted, skipped: rows.length - inserted };
+  const replaced = rows.length - inserted;
+  return { inserted, skipped: 0, replaced, changed: replaced - identical };
 }
 
 export function countReplayDays(db: DatabaseSync): number {

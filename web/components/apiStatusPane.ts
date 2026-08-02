@@ -4,25 +4,59 @@ interface StatusResponse {
   yahoo: { fallback: boolean; skipUntil: number };
   llm: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   /** ★提案生成器(分析用)の台帳の死活。公開版(lite)や未導入の PC では返らない(=表示しない)。 */
-  generatorLedger?: { available: boolean; lastRecordAt: number | null; ageMin: number | null; total: number };
+  generatorLedger?: {
+    available: boolean; lastRecordAt: number | null; ageMin: number | null; total: number;
+    /** 直近1時間に **標本が取れた** 件数(status='plan')。台帳を読めない環境では無い。 */
+    planLastHour?: number;
+    /** 直近1時間に **取引時間内に** 投げた件数。0=標本を取る時間帯ではない。 */
+    inSessionLastHour?: number;
+  };
 }
 
 /** 生成器が「止まった」と見なす無記録の分数。1サイクル=2分なので、数サイクル落ちても
- *  すぐ赤にはせず、明らかに止まっている領域で警告にする。 */
+ *  すぐ赤にはせず、明らかに止まっている領域で警告にする。
+ *  ★これは **プロセスが生きているか** の指標でしかない(下の説明)。 */
 const GENERATOR_STALE_MIN = 15;
 
-/** ★「生成器 最終記録 N分前」の1点表示(純関数)。
+/** ★死活の本体: 直近1時間に取れているべき標本の下限。
+ *  1サイクル2分・1サイクル2〜3腕なので、正常なら1時間で 60〜90 件。ゲートに散発的に弾かれても
+ *  この線は割らない。取引時間内でここを割ったら「溜まっていない」と言い切ってよい。 */
+const GENERATOR_MIN_PLANS_PER_HOUR = 10;
+
+/** ★「生成器」の1点表示(純関数)。
  *  1年かけて溜める実験の最悪の失敗形は「実は3か月動いていなかった」。生成器側だけの死活監視は
  *  生成器が死ぬと一緒に死ぬので、**ユーザーが毎日見る画面** に出す。
- *  台帳そのものが無い環境(未導入・公開版)では **何も出さない**(存在しない機構の警告を出さない)。 */
+ *  台帳そのものが無い環境(未導入・公開版)では **何も出さない**(存在しない機構の警告を出さない)。
+ *
+ *  ★指標は「プロセスが生きているか」ではなく **「標本が溜まっているか」**。
+ *    生成器はゲートに弾かれている間も2分ごとに status='skipped' を書き続けるので、
+ *    「最終記録 N分前」は **止まっている間も新しいまま** = 画面は緑のまま(実売買PCの実ログで
+ *    セッションの 91〜100% が停止していたのに一度も警告色にならなかった)。溜めたいのは提案なので、
+ *    直近1時間の status='plan' の件数で判定する。
+ *  ★planLastHour を返さない応答(台帳を読めない/古い monitor)だけ、従来の「最終記録 N分前」に落ちる。 */
 export function renderGeneratorDot(ledger: StatusResponse['generatorLedger']): string {
   if (!ledger || !ledger.available) return '';
   if (ledger.ageMin === null) {
     return renderDot('Ge', 'off', '提案生成器: 台帳はあるが記録が1件もありません');
   }
+  const age = `最終記録 ${ledger.ageMin}分前 (通算 ${ledger.total} 件)`;
+  if (typeof ledger.planLastHour === 'number') {
+    const plans = ledger.planLastHour;
+    const inSession = ledger.inSessionLastHour ?? 0;
+    const head = `提案生成器: 直近1時間の標本 ${plans} 件 / ${age}`;
+    // 取引時間外は「取れなくて当たり前」。常態を警告色にすると警告が読まれなくなるので灰にする。
+    if (inSession === 0 && plans < GENERATOR_MIN_PLANS_PER_HOUR) {
+      return renderDot('Ge', 'off', `${head} — 取引時間外(標本を取る時間帯ではありません)`);
+    }
+    if (plans < GENERATOR_MIN_PLANS_PER_HOUR) {
+      return renderDot('Ge', 'paused',
+        `${head} — ★標本が溜まっていません(プロセスは動いていても、ゲートで止められている可能性)`);
+    }
+    return renderDot('Ge', 'ok', head);
+  }
   const stale = ledger.ageMin >= GENERATOR_STALE_MIN;
   return renderDot('Ge', stale ? 'paused' : 'ok',
-    `提案生成器: 最終記録 ${ledger.ageMin}分前 (通算 ${ledger.total} 件)`
+    `提案生成器: ${age}`
     + (stale ? ' — ★止まっている可能性があります' : ''));
 }
 
