@@ -11,6 +11,7 @@ import { collectRecentBars } from '../barsSource.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
+import type { ExitVariant } from '../signalTrade/exit/index.js';
 import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 
 // 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
@@ -83,6 +84,10 @@ export interface RunScalpPlanOverrides {
   /** ★呼び出し元。未指定は 'default'(シグナルエンジン・既存 route = 実弾につながる経路。挙動不変)。
    *  'generator' のときだけ LLM プロバイダ・プールが generator に切り替わる。 */
   caller?: LlmCaller;
+  /** ★決済仕様の「名前付き変種」。未指定は従来どおり(プロンプトの決済ブロックは byte 不変)。
+   *  指定するとその変種の決済仕様を AI に教える(実数値は非公開側が解決=数値は HTTP に載らない)。
+   *  ★実際の決済(computeExitStop)には一切影響しない=提案の入力が変わるだけ。 */
+  exitVariant?: ExitVariant;
 }
 
 /** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
@@ -190,5 +195,6 @@ async function runScalpPlanWithChartInner(
     heldPosition: overrides.heldPosition,   // ★ドテン: 保有中の反転評価はプロンプトに held-context を注入(flat-plan は未指定=不変)。
     armedContext: overrides.armedContext,   // ★レンジ再評価: 未約定レンジのブレイク切替評価は armed-context を注入(通常は未指定=不変)。
     caller,                                 // ★プロバイダ・プールの選択のみに効く(プロンプト/parse/enforce は不変)。
+    exitVariant: overrides.exitVariant,      // ★未指定(エンジン/既存 route)は undefined = 決済ブロックは従来どおり。
   });
 }

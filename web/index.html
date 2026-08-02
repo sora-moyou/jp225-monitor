@@ -96,6 +96,54 @@
         <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。<br>各キー左のマーク: 🟢 有効(設定済) / 🟡 待機中(429=枠切れで一時休止) / ⚪ 未設定 ／「キーを検証」後: ✅ 実際に通った / ❌ 無効(401等)。</div>
       </div>
 
+      <fieldset class="settings-section" id="generator-keys-fieldset">
+        <legend>提案生成器（分析用・実弾とは別プール）</legend>
+        <div class="exit-hint">分析用の「提案生成器」は実弾（A）とは<strong>別のプロバイダ・プール</strong>で動きます。専用キーを入れると上流のクォータまで分けられます。<strong>空欄ならこの上の共通キーへ黙ってフォールバックします</strong>——その状態でも生成器は動きますが、実弾と同じ枠を消費します。各行の表示で「今どちらのキーが効いているか」を確認してください。</div>
+        <div class="setting-row">
+          <label>
+            <span id="genkey-gemini-status" class="key-status" title="キー状態"></span>Gemini（生成器）
+            <span id="genkey-gemini-src" class="gen-key-src"></span>
+          </label>
+          <input type="password" id="genkey-gemini" autocomplete="off" />
+        </div>
+        <div class="setting-row">
+          <label>
+            <span id="genkey-groq-status" class="key-status" title="キー状態"></span>Groq（生成器）
+            <span id="genkey-groq-src" class="gen-key-src"></span>
+          </label>
+          <input type="password" id="genkey-groq" autocomplete="off" />
+        </div>
+        <div class="setting-row">
+          <label>
+            <span id="genkey-openai-status" class="key-status" title="キー状態"></span>OpenAI（生成器）
+            <span id="genkey-openai-src" class="gen-key-src"></span>
+          </label>
+          <input type="password" id="genkey-openai" autocomplete="off" />
+        </div>
+        <div class="setting-row">
+          <label>
+            <span id="genkey-kimi-status" class="key-status" title="キー状態"></span>Kimi（生成器）
+            <span id="genkey-kimi-src" class="gen-key-src"></span>
+          </label>
+          <input type="password" id="genkey-kimi" autocomplete="off" />
+        </div>
+        <label class="exit-check" style="margin-top:8px">
+          <input type="checkbox" id="genkey-clear" />
+          保存時に生成器の専用キーを消去する（＝共通キーの使用に戻す）
+        </label>
+        <div class="exit-hint gen-key-warn">★<strong>専用キーを設定しても、同じアカウントのキーでは提供元側の枠は共有されます</strong>（多くの提供元でレート制限は組織／プロジェクト単位です）。完全に分けるには<strong>別アカウント</strong>、または<strong>実弾とは違う提供元</strong>を使ってください。</div>
+        <div class="setting-row">
+          <button type="button" id="settings-test-genkeys" class="btn-secondary">生成器のキーを検証</button>
+          <div id="settings-test-genkeys-result" class="update-result"></div>
+          <div class="exit-hint">生成器プールが実際に使うキーで極小(1トークン)の ping を1回ずつ送ります。<strong>専用キーがある行は専用キーで、「共通キーを使用中」の行は共通キーで検証します</strong>（後者は実弾と同じ枠を消費します）。上の「キーを検証」は従来どおり共通キー（実弾側）が対象です。</div>
+        </div>
+        <div class="setting-row">
+          <label>生成器の日次予算（回 / 取引日・0 で生成器を無効化）</label>
+          <input type="number" id="generator-budget" min="0" max="5000" step="10" placeholder="200 (既定)" />
+          <div class="exit-hint">2分間隔でフルカバーすると約 <strong>600 回/取引日</strong>、生成器2本＋対照の運用見込みは約 <strong>1,584 回/日</strong>。既定の <strong>200</strong> はそれを大きく下回る保守的な値で、実測に応じて上げる前提です。<strong>上限に達すると生成器は停止し、記録に残ります</strong>（無音で縮退したりモードを書き換えたりはしません）。空欄で既定に戻ります。</div>
+        </div>
+      </fieldset>
+
       <fieldset class="settings-section">
         <legend>更新</legend>
         <div class="version-row">

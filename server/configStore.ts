@@ -281,11 +281,43 @@ const GENERATOR_ENV: Record<ProviderName, string> = {
  *    generatorGate.ts の日次予算 + 従属規則(default が quota を踏んだら生成器停止)で受け持つ。 */
 export function resolveApiKeyForPool(provider: ProviderName, pool: LlmCaller): string | undefined {
   if (pool === 'default') return resolveApiKey(provider);
+  return resolveGeneratorKey(provider).key;
+}
+
+/** ★生成器プールが実際に使うキーの「出どころ」。**キーの値は含めない**(表示/診断用)。
+ *  - 'own'    … config.generatorKeys[provider] の専用キー
+ *  - 'env'    … 環境変数 GENERATOR_*_API_KEY の専用キー
+ *  - 'shared' … ★共通キーへフォールバック中。**実弾(A)と同じキー**=上流のクォータは共有されたまま。
+ *  - 'none'   … 共通キーも無い(このプロバイダは生成器でも使えない)
+ *  ★'shared' を「未設定」と呼ばないこと: 実際には使われていて、しかも A と同じ枠を消費する。 */
+export type GeneratorKeySource = 'own' | 'env' | 'shared' | 'none';
+
+/** 設定画面に並べる生成器プロバイダ(LLM_PROVIDERS と同じ4種)。 */
+export const GENERATOR_PROVIDERS = ['gemini', 'groq', 'openai', 'kimi'] as const;
+export type GeneratorProviderName = typeof GENERATOR_PROVIDERS[number];
+
+/** ★生成器プールのキー解決を1か所に集約する内部ヘルパ(値と出どころを同時に返す)。
+ *  resolveApiKeyForPool(実際に使うキー)と resolveGeneratorKeySource(画面の表示)が
+ *  同じ関数を通ることで、「表示は専用キーなのに実際は共通キー」という食い違いが起こり得なくなる。 */
+function resolveGeneratorKey(provider: ProviderName): { source: GeneratorKeySource; key?: string } {
   const own = loadConfig().generatorKeys?.[provider];
-  if (own && own.trim()) return own.trim();
+  if (own && own.trim()) return { source: 'own', key: own.trim() };
   const env = process.env[GENERATOR_ENV[provider]]?.trim();
-  if (env) return env;
-  return resolveApiKey(provider);
+  if (env) return { source: 'env', key: env };
+  const shared = resolveApiKey(provider);
+  return shared ? { source: 'shared', key: shared } : { source: 'none' };
+}
+
+/** 生成器プールが当該プロバイダで使うキーの出どころ(キー値は返さない)。 */
+export function resolveGeneratorKeySource(provider: ProviderName): GeneratorKeySource {
+  return resolveGeneratorKey(provider).source;
+}
+
+/** 全プロバイダ分の出どころ(設定画面 GET 用)。キー値は一切含まれない。 */
+export function resolveGeneratorKeySources(): Record<GeneratorProviderName, GeneratorKeySource> {
+  const out = {} as Record<GeneratorProviderName, GeneratorKeySource>;
+  for (const p of GENERATOR_PROVIDERS) out[p] = resolveGeneratorKeySource(p);
+  return out;
 }
 
 // ─── 提案生成器の日次予算 ────────────────────────────────────────────────

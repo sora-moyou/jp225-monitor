@@ -1,8 +1,17 @@
 // 設定フォームの読み込み(反映)/有効無効同期/保存ペイロード構築。
 // settingsModal.ts から純粋に切り出したもの(参照する input id・値の組み立て・条件は一切不変)。
 
-import { renderStatus, setKeyStatus, providerMark } from './status.js';
-import type { SettingsElements, SettingsResponse, SavePayload, KnobSource } from './types.js';
+import { renderStatus, setKeyStatus, providerMark, generatorKeyLabel, setKeySourceLabel } from './status.js';
+import { GENERATOR_PROVIDERS } from './types.js';
+import type {
+  SettingsElements, SettingsResponse, SavePayload, KnobSource,
+  GeneratorProviderName,
+} from './types.js';
+
+// ★提案生成器のキー欄(プロバイダ → 入力要素)。apply/save の両方がこの1か所を使う。
+function genKeyInputs(el: SettingsElements): Record<GeneratorProviderName, HTMLInputElement> {
+  return { gemini: el.inputGenGemini, groq: el.inputGenGroq, openai: el.inputGenOpenai, kimi: el.inputGenKimi };
+}
 
 // サーバから取得した設定を全入力へ反映する(元 refresh の本体)。
 export function applySettingsToForm(el: SettingsElements, current: SettingsResponse | null): void {
@@ -52,6 +61,25 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
     wsResolvable
       ? (current?.webSearchKeySet ? '専用キー設定済' : wsGemini ? '共通 Gemini キーを使用' : 'OpenAI で検索')
       : '未設定(Web検索は無効)');
+  // ★提案生成器(分析用・実弾 A とは別プール): プロバイダごとに「実際にどのキーを使うか」を出す。
+  //   専用キー未設定なら黙って共通キーへ落ちる=この表示が無いと分離できていないことが分からない。
+  const genSrc = current?.generatorKeySources;
+  const genInputs = genKeyInputs(el);
+  for (const n of GENERATOR_PROVIDERS) {
+    const label = generatorKeyLabel(genSrc?.[n]);
+    setKeyStatus(`genkey-${n}-status`, label.mark, label.text);
+    setKeySourceLabel(`genkey-${n}-src`, label.text, label.title, label.shared);
+    genInputs[n].placeholder = genSrc?.[n] === 'own'
+      ? '専用キー設定済み (上書きする場合のみ入力)'
+      : genSrc?.[n] === 'env' ? '環境変数の専用キーを使用中 (上書きするにはここに入力)'
+      : '空欄なら共通キーを使用 (=上流クォータは実弾と共有)';
+    genInputs[n].value = '';   // 秘密フィールド: 反映のたびに空へ戻す(値はサーバから来ない)
+  }
+  el.checkGenKeysClear.checked = false;   // 消去チェックは毎回オフから(誤って消さない)
+  // 日次予算: 可視フィールド。実効値を出し、空欄で既定に戻せる。
+  el.inputGeneratorBudget.value = current?.generatorDailyBudget === undefined ? '' : String(current.generatorDailyBudget);
+  el.inputGeneratorBudget.placeholder = `${current?.generatorDailyBudgetDefault ?? 200} (既定)`;
+  if (current?.generatorDailyBudgetMax !== undefined) el.inputGeneratorBudget.max = String(current.generatorDailyBudgetMax);
   // AIエントリー: 現値を反映(可視フィールド)。
   el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
   el.selectScalpBias.value = current?.scalpBias ?? 'none';
@@ -159,6 +187,20 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   if (kv) body.kimiKey = kv;
   if (ov) body.openaiKey = ov;
   if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
+  // ★提案生成器の専用キー(秘密)。入力があれば保存、消去チェックが入っていれば未入力分を null で消去。
+  //   どちらも無ければフィールドごと送らない(=変更なし)。
+  const genInputs = genKeyInputs(el);
+  const clearGen = el.checkGenKeysClear.checked;
+  const genKeys: Partial<Record<GeneratorProviderName, string | null>> = {};
+  for (const n of GENERATOR_PROVIDERS) {
+    const v = genInputs[n].value.trim();
+    if (v) genKeys[n] = v;
+    else if (clearGen) genKeys[n] = null;   // 明示クリア=共通キーへ戻す
+  }
+  if (Object.keys(genKeys).length > 0) body.generatorKeys = genKeys;
+  // 生成器の日次予算: 可視フィールド。空欄=既定に戻す(null)。0 は「生成器を無効化」の意味で有効な値。
+  const genBudgetRaw = el.inputGeneratorBudget.value.trim();
+  body.generatorDailyBudget = genBudgetRaw === '' ? null : Number(genBudgetRaw);
   // ★基礎データ公開(225labo)認証: 秘密フィールド。空欄は送らない(=変更なし)。
   const laboUser = el.inputLaboUser.value.trim();
   const laboPass = el.inputLaboPass.value.trim();

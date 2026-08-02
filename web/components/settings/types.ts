@@ -2,6 +2,13 @@
 
 export type KnobSource = 'manual' | 'ai';
 
+// ★提案生成器(分析用・実弾 A とは別プール)が実際にどのキーを使うか。**キーの値は運ばない**。
+//   'own'/'env' = 専用キー(=プールもキーも分離) / 'shared' = 共通キーへフォールバック中
+//   (=ローカルのポーズは分離されるが **上流のクォータは A と共有**) / 'none' = キーそのものが無い。
+export type GeneratorKeySource = 'own' | 'env' | 'shared' | 'none';
+export const GENERATOR_PROVIDERS = ['gemini', 'groq', 'openai', 'kimi'] as const;
+export type GeneratorProviderName = typeof GENERATOR_PROVIDERS[number];
+
 export interface SettingsResponse {
   kimiSet: boolean; geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   kimiFromEnv: boolean; geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
@@ -26,6 +33,11 @@ export interface SettingsResponse {
   // ★v0.8.2: System B(紙専用)の設定。raw=保存済み生値(未設定=A追従) / effective=A フォールバック済みの実効値(表示補助)。
   signalB?: SignalBRaw;
   signalBEffective?: SignalBEffective;
+  // ★提案生成器(分析用): キーの出どころ(値は含まない)+ 日次予算。
+  generatorKeySources?: Partial<Record<GeneratorProviderName, GeneratorKeySource>>;
+  generatorDailyBudget?: number;          // 実効値(config → env → 既定)
+  generatorDailyBudgetDefault?: number;   // 既定値(プレースホルダ表示用)
+  generatorDailyBudgetMax?: number;       // 上限(入力の max 属性用)
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -97,6 +109,10 @@ export interface SavePayload {
   scalpLcHardMaxYen?: number | null;
   // ★v0.8.2: System B(紙専用)。ネストしたオブジェクトで送る(各フィールドは A と同名・''/null=A追従)。
   signalB?: Record<string, unknown>;
+  // ★提案生成器の専用キー。秘密フィールド規約(空欄=変更なし)+ null=消去(共通キーへ戻す)。
+  //   何も入力せず消去もしないときは **フィールドごと送らない**(=変更なし)。
+  generatorKeys?: Partial<Record<GeneratorProviderName, string | null>>;
+  generatorDailyBudget?: number | null;   // 生成器の日次予算。空欄=null=既定に戻す / 0=無効。
 }
 
 export interface KeyTestResponse {
@@ -173,6 +189,16 @@ export interface SettingsElements {
   replaceResult: HTMLElement;
   testKeysBtn: HTMLButtonElement;
   testResult: HTMLElement;
+  // ★提案生成器(分析用・実弾 A とは別プール)。キー欄はプロバイダごと・状態表示は form.ts が
+  //   id(genkey-<name>-status / genkey-<name>-src)で書き込む。
+  inputGenGemini: HTMLInputElement;
+  inputGenGroq: HTMLInputElement;
+  inputGenOpenai: HTMLInputElement;
+  inputGenKimi: HTMLInputElement;
+  checkGenKeysClear: HTMLInputElement;      // 保存時に専用キーを消去(=共通キーへ戻す)
+  inputGeneratorBudget: HTMLInputElement;   // 日次予算(回/取引日・空欄=既定)
+  testGenKeysBtn: HTMLButtonElement;        // 生成器プールのキー検証
+  testGenResult: HTMLElement;
 }
 
 // ★v0.8.3: 設定モーダル分割後、🎛️(詳細設定)側からも移設フィールド(Web検索モデル/AIエントリー/データ)を

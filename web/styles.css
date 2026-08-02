@@ -686,6 +686,11 @@ body {
 .key-status { display: inline-block; min-width: 1.1em; margin-right: 4px; font-size: 13px; vertical-align: baseline; }
 .badge-free { background: rgba(63,185,80,0.15); color: var(--up); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
 .badge-paid { background: rgba(248,81,73,0.15); color: var(--down); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+/* ★提案生成器: 「今どちらのキーが効いているか」のバッジ。専用キー=緑 / 共通キーへフォールバック中=黄
+   (=分離できていない。上流クォータを実弾と共有している状態なので、目立たせて誤解を防ぐ)。 */
+.gen-key-src { background: rgba(63,185,80,0.15); color: var(--up); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+.gen-key-src.gen-key-shared { background: rgba(210,153,34,0.18); color: #d29922; }
+.gen-key-warn { border-left: 3px solid #d29922; padding-left: 8px; }
 
 .settings-status { margin: 8px 0 14px; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-size: 12px; line-height: 1.7; }
 .settings-status.err { color: var(--down); }

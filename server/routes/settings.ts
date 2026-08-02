@@ -8,8 +8,11 @@ import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled,
+  resolveGeneratorKeySources, resolveGeneratorDailyBudget,
+  GENERATOR_PROVIDERS, GENERATOR_DAILY_BUDGET_DEFAULT, GENERATOR_DAILY_BUDGET_MAX,
   type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig, type LiteConfig,
 } from '../configStore.js';
+import { normalizeCaller } from '../llm/caller.js';
 import { resolveVariant } from '../variant.js';
 import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
 import { openDb, resolveDbPath, getMeta } from '../db/store.js';
@@ -46,6 +49,9 @@ const EXPLICIT_PARAM_KEYS = [
   'scalpCooldownSource', 'scalpBiasSource', 'scalpRangeSource',
   'scalpLcHardMaxEnabled',
   'signalB', 'lite',
+  // ★提案生成器(caller='generator')の設定。UI を持たせた(⚙️「提案生成器」fieldset)。
+  'generatorKeys',          // 生成器プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では値を返さない。
+  'generatorDailyBudget',   // 生成器の日次予算[回/取引日]。0=無効。未設定は GENERATOR_DAILY_BUDGET_DEFAULT。
 ] as const satisfies readonly (keyof UserConfig)[];
 type ExplicitParamKey = typeof EXPLICIT_PARAM_KEYS[number];
 
@@ -53,10 +59,6 @@ type ExplicitParamKey = typeof EXPLICIT_PARAM_KEYS[number];
 //   設定画面にUIが無く、config.json の手編集でしか設定しない類(chromePath など)。
 const PRESERVED_PARAM_KEYS = [
   'chromePath',   // チャート撮影に使う chrome.exe の明示パス(UI 無し・手編集のみ)
-  // ★提案生成器(caller='generator')の設定。UI は持たせず config.json / 環境変数で設定する。
-  //   実弾(A)の設定画面に実験系のノブを並べて誤操作の面を増やしたくないため。保存で消えないようここで持ち越す。
-  'generatorKeys',          // 生成器プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では返さない。
-  'generatorDailyBudget',   // 生成器の日次予算[回/取引日]。0=無効。未設定は GENERATOR_DAILY_BUDGET_DEFAULT。
 ] as const satisfies readonly (keyof UserConfig)[];
 type PreservedParamKey = typeof PRESERVED_PARAM_KEYS[number];
 
@@ -138,6 +140,14 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     indicatorsEnabled: resolveIndicatorsEnabled(),   // ★テクニカル指標(RSI/SMA/BB)パネル + AI文脈供給(既定ON・表示/文脈のみ)。
     aiTechnicalEnabled: resolveScalpAiTechnicalEnabled(),   // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う・既定ON)。決済は既定ロジック。
     scalpChartFallbackText: resolveScalpChartFallbackText(),   // ★チャート撮影失敗時のテキスト縮退(既定ON=全停止防止)。
+    // ★提案生成器(分析用・実弾 A とは別プール)。
+    //   generatorKeySources は **キーの値ではなく「どのキーを使うか」** を返す
+    //   ('own'/'env'=専用キー / 'shared'=共通キーへフォールバック中=上流クォータは A と共有 / 'none'=キー無し)。
+    //   フォールバックしていることが画面から見えないと「分離したつもりで分離できていない」が無音で成立する。
+    generatorKeySources: resolveGeneratorKeySources(),
+    generatorDailyBudget: resolveGeneratorDailyBudget(),   // 実効値(config → env → 既定・クランプ済み)
+    generatorDailyBudgetDefault: GENERATOR_DAILY_BUDGET_DEFAULT,
+    generatorDailyBudgetMax: GENERATOR_DAILY_BUDGET_MAX,
     doubleFormingEnabled: resolveDoubleFormingEnabled(),   // ★検知チューニング: double 形成通知(既定OFF=breakout のみ)。breakScore/slopeConfluenceBonus は数値展開に含まれる。
     nwaveEnabled: resolveNwaveEnabled(),   // ★N波動の節目/アラート(既定ON)。nwaveMinSwingYen は数値展開に含まれる。
     // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
@@ -181,10 +191,16 @@ export function getSettingsHandler(_req: Request, res: Response): void {
 
 // GET /api/settings/test — 各プロバイダのAPIキーが「実際に有効か」を1トークンの ping で確認する。
 // 「設定済み」と「有効」は別なので、キーが本当に通るかを診断する設定画面専用エンドポイント。
-export async function testSettingsHandler(_req: Request, res: Response): Promise<void> {
+// ★?pool=generator で **生成器プールのキー**を検証する(省略/'default' は従来と完全に同じ)。
+//   検証は実際に外部へリクエストを送るので、プールごとに正しいキー(resolveApiKeyForPool)で送る。
+//   未知の pool は黙って default に倒さず 400(caller と同じ規約: 失敗は声を出す)。
+export async function testSettingsHandler(req: Request, res: Response): Promise<void> {
+  const pool = normalizeCaller((req.query as Record<string, unknown> | undefined)?.pool);
+  // 受理値の一覧は normalizeCaller(caller.ts)が SSOT。ここはクエリ名に合わせて語だけ言い換える。
+  if (!pool.ok) { res.status(400).json({ error: pool.error.replace(/^caller/, 'pool') }); return; }
   try {
-    const results = await testAllProviders();
-    res.json({ results });
+    const results = await testAllProviders(pool.caller);
+    res.json({ pool: pool.caller, results });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -227,6 +243,11 @@ interface SettingsBody {
   // ★v0.8.2: System B(紙専用)の設定。ネストしたオブジェクトで送る。各フィールドは A と同名。
   //   値の空欄/未設定(null)=「A追従」(signalB から外す)/ source は ''(A追従)/'manual'/'ai'。
   signalB?: Record<string, unknown> | null;
+  // ★提案生成器の専用 API キー。秘密フィールドの規約に揃える:
+  //   未指定/''=変更なし / 文字列=保存 / **null=そのプロバイダの専用キーを消去(=共通キーへ戻す)** /
+  //   generatorKeys 自体が null=全プロバイダの専用キーを消去。
+  generatorKeys?: Record<string, unknown> | null;
+  generatorDailyBudget?: number | null;   // 生成器の日次予算[回/取引日]。null=既定(200)に戻す / 0=無効。
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -322,6 +343,51 @@ function buildLiteConfig(existing: LiteConfig | undefined, body: Record<string, 
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+// ★提案生成器の専用 API キー。既存の秘密フィールド(applyStringField)と同じ規約に、
+//   「専用キーを外して共通キーへ戻す」ための明示クリア(null)を足したもの。
+//   ・incoming 未指定           → 変更なし
+//   ・incoming === null         → 全プロバイダの専用キーを消去(=すべて共通キーへフォールバック)
+//   ・オブジェクト内 未指定/''  → そのプロバイダは変更なし(秘密フィールドの既存規約)
+//   ・オブジェクト内 null       → そのプロバイダの専用キーを消去(=共通キーへフォールバック)
+//   ・オブジェクト内 文字列     → trim して保存
+type GeneratorKeys = NonNullable<UserConfig['generatorKeys']>;
+export function buildGeneratorKeys(
+  existing: GeneratorKeys | undefined,
+  incoming: Record<string, unknown> | null | undefined,
+): GeneratorKeys | undefined {
+  if (incoming === undefined) return existing;
+  if (incoming === null) return undefined;
+  if (typeof incoming !== 'object') return existing;
+  const next: GeneratorKeys = { ...(existing ?? {}) };
+  for (const p of GENERATOR_PROVIDERS) {
+    const v = incoming[p];
+    if (v === undefined) continue;
+    if (v === null) { delete next[p]; continue; }
+    if (typeof v !== 'string') continue;
+    const t = v.trim();
+    if (t === '') continue;   // 空欄=変更なし(既存キー欄と同じ挙動)
+    next[p] = t;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+// ★生成器の日次予算。null=既定に戻す(未設定で保存)/ 0=生成器を無効化 / 1..MAX=採用。
+//   範囲外や非数値は 400 にする(黙って丸めない=設定した値と動く値がずれない)。
+export function applyGeneratorBudget(
+  existing: number | undefined,
+  incoming: unknown,
+): { value: number | undefined; error: string | null } {
+  if (incoming === undefined) return { value: existing, error: null };
+  if (incoming === null) return { value: undefined, error: null };
+  if (typeof incoming !== 'number' || !Number.isFinite(incoming) || !Number.isInteger(incoming)) {
+    return { value: existing, error: 'generatorDailyBudget must be an integer' };
+  }
+  if (incoming < 0 || incoming > GENERATOR_DAILY_BUDGET_MAX) {
+    return { value: existing, error: `generatorDailyBudget out of range (0-${GENERATOR_DAILY_BUDGET_MAX})` };
+  }
+  return { value: incoming, error: null };
+}
+
 function applyStringField(existing: string | undefined, incoming: unknown): string | undefined {
   if (incoming === undefined) return existing;
   if (incoming === null) return undefined;
@@ -389,6 +455,10 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const autoPublishValue = applyBoolField(existing.basedataAutoPublish, bodyRec.basedataAutoPublish);
   // ★v0.8.2: System B(紙専用)の設定を組み立てる(未指定=変更なし・数値/bias 検証込み)。
   const signalBValue = buildSignalB(existing.signalB, body.signalB, errors);
+  // ★提案生成器: 専用キー(秘密・空欄=変更なし / null=消去)と日次予算(範囲検証)。
+  const generatorKeysValue = buildGeneratorKeys(existing.generatorKeys, body.generatorKeys);
+  const generatorBudget = applyGeneratorBudget(existing.generatorDailyBudget, bodyRec.generatorDailyBudget);
+  if (generatorBudget.error) errors.push(generatorBudget.error);
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -438,6 +508,9 @@ export function postSettingsHandler(req: Request, res: Response): void {
     signalB: signalBValue,
     // ★lite 独立設定(full では existing.lite をそのまま持ち越す=触らない)。
     lite: liteValue,
+    // ★提案生成器(分析用・実弾 A とは別プール)。キーは秘密扱い(値は GET で返さない)。
+    generatorKeys: generatorKeysValue,
+    generatorDailyBudget: generatorBudget.value,
   };
 
   // ★既存 config を土台にして、明示的に決めたフィールドだけを上書きする。

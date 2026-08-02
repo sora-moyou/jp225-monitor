@@ -164,14 +164,18 @@ export async function testProviderState(
 }
 
 /** 指定プロバイダのキーが実際に有効か、1トークンの ping で確認する。キー未設定は notset。
- *  ★設定画面の「キーを検証」は **default プールのキー**を検証する(従来と同じ)。 */
-export async function testProvider(name: string): Promise<KeyTestResult> {
-  return testProviderState(poolOf(DEFAULT_CALLER).find(x => x.config.name === name), name);
+ *  ★引数なしは従来どおり **default プールのキー**を検証する(既存の呼び出し側は無改変で同じ経路)。
+ *  ★pool='generator' を渡すと **生成器プールのキー**(専用キー→env→共通キーのフォールバック結果)で
+ *    ping する。プールごとに resolveApiKeyForPool でクライアントを組んでいるので、専用キーがある
+ *    プロバイダの検証で共通キーを消費することはない。 */
+export async function testProvider(name: string, pool: PoolKey = DEFAULT_CALLER): Promise<KeyTestResult> {
+  return testProviderState(poolOf(pool).find(x => x.config.name === name), name);
 }
 
-/** 全プロバイダのキー有効性を並列に ping で確認する(LLM_PROVIDERS 順)。各プロバイダ1トークン消費。 */
-export async function testAllProviders(): Promise<KeyTestResult[]> {
-  return Promise.all(LLM_PROVIDERS.map(cfg => testProvider(cfg.name)));
+/** 全プロバイダのキー有効性を並列に ping で確認する(LLM_PROVIDERS 順)。各プロバイダ1トークン消費。
+ *  引数なしは default プール(従来と同一)。 */
+export async function testAllProviders(pool: PoolKey = DEFAULT_CALLER): Promise<KeyTestResult[]> {
+  return Promise.all(LLM_PROVIDERS.map(cfg => testProvider(cfg.name, pool)));
 }
 
 // ─── ビジョン(チャート画像入力)対応判定 ───

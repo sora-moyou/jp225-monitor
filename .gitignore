@@ -19,4 +19,6 @@ src-tauri/binaries/
 #
 # トレードシグナルの非公開 phase-exit(数値・段階ルールは公開しない)
 server/signalTrade/exit/private.ts
+# 上の等価性テスト(パラメータ化前の実装を凍結したコピー=実数値を含む)。公開リポには載せない。
+server/signalTrade/exit/private.test.ts
 # ── ▲▲ PRIVATE-BACKUP:END ▲▲ ─────────────────────────────────────────────────

@@ -214,6 +214,15 @@ const settingsCtl = initSettingsModal({
   replaceResult:  document.getElementById('settings-replace-result') as HTMLElement,
   testKeysBtn:    document.getElementById('settings-test-keys') as HTMLButtonElement,
   testResult:     document.getElementById('settings-test-result') as HTMLElement,
+  // ★提案生成器(分析用・実弾 A とは別プール)の専用キー / 消去 / 日次予算 / プール別検証。
+  inputGenGemini: document.getElementById('genkey-gemini') as HTMLInputElement,
+  inputGenGroq:   document.getElementById('genkey-groq') as HTMLInputElement,
+  inputGenOpenai: document.getElementById('genkey-openai') as HTMLInputElement,
+  inputGenKimi:   document.getElementById('genkey-kimi') as HTMLInputElement,
+  checkGenKeysClear: document.getElementById('genkey-clear') as HTMLInputElement,
+  inputGeneratorBudget: document.getElementById('generator-budget') as HTMLInputElement,
+  testGenKeysBtn: document.getElementById('settings-test-genkeys') as HTMLButtonElement,
+  testGenResult:  document.getElementById('settings-test-genkeys-result') as HTMLElement,
 });
 
 // ★lite: 詳細設定(🎛️)の「AIエントリー」を 4項目(A系統のみ)に絞るための要素収集。

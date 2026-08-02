@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { runScalpPlanWithChart } from '../llm/scalpPlanRunner.js';
 import { normalizeCaller, DEFAULT_CALLER } from '../llm/caller.js';
+import { normalizeExitVariant, type ExitVariant } from '../signalTrade/exit/index.js';
 import { checkGeneratorGate } from '../llm/generatorGate.js';
 
 // ★実際の呼び出し元(2026-08-02 に実確認):
@@ -32,6 +33,12 @@ interface Body {
   /** ★呼び出し元の識別子。**省略時は 'default'**(既存の呼び出しは完全に従来どおり)。
    *  'generator' を指定した時だけ、プロバイダ・プール / backpressure / 日次予算 が分離される。 */
   caller?: unknown;
+  /** ★決済仕様の「名前付き変種」。**省略時は現行**(既存の呼び出し元は byte 不変)。
+   *  ★設計上の要点: **決済の数値をリクエストに載せない**。ここに載るのは名前
+   *  ('current' | 'candidate-a')だけで、名前 → 実数値の解決は monitor プロセス内の
+   *  非公開定義が行う。だからリクエスト・アクセスログ・エラーメッセージに実数値は出ない。
+   *  不正な名前は **400**(caller と同じ扱い。黙って現行に倒すと実験が静かに壊れる)。 */
+  exitVariant?: unknown;
 }
 
 /** body/query から数値を optional に受理する(文字列でも数値化)。非有限は undefined を返し、既定に委ねる。
@@ -64,6 +71,25 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   }
   const caller = callerResult.caller;
 
+  // ── ★決済仕様の変種(作業2)。**名前だけ**を受け取り、実数値の解決は非公開側に閉じる。
+  //    省略(未指定/null/空文字)は「要求なし」= buildScalpPlan へ渡さない ⇒ 決済ブロックは従来と byte 一致。
+  const rawVariant = body.exitVariant ?? query.exitVariant;
+  const variantSpecified = rawVariant !== undefined && rawVariant !== null && rawVariant !== '';
+  const variantResult = normalizeExitVariant(rawVariant);
+  if (!variantResult.ok) {
+    // 未知の変種名を黙って現行に倒すと、「候補仕様で生成した」つもりの標本が実は現行仕様になり、
+    // A/B の差が消えたことに誰も気づけない(=実験が静かに壊れる)。だから 400 で落とす。
+    res.status(400).json({ ok: false, error: variantResult.error });
+    return;
+  }
+  // ★undefined を渡すことが「従来経路」の意味を持つ(scalpPlan 側が describeExitLogic() をそのまま使う)。
+  const exitVariant: ExitVariant | undefined = variantSpecified ? variantResult.variant : undefined;
+  // 応答へ「どの変種で生成したか」を載せるか。レガシー経路(caller 省略 かつ exitVariant 省略)だけは
+  // 応答も従来どおりにする(フィールドを増やさない)。生成器は caller または exitVariant を必ず指定するので、
+  // 生成器から見れば **常に** 変種が返る=記録に穴が空かない。
+  const echoVariant = variantSpecified || caller !== DEFAULT_CALLER
+    ? { exitVariant: variantResult.variant } : {};
+
   // ── ★生成器だけの関門(作業3 backpressure + 作業4 予算/従属)。
   //    caller 省略/'default' はこのブロックを **一切通らない**(既存の呼び出し元に影響ゼロ)。
   if (caller !== DEFAULT_CALLER) {
@@ -77,12 +103,13 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   }
 
   try {
-    const result = await runScalpPlanWithChart({ symbol, lcFloorYen, lcCeilingYen, caller });
+    const result = await runScalpPlanWithChart({ symbol, lcFloorYen, lcCeilingYen, caller, exitVariant });
     if (result.ok) {
-      res.json({ ok: true, plan: result.plan });
+      res.json({ ok: true, plan: result.plan, ...echoVariant });
     } else {
       // キー無し/パース失敗/LLM 失敗/チャート未生成は 200 + ok:false で返す(キーは決して漏らさない)。
-      res.json({ ok: false, error: result.error });
+      // 見送りも実験の1標本なので、変種名(名前のみ・数値なし)は同じように返す。
+      res.json({ ok: false, error: result.error, ...echoVariant });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -16,6 +16,57 @@ export interface ExitState {
 export type ExitFn = (s: ExitState) => number | null;
 export type DescribeFn = () => string;
 
+// ─── 決済仕様の「名前付き変種」 ──────────────────────────────────────────────
+//
+// 分析用の提案生成器は「同じ相場に、現行の決済仕様を教えた AI と 候補の決済仕様を教えた AI」を
+// 並走させて提案の差を測る。そのとき **決済の数値を HTTP リクエストに載せてはならない**
+// (リクエスト・アクセスログ・エラーメッセージに実数値が乗りうる)。
+// だから外から渡すのは **名前だけ** にし、名前 → 実数値の解決は monitor プロセス内の
+// 非公開定義(./private.ts, gitignored)が行う。数値はプロセス内に留まる。
+//
+// ★このファイル(公開)には名前と型だけを置く。実数値は書かない。
+//   - 'current'     … 実運用の現行仕様(既定)。
+//   - 'candidate-a' … 分析用の候補。利益ロックの **第1段** だけを「発動 60pt / 床 25pt」に置き換え、
+//                     それ以外の段は現行のまま。(この2値は候補として指定されたもので、現行値ではない)
+
+export type ExitVariant = 'current' | 'candidate-a';
+
+/** 受理する変種名の一覧(順序は説明表示用・normalize の真実)。 */
+export const EXIT_VARIANTS: readonly ExitVariant[] = ['current', 'candidate-a'];
+
+/** 省略時の変種。既存の呼び出し元は必ずこれ(=従来の挙動)。 */
+export const DEFAULT_EXIT_VARIANT: ExitVariant = 'current';
+
+export type NormalizeExitVariantResult =
+  | { ok: true; variant: ExitVariant }
+  | { ok: false; error: string };
+
+/** 外部入力(HTTP body/query)を ExitVariant へ正規化する純関数。
+ *  - 未指定 / null / 空文字 → 'current'(★省略時は現行。既存呼び出し元は byte 不変)
+ *  - 既知の変種名 → そのまま
+ *  - それ以外 → **エラー(400)**。
+ *
+ *  ★未知の値を黙って 'current' に倒さない理由: 生成器②が変種名を打ち間違えた時にそれを現行として
+ *    処理すると、「候補仕様で生成した」つもりの標本が実は現行仕様で、A/B の差が消える。
+ *    実験が壊れたことに誰も気づけない=最悪の壊れ方。だから **失敗は声を出す**。 */
+export function normalizeExitVariant(v: unknown): NormalizeExitVariantResult {
+  if (v === undefined || v === null || v === '') return { ok: true, variant: DEFAULT_EXIT_VARIANT };
+  if (typeof v === 'string' && (EXIT_VARIANTS as readonly string[]).includes(v)) {
+    return { ok: true, variant: v as ExitVariant };
+  }
+  const got = typeof v === 'string' ? v.slice(0, 32) : typeof v;
+  return { ok: false, error: `exitVariant は ${EXIT_VARIANTS.map(n => `'${n}'`).join(' | ')} のみ(受信: ${got})` };
+}
+
+/** 変種ごとの説明文(公開フォールバック・数値なし)。private が在れば実数値つきに差し替わる。
+ *  既定('current')は describeExitLogicSimple() と byte 一致させる(既存プロンプトを変えない)。 */
+export function describeExitLogicVariantSimple(variant: ExitVariant): string {
+  if (variant === DEFAULT_EXIT_VARIANT) return describeExitLogicSimple();
+  return `${describeExitLogicSimple()}\n※この計画は決済仕様の変種 "${variant}" を前提とする(段階/数値は非公開ビルドでのみ注入される)。`;
+}
+
+export type DescribeVariantFn = (variant: ExitVariant) => string;
+
 /** 簡易フォールバック(公開・決定論): 初期LC固定。含み益に関わらず逆指値は初期のまま(ラチェット無し)。 */
 export function computeExitStopSimple(s: ExitState): number | null {
   return Number.isFinite(s.initialStop) ? s.initialStop : null;
@@ -30,6 +81,7 @@ export function describeExitLogicSimple(): string {
 
 let impl: ExitFn = computeExitStopSimple;
 let describeImpl: DescribeFn = describeExitLogicSimple;
+let describeVariantImpl: DescribeVariantFn = describeExitLogicVariantSimple;
 let loadAttempted = false;
 
 /** 起動時に一度だけ ./private.js を optional dynamic import する。
@@ -43,9 +95,15 @@ export async function loadExitImpl(): Promise<'private' | 'simple'> {
     // private 不在の公開リポで tsc が TS2307 を出すのだけを @ts-ignore で抑止する。
     // ★@ts-expect-error は private 在時に「抑止対象なし(TS2578)」で落ちるので不可。@ts-ignore を使う。
     // @ts-ignore optional private module (absent in public repo)
-    const mod = await import('./private.js') as { computeExitStopPrivate?: ExitFn; describeExitLogicPrivate?: DescribeFn };
+    const mod = await import('./private.js') as {
+      computeExitStopPrivate?: ExitFn;
+      describeExitLogicPrivate?: DescribeFn;
+      describeExitLogicVariantPrivate?: DescribeVariantFn;
+    };
     // 実数値つきの決済ロジック説明も private から取り込む(AI へ完全なロジックを渡すため)。無ければ定性版のまま。
     if (typeof mod.describeExitLogicPrivate === 'function') describeImpl = mod.describeExitLogicPrivate;
+    // 変種ごとの説明文(名前 → 非公開の実数値)。無ければ公開フォールバック(数値なし)のまま。
+    if (typeof mod.describeExitLogicVariantPrivate === 'function') describeVariantImpl = mod.describeExitLogicVariantPrivate;
     if (typeof mod.computeExitStopPrivate === 'function') {
       impl = mod.computeExitStopPrivate;
       return 'private';
@@ -60,6 +118,13 @@ export async function loadExitImpl(): Promise<'private' | 'simple'> {
  *  scalp-plan が AI へ「決済がどう動くか」を定数込みで渡すために使う。公開リポには数値は載らない。 */
 export function describeExitLogic(): string {
   return describeImpl();
+}
+
+/** 指定した変種の決済ロジック説明文。名前だけを受け取り、実数値は非公開側が解決する
+ *  (数値は HTTP/ログ/DB に出ない)。'current' は describeExitLogic() と **byte 一致** する
+ *  =変種を指定しない既存経路のプロンプトは1バイトも変わらない。 */
+export function describeExitLogicVariant(variant: ExitVariant): string {
+  return describeVariantImpl(variant);
 }
 
 /** 現在の決済逆指値(resting stop の絶対価格)を返す。private が読み込まれていればラチェット床、

@@ -5,7 +5,7 @@ import {
   resolveScalpAiTechnicalEnabled,
   type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
-import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
+import { describeExitLogic, describeExitLogicVariant, loadExitImpl, type ExitVariant } from '../signalTrade/exit/index.js';
 // ★v0.9.44: レンジの形の観測は依存ゼロの leaf(signalTrade/rangeShape.ts)に置く。engine.ts が LLM スタックを
 //   遅延ロードしている設計を壊さないため(engine は result.rangeAnomaly を読むだけ=静的 import 不要)。
 import { describeRangeAnomaly, type RangeAnomaly } from '../signalTrade/rangeShape.js';
@@ -782,6 +782,12 @@ export interface ScalpPlanInput {
    *  'generator'(分析用の提案生成器)のときだけ generator プールを使い、その 429 は default を止めない。
    *  ★プロンプト・パース・enforce には一切影響しない(どのプールを使うかだけが変わる)。 */
   caller?: LlmCaller;
+  /** ★決済仕様の「名前付き変種」。**未指定は従来どおり**(describeExitLogic() を使う=プロンプト byte 不変)。
+   *  指定するとその変種の決済仕様説明を AI に渡す(分析用の提案生成器②が候補仕様で提案させるため)。
+   *  ★名前だけを受け取り、実数値は非公開側(signalTrade/exit/private.ts)が解決する=数値は外に出ない。
+   *  ★プロンプトの決済ブロック **だけ** が変わる。parse/enforce/実際の決済計算には一切影響しない
+   *    (実弾の決済は常に現行仕様の computeExitStop が算出する)。 */
+  exitVariant?: ExitVariant;
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -1247,7 +1253,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     bias: { mode: biasD.mode, value: biasD.value },
     range: { mode: rangeD.mode, value: rangeEnabled },
     hardMax,
-    exitDesc: describeExitLogic(),
+    // ★決済仕様: 変種 **未指定なら従来の describeExitLogic() をそのまま**(この経路は byte 不変)。
+    //   指定時だけ名前 → 非公開定義から説明文を解決する(数値はプロセス内に留まる)。
+    exitDesc: input.exitVariant === undefined ? describeExitLogic() : describeExitLogicVariant(input.exitVariant),
   });
   // ★AIテクニカル許可(RSI/BB をエントリーの"タイミング"判断に使ってよい)。既定 ON。OFF では system prompt は従来と byte 一致。
   //   ※決済(手仕舞い)は既定の決済ロジックが担当する=AI に決済判断は委ねない。
