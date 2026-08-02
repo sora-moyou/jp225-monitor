@@ -7,6 +7,7 @@ import { loadExitImpl } from '../signalTrade/exit/index.js';
 import { exitVariantImplKindAll, type ExitImplKind } from '../signalTrade/exitVariantImpl.js';
 import { exitConfigHash, lookupExitConfigVersion } from '../signalTrade/exitConfigVersion.js';
 import { openDb, resolveDbPath } from '../db/store.js';
+import { readGeneratorLedgerStatus, resolveGeneratorDbPath } from '../db/generatorStore.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
 
 // ─── ★決済実装の「実態」を外から観測できるようにする ────────────────────────
@@ -76,6 +77,18 @@ export async function exitStatus(now: number = Date.now()): Promise<ExitStatus |
   }
 }
 
+/** 提案生成器の台帳の死活(最終記録が何分前か)。**表示専用**なので、ここで例外を出して
+ *  /api/status ごと 500 にしない(状態を見に来た画面が「サーバが死んでいる」ように見えるのが一番困る)。
+ *  台帳が無い環境では available:false = 「この PC では一度も動いていない」を素直に返す。 */
+function readGeneratorLedger(): ReturnType<typeof readGeneratorLedgerStatus> {
+  try {
+    return readGeneratorLedgerStatus(resolveGeneratorDbPath(), Date.now());
+  } catch (e) {
+    console.warn('[status] 生成器の台帳を読めません:', e instanceof Error ? e.message : String(e));
+    return { available: false, lastRecordAt: null, ageMin: null, today: [], total: 0 };
+  }
+}
+
 export async function statusHandler(_req: Request, res: Response): Promise<void> {
   // ★公開版(lite)は提案生成器を持たない=その状況を返しても意味が無い(存在しない機構の
   //   予算・従属停止・腕別消費が並ぶだけ)。**唯一のゲート** で丸ごと落とす。
@@ -85,7 +98,14 @@ export async function statusHandler(_req: Request, res: Response): Promise<void>
     //   「飛ばしたことを必ず記録する」= ログだけでなく画面/HTTP からも見えるようにする。API キーは含まない。
     //   ★予算は **腕ごと** に独立しているので、腕別の消費も出す(合計だけでは
     //     どの腕が枯れかけているか読めない)。回数のみでキーも決済値も含まない。
-    ? { generator: generatorGateSnapshot(), generatorArms: generatorArmUsage() }
+    // ★「1年後に、実は3か月動いていなかった」が最悪の失敗形。生成器側だけの死活監視は
+    //   生成器が死んだら一緒に死ぬので、**ユーザーが見る画面** が読む /api/status に出す。
+    //   専用DBを **readOnly** で読むだけ(台帳を作らない・書かない・例外を投げない)。
+    ? {
+      generator: generatorGateSnapshot(),
+      generatorArms: generatorArmUsage(),
+      generatorLedger: readGeneratorLedger(),
+    }
     : {};
   res.json({
     yahoo: getYahooStatus(),

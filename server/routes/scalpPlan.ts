@@ -108,6 +108,9 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
   if (r.noneReason !== undefined) out.noneReason = r.noneReason;
   if (r.noneLegs !== undefined) out.noneLegs = r.noneLegs;
   if (r.rangeAnomaly !== undefined) out.rangeAnomaly = r.rangeAnomaly;
+  // ★画像の同一性(撮影の識別子と齢)。①と②が同じ1枚を見たことを、仮定ではなく **記録** にするため。
+  //   1サイクルが撮影キャッシュの TTL を超えれば②は別の画像を見るが、これが無いと誰にも分からない。
+  if (r.chartShot !== undefined) out.chartShot = r.chartShot;
   return out;
 }
 

@@ -4,6 +4,7 @@
 // すべての失敗経路(Chrome 不在・タイムアウト・撮影失敗)は null を返し、呼び出し側はテキストのみへフォールバックする。
 
 import { spawn, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
@@ -463,9 +464,44 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
 //   分離するのは 'generator' だけ。
 const CHART_CACHE_TTL_MS = 60_000;   // 成功画像を最大60秒 共有(plan間隔180sなのでA/B同時要求を吸収しつつ毎サイクルは再撮影)。
 
+// ─── ★「同じ画像を見たか」を **仮定ではなく記録** にするための識別子 ───────────────
+//
+// 提案生成器は1サイクルの中で ①現行仕様 → ②候補仕様 を **直列** に問う。①と②が同じ相場・同じ画像を
+// 見ていることが対応比較の前提だが、その保証は「キャッシュ TTL が60秒だから間に合うはず」という
+// **仮定** でしかなかった。1サイクルが60秒を超えれば②は別の画像を見るが、**誰にも分からない**。
+// (齢はログには出るが、生成器の台帳には残らないので1年後の分析者は再構成できない。)
+//
+// → 撮影1回ごとに識別子を振り、応答に「識別子と齢」を additive に載せる。
+//   ①と②の shotId が一致すれば同じ画像、違えば別の画像だったと **記録で** 言える。
+//
+// ★識別子に画像の中身も決済の数値も含まれない(プロセス起動ごとの乱数 + 連番)。
+//   起動をまたいで衝突しないよう、プロセスごとの接頭辞を付ける(連番だけだと再起動後に同じ id が再出現し、
+//   「別の日の別の画像」が同一と読めてしまう)。
+const SHOT_ID_RUN = randomUUID().slice(0, 8);
+let shotSeq = 0;
+function nextShotId(): string { return `${SHOT_ID_RUN}-${++shotSeq}`; }
+
+/** その要求がどうやって画像を得たか。'fresh'=新規撮影 / 'cache'=既存画像の流用 / 'joined'=進行中撮影に相乗り。 */
+export type ChartShotOrigin = 'fresh' | 'cache' | 'joined';
+
+/** 画像の同一性(記録専用)。同じ shotId = **同じ1枚の PNG** を見たということ。 */
+export interface ChartShotIdentity {
+  /** 撮影1回ごとの識別子。 */
+  shotId: string;
+  /** その要求が受け取った時点での画像の齢[ms](0=撮りたて)。 */
+  ageMs: number;
+  origin: ChartShotOrigin;
+}
+
+/** 撮影結果 + 画像の同一性(**additive**)。identity は画像が得られたときだけ付く(失敗時は null)。
+ *  ★関数を2本に分けない: 分けると「identity を返す版」と「返さない版」で経路が2本になり、
+ *    記録に載る画像と実際に AI が見た画像がずれる余地ができる。既存の呼び出し元は
+ *    identity を読まないだけ(挙動不変)。 */
+export type TrackedCaptureResult = CaptureResult & { identity: ChartShotIdentity | null };
+
 interface ChartCachePool {
-  cache: { at: number; result: CaptureResult } | null;
-  inFlight: Promise<CaptureResult> | null;
+  cache: { at: number; result: CaptureResult; shotId: string } | null;
+  inFlight: Promise<{ at: number; result: CaptureResult; shotId: string | null }> | null;
 }
 
 /** caller をキーにしたプール。'default' は A/B が共有する1個、'generator' は完全に別物。 */
@@ -486,28 +522,45 @@ export async function captureChartPngCached(
   capture: (p: number) => Promise<CaptureResult> = captureChartPng,
   now: () => number = Date.now,
   caller: LlmCaller = DEFAULT_CALLER,
-): Promise<CaptureResult> {
+): Promise<TrackedCaptureResult> {
   const pool = poolFor(caller);
   if (pool.cache && pool.cache.result.buffer && now() - pool.cache.at < CHART_CACHE_TTL_MS) {
+    const ageMs = now() - pool.cache.at;
     // ★無音をやめる: 「新規撮影」と「60秒前の使い回し」を必ず区別してログに出す。
     //   画像の齢が変わったこと(=A の入力の鮮度が落ちたこと)に誰も気づけない状態を作らない。
-    console.log(`[chart-shot] キャッシュ流用 caller=${caller} 齢=${((now() - pool.cache.at) / 1000).toFixed(1)}s `
+    console.log(`[chart-shot] キャッシュ流用 caller=${caller} 齢=${(ageMs / 1000).toFixed(1)}s `
       + `(Chrome を起動せず既存画像を再利用)`);
-    return pool.cache.result;   // 新鮮な成功画像を A/B/連続要求で共有(Chrome を起動しない)。
+    // 新鮮な成功画像を A/B/連続要求で共有(Chrome を起動しない)。
+    return { ...pool.cache.result, identity: { shotId: pool.cache.shotId, ageMs, origin: 'cache' } };
   }
   if (pool.inFlight) {
     console.log(`[chart-shot] 進行中の撮影に相乗り caller=${caller} (同時2起動を防止)`);
-    return pool.inFlight;   // 進行中の撮影に相乗り(同時2起動を防ぐ)。
+    const joined = await pool.inFlight;   // 進行中の撮影に相乗り(同時2起動を防ぐ)。
+    return {
+      ...joined.result,
+      identity: joined.shotId === null
+        ? null
+        : { shotId: joined.shotId, ageMs: Math.max(0, now() - joined.at), origin: 'joined' },
+    };
   }
   console.log(`[chart-shot] 新規撮影 caller=${caller} (キャッシュ無効/期限切れ)`);
   pool.inFlight = (async () => {
     try {
       const r = await capture(port);
-      if (r.buffer) pool.cache = { at: now(), result: r };   // 成功のみキャッシュ(失敗は都度再試行)。
-      return r;
+      const at = now();
+      if (r.buffer) {
+        const shotId = nextShotId();
+        pool.cache = { at, result: r, shotId };   // 成功のみキャッシュ(失敗は都度再試行)。
+        return { at, result: r, shotId };
+      }
+      return { at, result: r, shotId: null };
     } finally { pool.inFlight = null; }
   })();
-  return pool.inFlight;
+  const fresh = await pool.inFlight;
+  return {
+    ...fresh.result,
+    identity: fresh.shotId === null ? null : { shotId: fresh.shotId, ageMs: 0, origin: 'fresh' },
+  };
 }
 
 /** テスト用: 全プールのキャッシュ/進行中状態をリセット。 */

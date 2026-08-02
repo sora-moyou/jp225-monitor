@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { buildScalpPlan, firstAvailableVisionProvider, resolveEffectiveRangeEnabled, type ScalpPlanResult } from './openai.js';
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
-import { captureChartPngCached } from '../chart/chartShot.js';
+import { captureChartPngCached, type ChartShotIdentity } from '../chart/chartShot.js';
 import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, resolveIndicatorsEnabled, type SignalProfile } from '../configStore.js';
 import { getRealtimeOHLCBars } from '../feedBars.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
@@ -127,6 +127,8 @@ async function runScalpPlanWithChartInner(
 
   // ── チャートビジョン + 逐次オンデマンドゲート(②生成→③確認→④戦略)。
   let chartImageDataUrl: string | null = null;
+  // ★「その提案がどの1枚を見たか」。生成器の①と②が同じ画像を見たことを **仮定でなく記録** にする。
+  let chartShot: ChartShotIdentity | null = null;
   const visionOn = chartVisionEnabled();
   // ★プールを渡す: 「画像を撮るべきか」は **自分が使うプールの** ポーズ状態で判断する
   //   (default 経路は引数 'default' = 従来と同じ判定)。
@@ -142,6 +144,8 @@ async function runScalpPlanWithChartInner(
       console.warn(`[scalp-plan] vision: 画像生成失敗 → 1回リトライ reason=${shot.reason ?? 'unknown'}`);
       shot = await captureChartPngCached(resolvePort(), undefined, undefined, caller);
     }
+    // ★どの1枚を見たか(identity)。撮影側が返さない場合(テストのモック等)は null=「画像の同一性は不明」。
+    chartShot = shot.identity ?? null;
     // ③ 2回とも失敗: 設定に応じて「テキストのみで継続(縮退運転=全停止を防ぐ)」or 従来どおり「見送り」。
     if (!shot.buffer) {
       if (resolveScalpChartFallbackText()) {
@@ -185,7 +189,7 @@ async function runScalpPlanWithChartInner(
   const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
 
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
-  return buildScalpPlan({
+  return attachChartShot(await buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
@@ -200,5 +204,16 @@ async function runScalpPlanWithChartInner(
     armedContext: overrides.armedContext,   // ★レンジ再評価: 未約定レンジのブレイク切替評価は armed-context を注入(通常は未指定=不変)。
     caller,                                 // ★プロバイダ・プールの選択のみに効く(プロンプト/parse/enforce は不変)。
     exitVariant: overrides.exitVariant,      // ★未指定(エンジン/既存 route)は undefined = 決済ブロックは従来どおり。
-  });
+  }), caller, chartShot);
+}
+
+/** ★画像の同一性を結果に additive で載せる(記録専用)。
+ *  caller==='default'(実弾 A につながる既存の全経路)では **元のオブジェクトをそのまま返す**
+ *  =フィールドが1つも増えない=engine/route/既存テストから見て byte 不変。
+ *  生成器(caller!=='default')のときだけ、その提案がどの1枚を見たかを載せる。 */
+function attachChartShot(
+  result: ScalpPlanResult, caller: LlmCaller, identity: ChartShotIdentity | null,
+): ScalpPlanResult {
+  if (caller === DEFAULT_CALLER || identity === null || !result.ok) return result;
+  return { ...result, chartShot: identity };
 }

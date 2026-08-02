@@ -9,6 +9,8 @@ import { describeExitLogic, describeExitLogicVariant, loadExitImpl, type ExitVar
 // ★v0.9.44: レンジの形の観測は依存ゼロの leaf(signalTrade/rangeShape.ts)に置く。engine.ts が LLM スタックを
 //   遅延ロードしている設計を壊さないため(engine は result.rangeAnomaly を読むだけ=静的 import 不要)。
 import { describeRangeAnomaly, type RangeAnomaly } from '../signalTrade/rangeShape.js';
+// 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
+import type { ChartShotIdentity } from '../chart/chartShot.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
@@ -86,8 +88,11 @@ export interface NoneLegs { dir: 'buy' | 'sell' | 'range'; legs: NoneLeg[]; }
 // noneReason/noneLegs(v0.9.44): 見送り(none)の経路と落としたレッグの生数値(記録のみ=engine のログ用)。
 // rangeAnomaly(v0.9.44): レンジが規約(2択・組を混ぜない)に反する形で届いたか。★必ず **AI の生出力(parse 直後)**
 //   に対して判定した結果を載せる(enforce 後だと veto/bias で片脚が落ちて観測できなくなる)。記録のみ。
+// chartShot(v0.9.51): ★①と②が **同じ画像を見たか** を仮定でなく記録にするための識別子と齢。
+//   scalpPlanRunner が caller!=='default' のときだけ載せる(既存の呼び出し元のオブジェクトは byte 不変)。
+//   記録専用で、判定にも決済にも一切影響しない。型は撮影側(chart/chartShot.ts)が SSOT。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; rangeAnomaly?: RangeAnomaly }
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity }
   | { ok: false; error: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
