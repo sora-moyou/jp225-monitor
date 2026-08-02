@@ -10,6 +10,8 @@ import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades
 import { collectRecentBars } from '../barsSource.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
+import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
+import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 
 // 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
 const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
@@ -78,6 +80,9 @@ export interface RunScalpPlanOverrides {
   /** ★レンジ再評価(未約定→ブレイク)。渡すとプロンプトにレンジ両指値の未約定経過を注入し、ブレイク切替可否を AI に問う。
    *  未指定(通常)は注入なし=byte 一致。 */
   armedContext?: { mode: 'range-fade'; ageMs: number; avgMs: number };
+  /** ★呼び出し元。未指定は 'default'(シグナルエンジン・既存 route = 実弾につながる経路。挙動不変)。
+   *  'generator' のときだけ LLM プロバイダ・プールが generator に切り替わる。 */
+  caller?: LlmCaller;
 }
 
 /** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
@@ -94,6 +99,22 @@ function chartVisionEnabled(): boolean {
 export async function runScalpPlanWithChart(
   overrides: RunScalpPlanOverrides = {},
 ): Promise<ScalpPlanResult> {
+  // ★作業3(backpressure)の計上点: **全経路**(A/B シグナルエンジン・route)がここで進行中カウンタを上下させる。
+  //   このカウンタを読むのは caller='generator' の関門だけなので、default 経路の挙動は一切変わらない。
+  //   生成器からは A/B の起動条件(lastPlanAt + flat + 抑止アンカーの合成)が外部から予測不能なため、
+  //   「今 A/B が生成中か」はサーバ側にしか判断材料がない。だから共通関数で数える。
+  beginScalpPlan();
+  try {
+    return await runScalpPlanWithChartInner(overrides);
+  } finally {
+    endScalpPlan();
+  }
+}
+
+async function runScalpPlanWithChartInner(
+  overrides: RunScalpPlanOverrides,
+): Promise<ScalpPlanResult> {
+  const caller = overrides.caller ?? DEFAULT_CALLER;
   const symbol =
     typeof overrides.symbol === 'string' && overrides.symbol ? overrides.symbol : NIKKEI_SYMBOL;
   const prices = getPrices();
@@ -102,7 +123,9 @@ export async function runScalpPlanWithChart(
   // ── チャートビジョン + 逐次オンデマンドゲート(②生成→③確認→④戦略)。
   let chartImageDataUrl: string | null = null;
   const visionOn = chartVisionEnabled();
-  const vision = visionOn ? firstAvailableVisionProvider() : null;
+  // ★プールを渡す: 「画像を撮るべきか」は **自分が使うプールの** ポーズ状態で判断する
+  //   (default 経路は引数 'default' = 従来と同じ判定)。
+  const vision = visionOn ? firstAvailableVisionProvider(caller) : null;
   if (visionOn && vision) {
     // ② 画像生成(A/B共有キャッシュ+進行中相乗り=同時2起動を防ぐ)。ws-error 等の一過性に備え失敗時は1回リトライ。
     let shot = await captureChartPngCached(resolvePort());
@@ -166,5 +189,6 @@ export async function runScalpPlanWithChart(
     profile: overrides.profile,   // ★v0.8.2: A(既定)は byte 一致 / B は signalB 設定で解決。
     heldPosition: overrides.heldPosition,   // ★ドテン: 保有中の反転評価はプロンプトに held-context を注入(flat-plan は未指定=不変)。
     armedContext: overrides.armedContext,   // ★レンジ再評価: 未約定レンジのブレイク切替評価は armed-context を注入(通常は未指定=不変)。
+    caller,                                 // ★プロバイダ・プールの選択のみに効く(プロンプト/parse/enforce は不変)。
   });
 }

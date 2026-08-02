@@ -14,7 +14,8 @@ import type { Price } from '../types.js';
 //
 //   ★stale フラグだけでは塞がらない実在の穴: priceLoop.tick() は取引時間外に setPrices を呼ばずに
 //     早期 return するため、時間外はキャッシュに「最後の場中価格が stale:false のまま」凍って残る。
-//     engine 経路は inPollWindow でゲートされるが POST /api/scalp-plan(trade2 が叩く)は時間外でも通る。
+//     engine 経路は inPollWindow でゲートされるが POST /api/scalp-plan は時間外でも通る
+//     (旧記述「trade2 が叩く」は誤り。trade2 はシグナル追従のみで scalp-plan は叩かない=2026-08-02 実確認)。
 //     → 経過時間の上限(REF_PRICE_MAX_AGE_MS)が要る。
 
 const createMock = vi.fn();

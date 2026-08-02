@@ -53,6 +53,10 @@ type ExplicitParamKey = typeof EXPLICIT_PARAM_KEYS[number];
 //   設定画面にUIが無く、config.json の手編集でしか設定しない類(chromePath など)。
 const PRESERVED_PARAM_KEYS = [
   'chromePath',   // チャート撮影に使う chrome.exe の明示パス(UI 無し・手編集のみ)
+  // ★提案生成器(caller='generator')の設定。UI は持たせず config.json / 環境変数で設定する。
+  //   実弾(A)の設定画面に実験系のノブを並べて誤操作の面を増やしたくないため。保存で消えないようここで持ち越す。
+  'generatorKeys',          // 生成器プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では返さない。
+  'generatorDailyBudget',   // 生成器の日次予算[回/取引日]。0=無効。未設定は GENERATOR_DAILY_BUDGET_DEFAULT。
 ] as const satisfies readonly (keyof UserConfig)[];
 type PreservedParamKey = typeof PRESERVED_PARAM_KEYS[number];
 

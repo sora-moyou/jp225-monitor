@@ -10,6 +10,7 @@ import { describeExitLogic, loadExitImpl } from '../signalTrade/exit/index.js';
 //   遅延ロードしている設計を壊さないため(engine は result.rangeAnomaly を読むだけ=静的 import 不要)。
 import { describeRangeAnomaly, type RangeAnomaly } from '../signalTrade/rangeShape.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
+import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { getPrices } from '../cache.js';
 import {
@@ -124,8 +125,8 @@ function noneLegsFromDirectional(
   return legs.length ? { dir, legs } : undefined;
 }
 
-// 初期 LC(損切り)幅の既定レンジ。呼び出し側(trade2)が /api/scalp-plan で lcFloorYen/lcCeilingYen を
-// 指定しない時のフォールバック。★v0.7.39: 旧「原則45〜75/上限95」の二段を撤去し、
+// 初期 LC(損切り)幅の既定レンジ。呼び出し側が /api/scalp-plan で lcFloorYen/lcCeilingYen を
+// 指定しない時のフォールバック(旧記述の「trade2」は誤り。呼び出し元は上の注記を参照)。★v0.7.39: 旧「原則45〜75/上限95」の二段を撤去し、
 // 単一上限「45〜65 に収める・65 超は出さない」へ collapse。パラメータで上下限を可変にする。
 export const DEFAULT_LC_FLOOR_YEN = 45;
 export const DEFAULT_LC_CEILING_YEN = 65;
@@ -777,6 +778,10 @@ export interface ScalpPlanInput {
    *  渡すとプロンプトに「両逆指値(ブレイク追随)へ切替えてよい/現状維持/direction:none」の判断を促す。
    *  未指定(通常)は注入なし=systemPrompt は従来と byte 一致。rangeReevalEnabled=false は engine が渡さないので常に未指定。 */
   armedContext?: { mode: 'range-fade'; ageMs: number; avgMs: number };
+  /** ★呼び出し元(LLM プロバイダ・プールの選択キー)。未指定は 'default' = 従来と完全に同じ経路・同じ状態。
+   *  'generator'(分析用の提案生成器)のときだけ generator プールを使い、その 429 は default を止めない。
+   *  ★プロンプト・パース・enforce には一切影響しない(どのプールを使うかだけが変わる)。 */
+  caller?: LlmCaller;
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -1113,7 +1118,10 @@ export const LC_YEN_MAX = 300;
 // ★stale フラグだけでは塞がらない実在の穴:
 //   priceLoop.tick() は取引時間外に **setPrices を呼ばずに** 早期 return する。つまり時間外はキャッシュに
 //   「最後の場中価格が stale:false のまま」残り続ける。engine 経路は inPollWindow でゲートされるが、
-//   POST /api/scalp-plan(trade2 が叩く)は時間外でも到達する。よって **経過時間の上限** も要る。
+//   POST /api/scalp-plan は時間外でも到達する。よって **経過時間の上限** も要る。
+//   ※旧記述「trade2 が叩く」は誤り(2026-08-02 に実確認して訂正)。trade2 は monitor のシグナルを
+//     SSE/`/api/current-signal` で追従するだけで /api/scalp-plan は叩かない(コード上のヒットはコメントのみ)。
+//     現在この route を叩くのは手動診断と、これから追加する提案生成器(caller='generator')。
 //
 /** refPrice として許容する価格の最大経過時間[ms]。
  *  根拠: 価格取得間隔 pricePollMs の設定上限が 60,000ms、全滅時のバックオフ PRICE_BACKOFF_MS の最大も
@@ -1290,7 +1298,8 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis);
       // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。戻り値そのものは使わない。
       return JSON.stringify(planResult.plan);
-    }, 'scalp-plan');
+      // ★第3引数(caller)= プロバイダ・プールの選択。未指定は 'default'(既存経路は byte 不変)。
+    }, 'scalp-plan', input.caller ?? DEFAULT_CALLER);
     // task が一度も走らなかった場合(callWithFallback がプロバイダ不在の定型文を返す経路)だけ raw を読む。
     // 通常は planResult が入っているので再パースは起きない。
     const parsed: ScalpPlanResult = planResult ?? parseScalpPlan(raw, refPrice);

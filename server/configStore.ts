@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync, renameSyn
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { resolveVariant } from './variant.js';
+import type { LlmCaller } from './llm/caller.js';   // 型のみ(実行時 import なし=循環なし)
 
 const CONFIG_DIR = () => join(homedir(), '.jp225-monitor');
 const CONFIG_FILE = () => join(CONFIG_DIR(), 'config.json');
@@ -18,6 +19,12 @@ export interface UserConfig {
   webSearchModel?: string; // web_search 用の Gemini モデル(chatModel と別)。未設定は既定 gemini-flash-latest。
   webSearchOpenaiModel?: string; // Gemini キーが無い/枠切れ時に OpenAI で Web 検索するモデル。未設定は既定 gpt-4o-mini-search-preview。
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
+  // ★提案生成器(caller='generator')専用の API キー。**未設定なら共通キーへフォールバック**する。
+  //   「今回キーを分けるかは未定・分けられる構造にする」への答え: プール分離(providers.ts)は既に
+  //   キー解決をプール別に通しているので、ここへ値を入れるだけで上流クォータまで完全に分離できる。
+  generatorKeys?: { gemini?: string; groq?: string; openai?: string; kimi?: string };
+  // ★提案生成器の日次予算(1取引日あたりの許可回数)。0=生成器を無効化。未設定は保守的な既定値。
+  generatorDailyBudget?: number;
   basedataUser?: string;  // ★基礎データ公開(225labo)ログインのユーザー名。秘密扱い(既存 API キーと同モデル)。
   basedataPass?: string;  // ★基礎データ公開(225labo)ログインのパスワード。秘密扱い。
   basedataSaveDir?: string;  // ★基礎データ公開の保存先フォルダ(xlsx/gz/meta)。可視。未設定は Downloads。
@@ -256,6 +263,47 @@ export function resolveApiKey(provider: ProviderName): string | undefined {
   : provider === 'groq'   ? 'GROQ_API_KEY'
   : 'OPENAI_API_KEY';
   return process.env[envName]?.trim();
+}
+
+/** 環境変数名(生成器プール用)。共通キーの env 名に GENERATOR_ を前置する。 */
+const GENERATOR_ENV: Record<ProviderName, string> = {
+  kimi:   'GENERATOR_KIMI_API_KEY',
+  gemini: 'GENERATOR_GEMINI_API_KEY',
+  groq:   'GENERATOR_GROQ_API_KEY',
+  openai: 'GENERATOR_OPENAI_API_KEY',
+};
+
+/** ★プール別の API キー解決。providers.ts のプール(default/generator)構築が使う。
+ *  - pool==='default' → **resolveApiKey と完全に同一**(既存経路は1ミリも変えない)。
+ *  - pool==='generator' → 専用キー(config.generatorKeys → env GENERATOR_*)があればそれ。
+ *    無ければ **共通キーへフォールバック**する(=キーを分けなくても動く)。
+ *  ★フォールバック時は上流のクォータが共有されたままである点に注意。それは
+ *    generatorGate.ts の日次予算 + 従属規則(default が quota を踏んだら生成器停止)で受け持つ。 */
+export function resolveApiKeyForPool(provider: ProviderName, pool: LlmCaller): string | undefined {
+  if (pool === 'default') return resolveApiKey(provider);
+  const own = loadConfig().generatorKeys?.[provider];
+  if (own && own.trim()) return own.trim();
+  const env = process.env[GENERATOR_ENV[provider]]?.trim();
+  if (env) return env;
+  return resolveApiKey(provider);
+}
+
+// ─── 提案生成器の日次予算 ────────────────────────────────────────────────
+/** 生成器の日次予算の既定値[回/取引日]。
+ *  ★根拠: 2分間隔でフルカバー(日中7h + ナイト13h)すると約 600 回/取引日。運用見込みは 700〜1,600 回。
+ *    既定はそれを **大きく下回る 200** にする=「第1週の実測で決める」までの間、実測に十分な標本
+ *    (200件/日)を取りつつ、上流クォータへの露出を1セッション相当に抑える。
+ *    上限に達した生成器は **止まって記録する**(無音の縮退やモード書き換えは絶対にしない)ので、
+ *    既定が低すぎればユーザーはログで即座に気づき、実測値に基づいて設定を上げられる。 */
+export const GENERATOR_DAILY_BUDGET_DEFAULT = 200;
+export const GENERATOR_DAILY_BUDGET_MAX = 5000;
+
+/** 生成器の日次予算を解決。config.json → env GENERATOR_DAILY_BUDGET → 既定。0 は「無効」の意味で受理する。 */
+export function resolveGeneratorDailyBudget(): number {
+  const v = loadConfig().generatorDailyBudget;
+  const raw = typeof v === 'number' && Number.isFinite(v) ? v : Number(process.env.GENERATOR_DAILY_BUDGET);
+  if (!Number.isFinite(raw)) return GENERATOR_DAILY_BUDGET_DEFAULT;
+  return Math.min(Math.max(Math.floor(raw), 0), GENERATOR_DAILY_BUDGET_MAX);
 }
 
 // 基礎データ公開(225labo)の資格情報を解決。config.json 優先 → env LABO225_USER/LABO225_PASS フォールバック。

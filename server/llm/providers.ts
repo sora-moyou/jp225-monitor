@@ -1,7 +1,27 @@
 import OpenAI from 'openai';
 import { LLM_PROVIDERS } from '../config.js';
 import type { LLMProvider } from '../config.js';
-import { resolveApiKey } from '../configStore.js';
+import { resolveApiKeyForPool } from '../configStore.js';
+import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
+import { notifyDefaultQuota } from './generatorGate.js';
+
+// ─── プロバイダ状態は「プール別」(default / generator) ───────────────────
+//
+// ★以前はモジュール単位のシングルトン(`let providers = LLM_PROVIDERS.map(buildProvider)`)で、
+//   プロセス内の全呼び出し元が circuitOpenUntil を共有していた。そのため
+//   **分析用の実験系が 429 を踏むと、実弾(A)の経路が PAUSE_LADDER の最大 8 時間まで止まる**。
+//   別プロセス化しても解決しない(/api/scalp-plan の LLM 呼び出しは monitor のプロセス内で起きる)。
+//
+// そこで状態を LlmCaller をキーにしたプールへ分ける。プールは
+//   - **それぞれ独立した circuitOpenUntil / consecutiveFails / lastFailAt** を持つ
+//   - **プール別に API キーを解決する**(resolveApiKeyForPool)。今は generator 用キー未設定なら
+//     共通キーへフォールバックするので挙動は同じだが、キーを入れるだけで上流クォータまで分離できる。
+//
+// ★default の不変性の担保:
+//   - default プールは従来どおり **モジュール読み込み時に1回だけ**構築し、同じ1行をログする。
+//   - generator プールは **遅延構築**(初めて generator が呼ばれた時)。使わなければ存在しない。
+//   - 引数を増やした公開関数はすべて **既定値 'default'**。既存の呼び出し側は無改変で同じ経路を通る。
+type PoolKey = LlmCaller;
 
 interface ProviderState {
   config: LLMProvider;
@@ -9,6 +29,8 @@ interface ProviderState {
   circuitOpenUntil: number;
   consecutiveFails: number;
   lastFailAt: number;
+  /** この状態がどのプールのものか。ログの体裁と ★従属規則の発火判定に使う。 */
+  pool: PoolKey;
 }
 
 const PAUSE_LADDER_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3600_000, 8 * 3600_000];
@@ -34,9 +56,9 @@ export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient
   return null;
 }
 
-function buildProvider(config: LLMProvider): ProviderState {
+function buildProvider(config: LLMProvider, pool: PoolKey): ProviderState {
   const name = config.name as 'gemini' | 'groq' | 'openai' | 'kimi';
-  const key = resolveApiKey(name);
+  const key = resolveApiKeyForPool(name, pool);
   const isPlaceholder = !key || key.includes('your-key');
   return {
     config,
@@ -44,29 +66,60 @@ function buildProvider(config: LLMProvider): ProviderState {
     circuitOpenUntil: 0,
     consecutiveFails: 0,
     lastFailAt: 0,
+    pool,
   };
 }
 
-let providers: ProviderState[] = LLM_PROVIDERS.map(buildProvider);
-logEnabled();
+/** プール別のプロバイダ状態。default は起動時に構築、generator は初回利用時に遅延構築する。 */
+const pools = new Map<PoolKey, ProviderState[]>();
 
-function logEnabled(): void {
-  const enabled = providers.filter(p => p.client !== null).map(p => p.config.name);
-  console.log(`[LLM] enabled providers: ${enabled.join(', ') || '(none)'}`);
+function buildPool(pool: PoolKey): ProviderState[] {
+  return LLM_PROVIDERS.map(c => buildProvider(c, pool));
+}
+
+/** プールを取得(未構築なら構築)。default は必ず構築済みなので遅延ログは出ない=起動ログは従来と同一。 */
+function poolOf(pool: PoolKey): ProviderState[] {
+  let s = pools.get(pool);
+  if (!s) {
+    s = buildPool(pool);
+    pools.set(pool, s);
+    logEnabled(pool);
+  }
+  return s;
+}
+
+pools.set(DEFAULT_CALLER, buildPool(DEFAULT_CALLER));
+logEnabled(DEFAULT_CALLER);
+
+/** 有効プロバイダのログ。★default は従来と **byte 単位で同一の1行**(タグ無し)。 */
+function logEnabled(pool: PoolKey = DEFAULT_CALLER): void {
+  const enabled = poolProviders(pool).filter(p => p.client !== null).map(p => p.config.name);
+  const tag = pool === DEFAULT_CALLER ? '[LLM]' : `[LLM:${pool}]`;
+  console.log(`${tag} enabled providers: ${enabled.join(', ') || '(none)'}`);
+}
+
+/** ログ用の非構築アクセサ(logEnabled が poolOf を呼ぶと再帰するため分離)。 */
+function poolProviders(pool: PoolKey): ProviderState[] {
+  return pools.get(pool) ?? [];
 }
 
 // 設定保存後に呼んでクライアントを差し替える
 export function reloadProviders(): void {
-  providers = LLM_PROVIDERS.map(buildProvider);
-  logEnabled();
+  // ★default は従来どおり即時再構築し、同じ1行をログする(挙動不変)。
+  pools.set(DEFAULT_CALLER, buildPool(DEFAULT_CALLER));
+  logEnabled(DEFAULT_CALLER);
+  // generator プールは破棄するだけ(次に generator が呼ばれた時に新しいキーで遅延再構築される)。
+  // 使っていないプールの構築ログを設定保存のたびに出さない。
+  pools.delete('generator');
 }
 
 export function isLLMEnabled(): boolean {
-  return providers.some(p => p.client !== null);
+  return poolOf(DEFAULT_CALLER).some(p => p.client !== null);
 }
 
-export function getProviderStatus() {
-  return providers.map(p => ({
+/** プロバイダ状態(設定/診断画面用)。引数なしは従来どおり **default プール**。 */
+export function getProviderStatus(pool: PoolKey = DEFAULT_CALLER) {
+  return poolOf(pool).map(p => ({
     name: p.config.name,
     enabled: p.client !== null,
     paused: Date.now() < p.circuitOpenUntil,
@@ -76,6 +129,13 @@ export function getProviderStatus() {
 
 function isAvailable(p: ProviderState): boolean {
   return p.client !== null && Date.now() >= p.circuitOpenUntil;
+}
+
+/** ログ行の接頭辞(**末尾の空白まで含む**)。
+ *  ★default プールでは従来と byte 単位で同一の `[LLM:<name>] `。generator プールだけ `@generator` が付く。
+ *    こうしないと「どちらのプールのポーズか」がログから判別できず、事故の切り分けができない。 */
+function logPrefix(p: ProviderState): string {
+  return p.pool === DEFAULT_CALLER ? `[LLM:${p.config.name}] ` : `[LLM:${p.config.name}@${p.pool}] `;
 }
 
 // ─── APIキーの実効性テスト(ライブ ping) ───
@@ -103,9 +163,10 @@ export async function testProviderState(
   }
 }
 
-/** 指定プロバイダのキーが実際に有効か、1トークンの ping で確認する。キー未設定は notset。 */
+/** 指定プロバイダのキーが実際に有効か、1トークンの ping で確認する。キー未設定は notset。
+ *  ★設定画面の「キーを検証」は **default プールのキー**を検証する(従来と同じ)。 */
 export async function testProvider(name: string): Promise<KeyTestResult> {
-  return testProviderState(providers.find(x => x.config.name === name), name);
+  return testProviderState(poolOf(DEFAULT_CALLER).find(x => x.config.name === name), name);
 }
 
 /** 全プロバイダのキー有効性を並列に ping で確認する(LLM_PROVIDERS 順)。各プロバイダ1トークン消費。 */
@@ -127,9 +188,11 @@ export function isVisionCapableProvider(name: string, chatModel = ''): boolean {
 }
 
 /** 現在「利用可能(キーあり・非ポーズ)」で、かつビジョン対応の先頭プロバイダ名。無ければ null。
- *  scalp-plan が「画像を撮るべきか」を事前判断するために使う(callWithFallback の選択順と同じ優先順)。 */
-export function firstAvailableVisionProvider(): { name: string; chatModel: string } | null {
-  for (const p of providers) {
+ *  scalp-plan が「画像を撮るべきか」を事前判断するために使う(callWithFallback の選択順と同じ優先順)。
+ *  ★プールを指定すると **そのプールの** ポーズ状態で判断する(引数なしは従来どおり default)。
+ *    生成器が「default がポーズ中だから撮らない」と誤判断しない/その逆もない、を保つため。 */
+export function firstAvailableVisionProvider(pool: PoolKey = DEFAULT_CALLER): { name: string; chatModel: string } | null {
+  for (const p of poolOf(pool)) {
     if (!isAvailable(p)) continue;
     if (isVisionCapableProvider(p.config.name, p.config.chatModel)) {
       return { name: p.config.name, chatModel: p.config.chatModel };
@@ -143,15 +206,21 @@ export function firstAvailableVisionProvider(): { name: string; chatModel: strin
 //   oversize(413)   → ポーズ無し + フォールバック(この要求だけが上限超過。小さい要求は通り続ける)
 //   transient(5xx等)→ 短い固定ポーズ(すぐ復帰想定)+ フォールバック
 //   config(401/403/404)→ 長ポーズ(30分)+ フォールバック(誤設定のプロバイダを避けて他で継続)
+//
+// ★プールの独立性: p は呼び出し元のプールの状態オブジェクトなので、ここでのポーズは **そのプールにしか効かない**。
+//   生成器が 429 を踏んでも default プールの circuitOpenUntil は 0 のままで、実弾(A)は止まらない。
 function tripCircuit(p: ProviderState, err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const kind = classifyLLMError(msg);
   if (!kind) return false;
   const now = Date.now();
+  // ★従属規則(作業4-2)の発火点: **default プールが quota を踏んだ瞬間**だけ生成器を止める。
+  //   transient(5xx)/config(401/403/404)/oversize(413) では発火しない(枠の枯渇ではない)。
+  if (kind === 'quota' && p.pool === DEFAULT_CALLER) notifyDefaultQuota(p.config.name, now);
   if (kind === 'oversize') {
     // この要求だけがモデル上限(TPM/コンテキスト)を超過。プロバイダ自体は健全なので
     // ポーズしない(小さい chat/explain は同プロバイダで通り続ける)。より大きいモデルへ流すだけ。
-    console.warn(`[LLM:${p.config.name}] oversize (${msg.slice(0, 60)}) — ポーズせず次(大きいモデル)へフォールバック`);
+    console.warn(`${logPrefix(p)}oversize (${msg.slice(0, 60)}) — ポーズせず次(大きいモデル)へフォールバック`);
     return true;
   }
   if (kind === 'quota') {
@@ -164,35 +233,41 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     const pause = PAUSE_LADDER_MS[p.consecutiveFails]!;
     p.circuitOpenUntil = now + pause;
     const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
-    console.warn(`[LLM:${p.config.name}] 429 #${p.consecutiveFails + 1} — paused for ${human}`);
+    console.warn(`${logPrefix(p)}429 #${p.consecutiveFails + 1} — paused for ${human}`);
   } else if (kind === 'config') {
     // 設定不備(401/403/404): 再試行しても直らないので長くポーズ(30分)して次へフォールバック。
     //   これで Kimi 404 等の誤設定プロバイダを避けて他プロバイダで継続できる(連鎖全滅を防ぐ)。
     p.lastFailAt = now;
     p.circuitOpenUntil = now + 30 * 60_000;
-    console.warn(`[LLM:${p.config.name}] config error (${msg.slice(0, 70)}) — paused 30min → 次へフォールバック(キー/モデルを確認)`);
+    console.warn(`${logPrefix(p)}config error (${msg.slice(0, 70)}) — paused 30min → 次へフォールバック(キー/モデルを確認)`);
   } else {
     // 一過性: ladder を進めず短時間だけ休ませる(枠切れと違い恒久化させない)。
     p.lastFailAt = now;
     p.circuitOpenUntil = now + TRANSIENT_PAUSE_MS;
-    console.warn(`[LLM:${p.config.name}] transient (${msg.slice(0, 60)}) — paused ${Math.round(TRANSIENT_PAUSE_MS / 1000)}s → 次へフォールバック`);
+    console.warn(`${logPrefix(p)}transient (${msg.slice(0, 60)}) — paused ${Math.round(TRANSIENT_PAUSE_MS / 1000)}s → 次へフォールバック`);
   }
   return true;
 }
 
 function recordSuccess(p: ProviderState): void {
   if (p.consecutiveFails > 0) {
-    console.log(`[LLM:${p.config.name}] success — circuit reset`);
+    console.log(`${logPrefix(p)}success — circuit reset`);
     p.consecutiveFails = 0;
   }
 }
 
 // プロバイダを順に試して、最初に成功したものの応答を返す
+//
+// ★caller(=プール)は **既定 'default'**。引数を渡さない既存の呼び出し元(chat/explain/translate/scalp-plan)は
+//   従来と完全に同じ default プールを、従来と同じ順序・同じ判定・同じメッセージで使う。
+// ★caller='generator' を渡した時だけ generator プールの状態を使う。生成器がここで 429 を積んでも
+//   default プールの circuitOpenUntil には触れない=実弾(A)は止まらない。
 export async function callWithFallback(
   task: (p: ProviderState) => Promise<string>,
   label: string,
+  caller: LlmCaller = DEFAULT_CALLER,
 ): Promise<string> {
-  const enabled = providers.filter(p => p.client !== null);
+  const enabled = poolOf(caller).filter(p => p.client !== null);
   if (enabled.length === 0) return '(LLM disabled — APIキーが未設定です。右上⚙️から設定してください)';
   const available = enabled.filter(isAvailable);
   if (available.length === 0) {
