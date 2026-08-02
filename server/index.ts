@@ -30,7 +30,9 @@ import { exportHandler } from './routes/export.js';
 import { replaceHandler } from './routes/replace.js';
 import { signalTradesHandler, signalTradesClearHandler } from './routes/signalTrades.js';
 import { currentSignalHandler } from './routes/currentSignal.js';
+import { exitStopHandler } from './routes/exitStop.js';
 import { startSignalEngine } from './signalTrade/engine.js';
+import { loadExitImpl } from './signalTrade/exit/index.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
@@ -45,6 +47,7 @@ import { resolvePort, ensureDefaults, resolveCooldownMin } from './configStore.j
 import { setCooldownMs } from './alertCooldown.js';
 import { resolveVariant } from './variant.js';
 import { startBasedataAutoScheduler } from './basedata/autoPublish.js';
+import { normalizeCorsPath } from './corsPolicy.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
@@ -67,7 +70,30 @@ const app = express();
 // CORS: Tauri 配布版では Webview origin (tauri://localhost or http://tauri.localhost)
 // が sidecar (localhost:3000) と異なるため、明示的に許可する。
 // サイドカーは localhost 専用 (loopback only) を想定しているので * で安全。
+//
+// ★例外: /api/exit-stop。ここは「秘密のパラメータを引ける経路」なので * は成立しない
+//   (ブラウザで任意の頁を開いているだけで、その頁の JS がループバックへ POST して応答を読める。
+//    実測 121 リクエストで段構造を完全復元)。この経路だけ CORS を **付けない** =
+//   ブラウザは応答を読めない。加えてハンドラ側が Origin/Referer 付き要求を 403 で拒否する
+//   (trade2 は Node fetch = これらを送らないので従来どおり引ける)。
+//
+// ★照合はパスを **正規化してから**(直した欠陥)。express は既定で caseSensitive=false / strict=false
+//   なので `/API/exit-stop` も `/api/exit-stop/` も同じハンドラへ届く。完全一致で照合していたため
+//   実測では例外をすり抜けて ACAO:* が付いていた:
+//     POST /api/exit-stop  → ACAO=(none) / POST /API/exit-stop → ACAO=* / POST /api/exit-stop/ → ACAO=*
+//   ハンドラ側の access gate(Origin/Referer/Sec-Fetch-Site → 403)が効くのでオラクルにはならないが、
+//   多層防御の1層が効いていない状態だった。照合はルーティングと同じ規約(小文字化+末尾スラッシュ除去)にする。
+const NO_CORS_PATHS: ReadonlySet<string> = new Set(['/api/exit-stop']);
 app.use((req, res, next) => {
+  if (NO_CORS_PATHS.has(normalizeCorsPath(req.path))) {
+    // preflight にも成功を返さない(ブラウザからは到達不能にする)。
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(403);
+      return;
+    }
+    next();
+    return;
+  }
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -105,6 +131,10 @@ app.post('/api/replace', replaceHandler);
 app.get('/api/signal-trades', signalTradesHandler);
 app.post('/api/signal-trades/clear', signalTradesClearHandler);
 app.get('/api/current-signal', currentSignalHandler);
+// 決済逆指値の権威(trade2 の孤児建玉保護)。状態を受けて価格だけを返す=決済パラメータは通信路に出さない。
+// ★variant ゲートしない: /api/current-signal・/api/version と同じ「trade2 追従の面」であり、
+//   lite で塞ぐと lite に繋いだ trade2 の孤児保護だけが無音で劣化する(本件で潰そうとしている壊れ方そのもの)。
+app.post('/api/exit-stop', exitStopHandler);
 // スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
 app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));
@@ -137,6 +167,11 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   startLevelsLoop();
   startIndicatorsLoop();   // テクニカル指標(RSI/SMA/BB)の SSE 配信(表示/AI文脈専用)
   startForecastLoop();
+  // ★決済逆指値の権威(POST /api/exit-stop)は **エンジンの有無と無関係** に成立させる。
+  //   従来は loadExitImpl() が startSignalEngine() の中にしか無く、SIGNAL_TRADE=0 では一度も走らず、
+  //   ルートだけが生きて公開フォールバック(初期LC固定=劣化)を 200 で返していた(呼び出し側に判別不能)。
+  //   冪等なのでエンジン側の呼び出しと二重にはならない。ロード完了までの窓はハンドラが 503 で塞ぐ。
+  void loadExitImpl().then(kind => console.log(`[server] exit impl = ${kind}`));
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
   // ★基礎データ自動公開スケジューラは monitor2(full)専用。lite では絶対に起動しない(ハードゲート)。

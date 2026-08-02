@@ -148,11 +148,34 @@ let describeImpl: DescribeFn = describeExitLogicSimple;
 let describeVariantImpl: DescribeVariantFn = describeExitLogicVariantSimple;
 let loadAttempted = false;
 
+/**
+ * 現在 computeExitStop が何で動いているか(★数値は含まない・観測用)。
+ *  - 'unloaded' … loadExitImpl() が **まだ一度も走っていない**。この状態の computeExitStop は
+ *                 「初期LC固定」の簡易版で、含み益がいくら伸びても初期LCを返す=**権威ではない**。
+ *  - 'simple'   … ロードは試したが非公開実装が無い(公開/lite ビルド)。同上=権威ではない。
+ *  - 'private'  … 非公開のフェーズ式ラチェット床が有効。**この時だけ** 値は権威。
+ *
+ * ★なぜ要るか(消すとまた同じ壊れ方をするので理由を残す): HTTP ルート(POST /api/exit-stop)は
+ *   app.listen の時点で生きているが、非公開実装のロードは startSignalEngine() の中で走る。
+ *   SIGNAL_TRADE=0 なら **一度も走らない**。ロード前に引くと全 peak で initialStop と同値
+ *   (= 劣化フォールバック)が 200 で返り、呼び出し側(trade2)は見分ける手段が無い=静かに間違う。
+ *   だから「権威かどうか」を型で外に出し、ルートは private 以外では **値を返さない**。
+ */
+export type ExitImplStatus = 'unloaded' | 'simple' | 'private';
+
+let implStatus: ExitImplStatus = 'unloaded';
+
+/** 現在の決済実装の実態(数値なし)。**権威と言えるのは 'private' のときだけ**。 */
+export function exitImplStatus(): ExitImplStatus {
+  return implStatus;
+}
+
 /** 起動時に一度だけ ./private.js を optional dynamic import する。
  *  在れば computeExitStopPrivate に差し替え('private')、無ければ簡易版のまま('simple')。 */
 export async function loadExitImpl(): Promise<'private' | 'simple'> {
   if (loadAttempted) return impl === computeExitStopSimple ? 'simple' : 'private';
   loadAttempted = true;
+  implStatus = 'simple';   // ロードを試みた=以後 'unloaded' ではない(private が取れたら下で 'private' へ)。
   try {
     // 公開リポには private.ts が無い(gitignored)。string リテラル指定子は esbuild が
     // 静的解決して private を同梱できる(署名ビルドの runtime を不変に保つ)ため残し、
@@ -186,6 +209,7 @@ export async function loadExitImpl(): Promise<'private' | 'simple'> {
     if (typeof mod.describeExitLogicVariantPrivate === 'function') describeVariantImpl = mod.describeExitLogicVariantPrivate;
     if (typeof mod.computeExitStopPrivate === 'function') {
       impl = mod.computeExitStopPrivate;
+      implStatus = 'private';
       return 'private';
     }
   } catch {
@@ -213,7 +237,11 @@ export function computeExitStop(s: ExitState): number | null {
   return impl(s);
 }
 
-/** テスト用: 実装を明示的に差し替え/リセット(null で簡易版へ戻す)。公開テストは簡易版のみ検証する。 */
+/** テスト用: 実装を明示的に差し替え/リセット(null で簡易版へ戻す)。公開テストは簡易版のみ検証する。
+ *  ★実態(exitImplStatus)も一緒に動かす: 差し替え=ラチェット床が有効な状態の代替('private')、
+ *   null=簡易版へ戻る(ロード済みなら 'simple'、未ロードなら 'unloaded')。実装と実態がズレると
+ *   「権威かどうか」の判定が嘘になる(=本件で潰した壊れ方そのもの)。 */
 export function _setExitImpl(fn: ExitFn | null): void {
   impl = fn ?? computeExitStopSimple;
+  implStatus = fn ? 'private' : (loadAttempted ? 'simple' : 'unloaded');
 }

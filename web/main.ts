@@ -22,7 +22,7 @@ import { initSignalTradesModal, initSignalClearButton } from './components/signa
 import { labelOf } from './lib/i18n.js';
 import { UI } from './lib/i18n.js';
 import { apiUrl } from './lib/apiBase.js';
-import { applyVariantVisibility, normalizeVariant, LITE_SCALP } from './lib/variant.js';
+import { applyVariantVisibility, normalizeVariant, applyProductNameTo, LITE_SCALP } from './lib/variant.js';
 
 // v0.3.17: アラート検知はサーバ側 (alertLoop + tickDetector) に移管。クライアントは SSE で受信のみ。
 
@@ -407,8 +407,13 @@ setInterval(() => {
 const versionEl = document.getElementById('app-version');
 fetch(apiUrl('/api/version'))
   .then(r => r.json())
-  .then((d: { version: string; variant?: string }) => {
+  .then((d: { version: string; variant?: string; name?: string }) => {
     if (versionEl) versionEl.textContent = `v${d.version}`;
+    // ★製品名は server(/api/version の name)を正とする: full=JP225 Monitor2 / lite=JP225 Monitor。
+    //   HTML の静値は lite 名にしてあるので、lite は書き換え不要(=ちらつかない)、full だけ差し替わる。
+    //   ここで variant から名前を組み立て直さないのは、名前の決定を server の1箇所に閉じるため
+    //   (2箇所で決めると、片方だけ直したときに黙ってズレる)。
+    applyProductNameTo({ title: document.querySelector('title'), heading: document.querySelector('header h1') }, d.name);
     applyVariantVisibility(normalizeVariant(d.variant), {
       alertsHistoryBtn: document.getElementById('alerts-history-btn'),
       openLogsBtn: document.getElementById('open-logs'),

@@ -9,6 +9,24 @@ export function normalizeVariant(v: unknown): Variant {
   return v === 'lite' ? 'lite' : 'full';
 }
 
+// ★製品名の反映(タイトル + ヘッダ見出し)。full=JP225 Monitor2 / lite=JP225 Monitor。
+//   名前を決めるのは server(/api/version の name)1箇所だけ。ここで variant から組み立て直さないのは、
+//   2箇所で決めると片方だけ直したときに黙ってズレるため(製品名は 4つの版ファイルとも整合が要る)。
+//   name が来ない(古い server / 取得失敗)ときは HTML の静値のまま = lite 名 = 安全側。
+export interface ProductNameEls {
+  title: { textContent: string | null } | null;
+  heading: { firstChild: { nodeValue: string | null } | null } | null;
+}
+
+/** name があればタイトルと見出しへ反映する。見出しは版タグ(span)を壊さないよう先頭テキストだけ差し替える。 */
+export function applyProductNameTo(els: ProductNameEls, name: unknown): void {
+  if (typeof name !== 'string' || name.trim() === '') return;   // 欠落は静値のまま(=lite 名・安全側)
+  const n = name.trim();
+  if (els.title) els.title.textContent = n;
+  const head = els.heading?.firstChild;
+  if (head) head.nodeValue = `${n} `;   // 末尾の空白は版タグとの間隔(HTML の静値と同じ形)
+}
+
 // hidden プロパティと style を持つ最小要素インターフェース(null 許容)。
 // jsdom を導入せずに純関数としてテストできるよう HTMLElement ではなくこの形にする。
 export interface ToggleableEl {
