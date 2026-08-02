@@ -25,6 +25,12 @@ export interface UserConfig {
   generatorKeys?: { gemini?: string; groq?: string; openai?: string; kimi?: string };
   // ★提案生成器の日次予算(1取引日あたりの許可回数)。0=生成器を無効化。未設定は保守的な既定値。
   generatorDailyBudget?: number;
+  // ★提案生成器(サイドカー)を走らせるか。**未設定/false=無効(既定)**。
+  //   配布物に同梱する以上、インストールしただけで LLM 予算を食い始めてはいけない。
+  //   無効のあいだサイドカーは **待機するだけ**(LLM を1回も叩かない・台帳に1行も書かない)。
+  //   予算(generatorDailyBudget)は「有効にしたあと、どこまで使ってよいか」の天井であって、
+  //   走り出すかどうかのスイッチではない(0 に倒すと 429 を記録し続けてしまう)。だから別に持つ。
+  generatorEnabled?: boolean;
   basedataUser?: string;  // ★基礎データ公開(225labo)ログインのユーザー名。秘密扱い(既存 API キーと同モデル)。
   basedataPass?: string;  // ★基礎データ公開(225labo)ログインのパスワード。秘密扱い。
   basedataSaveDir?: string;  // ★基礎データ公開の保存先フォルダ(xlsx/gz/meta)。可視。未設定は Downloads。
@@ -351,6 +357,21 @@ export function resolveGeneratorDailyBudget(): number {
   const raw = typeof v === 'number' && Number.isFinite(v) ? v : Number(process.env.GENERATOR_DAILY_BUDGET);
   if (!Number.isFinite(raw)) return GENERATOR_DAILY_BUDGET_DEFAULT;
   return Math.min(Math.max(Math.floor(raw), 0), GENERATOR_DAILY_BUDGET_MAX);
+}
+
+/** ★提案生成器を走らせてよいか。**既定は false(無効)**。
+ *  config.json の generatorEnabled → env GENERATOR_ENABLED('1'/'true')→ false。
+ *
+ *  ★なぜ既定を無効にするか: 生成器は配布物(サイドカー)に同梱されるので、既定で有効だと
+ *    インストールした瞬間から2分ごとに LLM を叩き始める。予算はユーザーの財布なので、
+ *    **明示的に有効化するまで1回も叩かない**。
+ *  ★生成器サイドカーは monitor と同じ PC の同じ config.json を読む(loadConfig は mtime キャッシュ
+ *    なので、設定画面で保存した値を再起動なしで拾う)= 新しい設定機構を作らない。 */
+export function resolveGeneratorEnabled(): boolean {
+  const v = loadConfig().generatorEnabled;
+  if (typeof v === 'boolean') return v;
+  const env = process.env.GENERATOR_ENABLED?.trim().toLowerCase();
+  return env === '1' || env === 'true';
 }
 
 // 基礎データ公開(225labo)の資格情報を解決。config.json 優先 → env LABO225_USER/LABO225_PASS フォールバック。

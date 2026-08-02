@@ -208,6 +208,33 @@ pub fn run() {
                 Err(e) => eprintln!("[collector] sidecar resolve failed: {e}"),
             }
 
+            // 提案生成器(分析用)をデタッチ起動。collector と同じ流儀(SidecarState に入れない=
+            // Exit で kill しない)。monitor 本体の起動を遅らせないよう、spawn するだけで待たない。
+            //
+            // ★lite(公開版)では spawn しない。生成器は決済パラメータの分析専用で、公開版のユーザーの
+            //   PC で LLM 予算とディスクを黙って消費させてはいけない。判定材料は collector へ渡すのと
+            //   同じ variant(identifier 由来)だけ=新しい設定機構を作らない。
+            // ★full でも「起動しただけでは走らない」: 生成器は設定 generatorEnabled(既定 false)が
+            //   true になるまで待機するだけで、LLM も台帳も触らない(server/generator/sidecar.ts)。
+            if variant == "full" {
+                match app.shell().sidecar("jp225-generator") {
+                    Ok(cmd) => match cmd.env("MONITOR_VARIANT", variant).spawn() {
+                        Ok((mut grx, _child)) => {
+                            // _child は kill せず drop に任せる(=生存)。stderr のみログ。
+                            tauri::async_runtime::spawn(async move {
+                                while let Some(event) = grx.recv().await {
+                                    if let CommandEvent::Stderr(line) = event {
+                                        eprintln!("[generator:err] {}", String::from_utf8_lossy(&line).trim_end());
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => eprintln!("[generator] spawn failed: {e}"),
+                    },
+                    Err(e) => eprintln!("[generator] sidecar resolve failed: {e}"),
+                }
+            }
+
             Ok(())
         })
         .build(tauri::generate_context!())

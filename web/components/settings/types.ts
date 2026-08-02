@@ -38,6 +38,7 @@ export interface SettingsResponse {
   generatorDailyBudget?: number;          // 実効値(config → env → 既定)
   generatorDailyBudgetDefault?: number;   // 既定値(プレースホルダ表示用)
   generatorDailyBudgetMax?: number;       // 上限(入力の max 属性用)
+  generatorEnabled?: boolean;             // ★生成器サイドカーを動かすか(既定 false=待機のみ)
   pricePollMs: number; newsPollMs: number; port: number; cooldownMin: number;
   providers: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   configFile: string;
@@ -113,6 +114,7 @@ export interface SavePayload {
   //   何も入力せず消去もしないときは **フィールドごと送らない**(=変更なし)。
   generatorKeys?: Partial<Record<GeneratorProviderName, string | null>>;
   generatorDailyBudget?: number | null;   // 生成器の日次予算。空欄=null=既定に戻す / 0=無効。
+  generatorEnabled?: boolean | null;      // ★生成器サイドカー(true=動かす / false/null=既定=動かさない)。
 }
 
 export interface KeyTestResponse {
@@ -197,6 +199,7 @@ export interface SettingsElements {
   inputGenKimi: HTMLInputElement;
   checkGenKeysClear: HTMLInputElement;      // 保存時に専用キーを消去(=共通キーへ戻す)
   inputGeneratorBudget: HTMLInputElement;   // 日次予算(回/取引日・空欄=既定)
+  checkGeneratorEnabled: HTMLInputElement;  // ★生成器サイドカーを動かすか(既定オフ=待機のみ)
   testGenKeysBtn: HTMLButtonElement;        // 生成器プールのキー検証
   testGenResult: HTMLElement;
 }

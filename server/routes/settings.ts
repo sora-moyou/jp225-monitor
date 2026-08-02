@@ -8,7 +8,7 @@ import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled,
-  resolveGeneratorKeySources, resolveGeneratorDailyBudget,
+  resolveGeneratorKeySources, resolveGeneratorDailyBudget, resolveGeneratorEnabled,
   GENERATOR_PROVIDERS, GENERATOR_DAILY_BUDGET_DEFAULT, GENERATOR_DAILY_BUDGET_MAX,
   type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig, type LiteConfig,
 } from '../configStore.js';
@@ -53,6 +53,7 @@ const EXPLICIT_PARAM_KEYS = [
   // ★提案生成器(caller='generator')の設定。UI を持たせた(⚙️「提案生成器」fieldset)。
   'generatorKeys',          // 生成器プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では値を返さない。
   'generatorDailyBudget',   // 生成器の日次予算[回/取引日]。0=無効。未設定は GENERATOR_DAILY_BUDGET_DEFAULT。
+  'generatorEnabled',       // ★生成器サイドカーを走らせるか。未設定/false=無効(既定)。有効化するまで LLM も台帳も触らない。
 ] as const satisfies readonly (keyof UserConfig)[];
 type ExplicitParamKey = typeof EXPLICIT_PARAM_KEYS[number];
 
@@ -126,6 +127,8 @@ export function getSettingsHandler(_req: Request, res: Response): void {
       //   ('own'/'env'=専用キー / 'shared'=共通キーへフォールバック中=上流クォータは A と共有 / 'none'=キー無し)。
       //   フォールバックしていることが画面から見えないと「分離したつもりで分離できていない」が無音で成立する。
       generatorKeySources: resolveGeneratorKeySources(),
+      // ★生成器サイドカーの有効/無効。**既定は false**(同梱されていても、有効化するまで走らない)。
+      generatorEnabled: resolveGeneratorEnabled(),
       generatorDailyBudget: resolveGeneratorDailyBudget(),   // 実効値(config → env → 既定・クランプ済み)
       generatorDailyBudgetDefault: GENERATOR_DAILY_BUDGET_DEFAULT,
       generatorDailyBudgetMax: GENERATOR_DAILY_BUDGET_MAX,
@@ -237,6 +240,7 @@ interface SettingsBody {
   scalpChartFallbackText?: boolean | null; // ★チャート撮影失敗時のテキスト縮退(true/null=ON=既定 / false=ストリクトvision)
   doubleFormingEnabled?: boolean | null;   // ★検知チューニング: double 形成通知(true=ON / false/null=OFF=既定=breakout のみ)
   nwaveEnabled?: boolean | null;           // ★N波動の節目/アラート(true/null=ON=既定 / false=OFF)
+  generatorEnabled?: boolean | null;       // ★提案生成器サイドカー(true=有効 / false/null=無効=既定)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
   scalpLcFloorSource?: string | null;
@@ -476,6 +480,11 @@ export function postSettingsHandler(req: Request, res: Response): void {
     ? applyGeneratorBudget(existing.generatorDailyBudget, bodyRec.generatorDailyBudget)
     : { value: existing.generatorDailyBudget, error: null };
   if (generatorBudget.error) errors.push(generatorBudget.error);
+  // ★生成器サイドカーの有効/無効(boolean・既定 false)。null/false=無効(未設定で保存)。
+  //   lite は生成器を持たない=body を見ずに既存値を据え置く(lite の保存が monitor2 の設定を消さない)。
+  const generatorEnabledValue = analysis
+    ? applyBoolField(existing.generatorEnabled, bodyRec.generatorEnabled)
+    : existing.generatorEnabled;
   if (errors.length > 0) {
     res.status(400).json({ error: errors.join('; ') });
     return;
@@ -528,6 +537,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     // ★提案生成器(分析用・実弾 A とは別プール)。キーは秘密扱い(値は GET で返さない)。
     generatorKeys: generatorKeysValue,
     generatorDailyBudget: generatorBudget.value,
+    generatorEnabled: generatorEnabledValue,   // ★既定(無効)は未設定で保存
   };
 
   // ★既存 config を土台にして、明示的に決めたフィールドだけを上書きする。

@@ -76,6 +76,8 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
     genInputs[n].value = '';   // 秘密フィールド: 反映のたびに空へ戻す(値はサーバから来ない)
   }
   el.checkGenKeysClear.checked = false;   // 消去チェックは毎回オフから(誤って消さない)
+  // ★生成器サイドカーの有効/無効: 既定オフ(=同梱されていても、明示的にオンにするまで走らない)。
+  el.checkGeneratorEnabled.checked = current ? current.generatorEnabled === true : false;
   // 日次予算: 可視フィールド。実効値を出し、空欄で既定に戻せる。
   el.inputGeneratorBudget.value = current?.generatorDailyBudget === undefined ? '' : String(current.generatorDailyBudget);
   el.inputGeneratorBudget.placeholder = `${current?.generatorDailyBudgetDefault ?? 200} (既定)`;
@@ -201,6 +203,8 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   // 生成器の日次予算: 可視フィールド。空欄=既定に戻す(null)。0 は「生成器を無効化」の意味で有効な値。
   const genBudgetRaw = el.inputGeneratorBudget.value.trim();
   body.generatorDailyBudget = genBudgetRaw === '' ? null : Number(genBudgetRaw);
+  // ★生成器サイドカーの有効/無効: チェックボックスなので常に true/false を送る(既定=false)。
+  body.generatorEnabled = el.checkGeneratorEnabled.checked;
   // ★基礎データ公開(225labo)認証: 秘密フィールド。空欄は送らない(=変更なし)。
   const laboUser = el.inputLaboUser.value.trim();
   const laboPass = el.inputLaboPass.value.trim();

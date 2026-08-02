@@ -10,7 +10,11 @@ interface StatusResponse {
     planLastHour?: number;
     /** 直近1時間に **取引時間内に** 投げた件数。0=標本を取る時間帯ではない。 */
     inSessionLastHour?: number;
+    /** ★まだ効いている停止理由(最後の記録より後に止まったときだけ入る)。決済の実数値は含まれない。 */
+    halt?: { at: number; phase: string; reason: string };
   };
+  /** ★生成器サイドカーが有効化されているか(設定・既定 false)。公開版(lite)では返らない。 */
+  generatorEnabled?: boolean;
 }
 
 /** 生成器が「止まった」と見なす無記録の分数。1サイクル=2分なので、数サイクル落ちても
@@ -34,8 +38,28 @@ const GENERATOR_MIN_PLANS_PER_HOUR = 10;
  *    セッションの 91〜100% が停止していたのに一度も警告色にならなかった)。溜めたいのは提案なので、
  *    直近1時間の status='plan' の件数で判定する。
  *  ★planLastHour を返さない応答(台帳を読めない/古い monitor)だけ、従来の「最終記録 N分前」に落ちる。 */
-export function renderGeneratorDot(ledger: StatusResponse['generatorLedger']): string {
-  if (!ledger || !ledger.available) return '';
+export function renderGeneratorDot(
+  ledger: StatusResponse['generatorLedger'],
+  enabled?: StatusResponse['generatorEnabled'],
+): string {
+  // ★「無効だから動いていない」と「止まった」は別物。まず前者を先に言い切る
+  //   (無効なのに「止まっている」と警告したら、warnings が読まれなくなる)。
+  //   enabled===undefined は **この情報を返さない monitor**(公開版 lite / 旧版)= 従来どおり無言。
+  if (enabled === false) {
+    return renderDot('Ge', 'off', '提案生成器: 無効（設定 ⚙️「提案生成器」で有効にすると動き出します）');
+  }
+  // ★止まった理由は、記録が有る/無いに関わらず最優先で出す。運用PCではコンソールを見られないので、
+  //   ここに出ないと「なぜ止まったか」は永遠に分からない(理由はログにしか無かった)。
+  if (ledger?.halt) {
+    return renderDot('Ge', 'halted',
+      `提案生成器: ★停止しました（${ledger.halt.phase}）— ${ledger.halt.reason}`);
+  }
+  if (!ledger || !ledger.available) {
+    // 有効化されているのに台帳がまだ無い=サイドカーが1行も書いていない(起動直後 or 起動していない)。
+    return enabled === true
+      ? renderDot('Ge', 'paused', '提案生成器: 有効だが記録がまだありません（起動直後、または生成器が起動していません）')
+      : '';
+  }
   if (ledger.ageMin === null) {
     return renderDot('Ge', 'off', '提案生成器: 台帳はあるが記録が1件もありません');
   }
@@ -73,8 +97,10 @@ function fmtClock(t: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
-function renderDot(label: string, state: 'ok' | 'paused' | 'off', tooltip: string): string {
-  const emoji = state === 'ok' ? '🟢' : state === 'paused' ? '🟡' : '⚪';
+// 'halted' = ★意図的に停止した(前提が崩れた)。黄(=一時的な待機)と同じ色にすると
+//            「そのうち戻る」に見えてしまうので、赤で「戻らない・人が直すもの」を表す。
+function renderDot(label: string, state: 'ok' | 'paused' | 'off' | 'halted', tooltip: string): string {
+  const emoji = state === 'ok' ? '🟢' : state === 'paused' ? '🟡' : state === 'halted' ? '🔴' : '⚪';
   return `<span class="dot" title="${tooltip}">${emoji}<span class="label">${label}</span></span>`;
 }
 
@@ -104,7 +130,7 @@ export async function refreshApiStatus(container: HTMLElement): Promise<void> {
     const labelShort = p.name === 'gemini' ? 'G' : p.name === 'groq' ? 'Gr' : 'O';
     return renderDot(labelShort, state, tooltip);
   }).join('');
-  container.innerHTML = priceDot + llm + renderGeneratorDot(data.generatorLedger);
+  container.innerHTML = priceDot + llm + renderGeneratorDot(data.generatorLedger, data.generatorEnabled);
 }
 
 export function initApiStatusPane(container: HTMLElement, intervalMs: number = 5000): void {

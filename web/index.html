@@ -98,6 +98,11 @@
 
       <fieldset class="settings-section" id="generator-keys-fieldset">
         <legend>提案生成器（分析用・実弾とは別プール）</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="generator-enabled" />
+          提案生成器を動かす（<strong>既定はオフ</strong>）
+        </label>
+        <div class="exit-hint">オフのあいだ、同梱の生成器は<strong>待機するだけ</strong>です——LLM を1回も叩かず、台帳にも1行も書きません。オンにすると2分ごとに提案を作り始め、<strong>LLM の予算を消費します</strong>。画面右上の <strong>Ge</strong> ドットで状態が分かります（⚪無効／🟡有効だが記録なし／🟢標本が溜まっている／🔴前提が崩れて停止＝理由はマウスを乗せると出ます）。</div>
         <div class="exit-hint">分析用の「提案生成器」は実弾（A）とは<strong>別のプロバイダ・プール</strong>で動きます。専用キーを入れると上流のクォータまで分けられます。<strong>空欄ならこの上の共通キーへ黙ってフォールバックします</strong>——その状態でも生成器は動きますが、実弾と同じ枠を消費します。各行の表示で「今どちらのキーが効いているか」を確認してください。</div>
         <div class="setting-row">
           <label>

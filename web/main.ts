@@ -221,6 +221,7 @@ const settingsCtl = initSettingsModal({
   inputGenKimi:   document.getElementById('genkey-kimi') as HTMLInputElement,
   checkGenKeysClear: document.getElementById('genkey-clear') as HTMLInputElement,
   inputGeneratorBudget: document.getElementById('generator-budget') as HTMLInputElement,
+  checkGeneratorEnabled: document.getElementById('generator-enabled') as HTMLInputElement,
   testGenKeysBtn: document.getElementById('settings-test-genkeys') as HTMLButtonElement,
   testGenResult:  document.getElementById('settings-test-genkeys-result') as HTMLElement,
 });

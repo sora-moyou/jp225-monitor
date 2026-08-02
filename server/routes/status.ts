@@ -9,6 +9,7 @@ import { exitConfigHash, lookupExitConfigVersion } from '../signalTrade/exitConf
 import { openDb, resolveDbPath } from '../db/store.js';
 import { readGeneratorLedgerStatus, resolveGeneratorDbPath } from '../db/generatorStore.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
+import { resolveGeneratorEnabled } from '../configStore.js';
 
 // ─── ★決済実装の「実態」を外から観測できるようにする ────────────────────────
 //
@@ -105,6 +106,12 @@ export async function statusHandler(_req: Request, res: Response): Promise<void>
       generator: generatorGateSnapshot(),
       generatorArms: generatorArmUsage(),
       generatorLedger: readGeneratorLedger(),
+      // ★生成器サイドカーが有効化されているか(設定・既定 false)。
+      //   「動いていない」の理由が **無効だから** なのか **止まったから** なのかは別物なので、
+      //   台帳の死活(generatorLedger)とは **別のフィールド** で出す。
+      //   ★台帳と混ぜない理由はもう1つある: 台帳は生成器が書くもので、monitor が知っているのは設定。
+      //     出どころが違うものを1つのオブジェクトに畳むと、後から「どちらが正か」が読めなくなる。
+      generatorEnabled: resolveGeneratorEnabled(),
     }
     : {};
   res.json({

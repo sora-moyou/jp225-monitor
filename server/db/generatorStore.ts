@@ -185,6 +185,20 @@ export function initGeneratorSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_gen_tally ON daily_tally (session_date, at);
 
+    -- ★「止まった理由」の **追記のみ** の台帳。
+    --   起動時検証(preflight)や稼働中の再検証で前提が崩れたとき、生成器は意図的に停止する。
+    --   運用PCではコンソールを見られないので、理由がログにしか出ないと「動いていない」ことは
+    --   分かっても「なぜ止まったか」は永遠に分からない(= 別物である)。だから台帳に残し、
+    --   monitor の /api/status → 死活ドットまで届ける。
+    --   ★決済の実数値は入らない(reason は preflight/recheck の文言=種別・版・指紋のみ)。
+    CREATE TABLE IF NOT EXISTS halts (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      at     INTEGER NOT NULL,
+      phase  TEXT    NOT NULL,
+      reason TEXT    NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gen_halt ON halts (at);
+
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
   `);
   // ★既に走っている台帳(実売買PCには数日ぶんの行がある)へ列を足す。冪等に足すのは
@@ -302,6 +316,39 @@ export function appendDailyTally(db: DatabaseSync, at: number, sessionDate?: str
   return rows.length;
 }
 
+// ─── ★止まった理由(halts)────────────────────────────────────────────────────
+//
+// 「動いていない」と「止まった理由」は別物。前者は台帳の件数(planLastHour)で分かるが、
+// 後者はプロセスのログにしか無かった。運用PCではコンソールを見られないので、
+// **理由を残す場所** を台帳に1つ作り、/api/status → 死活ドットまで届ける。
+
+/** 止まった理由の1行(追記のみ・更新も削除もしない)。 */
+export interface GeneratorHaltRow {
+  at: number;
+  /** どの局面で止まったか('起動しません' / '停止します')。生成器 die() の第2引数と同じ語彙。 */
+  phase: string;
+  /** 理由の文言(preflight/recheck が返すもの)。★決済の実数値は含まれない。 */
+  reason: string;
+}
+
+/** 止まった理由を **追記** する。台帳が無ければ作る(=停止しか起きなかった PC でも理由が残る)。
+ *  ★呼ぶのは「有効化されていて、実際に止まったとき」だけ。無効(待機)中は1行も書かない。 */
+export function insertGeneratorHalt(db: DatabaseSync, row: GeneratorHaltRow): void {
+  db.prepare('INSERT INTO halts (at, phase, reason) VALUES (?,?,?)')
+    .run(row.at, row.phase, row.reason);
+}
+
+/** 直近の停止理由を読む(readOnly 接続で使う)。halts 表が無い旧台帳では null。 */
+function readLatestHalt(db: DatabaseSync): GeneratorHaltRow | null {
+  try {
+    const r = db.prepare('SELECT at, phase, reason FROM halts ORDER BY at DESC, id DESC LIMIT 1')
+      .get() as { at: number; phase: string; reason: string } | undefined;
+    return r ? { at: r.at, phase: r.phase, reason: r.reason } : null;
+  } catch {
+    return null;   // 旧台帳(halts 表が無い)。停止理由が無いことと観測不能を区別する必要はここでは無い。
+  }
+}
+
 /** 死活を判定する窓[ms]。1サイクル=2分なので、1時間 ≒ 30サイクル ≒ 標本60〜90件。 */
 export const LIVENESS_WINDOW_MS = 60 * 60_000;
 
@@ -329,6 +376,10 @@ export interface GeneratorLedgerStatus {
   /** 直近の取引日(セッション外は '(closed)')の腕別件数。 */
   today: Array<{ sessionDate: string; arm: string; n: number }>;
   total: number;
+  /** ★**まだ効いている** 停止理由(最後の記録より後に止まっているときだけ入る)。
+   *  最後の提案より前の停止は、その後に走り出しているので「今の状態」ではない=出さない
+   *  (古い理由を出し続けると、ドットが直らなくなって読まれなくなる)。 */
+  halt?: GeneratorHaltRow;
 }
 
 const UNAVAILABLE_LEDGER: GeneratorLedgerStatus = {
@@ -357,6 +408,9 @@ export function readGeneratorLedgerStatus(path: string, now: number): GeneratorL
        WHERE COALESCE(session_date, '(closed)') = ? GROUP BY d, arm ORDER BY arm`,
     ).all(day) as unknown as Array<{ d: string; arm: string; n: number }>)
       .map(r => ({ sessionDate: r.d, arm: r.arm, n: r.n }));
+    // ★停止理由は「最後の記録より後」のものだけ効いていると見なす。
+    const latestHalt = readLatestHalt(db);
+    const halt = latestHalt && latestHalt.at >= (last ?? 0) ? latestHalt : null;
     return {
       available: true,
       lastRecordAt: last,
@@ -365,6 +419,7 @@ export function readGeneratorLedgerStatus(path: string, now: number): GeneratorL
       inSessionLastHour,
       today,
       total,
+      ...(halt ? { halt } : {}),
     };
   } catch {
     // 表がまだ無い(=開いただけで一度も書いていない)等。「観測できなかった」を available:false で表す。
