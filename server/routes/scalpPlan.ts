@@ -1,8 +1,14 @@
-import type { Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { runScalpPlanWithChart } from '../llm/scalpPlanRunner.js';
+// 型だけの import(実行時には消える)。route テストが '../llm/openai.js' をモックしていても影響しない。
+import type { ScalpPlanResult } from '../llm/openai.js';
 import { normalizeCaller, DEFAULT_CALLER } from '../llm/caller.js';
-import { normalizeExitVariant, type ExitVariant } from '../signalTrade/exit/index.js';
+import {
+  normalizeExitVariant, loadExitImpl, DEFAULT_EXIT_VARIANT, type ExitVariant,
+} from '../signalTrade/exit/index.js';
+import { exitVariantImplKind } from '../signalTrade/exitVariantImpl.js';
 import { checkGeneratorGate } from '../llm/generatorGate.js';
+import { inPollWindow } from '../../core/session.js';
 
 // ★実際の呼び出し元(2026-08-02 に実確認):
 //   - **trade2 は叩いていない**。trade2 は monitor のシグナルを SSE / `/api/current-signal` で追従するだけで、
@@ -53,6 +59,57 @@ function optionalNumber(v: unknown): number | undefined {
   return undefined;
 }
 
+// ─── ★場外(取引セッション外)の生成器要求を **撮影より前に** 弾く ─────────────
+//
+// runScalpPlanWithChart は refPrice の鮮度判定(scalpPlan.ts)より **先に** チャートを撮る。
+// つまり場外の無意味な要求でも毎回 Chrome が起動し(実測1撮影あたりイベントループが 286ms 停止)、
+// その後 refPrice が古くて捨てられる。さらに generatorGate の roll() は場外でも直前のセッションキーを
+// 保持する(=予算がリセットされない正しい設計)ため、15:45〜17:00 の 75 分や週末の要求が
+// **その取引日の予算をそのまま食う**。どちらも「撮る前に弾く」だけで消える。
+//
+// ★実弾(A)につながる経路は一切通さない: 判定するのは caller='generator' の要求だけで、
+//   caller 省略/'default'(シグナルエンジン・手動診断・既存の呼び出し元)は素通しする。
+//   既存の「時間外でも通る」挙動(server/llm/refPriceGate.test.ts の注記)は default では不変。
+//
+// ★ミドルウェアとして **ハンドラの前** に置く(server/index.ts で登録)。ハンドラ内に置くと
+//   「撮影より前」ではあっても、生成器の関門(予算計上)と順序が絡んで責務が混ざる。
+
+/** 場外の生成器要求か(純関数・now 注入可)。true なら弾く。
+ *  不正な caller は **ここでは判定しない**(ハンドラが 400 で理由付きに落とす=誤設定を無音にしない)。 */
+export function isGeneratorRequestOutOfSession(body: unknown, query: unknown, now: number): boolean {
+  const b = (body ?? {}) as Body;
+  const q = (query ?? {}) as Record<string, unknown>;
+  const callerResult = normalizeCaller(b.caller ?? q.caller);
+  if (!callerResult.ok || callerResult.caller === DEFAULT_CALLER) return false;
+  return !inPollWindow(now);
+}
+
+/** POST /api/scalp-plan の前段ミドルウェア。場外の生成器要求を 429 で弾く(撮影も LLM も行わない)。 */
+export function generatorSessionGate(req: Request, res: Response, next: NextFunction): void {
+  if (!isGeneratorRequestOutOfSession(req.body, req.query, Date.now())) {
+    next();
+    return;
+  }
+  // 弾いたことは必ず1行残す(無音にしない)。予算は1回も消費していない。
+  console.warn('[scalp-plan] 見送り(closed): 取引時間外の生成器要求 → 撮影も LLM も行わない');
+  res.status(429).json({ ok: false, error: 'closed', detail: '取引時間外(セッション外)です' });
+}
+
+type OkPlanResult = Extract<ScalpPlanResult, { ok: true }>;
+
+/** 応答に載せる「決定台帳」用の付随情報(記録専用)。undefined のフィールドは載せない
+ *  (=値が無いことと、そのフィールドを返さない実装であることを混同させない)。
+ *  ★on=false(レガシー経路)では **必ず空オブジェクト** を返す=応答は従来と byte 一致。 */
+function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
+  if (!on) return {};
+  const out: Partial<OkPlanResult> = {};
+  if (r.vetoFired !== undefined) out.vetoFired = r.vetoFired;
+  if (r.noneReason !== undefined) out.noneReason = r.noneReason;
+  if (r.noneLegs !== undefined) out.noneLegs = r.noneLegs;
+  if (r.rangeAnomaly !== undefined) out.rangeAnomaly = r.rangeAnomaly;
+  return out;
+}
+
 export async function scalpPlanHandler(req: Request, res: Response): Promise<void> {
   const body = (req.body ?? {}) as Body;
   const query = (req.query ?? {}) as Record<string, unknown>;
@@ -84,16 +141,35 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   }
   // ★undefined を渡すことが「従来経路」の意味を持つ(scalpPlan 側が describeExitLogic() をそのまま使う)。
   const exitVariant: ExitVariant | undefined = variantSpecified ? variantResult.variant : undefined;
-  // 応答へ「どの変種で生成したか」を載せるか。レガシー経路(caller 省略 かつ exitVariant 省略)だけは
-  // 応答も従来どおりにする(フィールドを増やさない)。生成器は caller または exitVariant を必ず指定するので、
-  // 生成器から見れば **常に** 変種が返る=記録に穴が空かない。
-  const echoVariant = variantSpecified || caller !== DEFAULT_CALLER
-    ? { exitVariant: variantResult.variant } : {};
+  // 応答へ「どの変種で生成したか」と「見送り理由」を載せるか。レガシー経路(caller 省略 かつ
+  // exitVariant 省略)だけは応答も従来どおりにする(フィールドを増やさない=byte 一致)。
+  // 生成器は caller または exitVariant を必ず指定するので、生成器から見れば **常に** 返る=記録に穴が空かない。
+  // ★変種のエコーも見送り理由の付随情報も、この1つの条件で揃って on/off する。
+  const diagnosticsOn = variantSpecified || caller !== DEFAULT_CALLER;
+  const echoVariant = diagnosticsOn ? { exitVariant: variantResult.variant } : {};
+
+  // ── ★変種を要求されたのに **実体が無い** なら 400(未知の変種名と同じ扱い)。
+  //    private(非公開実装)が無い環境では変種の説明文が公開フォールバック(数値なし)になり、
+  //    'candidate-a' のプロンプトが 'current' とほぼ同一になる。それでも応答は
+  //    exitVariant:'candidate-a' を返すので、**実験は何も測っていないのに記録には
+  //    「候補仕様で生成した」と残る**。黙って現行に倒すのと全く同じ壊れ方なので、同じ作法で拒否する。
+  //    ★'current'(既定)は対象外: 実体が無くても現行仕様として正しく動くので、この壊れ方は起きない。
+  if (variantSpecified && variantResult.variant !== DEFAULT_EXIT_VARIANT) {
+    await loadExitImpl();   // 冪等(起動時に済んでいれば即返る)。これを経ないと必ずフォールバック判定になる。
+    if (exitVariantImplKind(variantResult.variant) === 'fallback') {
+      const error = `exitVariant '${variantResult.variant}' はこのビルドでは解決できません(決済仕様の実体が読み込まれていない)`;
+      console.warn(`[scalp-plan] 400: ${error}`);
+      res.status(400).json({ ok: false, error });
+      return;
+    }
+  }
 
   // ── ★生成器だけの関門(作業3 backpressure + 作業4 予算/従属)。
   //    caller 省略/'default' はこのブロックを **一切通らない**(既存の呼び出し元に影響ゼロ)。
+  //    ★予算は **腕(=決済仕様の変種)ごと** に独立させる。全腕で1本の帳簿だと先着の腕が
+  //      取引日の残りを食い切り、標本が Day セッション前半に偏る(=時間帯という既知最大の交絡)。
   if (caller !== DEFAULT_CALLER) {
-    const gate = checkGeneratorGate();
+    const gate = checkGeneratorGate(Date.now(), variantResult.variant);
     if (!gate.allowed) {
       // 429 = 「今は投げるな」。生成器は reason で busy / budget / default-quota / disabled を区別できる。
       // 見送りは checkGeneratorGate 側で必ず1行ログ+カウンタに記録される(無音にしない)。
@@ -105,7 +181,13 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   try {
     const result = await runScalpPlanWithChart({ symbol, lcFloorYen, lcCeilingYen, caller, exitVariant });
     if (result.ok) {
-      res.json({ ok: true, plan: result.plan, ...echoVariant });
+      // ★見送りの経路を **応答に載せる**(記録専用・判定には一切影響しない)。
+      //   これが無いと direction:'none' のとき、外の記録側は「AI が見送った(ai)」「LC上限で落ちた(lc)」
+      //   「下限未満で落ちた(lcFloor)」「トレンド veto(trend)」を区別できない。区別できないと
+      //   2本の生成器の見送り率の差が「AI の適応」なのか「enforce の副作用」なのか判別不能になり、
+      //   実験の主要比較そのものが成立しない(エンジンは engine.ts でログに出しているが HTTP 越しには届かない)。
+      //   ★数値は AI が出したレッグの価格(noneLegs)だけで、決済ラダーの実数値は一切含まれない。
+      res.json({ ok: true, plan: result.plan, ...planDiagnostics(result, diagnosticsOn), ...echoVariant });
     } else {
       // キー無し/パース失敗/LLM 失敗/チャート未生成は 200 + ok:false で返す(キーは決して漏らさない)。
       // 見送りも実験の1標本なので、変種名(名前のみ・数値なし)は同じように返す。

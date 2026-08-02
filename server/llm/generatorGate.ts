@@ -20,6 +20,7 @@
 
 import { classifySession } from '../../core/session.js';
 import { resolveGeneratorDailyBudget } from '../configStore.js';
+import { DEFAULT_EXIT_VARIANT, type ExitVariant } from '../signalTrade/exit/index.js';
 
 /** 予算/従属停止のリセット境界。取引セッション(core/session の SSOT)で刻む。
  *  - dayKey     = sessionDate。Day D と Night D は同じ D = **同一取引日** → 日次予算の単位。
@@ -31,10 +32,28 @@ interface Keys { dayKey: string; sessionKey: string; }
 
 const BOOT_KEYS: Keys = { dayKey: '(boot)', sessionKey: '(boot)' };
 
+// ─── ★予算の単位は「腕(arm)」 ────────────────────────────────────────────────
+//
+// 実験は「同じ相場に、決済仕様の異なる説明を与えた生成器」を並走させて提案の差を測る。
+// 予算を全腕で1本にすると、**先に叩いた腕が取引日の残りを全部食う**。20時間の取引日を
+// 先着順で切ることになるので、標本が Day セッション前半に系統的に偏る。
+// この案件の過去の検証(ADR)で見つかった最大の効果は **時間帯そのもの**(Day-AM / Night-NY前 /
+// それ以外で性質が全く違う)なので、時間帯で切られた標本で決済パラメータを比べると
+// **既知の最大の交絡を標本設計に組み込む**ことになる。だから予算は腕ごとに独立させる。
+//
+// ★腕の識別子は **既存の語彙をそのまま使う**(新しい概念を増やさない): 決済仕様の変種名 ExitVariant。
+//   route はリクエストで解決した変種をそのまま渡す(未指定は 'current')。
+type ArmKey = ExitVariant;
+
+/** 腕ごとの消費カウンタ。腕が増えたら自動で増える(初出は 0)。 */
+type ArmUsage = Partial<Record<ArmKey, number>>;
+
 interface GateState {
   keys: Keys;
-  /** 当該取引日に生成器へ許可した回数(=予算の消費)。 */
+  /** 当該取引日に生成器へ許可した回数の **合計**(全腕の和・診断表示用)。 */
   used: number;
+  /** ★当該取引日に **腕ごと** に許可した回数。予算判定はこちらを見る(=腕は互いに枯らし合わない)。 */
+  usedByArm: ArmUsage;
   /** 従属停止中のセッションキー(null=停止していない)。 */
   haltedSessionKey: string | null;
   /** 停止理由の記録用カウンタ(無音にしないための最小の可視化)。 */
@@ -44,7 +63,7 @@ interface GateState {
 }
 
 function freshState(keys: Keys): GateState {
-  return { keys, used: 0, haltedSessionKey: null, skipped: { busy: 0, budget: 0, defaultQuota: 0, disabled: 0 }, inFlight: 0 };
+  return { keys, used: 0, usedByArm: {}, haltedSessionKey: null, skipped: { busy: 0, budget: 0, defaultQuota: 0, disabled: 0 }, inFlight: 0 };
 }
 
 let state: GateState = freshState(BOOT_KEYS);
@@ -65,7 +84,8 @@ function roll(now: number): void {
     state = freshState(k);
     state.inFlight = prev.inFlight;
     if (prev.used > 0 || prev.skipped.busy + prev.skipped.budget + prev.skipped.defaultQuota + prev.skipped.disabled > 0) {
-      console.log(`[llm:generator] 取引日 ${prev.keys.dayKey} 終了 — 使用 ${prev.used} / 見送り `
+      const perArm = Object.entries(prev.usedByArm).map(([k, v]) => `${k}=${v}`).join(' ');
+      console.log(`[llm:generator] 取引日 ${prev.keys.dayKey} 終了 — 使用 ${prev.used}${perArm ? `(腕別 ${perArm})` : ''} / 見送り `
         + `busy=${prev.skipped.busy} budget=${prev.skipped.budget} default-quota=${prev.skipped.defaultQuota} disabled=${prev.skipped.disabled}`);
     }
     return;
@@ -86,10 +106,12 @@ export type GeneratorGateResult =
   | { allowed: false; reason: GeneratorSkipReason; detail: string };
 
 /** ★生成器の関門。**caller==='generator' のときだけ**呼ぶこと。
- *  通過した場合は予算を1消費する(=呼んだ側は必ず実行に進む前提)。
+ *  通過した場合は **その腕の** 予算を1消費する(=呼んだ側は必ず実行に進む前提)。
  *  ★消費は「試行」で数える: チャート撮影に失敗して LLM を呼ばずに見送る場合も1消費する。
- *    予算は上流クォータへの負荷の上限を保守側で押さえるためのもので、過小に数えるより過大に数える方が安全。 */
-export function checkGeneratorGate(now: number = Date.now()): GeneratorGateResult {
+ *    予算は上流クォータへの負荷の上限を保守側で押さえるためのもので、過小に数えるより過大に数える方が安全。
+ *  ★第2引数 arm = 予算の帳簿を分ける単位(決済仕様の変種名)。省略は 'current'(既定の腕)。
+ *    日次予算は **腕ごとに** 適用されるので、片方の腕が先に枯れて他方だけが回り続けることは起きない。 */
+export function checkGeneratorGate(now: number = Date.now(), arm: ArmKey = DEFAULT_EXIT_VARIANT): GeneratorGateResult {
   roll(now);
   const budget = resolveGeneratorDailyBudget();
 
@@ -110,10 +132,12 @@ export function checkGeneratorGate(now: number = Date.now()): GeneratorGateResul
     return { allowed: false, reason: 'default-quota', detail };
   }
 
-  // ③ 日次予算。上限到達=停止(モードは書き換えない・無音で縮退しない)。
-  if (state.used >= budget) {
+  // ③ 日次予算。★**腕ごと**に判定する(全腕で1本の帳簿にすると先着の腕が取引日の残りを食い、
+  //    標本が Day 前半に偏る=時間帯という既知最大の交絡が標本設計に入る)。上限到達=停止。
+  const usedThisArm = state.usedByArm[arm] ?? 0;
+  if (usedThisArm >= budget) {
     state.skipped.budget += 1;
-    const detail = `取引日 ${state.keys.dayKey} の日次予算 ${budget} 回を使い切りました`;
+    const detail = `取引日 ${state.keys.dayKey} / 腕 ${arm} の日次予算 ${budget} 回を使い切りました`;
     console.warn(`[llm:generator] 見送り(budget): ${detail} — 通算 ${state.skipped.budget} 回`);
     return { allowed: false, reason: 'budget', detail };
   }
@@ -126,8 +150,9 @@ export function checkGeneratorGate(now: number = Date.now()): GeneratorGateResul
     return { allowed: false, reason: 'busy', detail };
   }
 
+  state.usedByArm[arm] = usedThisArm + 1;
   state.used += 1;
-  return { allowed: true, used: state.used, budget };
+  return { allowed: true, used: state.usedByArm[arm]!, budget };
 }
 
 /** ★従属規則の発火点。**default プールのプロバイダが quota(429/枯渇)を踏んだ瞬間**に providers.ts から呼ばれる。
@@ -147,7 +172,15 @@ export function beginScalpPlan(): void { state.inFlight += 1; }
 export function endScalpPlan(): void { state.inFlight = Math.max(0, state.inFlight - 1); }
 export function scalpPlanInFlight(): number { return state.inFlight; }
 
-/** 診断用スナップショット(/api/status 等)。キーは一切含めない。 */
+/** ★腕ごとの消費(/api/status 用)。予算は腕ごとに独立なので、合計だけでは
+ *  「どの腕が枯れかけているか」が読めない。数値は回数のみでキーも決済値も含まない。 */
+export function generatorArmUsage(now: number = Date.now()): Record<string, number> {
+  roll(now);
+  return { ...state.usedByArm } as Record<string, number>;
+}
+
+/** 診断用スナップショット(/api/status 等)。キーは一切含めない。
+ *  ★budget は **腕1本あたり** の上限、used は **全腕の合計**(腕別は generatorArmUsage)。 */
 export function generatorGateSnapshot(now: number = Date.now()) {
   roll(now);
   return {

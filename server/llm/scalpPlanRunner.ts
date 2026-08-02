@@ -133,10 +133,14 @@ async function runScalpPlanWithChartInner(
   const vision = visionOn ? firstAvailableVisionProvider(caller) : null;
   if (visionOn && vision) {
     // ② 画像生成(A/B共有キャッシュ+進行中相乗り=同時2起動を防ぐ)。ws-error 等の一過性に備え失敗時は1回リトライ。
-    let shot = await captureChartPngCached(resolvePort());
+    //   ★キャッシュ/相乗りは caller ごとに隔離する(第4引数)。生成器の撮影が A のキャッシュを温めて
+    //     「A は毎サイクル撮り直す」不変条件を壊すことも、生成器の進行中撮影に A が相乗りして
+    //     その遅延/失敗を継承することも無い。caller='default'(A/B)は従来と完全に同一。
+    //   第2/第3引数は撮影関数/時計のテスト注入点なので既定のまま(undefined)を渡す。
+    let shot = await captureChartPngCached(resolvePort(), undefined, undefined, caller);
     if (!shot.buffer) {
       console.warn(`[scalp-plan] vision: 画像生成失敗 → 1回リトライ reason=${shot.reason ?? 'unknown'}`);
-      shot = await captureChartPngCached(resolvePort());
+      shot = await captureChartPngCached(resolvePort(), undefined, undefined, caller);
     }
     // ③ 2回とも失敗: 設定に応じて「テキストのみで継続(縮退運転=全停止を防ぐ)」or 従来どおり「見送り」。
     if (!shot.buffer) {

@@ -13,7 +13,7 @@ import { streamHandler } from './routes/stream.js';
 import { startHeartbeat, stopHeartbeat } from './sse/broker.js';
 import { explainHandler } from './routes/explain.js';
 import { chatHandler } from './routes/chat.js';
-import { scalpPlanHandler } from './routes/scalpPlan.js';
+import { scalpPlanHandler, generatorSessionGate } from './routes/scalpPlan.js';
 import { chartShotHandler } from './routes/chartShot.js';
 import { captureChartPng } from './chart/chartShot.js';
 import { getSettingsHandler, postSettingsHandler, testSettingsHandler } from './routes/settings.js';
@@ -82,7 +82,10 @@ app.use(express.json({ limit: '256kb' }));
 app.get('/api/stream', streamHandler);
 app.post('/api/explain', explainHandler);
 app.post('/api/chat', chatHandler);
-app.post('/api/scalp-plan', scalpPlanHandler);
+// ★generatorSessionGate は **ハンドラより前**: 場外(取引セッション外)の生成器要求を、
+//   チャート撮影(Chrome 起動)にも LLM にも予算計上にも到達させずに 429 で弾く。
+//   caller 省略/'default'(実弾につながる既存の呼び出し元)は素通しする=挙動不変。
+app.post('/api/scalp-plan', generatorSessionGate, scalpPlanHandler);
 app.get('/api/settings', getSettingsHandler);
 app.post('/api/settings/keys', postSettingsHandler);
 app.get('/api/settings/test', testSettingsHandler);

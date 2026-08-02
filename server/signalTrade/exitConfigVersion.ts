@@ -73,6 +73,18 @@ export function resolveExitConfigVersion(db: DatabaseSync, hash: string, now: nu
   return row?.version ?? version;
 }
 
+/** hash → 既に採番済みの版番号(**読み取り専用**・未採番/表未作成は null)。
+ *  診断表示(/api/status)から呼ぶための入口。resolveExitConfigVersion と違って
+ *  **採番も表作成もしない**(表示のために台帳へ行を足さない)。SQL の知識はこのモジュールに閉じる。 */
+export function lookupExitConfigVersion(db: DatabaseSync, hash: string): number | null {
+  try {
+    const row = db.prepare('SELECT version FROM exit_config_versions WHERE hash = ?').get(hash) as { version: number } | undefined;
+    return row?.version ?? null;
+  } catch {
+    return null;   // 表がまだ無い(=一度も決済していない)。表示上は「未採番」。
+  }
+}
+
 export interface ExitConfigStamp { version: number; hash: string; }
 
 // ハッシュは起動中に変わらない(private 実装は起動時 loadExitImpl で一度だけ差し替わる)。
@@ -81,6 +93,10 @@ let cachedHash: string | null = null;
 
 /** テスト用: ハッシュのキャッシュを捨てる(実装を差し替えた後に呼ぶ)。 */
 export function _resetExitConfigHashCache(): void { cachedHash = null; }
+
+/** 現在の決済設定の指紋(キャッシュ済み・16桁hex)。**一方向ハッシュなので実数値は復元できない**
+ *  =DB/CSV に既に載っているのと同じ粒度で、診断表示にも出してよい。 */
+export function exitConfigHash(): string { return cachedHash ??= computeExitConfigHash(); }
 
 /** 起動時(loadExitImpl 直後)に指紋を先に計算しておく。決済確定時の記録経路から計算コストを外すため。
  *  失敗しても起動は止めない(記録専用)。 */

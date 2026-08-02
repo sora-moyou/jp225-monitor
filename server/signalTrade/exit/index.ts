@@ -79,6 +79,52 @@ export function describeExitLogicSimple(): string {
   return '決済は「フェーズ式・利益ロックのラチェット床」: 含み益ピークが伸びるほど決済逆指値(床)を段階的に有利側へ引き上げ、積み上げた利益を床でロックする。ラチェットは有利側にのみ動き、初期LCより不利にはしない。※具体的な段階/数値は非公開ビルドでのみ注入される。';
 }
 
+// ─── 分析用「影」の決済仕様の一覧 ────────────────────────────────────────────
+//
+// 影(shadow)= 同じ提案(AiPlan)に対して、決済パラメータだけを変えた模擬を並走させ、
+// 「決済設定を変えていたら各エントリーがどうなったか」を1年かけて溜めるための記録専用の模擬。
+//
+// ★ここ(公開)には **名前と分類だけ** を置く。どの発動/床を振るかという実数値は非公開側
+//   (./private.ts, gitignored)が持ち、cfg を **束ねた純関数** の形でだけ渡ってくる。
+//   記録(DB)に載るのも name(不透明な識別子)であって数値ではない。
+// ★グローバル差し替えは使わない: 各 spec の exit は呼び出しごとに自分の cfg を閉じ込めた純関数で、
+//   モジュール変数を読み書きしない(影の模擬と実建玉の算出が干渉しない)。
+
+/** 影の決済仕様の分類。**集計時に混ぜてはいけない区別** なので型で持つ。
+ *  - 'ratchet'    … ラチェット床(保有中に自分で決める水準)の変更。実弾でも実現可能だった。
+ *  - 'initial-lc' … 初期LCの変更。初期LCはブラケットの一部として **業者に送られている** ので、
+ *                   変えた注文は一度も存在しなかった=実現不可能な反実仮想。 */
+export type ShadowParamClass = 'ratchet' | 'initial-lc';
+
+/** 影1本ぶんの決済仕様。 */
+export interface ShadowExitSpec {
+  /** 記録に載る識別子。**数値を含めない**(DB/ログに決済の実数値を出さないため)。 */
+  name: string;
+  paramClass: ShadowParamClass;
+  /** その仕様での決済逆指値(絶対価格)。private が cfg を引数で束ねた純関数
+   *  (= computeExitStopWith(cfg, s))。実運用の computeExitStop とは独立。 */
+  exit: ExitFn;
+}
+
+/** 影の決済仕様の一覧 + その一覧自体の版(epoch)。epoch が変われば name↔実数値の対応も変わりうる
+ *  =記録には必ず epoch を添える(後から「sh07 は何だったか」を取り違えないため)。 */
+export interface ShadowExitLadder {
+  epoch: string;
+  specs: readonly ShadowExitSpec[];
+}
+
+/** 公開フォールバック: **影を1本も作らない**。
+ *  ★空にする理由: 公開ビルドには床の実数値が無く、ここで適当な代用値を入れると
+ *    「振ったつもりの記録が実は別物」という最悪の壊れ方(静かに無意味なデータが溜まる)になる。 */
+export const EMPTY_SHADOW_LADDER: ShadowExitLadder = { epoch: 'none', specs: [] };
+
+let shadowLadder: ShadowExitLadder = EMPTY_SHADOW_LADDER;
+
+/** 影の決済仕様の一覧(private が読み込まれていれば実体、無ければ空)。 */
+export function getShadowExitLadder(): ShadowExitLadder {
+  return shadowLadder;
+}
+
 let impl: ExitFn = computeExitStopSimple;
 let describeImpl: DescribeFn = describeExitLogicSimple;
 let describeVariantImpl: DescribeVariantFn = describeExitLogicVariantSimple;
@@ -99,7 +145,13 @@ export async function loadExitImpl(): Promise<'private' | 'simple'> {
       computeExitStopPrivate?: ExitFn;
       describeExitLogicPrivate?: DescribeFn;
       describeExitLogicVariantPrivate?: DescribeVariantFn;
+      shadowExitLadderPrivate?: () => ShadowExitLadder;
     };
+    // 分析用「影」の決済仕様(名前と純関数だけ受け取る。数値はこちらへ来ない)。無ければ空のまま=影を作らない。
+    if (typeof mod.shadowExitLadderPrivate === 'function') {
+      const l = mod.shadowExitLadderPrivate();
+      if (l && Array.isArray(l.specs)) shadowLadder = { epoch: String(l.epoch), specs: l.specs };
+    }
     // 実数値つきの決済ロジック説明も private から取り込む(AI へ完全なロジックを渡すため)。無ければ定性版のまま。
     if (typeof mod.describeExitLogicPrivate === 'function') describeImpl = mod.describeExitLogicPrivate;
     // 変種ごとの説明文(名前 → 非公開の実数値)。無ければ公開フォールバック(数値なし)のまま。

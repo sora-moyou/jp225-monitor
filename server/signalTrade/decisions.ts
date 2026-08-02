@@ -7,7 +7,7 @@
 
 import type { SignalTradeState, SignalSettingsSnapshot } from '../types.js';
 import type { RangeLeg, AiPlan } from '../llm/openai.js';
-import { computeExitStop } from './exit/index.js';
+import { computeExitStop, type ExitFn } from './exit/index.js';
 import type { ExitReason } from '../../core/exitReasons.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
@@ -286,9 +286,14 @@ export function unrealizedPt(direction: 'buy' | 'sell', entry: number, price: nu
   return direction === 'buy' ? price - entry : entry - price;
 }
 
-/** 現在の決済逆指値(絶対価格)。非公開 phase-exit(または簡易フォールバック)に委譲。 */
-export function restingStopOf(pos: OpenPosition): number | null {
-  return computeExitStop({
+/** 現在の決済逆指値(絶対価格)。非公開 phase-exit(または簡易フォールバック)に委譲。
+ *  ★exitFn(省略可)は **分析用の影の模擬だけ** が渡す差し替え(既定=computeExitStop=実運用)。
+ *    省略時の挙動は従来と byte 一致(実弾に繋がる呼び出し元は渡さない)。
+ *  ★なぜ引数で渡すか: グローバル差し替え(_setExitImpl)にすると、影の模擬が走っている最中に
+ *    **実建玉の決済逆指値が影のパラメータで算出される** 競合が起きる。引数なら並走しても干渉しない。
+ *  ★OpenPosition → ExitState の写像はここ1箇所だけ(影も同じこの関数を通る=写像を二重に書かない)。 */
+export function restingStopOf(pos: OpenPosition, exitFn: ExitFn = computeExitStop): number | null {
+  return exitFn({
     direction: pos.direction, entryPrice: pos.entryPrice,
     initialStop: pos.initialStop, peakProfit: pos.peakProfit,
   });
@@ -366,11 +371,19 @@ export function equitySeries(trades: Array<{ exit_t: number; pnl: number }>): Eq
  *    弾かれてエンジンが全シグナルを停止する(2026-07-21 の System B 停止の実原因)。 */
 export const ARMED_TIMEOUT_MS = 15 * 60_000;
 
+/** advance の任意オプション。**実弾に繋がる呼び出し元は渡さない**(渡さなければ従来と byte 一致)。 */
+export interface AdvanceOptions {
+  /** 決済逆指値の算出を差し替える(既定=computeExitStop=実運用の非公開 phase-exit)。
+   *  分析用の「影」は同じ advance を **パラメータだけ変えて** 呼ぶためにこれを渡す
+   *  (約定判定 detectFill / 建玉組み立て / スリッページ / 決済理由の規約を一切再実装しない)。 */
+  exitFn?: ExitFn;
+}
+
 /** 現在値 price を受けて armed→filled / filled→flat の遷移を1歩進める純関数(DB/LLM は呼ばない)。
  *  filled では peakProfit を更新し、ラチェット逆指値に達したら決済して RecordedTrade を返す。
  *  armed が ARMED_TIMEOUT_MS を超えて未約定なら取消して FLAT(armedTimedOut=true)。 */
 export function advance(
-  st: EngineState, price: number, now: number,
+  st: EngineState, price: number, now: number, opts?: AdvanceOptions,
 ): { next: EngineState; recorded?: RecordedTrade; armedTimedOut?: boolean } {
   if (st.phase === 'armed' && st.armed) {
     // ★未約定タイムアウト: どちらのレッグも約定しないまま一定時間経過 → 取消して FLAT(再計画可能に)。
@@ -480,7 +493,7 @@ export function advance(
     }
     const peak = Math.max(pos.peakProfit, unrealizedPt(pos.direction, pos.entryPrice, price));
     const updated: OpenPosition = { ...pos, peakProfit: peak };
-    const stop = restingStopOf(updated);
+    const stop = restingStopOf(updated, opts?.exitFn);
     const exit = detectExit(updated, price, stop);
     if (exit == null) {
       return { next: { phase: 'filled', position: updated, lastExit: st.lastExit } };

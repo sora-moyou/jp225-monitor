@@ -321,16 +321,22 @@ export function resolveGeneratorKeySources(): Record<GeneratorProviderName, Gene
 }
 
 // ─── 提案生成器の日次予算 ────────────────────────────────────────────────
-/** 生成器の日次予算の既定値[回/取引日]。
- *  ★根拠: 2分間隔でフルカバー(日中7h + ナイト13h)すると約 600 回/取引日。運用見込みは 700〜1,600 回。
- *    既定はそれを **大きく下回る 200** にする=「第1週の実測で決める」までの間、実測に十分な標本
- *    (200件/日)を取りつつ、上流クォータへの露出を1セッション相当に抑える。
- *    上限に達した生成器は **止まって記録する**(無音の縮退やモード書き換えは絶対にしない)ので、
- *    既定が低すぎればユーザーはログで即座に気づき、実測値に基づいて設定を上げられる。 */
-export const GENERATOR_DAILY_BUDGET_DEFAULT = 200;
+/** 生成器の日次予算の既定値[回/取引日・★腕(exitVariant)ごと]。
+ *  ★単位が「腕ごと」であることが要点: 全腕で1本の帳簿にすると先着の腕が取引日の残りを食い切り、
+ *    20時間の取引日が先着順で切られて **標本が Day セッション前半に偏る**。時間帯はこの案件で
+ *    実測された最大の効果(ADR)なので、それを標本設計に混ぜてはならない(generatorGate.ts 参照)。
+ *  ★値の根拠: 2分間隔でフルカバー(日中7h + ナイト13h)すると約 600 回/取引日。
+ *    運用見込みは生成器2本+対照で約 1,584 回/日。**800/腕** なら
+ *      - 1本の腕だけでもフルカバー(600)を上回る=需要側の都合で腕が枯れない
+ *      - 2腕合計 1,600 ≧ 運用見込み 1,584 = 設計どおりの標本が1年ぶん溜まる
+ *    旧既定 200(全腕共有)は設計の 1/8 で、初日から予算切れ=標本が時間帯で切れる値だった。
+ *  ★上限(GENERATOR_DAILY_BUDGET_MAX)は残す: 予算は上流クォータへの露出の天井であり、
+ *    上限に達した生成器は **止まって記録する**(無音の縮退やモード書き換えは絶対にしない)。 */
+export const GENERATOR_DAILY_BUDGET_DEFAULT = 800;
 export const GENERATOR_DAILY_BUDGET_MAX = 5000;
 
-/** 生成器の日次予算を解決。config.json → env GENERATOR_DAILY_BUDGET → 既定。0 は「無効」の意味で受理する。 */
+/** 生成器の日次予算[回/取引日・腕ごと]を解決。config.json → env GENERATOR_DAILY_BUDGET → 既定。
+ *  0 は「無効」の意味で受理する。 */
 export function resolveGeneratorDailyBudget(): number {
   const v = loadConfig().generatorDailyBudget;
   const raw = typeof v === 'number' && Number.isFinite(v) ? v : Number(process.env.GENERATOR_DAILY_BUDGET);

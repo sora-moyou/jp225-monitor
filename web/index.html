@@ -138,9 +138,9 @@
           <div class="exit-hint">生成器プールが実際に使うキーで極小(1トークン)の ping を1回ずつ送ります。<strong>専用キーがある行は専用キーで、「共通キーを使用中」の行は共通キーで検証します</strong>（後者は実弾と同じ枠を消費します）。上の「キーを検証」は従来どおり共通キー（実弾側）が対象です。</div>
         </div>
         <div class="setting-row">
-          <label>生成器の日次予算（回 / 取引日・0 で生成器を無効化）</label>
-          <input type="number" id="generator-budget" min="0" max="5000" step="10" placeholder="200 (既定)" />
-          <div class="exit-hint">2分間隔でフルカバーすると約 <strong>600 回/取引日</strong>、生成器2本＋対照の運用見込みは約 <strong>1,584 回/日</strong>。既定の <strong>200</strong> はそれを大きく下回る保守的な値で、実測に応じて上げる前提です。<strong>上限に達すると生成器は停止し、記録に残ります</strong>（無音で縮退したりモードを書き換えたりはしません）。空欄で既定に戻ります。</div>
+          <label>生成器の日次予算（回 / 取引日・<strong>腕ごと</strong>・0 で生成器を無効化）</label>
+          <input type="number" id="generator-budget" min="0" max="5000" step="10" placeholder="800 (既定)" />
+          <div class="exit-hint">2分間隔でフルカバーすると約 <strong>600 回/取引日</strong>、生成器2本＋対照の運用見込みは約 <strong>1,584 回/日</strong>。この予算は<strong>「腕」（決済仕様の変種）ごとに独立して</strong>効きます——共有にすると先に叩いた腕が取引日の残りを食い切り、標本が日中前半に偏るためです。既定は <strong>800 / 腕</strong>（旧: 全腕で共有する <strong>200</strong>）。<strong>上限に達した腕は停止し、記録に残ります</strong>（無音で縮退したりモードを書き換えたりはしません）。空欄で既定に戻ります。</div>
         </div>
       </fieldset>
 

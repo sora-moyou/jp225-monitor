@@ -40,9 +40,11 @@ vi.mock('../configStore.js', () => ({
 // ★v0.9.38: レジームの入力はリアルタイム足(feedBars・分内高安つき)を直接使う。
 //   モックせず本物へ feedRealtimePrice で投入する(既定は空=regime flat)。
 
-const captureMock = vi.fn<[number], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();
+// ★引数を全部そのまま記録する(port だけでなく caller も)。撮影キャッシュは caller ごとに
+//   隔離されるので、runner が自分の caller を撮影側へ渡していることを固定する。
+const captureMock = vi.fn<unknown[], Promise<{ buffer: Buffer | null; reason: string | null; chromePath: string | null; chromeVersion: string | null }>>();
 vi.mock('../chart/chartShot.js', () => ({
-  captureChartPngCached: (port: number) => captureMock(port),
+  captureChartPngCached: (...a: unknown[]) => captureMock(...a),
 }));
 
 // v0.7.54: 構造化データ(rich context)の DB 読みは本テストの対象外。DB/levels/scalpContext をモックして
@@ -100,6 +102,19 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
     expect(arg.chartImageDataUrl).toBe(`data:image/png;base64,${png.toString('base64')}`);
     expect(result).toEqual(GOOD_PLAN);
+  });
+
+  // ★撮影キャッシュの呼び出し元分離: runner は自分の caller を撮影側へ渡す。
+  //   渡さないと生成器の撮影が A のキャッシュを温め、A が「毎サイクル撮り直す」不変条件が壊れる。
+  it('★caller を撮影キャッシュへ渡す(既定=default / 生成器=generator)', async () => {
+    firstVisionMock.mockReturnValue({ name: 'gemini' });
+    captureMock.mockResolvedValue({ buffer: Buffer.from('png'), reason: null, chromePath: 'c', chromeVersion: 'v1' });
+
+    await runScalpPlanWithChart();                              // 既存の呼び出し元(A/B エンジン・既存 route)
+    expect(captureMock.mock.calls[0]![3]).toBe('default');      // 第4引数=caller
+
+    await runScalpPlanWithChart({ caller: 'generator' });       // 提案生成器
+    expect(captureMock.mock.calls[1]![3]).toBe('generator');
   });
 
   // DB が開けない環境(破損/権限/ロック)でも、メモリ内ライブ足があるなら AI 文脈を組む。

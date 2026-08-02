@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync, re
 import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { loadConfig } from '../configStore.js';
+import { DEFAULT_CALLER, type LlmCaller } from '../llm/caller.js';
 
 // TradingView ウィジェット(tv.js + iframe + ローソク描画)はネット依存で 12〜15 秒かかる。
 // 旧方式(--headless --screenshot --virtual-time-budget)は widget が描画される前に撮影して
@@ -447,30 +448,67 @@ export async function captureChartPng(port: number): Promise<CaptureResult> {
 // A系・B系エンジンは各々 runScalpPlanWithChart→captureChartPng を呼ぶため、素だと毎サイクル
 // **2つの Chrome を同時起動**して重い TradingView を二重描画=資源逼迫で ws-error/クラッシュを誘発する。
 // ここで「成功画像を短時間キャッシュ」+「進行中の撮影に相乗り(二重起動しない)」して起動数を半減する。
+//
+// ★呼び出し元(caller)ごとに **プールを分ける**(v0.9.51)。
+//   分けない実装では、2分間隔で回る生成器(caller='generator')の撮影がキャッシュを常時温めてしまい、
+//   TTL 60秒 < plan間隔 180秒 という「A は毎サイクル撮り直す」不変条件が壊れる
+//   (=A が二度と自前で撮らず、常に最大60秒前の画像で判断する。refPrice は毎回新鮮に取り直すので
+//     「数値だけ新しく画像だけ古い」不整合になり、checkRefDrift/checkStaleLegs は価格しか見ないので誰も気づかない)。
+//   さらに in-flight 相乗りも分けないと、生成器の撮影開始41秒後に来た A が1秒後に buffer=null を掴み、
+//   リトライでプラン生成が最大84秒遅れ、2回失敗ならテキストのみへ縮退する(=A の入力から画像が消える)。
+//   generatorGate の busy ゲートは「A が生成中なら生成器を止める」の片方向しか守っていない。
+//
+//   **'default'(A と B)は従来どおり1プールを共有する**。A/B の共有は「同時2起動で Chrome が資源逼迫し
+//   ws-error/クラッシュを誘発する」という実際に起きた問題への対策なので、絶対に壊さない。
+//   分離するのは 'generator' だけ。
 const CHART_CACHE_TTL_MS = 60_000;   // 成功画像を最大60秒 共有(plan間隔180sなのでA/B同時要求を吸収しつつ毎サイクルは再撮影)。
-let chartCache: { at: number; result: CaptureResult } | null = null;
-let chartInFlight: Promise<CaptureResult> | null = null;
+
+interface ChartCachePool {
+  cache: { at: number; result: CaptureResult } | null;
+  inFlight: Promise<CaptureResult> | null;
+}
+
+/** caller をキーにしたプール。'default' は A/B が共有する1個、'generator' は完全に別物。 */
+const chartPools = new Map<LlmCaller, ChartCachePool>();
+
+function poolFor(caller: LlmCaller): ChartCachePool {
+  let p = chartPools.get(caller);
+  if (!p) { p = { cache: null, inFlight: null }; chartPools.set(caller, p); }
+  return p;
+}
 
 /** ★共有版: 新鮮な成功キャッシュがあれば即返す / 撮影中なら相乗り / どちらも無ければ1回だけ実撮影。
- *  失敗はキャッシュしない(呼び出し側のリトライ/縮退が効くように)。now/capture はテスト注入用。 */
+ *  失敗はキャッシュしない(呼び出し側のリトライ/縮退が効くように)。
+ *  キャッシュ/相乗りは **caller ごと**に隔離される(default = A と B の共有プール)。
+ *  now/capture はテスト注入用。caller 省略は 'default' = 従来と完全に同一経路。 */
 export async function captureChartPngCached(
   port: number,
   capture: (p: number) => Promise<CaptureResult> = captureChartPng,
   now: () => number = Date.now,
+  caller: LlmCaller = DEFAULT_CALLER,
 ): Promise<CaptureResult> {
-  if (chartCache && chartCache.result.buffer && now() - chartCache.at < CHART_CACHE_TTL_MS) {
-    return chartCache.result;   // 新鮮な成功画像を A/B/連続要求で共有(Chrome を起動しない)。
+  const pool = poolFor(caller);
+  if (pool.cache && pool.cache.result.buffer && now() - pool.cache.at < CHART_CACHE_TTL_MS) {
+    // ★無音をやめる: 「新規撮影」と「60秒前の使い回し」を必ず区別してログに出す。
+    //   画像の齢が変わったこと(=A の入力の鮮度が落ちたこと)に誰も気づけない状態を作らない。
+    console.log(`[chart-shot] キャッシュ流用 caller=${caller} 齢=${((now() - pool.cache.at) / 1000).toFixed(1)}s `
+      + `(Chrome を起動せず既存画像を再利用)`);
+    return pool.cache.result;   // 新鮮な成功画像を A/B/連続要求で共有(Chrome を起動しない)。
   }
-  if (chartInFlight) return chartInFlight;   // 進行中の撮影に相乗り(同時2起動を防ぐ)。
-  chartInFlight = (async () => {
+  if (pool.inFlight) {
+    console.log(`[chart-shot] 進行中の撮影に相乗り caller=${caller} (同時2起動を防止)`);
+    return pool.inFlight;   // 進行中の撮影に相乗り(同時2起動を防ぐ)。
+  }
+  console.log(`[chart-shot] 新規撮影 caller=${caller} (キャッシュ無効/期限切れ)`);
+  pool.inFlight = (async () => {
     try {
       const r = await capture(port);
-      if (r.buffer) chartCache = { at: now(), result: r };   // 成功のみキャッシュ(失敗は都度再試行)。
+      if (r.buffer) pool.cache = { at: now(), result: r };   // 成功のみキャッシュ(失敗は都度再試行)。
       return r;
-    } finally { chartInFlight = null; }
+    } finally { pool.inFlight = null; }
   })();
-  return chartInFlight;
+  return pool.inFlight;
 }
 
-/** テスト用: キャッシュ/進行中状態をリセット。 */
-export function resetChartCache(): void { chartCache = null; chartInFlight = null; }
+/** テスト用: 全プールのキャッシュ/進行中状態をリセット。 */
+export function resetChartCache(): void { chartPools.clear(); }
