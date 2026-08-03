@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -17,8 +17,10 @@ import { tmpdir } from 'node:os';
 import {
   exportLedgerSnapshot, runLedgerExport, formatLedgerExportStatus,
   writeLedgerExportStatus, readLedgerExportStatus, ledgerExportFileName, hostLabel,
+  writeLedgerExportStatusFile, ledgerExportStatusFileName,
   LEDGER_EXPORT_STATUS_KEY, LEDGER_SPECS, type LedgerSpec,
 } from './ledgerExport.js';
+import { jstStamp } from './tickArchiveHeartbeat.js';
 import { openDb, getMeta } from './store.js';
 
 let dir = '';
@@ -134,5 +136,91 @@ describe('★成否が観測できる(共有DBの meta = 既存の30分スナッ
     const line = formatLedgerExportStatus(failed, 1_700_000_000_000, paths.dest);
     expect(line.startsWith('ERROR')).toBe(true);
     expect(line).toContain('★shadow_exits=失敗: disk full');
+  });
+});
+
+// ─── ★循環を断つ: 状態を「書き出し先そのもの」にも置く ────────────────────────
+//
+// 実害(2026-08-03): 運用PCで台帳(generator_proposals.db)は 10:11 に実在していたのに
+//   `generator_proposals_kabu.db` が現れなかった。共有DBの meta を読むと
+//   「PARTIAL 09:20:33 | 原本なし」。読み手はこれを **現在の状態** と読んだが、実際は
+//   collector が 10:13:44 に停止しており(collector_heartbeat が同時刻で凍結)、
+//   10:20:33 の毎時ブロックがそもそも走っていなかった。
+//   meta が別PCへ届く唯一の経路が 30分スナップショットなので、
+//   **collector が止まると状態も止まる**=「古い状態」を現状として返す循環になっていた。
+//
+// ★否定対照: `git show HEAD:server/db/ledgerExport.ts > /tmp/old.ts` には
+//   writeLedgerExportStatusFile / ledgerExportStatusFileName が無く、この describe は全部赤。
+describe('★書き出し先に状態ファイルを置く(共有DB meta 経由の循環を断つ)', () => {
+  it('台帳と同じフォルダに ledger_export_<host>.txt が出て、1行目に「中身の時刻」が入る', () => {
+    makeLedger(paths.gen, 'proposals', 4);
+    const at = 1_700_000_000_000;
+    const results = [
+      exportLedgerSnapshot(specOf('generator_proposals', paths.gen, 'proposals'), paths.dest, at, 'kabu'),
+      exportLedgerSnapshot(specOf('shadow_exits', paths.shadow, 'shadow_exits'), paths.dest, at, 'kabu'),
+    ];
+    const shared = openDb(':memory:');
+    const hb = writeLedgerExportStatus(shared, results, at, paths.dest);
+    shared.close();
+
+    const w = writeLedgerExportStatusFile(paths.dest, hb, 'kabu');
+    expect(w.ok).toBe(true);
+    expect(w.file).toBe(join(paths.dest, 'ledger_export_kabu.txt'));
+    const text = readFileSync(w.file!, 'utf-8');
+    // 1行目は meta と **同じ formatter** の出力(書式の二重定義を作らない)。
+    expect(text.split('\n')[0]).toBe(formatLedgerExportStatus(results, at, paths.dest));
+    expect(text).toContain('generator_proposals=4件');
+    expect(text).toContain('shadow_exits=原本なし');
+    // ★ファイル更新時刻ではなく、中身に「いつの状態か」が入っている。
+    expect(text).toContain(jstStamp(at));
+    // 生の JSON も入っていて機械可読(読み手が state を直接判定できる)。
+    const json = JSON.parse(text.trim().split('\n').pop()!) as { at: number; results: { state: string }[] };
+    expect(json.at).toBe(at);
+    expect(json.results.map(r => r.state)).toEqual(['ok', 'missing']);
+    // 一時ファイルを残さない。
+    expect(existsSync(`${w.file}.tmp`)).toBe(false);
+  });
+
+  it('2回目は上書きされ、古い状態が残らない', () => {
+    makeLedger(paths.gen, 'proposals', 1);
+    const shared = openDb(':memory:');
+    const first = writeLedgerExportStatus(shared, [], 1_700_000_000_000, paths.dest);
+    writeLedgerExportStatusFile(paths.dest, first, 'kabu');
+    const second = writeLedgerExportStatus(
+      shared,
+      [exportLedgerSnapshot(specOf('generator_proposals', paths.gen, 'proposals'), paths.dest, 1_700_000_003_000, 'kabu')],
+      1_700_000_003_000, paths.dest,
+    );
+    shared.close();
+    const w = writeLedgerExportStatusFile(paths.dest, second, 'kabu');
+    const text = readFileSync(w.file!, 'utf-8');
+    expect(text).toContain('generator_proposals=1件');
+    expect(text).toContain(jstStamp(1_700_000_003_000));
+    expect(text).not.toContain(jstStamp(1_700_000_000_000));
+  });
+
+  it('書出先が未設定なら書かない(理由を値で返す・例外は投げない)', () => {
+    const shared = openDb(':memory:');
+    const hb = writeLedgerExportStatus(shared, [], 1, '');
+    shared.close();
+    const w = writeLedgerExportStatusFile('', hb, 'kabu');
+    expect(w.ok).toBe(false);
+    expect(w.file).toBeNull();
+    expect(w.error).toContain('未設定');
+  });
+
+  it('★書けない書出先(既存ファイルをフォルダとして指す)でも例外を出さず、理由を返す', () => {
+    const notADir = join(dir, 'blocked');
+    writeFileSync(notADir, 'x');
+    const shared = openDb(':memory:');
+    const hb = writeLedgerExportStatus(shared, [], 1, notADir);
+    shared.close();
+    const w = writeLedgerExportStatusFile(notADir, hb, 'kabu');
+    expect(w.ok).toBe(false);
+    expect(w.error).toBeTruthy();
+  });
+
+  it('ファイル名にホストが入る(複数PCの状態が衝突しない)', () => {
+    expect(ledgerExportStatusFileName('kabu-pc')).toBe('ledger_export_kabu-pc.txt');
   });
 });

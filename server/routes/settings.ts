@@ -15,7 +15,9 @@ import {
 import { normalizeCaller } from '../llm/caller.js';
 import { resolveVariant } from '../variant.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
-import { reloadProviders, getProviderStatus, testAllProviders } from '../llm/openai.js';
+import { reloadProviders, getProviderStatus } from '../llm/openai.js';
+import { checkProviderModels } from '../llm/modelCheck.js';
+import { DEFAULT_LLM_MODELS, LLM_MODEL_CONFIG_KEYS, resolveLlmModel, type LLMProviderName } from '../config.js';
 import { openDb, resolveDbPath, getMeta } from '../db/store.js';
 import { restartPriceLoop } from '../loops/priceLoop.js';
 import { restartNewsLoop } from '../loops/newsLoop.js';
@@ -43,6 +45,8 @@ const EXPLICIT_PARAM_KEYS = [
   'kimiKey', 'geminiKey', 'groqKey', 'openaiKey', 'webSearchKey',
   'basedataUser', 'basedataPass', 'basedataSaveDir', 'githubToken', 'basedataAutoPublish',
   'webSearchModel', 'webSearchOpenaiModel',
+  // ★LLM プロバイダのモデル名(可視・空欄=既定に戻す)。Web検索モデルと同じ扱い。
+  'geminiModel', 'groqModel', 'kimiModel', 'openaiModel',
   'scalpBias', 'scalpRangeEnabled', 'dotenEnabled', 'rangeReevalEnabled',
   'indicatorsEnabled', 'aiTechnicalEnabled', 'scalpChartFallbackText',
   'doubleFormingEnabled', 'nwaveEnabled',
@@ -115,6 +119,16 @@ function readAutoLastRun(): string {
   } catch { return ''; }
 }
 
+// ★LLM モデル欄のスナップショット。'raw'=config の保存値(空欄=未設定)/ 'effective'=実際に使う値(既定込み)。
+//   プロバイダの列挙は LLM_MODEL_CONFIG_KEYS(config.ts)が SSOT=プロバイダを足しても書き漏れない。
+function llmModelSnapshot(config: UserConfig, kind: 'raw' | 'effective'): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of Object.keys(LLM_MODEL_CONFIG_KEYS) as LLMProviderName[]) {
+    out[name] = kind === 'raw' ? (config[LLM_MODEL_CONFIG_KEYS[name]] ?? '') : resolveLlmModel(name);
+  }
+  return out;
+}
+
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
   // ★公開版(lite)は提案生成器(分析用)を持たない=2つ目の API キーの欄も日次予算の欄も出さない。
@@ -152,6 +166,12 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     basedataAutoLastRun: readAutoLastRun(),   // ★自動公開の直近結果サマリ(meta・無ければ '')
     webSearchModel: config.webSearchModel ?? '',
     webSearchOpenaiModel: config.webSearchOpenaiModel ?? '',   // OpenAI Web検索モデル(空欄なら既定)
+    // ★LLM プロバイダのモデル名。raw=保存値(空欄=未設定=既定)/ effective=実際に使う値 /
+    //   defaults=コードの既定(プレースホルダ表示用)。3つ出すのは「空欄なのに何が動いているのか」を
+    //   画面から分かるようにするため(既定値が画面に無いと、未設定と故障の区別がつかない)。
+    llmModels: llmModelSnapshot(config, 'raw'),
+    llmModelsEffective: llmModelSnapshot(config, 'effective'),
+    llmModelDefaults: { ...DEFAULT_LLM_MODELS },
     scalpBias: resolveScalpBias(),   // AIエントリー: バイアス(未設定は 'none')。scalpLcCeilingYen は下の数値展開に含まれる。
     scalpRangeEnabled: resolveScalpRangeEnabled(),   // AIエントリー: レンジ両面ストラドル(★実験終了=未設定は false=OFF)。
     dotenEnabled: resolveScalpDotenEnabled(),   // ★ドテン(反転)許可(既定OFF)。monitor2 専用UIで切替。
@@ -201,9 +221,13 @@ export function getSettingsHandler(_req: Request, res: Response): void {
   });
 }
 
-// GET /api/settings/test — 各プロバイダのAPIキーが「実際に有効か」を1トークンの ping で確認する。
-// 「設定済み」と「有効」は別なので、キーが本当に通るかを診断する設定画面専用エンドポイント。
-// ★?pool=generator で **生成器プールのキー**を検証する(省略/'default' は従来と完全に同じ)。
+// GET /api/settings/test — 各プロバイダについて「キーが実際に有効か」＋「**設定中のモデルが
+// そのキーで使えるか**」を確認する(設定画面専用の診断)。
+// ★判定は OpenAI 互換の `GET /v1/models`(トークン非消費)で行い、使えない場合は
+//   **そのキーで使えるモデルの一覧**を返す。「404」で終わらせず次の一手が決まるようにするため
+//   (Moonshot の "Not found the model … or Permission denied" はキーごとに違う=こちらでは選べない)。
+//   一覧が取れないプロバイダは従来どおり 1トークンの ping に落ちる(server/llm/modelCheck.ts)。
+// ★?pool=generator で **生成器プールのキー**を検証する(省略/'default' は従来と同じキー選択)。
 //   検証は実際に外部へリクエストを送るので、プールごとに正しいキー(resolveApiKeyForPool)で送る。
 //   未知の pool は黙って default に倒さず 400(caller と同じ規約: 失敗は声を出す)。
 export async function testSettingsHandler(req: Request, res: Response): Promise<void> {
@@ -211,7 +235,7 @@ export async function testSettingsHandler(req: Request, res: Response): Promise<
   // 受理値の一覧は normalizeCaller(caller.ts)が SSOT。ここはクエリ名に合わせて語だけ言い換える。
   if (!pool.ok) { res.status(400).json({ error: pool.error.replace(/^caller/, 'pool') }); return; }
   try {
-    const results = await testAllProviders(pool.caller);
+    const results = await checkProviderModels(pool.caller);
     res.json({ pool: pool.caller, results });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -231,6 +255,11 @@ interface SettingsBody {
   basedataAutoPublish?: boolean | null;   // ★自動公開 有効/無効(null=無効=未設定で保存)
   webSearchModel?: string | null;    // Web検索用 Gemini モデル
   webSearchOpenaiModel?: string | null;  // OpenAI Web検索モデル
+  // ★LLM プロバイダのモデル名(可視・空欄=既定に戻す)。未指定=変更なし。
+  geminiModel?: string | null;
+  groqModel?: string | null;
+  kimiModel?: string | null;
+  openaiModel?: string | null;
   scalpBias?: string | null;         // AIエントリー: バイアス(long|short|none)
   scalpRangeEnabled?: boolean | null;  // AIエントリー: レンジ両面ストラドル(true=ON / null=既定ONに戻す)
   dotenEnabled?: boolean | null;       // ★ドテン(反転)許可(true=ON / false/null=OFF=既定)
@@ -510,6 +539,12 @@ export function postSettingsHandler(req: Request, res: Response): void {
 
     webSearchModel: applyVisibleField(existing.webSearchModel, body.webSearchModel), // 可視: 空欄=既定に戻す
     webSearchOpenaiModel: applyVisibleField(existing.webSearchOpenaiModel, body.webSearchOpenaiModel), // 可視: 空欄=既定に戻す
+    // ★LLM プロバイダのモデル名: 可視フィールド(空欄=未設定で保存=コードの既定に戻る)。
+    //   保存後の reloadProviders + LLM_PROVIDERS の getter で、再起動なしに次の呼び出しから効く。
+    geminiModel: applyVisibleField(existing.geminiModel, body.geminiModel),
+    groqModel: applyVisibleField(existing.groqModel, body.groqModel),
+    kimiModel: applyVisibleField(existing.kimiModel, body.kimiModel),
+    openaiModel: applyVisibleField(existing.openaiModel, body.openaiModel),
     // ★lite は最上位の bias を据え置く(lite の変更は config.lite にだけ入る)。full は従来どおり。
     scalpBias: isLite ? existing.scalpBias : biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)

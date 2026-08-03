@@ -27,7 +27,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { existsSync, rmSync, renameSync, statSync, mkdirSync } from 'node:fs';
+import { existsSync, rmSync, renameSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { getMeta, setMeta } from './store.js';
@@ -162,6 +162,52 @@ export function writeLedgerExportStatus(
   setMeta(sharedDb, LEDGER_EXPORT_KEY, JSON.stringify(hb));
   setMeta(sharedDb, LEDGER_EXPORT_STATUS_KEY, formatLedgerExportStatus(results, now, destDir));
   return hb;
+}
+
+/** 書き出し先に置く状態ファイル名 `ledger_export_<host>.txt`(prices_<host>.db と同じ命名規則)。 */
+export function ledgerExportStatusFileName(host: string = hostLabel()): string {
+  return `ledger_export_${host}.txt`;
+}
+
+/** 状態ファイルの中身(1行目=人が読む状態・以降=生の JSON)。**書式は formatLedgerExportStatus に一本化**。
+ *  ★1行目に「この行を書いた時刻」が入るので、ファイルが凍っていること自体が中身から分かる。 */
+export function formatLedgerExportStatusFile(hb: LedgerExportHeartbeat): string {
+  return [
+    formatLedgerExportStatus(hb.results, hb.at, hb.destDir),
+    '',
+    '# この行は collector が毎時の書き出しブロックで上書きする。上の時刻が古ければ collector 自体が止まっている。',
+    '# (ファイルの更新時刻ではなく、上の時刻が「中身の時刻」。)',
+    JSON.stringify(hb),
+    '',
+  ].join('\n');
+}
+
+/**
+ * ★循環を断つ: 書き出しの結末を **書き出し先そのもの** にも平文で置く。
+ *
+ * 従来は共有DB(jp225.db)の meta にだけ書いていた。その meta が別PCへ届く経路は trade2 の
+ * 30分ごとの価格DBスナップショットしか無く、**collector が止まると meta も止まる** ため、
+ * 読み手には「09:20:33 の状態」が現在の状態として見えていた(実害: 台帳が出ていない原因の
+ * 特定に2時間)。書き出し先に直接置けば、台帳ファイルと状態が同じ場所・同じ鮮度で並ぶ。
+ *
+ * 失敗しても例外を外に出さない(状態が書けないことで収集を止めない)。結末は戻り値に載る。
+ */
+export function writeLedgerExportStatusFile(
+  destDir: string, hb: LedgerExportHeartbeat, host: string = hostLabel(),
+): { ok: boolean; file: string | null; error: string | null } {
+  if (!destDir) return { ok: false, file: null, error: '書出先が未設定' };
+  const file = join(destDir, ledgerExportStatusFileName(host));
+  const tmp = `${file}.tmp`;
+  try {
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(tmp, formatLedgerExportStatusFile(hb), 'utf-8');
+    try { if (existsSync(file)) rmSync(file); } catch { /* 上書き rename が使える環境ではここは不要 */ }
+    renameSync(tmp, file);                      // 部分書き込みのファイルを同期フォルダに置かない
+    return { ok: true, file, error: null };
+  } catch (e) {
+    try { if (existsSync(tmp)) rmSync(tmp); } catch { /* ignore */ }
+    return { ok: false, file: null, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** 読み手側(スナップショットを開いた人)。★値が更新されなくなったことを「正常」と誤読させない。 */

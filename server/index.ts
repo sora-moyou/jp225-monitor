@@ -48,6 +48,8 @@ import { setCooldownMs } from './alertCooldown.js';
 import { resolveVariant } from './variant.js';
 import { startBasedataAutoScheduler } from './basedata/autoPublish.js';
 import { normalizeCorsPath } from './corsPolicy.js';
+import { startGeneratorHeartbeat, stopGeneratorHeartbeat } from './db/generatorHeartbeat.js';
+import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
@@ -174,6 +176,18 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   void loadExitImpl().then(kind => console.log(`[server] exit impl = ${kind}`));
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
+  // ★提案生成器の状態(有効か/生きているか/標本/従属停止)を共有DBの meta に定期記録する。
+  //   別PCの書き出しから「無効なのか・止まったのか・起動していないのか」を判別するため
+  //   (ティック保管・台帳書き出しと同じ meta 経由=trade2 の30分スナップショットに乗る)。
+  //   分析用なので lite では起動しない(モジュール側でゲート)。記録専用=取引挙動に関与しない。
+  startGeneratorHeartbeat();
+  // ★収集デーモン(collector)の死活を **生きている側(monitor)が** 判定して記録する。
+  //   collector はデタッチ起動で、死んでも次にアプリを起動するまで誰も再起動しない。実運用で
+  //   心拍が10:13:44 に凍結したのに画面にも書き出しにも何も出ず、誰も気づかなかった。
+  //   状態を collector 自身に書かせると死んだ瞬間に状態も凍る(誤診断の原因)ので、ここで書く。
+  //   ★lite でもゲートしない: 収集デーモンは lite でも走り、止まれば同じ被害が出る。
+  //   ★記録専用=取引挙動には一切関与しない。
+  startCollectorWatch();
   // ★基礎データ自動公開スケジューラは monitor2(full)専用。lite では絶対に起動しない(ハードゲート)。
   if (resolveVariant() === 'full') startBasedataAutoScheduler();
 
@@ -203,6 +217,8 @@ const server = app.listen(PORT, '127.0.0.1', () => {
 // 終了時にハートビート interval を止めてプロセスが即座に落ちられるようにする。
 function shutdown(): void {
   stopHeartbeat();
+  stopGeneratorHeartbeat();
+  stopCollectorWatch();
   server.close();
 }
 process.on('SIGTERM', shutdown);

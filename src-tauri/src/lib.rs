@@ -25,12 +25,91 @@ fn instance_lock_path() -> Option<std::path::PathBuf> {
     Some(dir.join("app-instance.lock"))
 }
 
-// variant に対応する exe イメージ名。pid 再利用の誤 kill を防ぐ検証に使う。
-fn expected_image_for(variant: &str) -> &'static str {
-    if variant == "full" {
-        "JP225 Monitor2.exe"
-    } else {
-        "JP225 Monitor.exe"
+// ★サイドカー spawn の成否を1行だけ残す(%APPDATA%/jp225-monitor/sidecar-spawn.log)。
+//
+//   これまで spawn の失敗は eprintln! だけ = Rust のコンソール止まりで、運用PC(別マシン)からは
+//   「そもそも起動されたのか」すら分からなかった。生成器が動かない件の切り分けで最初に要る事実なので、
+//   ファイルに残す。**このファイルを別PCへ運ぶのは monitor(server/spawnLog.ts が読んで meta に載せ、
+//   trade2 の30分スナップショットに乗る)**= Rust は書き出しフォルダの解決を知らなくてよい。
+//
+//   ★失敗しても絶対にアプリを止めない(すべて let _ = で握る)。
+//   ★上限行数で切り詰める(毎起動 数行なので、末尾 200 行あれば十分に遡れる)。
+const SPAWN_LOG_MAX_LINES: usize = 200;
+
+fn spawn_log_path() -> Option<std::path::PathBuf> {
+    let appdata = std::env::var("APPDATA").ok()?;
+    let dir = std::path::Path::new(&appdata).join("jp225-monitor");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("sidecar-spawn.log"))
+}
+
+fn log_spawn(line: &str) {
+    eprintln!("{line}");   // 従来どおりコンソールにも出す(挙動を減らさない)
+    let Some(path) = spawn_log_path() else { return };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut lines: Vec<String> = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    lines.push(format!("{stamp} {line}"));
+    let start = lines.len().saturating_sub(SPAWN_LOG_MAX_LINES);
+    let out = lines[start..].join("\n") + "\n";
+    let _ = std::fs::write(&path, out);
+}
+
+// ★本体の実行ファイル名。**両 variant で同じ**。
+//
+//   NSIS の MAINBINARYNAME は Cargo の package name(jp225-monitor)由来で、
+//   productName("JP225 Monitor2" / "JP225 Monitor")ではない。実際に走るプロセスは
+//   full も lite も `jp225-monitor.exe`(実測: `taskkill /IM jp225-monitor.exe` で配布アプリが落ちる)。
+//
+//   ここは以前 productName を返していた = tasklist が **1件も一致しない** = 生存判定が常に false
+//   = 相互排他が完全に死んでいた(full は lite を kill せず、lite は full が居ても起動した)。
+//
+//   ★イメージ名では variant を区別できない(同名だから)。variant はロックファイルの
+//     `variant` フィールドが唯一の出どころで、イメージ名は **pid 再利用の誤 kill を防ぐ検証にだけ** 使う。
+//   ★literal で持たない: NSIS の MAINBINARYNAME は Cargo の package name そのものなので、
+//     同じ出どころ(CARGO_PKG_NAME)から作る = パッケージ名を変えても勝手に追従する。
+const MAIN_IMAGE: &str = concat!(env!("CARGO_PKG_NAME"), ".exe");
+
+// 相互排他の判断結果。★純粋に決めてからでないと「誰を kill するか」を間違える。
+#[derive(Debug, PartialEq, Eq)]
+enum Exclusion {
+    /// 何もしない(自分がロックを取るだけ)。
+    Proceed,
+    /// lite が生きている → kill してから自分が取る(full だけ)。
+    KillOther(u32),
+    /// full が生きている → 自分は起動しない(lite だけ)。
+    Yield,
+}
+
+// 相互排他の判断(純関数=テストできる)。★誤 kill をここで防ぐ:
+//   ・ロックが無い/壊れている → Proceed(何も殺さない)
+//   ・ロックの pid が **自分自身** → Proceed(pid 再利用で自分の pid が書かれていても自殺しない)
+//   ・pid が生きていない、またはイメージ名が本体と違う(pid 再利用の別プロセス)→ Proceed
+//   ・同じ variant 同士 → Proceed(相互排他は monitor2 と monitor の間の話)
+fn decide_exclusion(
+    variant: &str,
+    existing: Option<&InstanceLock>,
+    our_pid: u32,
+    alive: &dyn Fn(u32) -> bool,
+) -> Exclusion {
+    let Some(lock) = existing else { return Exclusion::Proceed };
+    if lock.pid == our_pid {
+        return Exclusion::Proceed;
+    }
+    if !alive(lock.pid) {
+        return Exclusion::Proceed;
+    }
+    match (variant, lock.variant.as_str()) {
+        ("full", "lite") => Exclusion::KillOther(lock.pid),
+        ("lite", "full") => Exclusion::Yield,
+        _ => Exclusion::Proceed,
     }
 }
 
@@ -94,6 +173,81 @@ fn stop_collector() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lock(variant: &str, pid: u32) -> InstanceLock {
+        InstanceLock { variant: variant.to_string(), pid }
+    }
+    fn alive_yes(_: u32) -> bool { true }
+    fn alive_no(_: u32) -> bool { false }
+    const ALIVE: &dyn Fn(u32) -> bool = &alive_yes;
+    const DEAD: &dyn Fn(u32) -> bool = &alive_no;
+
+    #[test]
+    fn no_lock_proceeds() {
+        assert_eq!(decide_exclusion("full", None, 100, ALIVE), Exclusion::Proceed);
+        assert_eq!(decide_exclusion("lite", None, 100, ALIVE), Exclusion::Proceed);
+    }
+
+    #[test]
+    fn full_kills_live_lite() {
+        assert_eq!(
+            decide_exclusion("full", Some(&lock("lite", 42)), 100, ALIVE),
+            Exclusion::KillOther(42)
+        );
+    }
+
+    #[test]
+    fn lite_yields_to_live_full() {
+        assert_eq!(
+            decide_exclusion("lite", Some(&lock("full", 42)), 100, ALIVE),
+            Exclusion::Yield
+        );
+    }
+
+    #[test]
+    fn dead_lock_is_ignored() {
+        assert_eq!(decide_exclusion("full", Some(&lock("lite", 42)), 100, DEAD), Exclusion::Proceed);
+        assert_eq!(decide_exclusion("lite", Some(&lock("full", 42)), 100, DEAD), Exclusion::Proceed);
+    }
+
+    // ★誤 kill 防止その1: pid 再利用で自分の pid がロックに書かれていても自殺しない。
+    #[test]
+    fn never_kills_self() {
+        assert_eq!(decide_exclusion("full", Some(&lock("lite", 100)), 100, ALIVE), Exclusion::Proceed);
+        assert_eq!(decide_exclusion("lite", Some(&lock("full", 100)), 100, ALIVE), Exclusion::Proceed);
+    }
+
+    // ★誤 kill 防止その2: 同じ variant 同士は相互排他の対象ではない(kill しない)。
+    #[test]
+    fn same_variant_is_not_excluded() {
+        assert_eq!(decide_exclusion("full", Some(&lock("full", 42)), 100, ALIVE), Exclusion::Proceed);
+        assert_eq!(decide_exclusion("lite", Some(&lock("lite", 42)), 100, ALIVE), Exclusion::Proceed);
+    }
+
+    // ★誤 kill 防止その3: 生存判定は「pid が居る」だけでは足りず本体のイメージ名と一致すること。
+    //   ここでは alive クロージャがその検証(is_alive_with_image)の代役。
+    #[test]
+    fn alive_check_receives_the_locked_pid() {
+        let seen = std::cell::Cell::new(0u32);
+        let probe: &dyn Fn(u32) -> bool = &|pid| { seen.set(pid); true };
+        assert_eq!(
+            decide_exclusion("full", Some(&lock("lite", 777)), 100, probe),
+            Exclusion::KillOther(777)
+        );
+        assert_eq!(seen.get(), 777);
+    }
+
+    // 本体のイメージ名は両 variant 共通(productName ではない)。
+    #[test]
+    fn main_image_is_the_cargo_binary_name() {
+        assert_eq!(MAIN_IMAGE, "jp225-monitor.exe");
+    }
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -115,37 +269,53 @@ pub fn run() {
 
             // ── 相互排他(共有ロック・monitor2 優先)──
             // 生存判定は pid 実在＋イメージ名一致(誤 kill 防止)。file/parse 失敗はロック無し扱い。
+            let mut yielded = false;
             if let Some(lock_path) = instance_lock_path() {
                 let existing = read_instance_lock(&lock_path);
-                if variant == "full" {
-                    // full(monitor2): lite が生きていれば kill して優先。
-                    if let Some(lock) = &existing {
-                        if lock.variant == "lite"
-                            && is_alive_with_image(lock.pid, expected_image_for("lite"))
-                        {
-                            let _ = std::process::Command::new("taskkill")
-                                .args(["/PID", &lock.pid.to_string(), "/F", "/T"])
-                                .output();
-                        }
+                let alive = |pid: u32| is_alive_with_image(pid, MAIN_IMAGE);
+                match decide_exclusion(variant, existing.as_ref(), our_pid, &alive) {
+                    Exclusion::KillOther(pid) => {
+                        // full(monitor2)優先: 生きている lite を落としてから自分が取る。
+                        log_spawn(&format!("[exclusion] full: kill lite pid={pid}"));
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/PID", &pid.to_string(), "/F", "/T"])
+                            .output();
+                        write_instance_lock(&lock_path, variant, our_pid);
                     }
-                    // 有無に関わらず自分でロックを上書き取得(=優先)。
-                    write_instance_lock(&lock_path, variant, our_pid);
-                } else {
-                    // lite: full(monitor2)が生きていれば起動しない(ダイアログ→exit)。
-                    if let Some(lock) = &existing {
-                        if lock.variant == "full"
-                            && is_alive_with_image(lock.pid, expected_image_for("full"))
-                        {
-                            app.dialog()
+                    Exclusion::Yield => {
+                        // lite: full(monitor2)が生きているので起動しない(ダイアログ→exit)。
+                        //
+                        // ★ダイアログは **メインスレッドで出さない**。tauri-plugin-dialog は
+                        //   blocking_show について「it cannot be executed on the main thread as it will
+                        //   freeze your application」と明示的に禁じており、ここ(setup)はメインスレッド。
+                        //   いまのスタックでは偶々固まらないだけで、依存を上げた瞬間に固まる構造だった。
+                        //   しかも相互排他自体がずっと壊れていた(イメージ名不一致)ので、この経路は
+                        //   **本番で一度も実行されたことがない** = 固まっても誰も気づけない。
+                        // ★別スレッドで出し、閉じられた時点で終了する。メインスレッドは即座に戻り、
+                        //   `yielded` によって **サイドカーを1本も spawn せずに** setup を終える
+                        //   (= 起動しない、という結末は1ミリも変えない)。
+                        log_spawn("[exclusion] lite: monitor2 is running — not starting");
+                        let handle = app.handle().clone();
+                        std::thread::spawn(move || {
+                            handle.dialog()
                                 .message("monitor2 が起動中のため monitor は起動できません。monitor2 を終了してから起動してください。")
                                 .title("JP225 Monitor")
                                 .blocking_show();
                             std::process::exit(0);
-                        }
+                        });
+                        // ★ダイアログを出したのに固まっていない、という事実そのものを残す
+                        //   (この行が spawn 記録に出る = メインスレッドが先へ進んだ証拠)。
+                        log_spawn("[exclusion] lite: dialog shown on a worker thread — main thread continues");
+                        yielded = true;
                     }
-                    // full が居ない/死んでいれば自分で取得。
-                    write_instance_lock(&lock_path, variant, our_pid);
+                    Exclusion::Proceed => {
+                        write_instance_lock(&lock_path, variant, our_pid);
+                    }
                 }
+            }
+            // ★譲った(lite)ときは、ここから先(サイドカー / collector / 生成器の spawn)を一切やらない。
+            if yielded {
+                return Ok(());
             }
 
             // サイドカー名は "jp225-sidecar"。Rust クレート名 "jp225-monitor" と
@@ -193,8 +363,10 @@ pub fn run() {
             //   公開版でも回してしまう(ディスクを永久に食う)。
             match app.shell().sidecar("jp225-collector") {
                 Ok(cmd) => match cmd.env("MONITOR_VARIANT", variant).spawn() {
-                    Ok((mut crx, _child)) => {
-                        // _child は kill せず drop に任せる(=生存)。stderr のみログ。
+                    Ok((mut crx, cchild)) => {
+                        log_spawn(&format!("[collector] spawned pid={}", cchild.pid()));
+                        // kill せず drop に任せる(=生存)。stderr のみログ。
+                        drop(cchild);
                         tauri::async_runtime::spawn(async move {
                             while let Some(event) = crx.recv().await {
                                 if let CommandEvent::Stderr(line) = event {
@@ -203,9 +375,9 @@ pub fn run() {
                             }
                         });
                     }
-                    Err(e) => eprintln!("[collector] spawn failed: {e}"),
+                    Err(e) => log_spawn(&format!("[collector] spawn failed: {e}")),
                 },
-                Err(e) => eprintln!("[collector] sidecar resolve failed: {e}"),
+                Err(e) => log_spawn(&format!("[collector] sidecar resolve failed: {e}")),
             }
 
             // 提案生成器(分析用)をデタッチ起動。collector と同じ流儀(SidecarState に入れない=
@@ -219,20 +391,33 @@ pub fn run() {
             if variant == "full" {
                 match app.shell().sidecar("jp225-generator") {
                     Ok(cmd) => match cmd.env("MONITOR_VARIANT", variant).spawn() {
-                        Ok((mut grx, _child)) => {
-                            // _child は kill せず drop に任せる(=生存)。stderr のみログ。
+                        Ok((mut grx, child)) => {
+                            // ★spawn できた事実(と pid)を残す。ここが無いと「起動されたのか」が
+                            //   別PCから一切分からない(生成器が動かない件で最初に要る事実)。
+                            log_spawn(&format!("[generator] spawned pid={}", child.pid()));
+                            // _child は kill せず drop に任せる(=生存)。
+                            drop(child);
+                            // ★終了と stderr を残す: 即死(SEA が起動できない等)を無音にしない。
                             tauri::async_runtime::spawn(async move {
                                 while let Some(event) = grx.recv().await {
-                                    if let CommandEvent::Stderr(line) = event {
-                                        eprintln!("[generator:err] {}", String::from_utf8_lossy(&line).trim_end());
+                                    match event {
+                                        CommandEvent::Stderr(line) => {
+                                            eprintln!("[generator:err] {}", String::from_utf8_lossy(&line).trim_end());
+                                        }
+                                        CommandEvent::Terminated(payload) => {
+                                            log_spawn(&format!("[generator] terminated code={:?}", payload.code));
+                                        }
+                                        _ => {}
                                     }
                                 }
                             });
                         }
-                        Err(e) => eprintln!("[generator] spawn failed: {e}"),
+                        Err(e) => log_spawn(&format!("[generator] spawn failed: {e}")),
                     },
-                    Err(e) => eprintln!("[generator] sidecar resolve failed: {e}"),
+                    Err(e) => log_spawn(&format!("[generator] sidecar resolve failed: {e}")),
                 }
+            } else {
+                log_spawn("[generator] skipped (variant=lite)");
             }
 
             Ok(())

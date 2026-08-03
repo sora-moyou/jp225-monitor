@@ -2,6 +2,10 @@
 // server/* の従来 importer が './config.js' から取れるよう再export する(web は core を直接 import)。
 export { INSTRUMENTS } from '../core/instruments.js';
 
+// ★LLM モデル名を設定から解決するために設定ストアを参照する(既存の webSearchModel と同じ流儀)。
+//   configStore は config.ts を import しないので循環しない(configStore → variant/config/*Resolvers のみ)。
+import { loadConfig } from './configStore.js';
+
 export const RSS_FEEDS = {
   ja: [
     { name: 'Yahoo News',     url: 'https://news.yahoo.co.jp/rss/categories/business.xml' },
@@ -205,23 +209,71 @@ export interface LLMProvider {
   chatModel: string;   // chat 用 (品質重視)
 }
 
+// ─── モデル名は「設定で変えられる」ものにする ───────────────────────────────
+//
+// ★なぜ: モデル名をコードに固定すると、提供元がモデルを廃止/改名したり、**キーごとに使える
+//   モデルが違ったり**(Moonshot の "Not found the model … or Permission denied")するだけで
+//   アプリのリリースが必要になる。実際 kimi-k2-0905-preview → kimi-latest と2回リリースした。
+//   モデル名は提供元の都合で動く外部の識別子であって、こちらのロジックではない=設定に置く。
+//
+// ★どの流儀に従うか: 既に設定可能な Web検索モデル(webSearchModel / webSearchOpenaiModel)と
+//   **同じ仕組み**をそのまま使う(新機構を作らない):
+//     - 保存先 = config.json の可視フィールド(<provider>Model)。
+//     - 空欄/未設定 = ここの既定値(=後方互換。設定しなければ挙動は1ミリも変わらない)。
+//     - 設定画面(⚙️ APIキー欄の直下)で編集し、保存で reloadProviders 経由で反映。
+//
+// ★explain 用(model)と chat 用(chatModel)は現在どのプロバイダも同じ文字列なので、設定も
+//   プロバイダごとに1つ。用途で分ける必要が出たらそのとき増やす(今は欄を増やすほうが害)。
+
+/** モデル未設定時の既定(=従来コードに固定されていた値そのもの)。 */
+export const DEFAULT_LLM_MODELS = {
+  // "latest" エイリアス=新版に自動追従し、バージョン固定モデルの廃止(例: gemini-2.5-flash 廃止→404)で壊れない。
+  // 実測(2026-08-03 GET /v1beta/openai/models): gemini-flash-latest は当キーの一覧に存在。
+  gemini: 'gemini-flash-latest',
+  // 実測(2026-08-03 GET /openai/v1/models): llama-3.3-70b-versatile は当キーの一覧に存在。
+  groq: 'llama-3.3-70b-versatile',
+  // ★Kimi は「キーごとに使えるモデルが違う」ことが判明している(kimi-k2-0905-preview も kimi-latest も
+  //   実アカウントで 404 "… or Permission denied")。**こちらが名前を選び直しても直らない**ので、
+  //   既定は据え置き、⚙️「キーを検証」で **そのキーで使えるモデル一覧**を出して選んでもらう。
+  kimi: 'kimi-latest',
+  openai: 'gpt-4o-mini',
+} as const;
+
+export type LLMProviderName = keyof typeof DEFAULT_LLM_MODELS;
+
+/** プロバイダ名 → config.json のモデル欄。設定画面/保存経路もこの対応表を SSOT にする。 */
+export const LLM_MODEL_CONFIG_KEYS = {
+  gemini: 'geminiModel',
+  groq: 'groqModel',
+  kimi: 'kimiModel',
+  openai: 'openaiModel',
+} as const satisfies Record<LLMProviderName, string>;
+
+/** 使用するモデル名。config.json の <provider>Model(trim・空欄は無視)→ 既定。 */
+export function resolveLlmModel(name: LLMProviderName): string {
+  const raw = loadConfig()[LLM_MODEL_CONFIG_KEYS[name]];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : DEFAULT_LLM_MODELS[name];
+}
+
+// model/chatModel は **getter**。プロバイダ状態(providers.ts)は起動時にこのオブジェクトを掴むが、
+// 実際にモデル名を読むのは LLM を呼ぶ瞬間なので、設定を保存した時点の値がそのまま効く
+// (loadConfig は mtime キャッシュ付き=毎回ファイルを読み直すわけではない)。
 export const LLM_PROVIDERS: LLMProvider[] = [
-  // 1. Gemini (品質高、無料)。モデルは "latest" エイリアスで固定=新版に自動追従し、
-  //    バージョン固定モデルの廃止(例: gemini-2.5-flash 廃止→404)で壊れないようにする。
+  // 1. Gemini (品質高、無料)
   {
     name: 'gemini',
     envVar: 'GEMINI_API_KEY',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-    model: 'gemini-flash-latest',       // 旧 gemini-2.5-flash-lite(廃止)。latest=現行GA Flash に追従。
-    chatModel: 'gemini-flash-latest',   // 旧 gemini-2.5-flash(廃止→404)。scalp-plan/chat が使用。
+    get model() { return resolveLlmModel('gemini'); },
+    get chatModel() { return resolveLlmModel('gemini'); },   // scalp-plan/chat が使用
   },
   // 2. Groq (高速、無料、日次14400回 — 実質無制限)
   {
     name: 'groq',
     envVar: 'GROQ_API_KEY',
     baseURL: 'https://api.groq.com/openai/v1',
-    model: 'llama-3.3-70b-versatile',
-    chatModel: 'llama-3.3-70b-versatile',
+    get model() { return resolveLlmModel('groq'); },
+    get chatModel() { return resolveLlmModel('groq'); },
   },
   // 3. Kimi (Moonshot・安価で高性能・256kコンテキスト・テキスト専用)。無料枠(gemini/groq)の次・
   //    OpenAIより安い従量課金。ビジョン非対応なのでチャート画像入力は gemini/openai へ回る(VISION_PROVIDERS 参照)。
@@ -229,17 +281,15 @@ export const LLM_PROVIDERS: LLMProvider[] = [
     name: 'kimi',
     envVar: 'KIMI_API_KEY',
     baseURL: 'https://api.moonshot.ai/v1',
-    // ★kimi-k2-0905-preview は実アカウントで 404(権限/未提供)だった(2026-07-28)。"latest" エイリアスに変更=
-    //   自動追従(モデル廃止404に強い・gemini-flash-latest と同方針)。テキスト専用(ビジョンは gemini/openai)。
-    model: 'kimi-latest',
-    chatModel: 'kimi-latest',
+    get model() { return resolveLlmModel('kimi'); },
+    get chatModel() { return resolveLlmModel('kimi'); },
   },
   // 4. OpenAI (有料、最後の砦)
   {
     name: 'openai',
     envVar: 'OPENAI_API_KEY',
     baseURL: undefined,
-    model: 'gpt-4o-mini',
-    chatModel: 'gpt-4o-mini',
+    get model() { return resolveLlmModel('openai'); },
+    get chatModel() { return resolveLlmModel('openai'); },
   },
 ];

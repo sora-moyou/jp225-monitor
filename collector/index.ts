@@ -1,3 +1,8 @@
+// ★1行目: これより後の import が評価される前にファイルログを開く。
+//   末尾で installProcessFileLog() を呼ぶ形だと **import の途中で落ちた場合に1バイトも残らない**
+//   (SEA バイナリで起きうる代表的な失敗形)。落ちてから書くのでは間に合わない。
+import './logInstall.js';
+
 // 日経225 データ収集デーモン v0.5.00。公開 HTTP フィード(ajax_cme/ajax_fx)を 2秒ごとに DB へ。
 // v0.5.00: デーモン単独でアラート検知→DB記録(単一ライター・ハートビート調停)。アプリ閉でも24/7記録。
 // v0.7.20: 価格源を公開 HTTP のみに統一(socket / Yahoo backfill を全廃)。
@@ -17,7 +22,7 @@ import {
 } from '../server/db/tickArchiveHeartbeat.js';
 // ★台帳(提案生成器/影)の同期フォルダへの書き出し。ティックの日次書き出しと同じ置き場所・同じ間隔で、
 //   状態も同じ共有DB(jp225.db)の meta に残す。設計は server/db/ledgerExport.ts の冒頭参照。
-import { runLedgerExport, writeLedgerExportStatus, formatLedgerExportStatus } from '../server/db/ledgerExport.js';
+import { runLedgerExport, writeLedgerExportStatus, formatLedgerExportStatus, writeLedgerExportStatusFile } from '../server/db/ledgerExport.js';
 import { recordFeedPrices } from './record.js';
 // v0.7.20(全銘柄 HTTP 化): 価格の主経路を monitor の priceLoop と同一にする。socket / Yahoo realtime を全廃し、
 // 監視 4 銘柄すべてを公開 HTTP から取る: ajax_cme.js(NIY=F/YM=F/NQ=F)+ ajax_fx.js(JPY=X)。両者とも毎 GET
@@ -38,6 +43,12 @@ import { warmFromDb } from '../server/warmup.js';
 //   variant は Rust が collector にも MONITOR_VARIANT で渡す(src-tauri/src/lib.rs)。
 //   ★従来どおりの3日削除の短期ティック(共有DB)は **両 variant で維持** する。
 import { isAnalysisEnabled } from '../server/analysisGate.js';
+// ★死因の手がかりを残す。collector の出力は Rust のコンソール止まりで、異常終了は痕跡ゼロで消えていた
+//   (実運用で 10:13:44 に停止したが、なぜ止まったかを示すものが1バイトも残っていなかった)。
+//   ファイルログ(書き出しフォルダ / 無ければ %APPDATA%)に全出力を、起動と終了の節目だけを
+//   Rust が spawn の成否を書いているのと **同じ** sidecar-spawn.log にも相乗りさせる。
+import { recordProcessLogSignals } from '../server/processLog.js';
+import { appendSpawnLog, shouldReportStreak } from '../server/spawnLog.js';
 
 // バンドルした依存(express/rss-parser/https-proxy-agent 等)が出す非推奨警告(DEP0169 url.parse 等)を抑制。
 // 自前コードは url.parse 不使用。これは deprecation 種別のみを抑え、他の警告は残す。
@@ -106,6 +117,8 @@ async function main(): Promise<void> {
 
   let lastPrune = 0;
   let lastTickExport = 0;   // 0 = 起動直後に1回走らせる(取りこぼした過去日を拾う)
+  /** ★poll が連続で失敗している回数。握りつぶして周回を続ける経路が **無音にならない** ようにする。 */
+  let pollErrorStreak = 0;
   // ★ティック保管の健全性ハートビート用の状態。失敗と最終書き出しは「最後に分かっている事実」を
   //   持ち回り、ハートビートに毎回渡す(渡さない回は前回の値が meta 側で引き継がれる)。
   let lastTickHeartbeat = 0;   // 0 = 起動直後に1回書く(起動した瞬間から状態が見える)
@@ -143,8 +156,25 @@ async function main(): Promise<void> {
         // level 検知は bar 検知と別周期(8秒・monitor の levelsLoop と同じ)。毎ポール(2秒)呼んでよく、
         // 8秒スロットの重複は onLevelTick 内で弾く。bar 検知/crash/followup/prune の周期は不変。
         alerts.onLevelTick(Date.now());
+        // ★復帰も残す。「いつ壊れて・いつ戻ったか」が1ファイルで時系列に並ぶ。
+        if (pollErrorStreak > 0) {
+          const line = `[collector] poll が復帰しました(直前まで ${pollErrorStreak} 回連続で失敗)`;
+          console.log(line);
+          appendSpawnLog(line);
+          pollErrorStreak = 0;
+        }
       } catch (err) {
-        console.error('[collector] poll error:', err instanceof Error ? err.message : err);
+        // ★握って周回を続けるのは従来どおり(1回の失敗で収集を止めない)。変えたのは **無音をやめた** ことだけ。
+        //   ここで失敗し続けると心拍だけが打たれ、プロセスは生きたまま1件も記録しない
+        //   =「生きているが仕事をしていない」。心拍・pid・書き出しのどの網にもかからないので、
+        //   続いている事実を共用ログ(sidecar-spawn.log)へ出す
+        //   → monitor が meta(collector_watch.spawn)に載せ、既存の同期で別PCまで届く。
+        pollErrorStreak += 1;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[collector] poll error(連続 ${pollErrorStreak} 回):`, message);
+        if (shouldReportStreak(pollErrorStreak)) {
+          appendSpawnLog(`[collector] ★poll が ${pollErrorStreak} 回連続で失敗しています(プロセスは生存・記録は止まっています): ${message}`);
+        }
       }
       wait = POLL_MS;
     }
@@ -180,9 +210,14 @@ async function main(): Promise<void> {
       try {
         const now = Date.now();
         const results = runLedgerExport(tickExportDir, now);
-        writeLedgerExportStatus(db, results, now, tickExportDir);
-        const line = `[collector] ledger export: ${formatLedgerExportStatus(results, now, tickExportDir)}`;
-        if (results.some(r => r.state === 'error')) console.error(line); else console.log(line);
+        const hb = writeLedgerExportStatus(db, results, now, tickExportDir);
+        // ★状態を **書き出し先そのもの** にも置く(循環を断つ)。共有DBの meta だけだと、その meta が
+        //   別PCへ届く経路は trade2 の30分スナップショットしか無く、collector が止まると
+        //   「止まる直前の状態」が現在の状態として読めてしまう(実害: 2時間の誤診断)。
+        const fileStatus = writeLedgerExportStatusFile(tickExportDir, hb);
+        const line = `[collector] ledger export: ${formatLedgerExportStatus(results, now, tickExportDir)}`
+          + (fileStatus.ok ? ` | 状態ファイル=${fileStatus.file}` : ` | ★状態ファイル書込失敗: ${fileStatus.error}`);
+        if (results.some(r => r.state === 'error') || !fileStatus.ok) console.error(line); else console.log(line);
       } catch (e) {
         // ここが失敗すると書き出しの成否そのものが無音になるので、必ず声を出す。
         console.error('[collector] ledger export FAILED:', e instanceof Error ? e.message : String(e));
@@ -218,5 +253,10 @@ async function main(): Promise<void> {
   if (archiveDb) { try { archiveDb.close(); } catch { /* ignore */ } }
   console.log('[collector] stopped');
 }
+
+// ★ファイルログ自体は1行目の import(./logInstall.js)で **既に開いている**。
+//   ここで足すのはシグナルの記録だけ: main() が自分で listen している SIGINT/SIGTERM に限る
+//   (listener を新たに足すと Node の既定終了動作が止まり、挙動が変わってしまう)。
+recordProcessLogSignals(['SIGINT', 'SIGTERM']);
 
 void main();

@@ -18,6 +18,15 @@ export interface UserConfig {
   webSearchKey?: string;   // チャットの web_search(Gemini グラウンディング)専用キー。未設定なら共通 geminiKey に落ちる。
   webSearchModel?: string; // web_search 用の Gemini モデル(chatModel と別)。未設定は既定 gemini-flash-latest。
   webSearchOpenaiModel?: string; // Gemini キーが無い/枠切れ時に OpenAI で Web 検索するモデル。未設定は既定 gpt-4o-mini-search-preview。
+  // ★LLM プロバイダごとのモデル名(explain/chat 共通)。**未設定は config.ts の DEFAULT_LLM_MODELS**=
+  //   設定しなければ従来と同じ挙動。提供元がモデルを廃止/改名した、キーごとに使えるモデルが違う
+  //   (Moonshot の "Not found the model … or Permission denied")といった外部都合を、
+  //   リリースせずに設定だけで直せるようにするためのフィールド(webSearchModel と同じ流儀)。
+  //   解決は config.ts の resolveLlmModel()、対応表は LLM_MODEL_CONFIG_KEYS が SSOT。
+  geminiModel?: string;
+  groqModel?: string;
+  kimiModel?: string;
+  openaiModel?: string;
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
   // ★提案生成器(caller='generator')専用の API キー。**未設定なら共通キーへフォールバック**する。
   //   「今回キーを分けるかは未定・分けられる構造にする」への答え: プール分離(providers.ts)は既に

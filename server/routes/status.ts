@@ -10,6 +10,7 @@ import { openDb, resolveDbPath } from '../db/store.js';
 import { readGeneratorLedgerStatus, resolveGeneratorDbPath } from '../db/generatorStore.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { resolveGeneratorEnabled } from '../configStore.js';
+import { collectorStatusForApi } from '../collectorWatch.js';
 
 // ─── ★決済実装の「実態」を外から観測できるようにする ────────────────────────
 //
@@ -114,12 +115,28 @@ export async function statusHandler(_req: Request, res: Response): Promise<void>
       generatorEnabled: resolveGeneratorEnabled(),
     }
     : {};
+  // ★収集デーモン(collector)の死活。**両 variant 共通**(収集デーモンは lite でも走る)。
+  //   判定は monitor プロセスが持っている(server/collectorWatch.ts)。測れない環境では null を返し、
+  //   画面側は何も出さない = 存在しない機構の警告を出さない。
+  const collector = safeCollectorStatus();
   res.json({
     yahoo: getYahooStatus(),
     // ★既存フィールドは不変: llm は従来どおり **default プール**(実弾につながる経路)の状態。
     llm: getProviderStatus(),
     ...generator,
+    ...(collector ? { collector } : {}),
     // ★追加(additive): 決済実装の実態(種別・版・指紋)。実数値は含まない。
     exit: await exitStatus(),
   });
+}
+
+/** 収集デーモンの死活。**表示専用**なので、ここで例外を出して /api/status ごと 500 にしない
+ *  (状態を見に来た画面が「サーバが死んでいる」ように見えるのが一番困る)。 */
+function safeCollectorStatus(): ReturnType<typeof collectorStatusForApi> {
+  try {
+    return collectorStatusForApi();
+  } catch (e) {
+    console.warn('[status] 収集デーモンの死活を測れません:', e instanceof Error ? e.message : String(e));
+    return null;
+  }
 }

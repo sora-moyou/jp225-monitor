@@ -386,6 +386,23 @@ const UNAVAILABLE_LEDGER: GeneratorLedgerStatus = {
   available: false, lastRecordAt: null, ageMin: null, today: [], total: 0,
 };
 
+/** ★最後に「前提検証を通って起動した」記録(runs の最新行)。**読むだけ**・例外を投げない。
+ *  停止理由(halts)と対で読むためのもの: halts だけでは「一度も起動できていない」と
+ *  「起動していたが後で崩れた」が区別できない。台帳が無ければ null。 */
+export function readGeneratorLastRun(path: string): { startedAt: number; epoch: string; monitorUrl: string } | null {
+  const db = openGeneratorDbReadOnly(path);
+  if (!db) return null;
+  try {
+    const r = db.prepare('SELECT started_at, epoch, monitor_url FROM runs ORDER BY started_at DESC, id DESC LIMIT 1')
+      .get() as { started_at: number; epoch: string; monitor_url: string } | undefined;
+    return r ? { startedAt: r.started_at, epoch: r.epoch, monitorUrl: r.monitor_url } : null;
+  } catch {
+    return null;
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
 /** 台帳の死活情報を読む。**例外を投げない**(状態を見に来た画面が「サーバが死んでいる」ように見えない)。 */
 export function readGeneratorLedgerStatus(path: string, now: number): GeneratorLedgerStatus {
   const db = openGeneratorDbReadOnly(path);

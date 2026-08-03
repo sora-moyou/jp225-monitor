@@ -66,23 +66,38 @@ export interface GeneratorRunOptions {
    *  サイドカーが「設定で無効に戻された」を検知して待機へ帰るために使う。
    *  未指定(CLI)は従来どおり永久ループ=挙動不変。 */
   shouldContinue?: () => boolean;
+  /** ★診断用の通知(記録専用・**挙動には一切影響しない**)。未指定(CLI)は従来どおり何も起きない。
+   *  サイドカーがこれを共有DBの meta に載せ、別PCから「どこまで進んだか」を読めるようにする
+   *  (前提検証の結果・接続先・最後のサイクル時刻はログにしか無く、遠隔からは観測できなかった)。 */
+  onEvent?: (e:
+    | { kind: 'config'; monitorUrl: string }
+    | { kind: 'preflight'; at: number; ok: boolean; failKind?: string; reason?: string }
+    | { kind: 'cycle'; at: number }) => void;
 }
 
 /** 生成器の本体。前提が崩れたら GeneratorHalt を throw する(黙って縮退しない)。
  *  shouldContinue が false を返したときだけ、停止ではなく **正常に戻る**。 */
 export async function runGenerator(opts: GeneratorRunOptions = {}): Promise<void> {
+  /** 診断通知。**絶対に throw させない**(記録のために生成器を落とさない)。 */
+  const notify: NonNullable<GeneratorRunOptions['onEvent']> = (e) => {
+    try { opts.onEvent?.(e); } catch { /* 記録の失敗で本体を止めない */ }
+  };
   // ── 公開版(lite)では走らない。唯一のゲート isAnalysisEnabled() で判断する。
   if (!isAnalysisEnabled()) {
     die('このビルドは分析用の経路を持ちません(公開版 lite) — server/analysisGate.ts');
   }
 
   const cfg = resolveGeneratorConfig(process.env, resolvePort());
+  notify({ kind: 'config', monitorUrl: cfg.monitorUrl });
   console.log(`[generator] 接続先 ${cfg.monitorUrl} / 間隔 ${cfg.intervalMs / 1000}s / 対照 ${cfg.controlEvery || '(なし)'}サイクルに1回`);
 
   // ── ① 起動時の検証。満たさなければ走らない。
   //    ★起動時は unreachable でも走らない(接続先が居ないまま空回りしない)。
   //      稼働中の再検証(下のループ)だけは unreachable を「止める理由」にしない。
   const pre = await runPreflight(cfg.monitorUrl, fetch, 10_000);
+  notify(pre.ok
+    ? { kind: 'preflight', at: Date.now(), ok: true }
+    : { kind: 'preflight', at: Date.now(), ok: false, failKind: pre.kind, reason: pre.reason });
   if (!pre.ok) die(pre.reason);
   console.log(`[generator] 前提OK: 決済実装=${pre.exit.impl} 変種実装=${pre.exit.variantImpl} `
     + `決済設定 版=${pre.exit.configVersion ?? '(未採番)'} 指紋=${pre.exit.configHash}`);
@@ -201,6 +216,7 @@ export async function runGenerator(opts: GeneratorRunOptions = {}): Promise<void
       }
     }
 
+    notify({ kind: 'cycle', at: cycleStart });
     const cycleId = makeCycleId(prefix, cycleStart, cycleIndex);
     let rows: ProposalRow[];
     try {

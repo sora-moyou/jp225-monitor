@@ -13,6 +13,12 @@ export interface SettingsResponse {
   kimiSet: boolean; geminiSet: boolean; groqSet: boolean; openaiSet: boolean;
   kimiFromEnv: boolean; geminiFromEnv: boolean; groqFromEnv: boolean; openaiFromEnv: boolean;
   webSearchKeySet: boolean; webSearchModel: string; webSearchOpenaiModel: string;
+  // ★LLM プロバイダのモデル名。llmModels=保存値(空欄=未設定=既定) /
+  //   llmModelsEffective=いま実際に使う値 / llmModelDefaults=コードの既定(プレースホルダ用)。
+  //   古いサーバ(このフィールドを返さない版)でも画面が壊れないよう全て任意。
+  llmModels?: Partial<Record<string, string>>;
+  llmModelsEffective?: Partial<Record<string, string>>;
+  llmModelDefaults?: Partial<Record<string, string>>;
   basedataUserSet?: boolean; basedataPassSet?: boolean;   // ★基礎データ公開(225labo)認証 設定済み(真偽のみ)
   basedataSaveDir?: string;   // ★保存先フォルダ(可視・生の保存値・空欄=既定 Downloads)
   githubTokenSet?: boolean;   // ★GitHub PAT 設定済み(真偽のみ・秘密)
@@ -83,6 +89,11 @@ export interface SavePayload {
   webSearchKey?: string | null;
   webSearchModel?: string | null;
   webSearchOpenaiModel?: string | null;
+  // ★LLM プロバイダのモデル名(可視・空欄=''=既定に戻す)。
+  geminiModel?: string | null;
+  groqModel?: string | null;
+  kimiModel?: string | null;
+  openaiModel?: string | null;
   basedataUser?: string | null;   // ★基礎データ公開(225labo)ユーザー名(秘密・空欄=送らない)
   basedataPass?: string | null;   // ★基礎データ公開(225labo)パスワード(秘密・空欄=送らない)
   basedataSaveDir?: string | null;   // ★保存先フォルダ(可視・常に送る・空欄=既定に戻す)
@@ -117,8 +128,27 @@ export interface SavePayload {
   generatorEnabled?: boolean | null;      // ★生成器サイドカー(true=動かす / false/null=既定=動かさない)。
 }
 
+// 「キーを検証」の1プロバイダぶんの結果。★モデル一覧(GET /v1/models・トークン非消費)で
+//   「キーが無効」と「そのキーでそのモデルが使えない」を **区別して** 返す。
+//   古いサーバ(モデル情報を返さない版)でも壊れないよう、追加分は全て任意。
+export interface KeyTestResult {
+  name: string;
+  ok: boolean;
+  notset?: boolean;
+  error?: string;
+  model?: string;            // 検証したモデル(設定値 → 既定)
+  isDefaultModel?: boolean;  // モデル欄が空(=既定のまま)か
+  keyOk?: boolean;           // キー自体は通ったか
+  modelOk?: boolean;         // 設定中のモデルがそのキーで使えるか
+  models?: string[];         // そのキーで使えるモデル一覧
+  modelsTotal?: number;      // 一覧の総数(models は上限で切り詰められる)
+  reason?: 'ok' | 'key' | 'model' | 'unknown';
+  via?: 'models' | 'ping';   // 判定経路('models'=無料の一覧 / 'ping'=1トークン)
+  listError?: string;        // 一覧が取れず ping に落ちた理由
+}
+
 export interface KeyTestResponse {
-  results?: Array<{ name: string; ok: boolean; notset?: boolean; error?: string }>;
+  results?: KeyTestResult[];
   error?: string;
 }
 

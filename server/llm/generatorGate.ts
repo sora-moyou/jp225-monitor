@@ -21,6 +21,8 @@
 
 import { classifySession } from '../../core/session.js';
 import { resolveGeneratorDailyBudget } from '../configStore.js';
+// ★型だけの import(実行時には消える)。この語彙の定義は configStore の GeneratorKeySource が唯一の出どころ。
+import type { GeneratorKeySource } from '../configStore.js';
 import { DEFAULT_EXIT_VARIANT, type ExitVariant } from '../signalTrade/exit/index.js';
 
 /** 予算/従属停止のリセット境界。取引セッション(core/session の SSOT)で刻む。
@@ -80,14 +82,26 @@ interface GateState {
   haltedUntil: number;
   /** 停止が発火した時点のセッションキー(診断表示用。停止していないときは null)。 */
   haltedAtSessionKey: string | null;
+  /** 停止を発火させたプロバイダ名(診断用。どのプロバイダの429で止まっているかを遠隔で読むため)。 */
+  haltedProvider: string | null;
   /** 停止理由の記録用カウンタ(無音にしないための最小の可視化)。 */
   skipped: { busy: number; budget: number; defaultQuota: number; disabled: number };
+  /** ★従属停止を **見送った** 回数(生成器が専用キーで走っており、A の429が生成器の枠について
+   *  何も語らない場合)。止めた回数だけでなく **止めなかった回数** も残さないと、
+   *  「なぜ止まっていないのか」を運用者が判断できない(無音の非停止を作らない)。 */
+  quotaIgnored: number;
+  /** 直近の見送りの内訳(プロバイダと出どころ)。キーの値は含めない。 */
+  lastQuotaIgnored: { provider: string; source: GeneratorKeySource; at: number } | null;
   /** 進行中の scalp-plan 生成数(A/B エンジン・route を問わず全経路が計上する)。 */
   inFlight: number;
 }
 
 function freshState(keys: Keys): GateState {
-  return { keys, used: 0, usedByArm: {}, haltedUntil: 0, haltedAtSessionKey: null, skipped: { busy: 0, budget: 0, defaultQuota: 0, disabled: 0 }, inFlight: 0 };
+  return {
+    keys, used: 0, usedByArm: {}, haltedUntil: 0, haltedAtSessionKey: null, haltedProvider: null,
+    skipped: { busy: 0, budget: 0, defaultQuota: 0, disabled: 0 },
+    quotaIgnored: 0, lastQuotaIgnored: null, inFlight: 0,
+  };
 }
 
 let state: GateState = freshState(BOOT_KEYS);
@@ -111,10 +125,12 @@ function roll(now: number): void {
     state.inFlight = prev.inFlight;
     state.haltedUntil = prev.haltedUntil;
     state.haltedAtSessionKey = prev.haltedAtSessionKey;
+    state.haltedProvider = prev.haltedProvider;
     if (prev.used > 0 || prev.skipped.busy + prev.skipped.budget + prev.skipped.defaultQuota + prev.skipped.disabled > 0) {
       const perArm = Object.entries(prev.usedByArm).map(([k, v]) => `${k}=${v}`).join(' ');
       console.log(`[llm:generator] 取引日 ${prev.keys.dayKey} 終了 — 使用 ${prev.used}${perArm ? `(腕別 ${perArm})` : ''} / 見送り `
-        + `busy=${prev.skipped.busy} budget=${prev.skipped.budget} default-quota=${prev.skipped.defaultQuota} disabled=${prev.skipped.disabled}`);
+        + `busy=${prev.skipped.busy} budget=${prev.skipped.budget} default-quota=${prev.skipped.defaultQuota} disabled=${prev.skipped.disabled}`
+        + ` / 従属停止を見送り(専用キー)=${prev.quotaIgnored}`);
     }
   } else if (k.sessionKey !== state.keys.sessionKey) {
     state.keys = k;
@@ -128,6 +144,7 @@ function expireHalt(now: number): void {
     console.log(`[llm:generator] 従属停止を解除(A のポーズ相当の時限が明けました / 発火時 ${state.haltedAtSessionKey})`);
     state.haltedUntil = 0;
     state.haltedAtSessionKey = null;
+    state.haltedProvider = null;
   }
 }
 
@@ -194,23 +211,106 @@ export function checkGeneratorGate(now: number = Date.now(), arm: ArmKey = DEFAU
   return { allowed: true, used: state.usedByArm[arm]!, budget };
 }
 
+// ─── ★従属停止は「上流クォータを共有しているプロバイダ」に限る ───────────────────────
+//
+// 何が壊れていたか(実売買PCの実ログ 2026-08-03 00:04〜01:11):
+//   A は数分おきに 429 を踏む。従属停止はキーの共有を **一切見ずに** 発火していたので、
+//   段が 60s → 300s → 1800s → 7200s(2時間)まで伸び、生成器は大半の時間止まって標本が溜まらなかった。
+//   ところがユーザーは4プロバイダ全てに **生成器専用キー** を設定済みで、上流のクォータは分かれている。
+//   → 専用キーなら「A が 429 を踏んだ」ことは **生成器のクォータについて何も語らない**。
+//     存在しない危険のために実験を止めていた。
+//
+// ★保護の目的は弱めない: 共有キー(shared)のときは従来どおり止める。
+//   「A がポーズしている間に生成器が同じ上流を食う」危険は共有キーでは実在するため。
+// ★判定は **プロバイダ単位**(全体ではない): キーはプロバイダごとに設定でき、
+//   gemini だけ共有・他は専用、という状態が普通に起こりうる。「1つでも共有なら全部止める」でも
+//   「1つでも専用なら止めない」でもなく、**429 を踏んだそのプロバイダ** が共有かどうかで決める。
+//   (停止そのものは従来どおり生成器 **全体** に効く。共有プロバイダの枠を食う経路は
+//    生成器のフォールバック順で必ず通りうるので、そこは弱めない。)
+
+/** その出どころが「生成器専用キー」= 上流クォータが A と分かれている、と言えるか。
+ *  ★語彙は configStore の GeneratorKeySource をそのまま使う(新しい語彙を作らない):
+ *    'own'/'env' だけが専用。'shared'(共通キーへフォールバック中)と 'none'、
+ *    そして **undefined(判定できなかった)** は専用ではない = 止める側に倒す。 */
+export function isDedicatedGeneratorKey(source: GeneratorKeySource | undefined): boolean {
+  return source === 'own' || source === 'env';
+}
+
+/** ★その429で生成器を止めなくてよいか(純関数)。
+ *
+ *  ここが食い違っていた: **停止は生成器 *全体* に効く**(すぐ上のコメントがそう書いている)のに、
+ *  見送りの判断は「429 を踏んだそのプロバイダ」だけを見ていた。
+ *  例) gemini=専用 / openai=共有 のとき、gemini の429で停止が **丸ごと** 見送られ、
+ *      生成器はフォールバックで **共有の openai** を食える = A の枠を食う経路が残る。
+ *  → 見送ってよいのは「生成器がフォールバックで通りうるどのプロバイダも専用キー」のときだけ。
+ *
+ *  ★出どころを観測できていない呼び出し(allSources 省略)は従来どおり、踏んだプロバイダだけで決める
+ *    = 既存の呼び出しの挙動は1ミリも変わらない。
+ *  ★「専用と証明できない」(shared/none/undefined)は常に止める側に倒す、という既存の規律は不変。 */
+export function shouldIgnoreDefaultQuota(
+  keySource: GeneratorKeySource | undefined,
+  allSources?: Readonly<Record<string, GeneratorKeySource | undefined>>,
+): boolean {
+  if (!isDedicatedGeneratorKey(keySource)) return false;
+  if (!allSources) return true;
+  const values = Object.values(allSources);
+  if (values.length === 0) return true;   // 観測できなかった = 踏んだプロバイダの判断に委ねる
+  return values.every(s => isDedicatedGeneratorKey(s));
+}
+
+/** 共有キー(= A と上流が同じ)のプロバイダ名。停止した理由を名指しで残すため。 */
+export function sharedGeneratorProviders(
+  allSources: Readonly<Record<string, GeneratorKeySource | undefined>>,
+): string[] {
+  return Object.entries(allSources)
+    .filter(([, s]) => !isDedicatedGeneratorKey(s))
+    .map(([name]) => name);
+}
+
 /** ★従属規則の発火点。**default プールのプロバイダが quota(429/枯渇)を踏んだ瞬間**に providers.ts から呼ばれる。
  *  transient(5xx)・config(401/403/404)・oversize(413)では発火しない(枠の枯渇ではないため)。
  *
+ *  @param keySource ★そのプロバイダで **生成器が実際に使っているキーの出どころ**。
+ *    'own'/'env'(専用キー)なら上流クォータは分かれているので **止めない**(見送りを必ず1行残す)。
+ *    'shared'/'none'/省略(=判定できなかった)は従来どおり止める。省略時に止めるのは
+ *    「分からないなら保護側に倒す」ため(既存の呼び出し・テストの挙動も変わらない)。
  *  @param pauseMs A(default プール)がそのプロバイダに実際に入れたポーズの長さ[ms]。
  *    **これがそのまま生成器の停止時間**になる: 危険なのは「A がポーズしている間に生成器が同じ上流を
  *    さらに食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば(最大8時間)停止も
  *    自動で深くなる=保護は弱まらない。省略時は最短段 DEFAULT_HALT_MS。
  *  ★既により長い停止中なら短くしない(max を取る)。停止を **縮める** 経路は作らない。 */
-export function notifyDefaultQuota(providerName: string, now: number = Date.now(), pauseMs?: number): void {
+export function notifyDefaultQuota(
+  providerName: string, now: number = Date.now(), pauseMs?: number, keySource?: GeneratorKeySource,
+  allSources?: Readonly<Record<string, GeneratorKeySource | undefined>>,
+): void {
   roll(now);
+  // ★踏んだプロバイダが専用でも、**生成器がフォールバックで通りうる先に共有キーが1つでもあれば止める**
+  //   (停止は生成器全体に効く=守る対象も全体)。無音にしない: 止めた理由を名指しで残す。
+  if (isDedicatedGeneratorKey(keySource) && allSources && !shouldIgnoreDefaultQuota(keySource, allSources)) {
+    console.warn(`[llm:generator] ★従属停止: default プール(${providerName})が quota を踏みました。`
+      + `${providerName} は生成器専用キー(${keySource})ですが、生成器のフォールバック先に共有キーの`
+      + `プロバイダが残っています(${sharedGeneratorProviders(allSources).join(', ')})`
+      + ' — その経路で A と同じ上流を食いうるので止めます');
+  }
+  // ★専用キー = A と生成器で上流のクォータが別。A の429は生成器の枠について何も語らないので止めない。
+  //   **無音にしない**: 止めなかったことと、その根拠(出どころ)を必ず1行残す。キーの値は出さない。
+  if (shouldIgnoreDefaultQuota(keySource, allSources)) {
+    state.quotaIgnored += 1;
+    state.lastQuotaIgnored = { provider: providerName, source: keySource!, at: now };
+    console.log(`[llm:generator] 従属停止は見送り: default プール(${providerName})が quota を踏みましたが、`
+      + `生成器は専用キー(出どころ=${keySource})で走っています(上流クォータが別なので生成器は A の枠を食いません)`
+      + ` — 通算 ${state.quotaIgnored} 回`);
+    return;
+  }
   const ms = typeof pauseMs === 'number' && Number.isFinite(pauseMs) && pauseMs > 0 ? pauseMs : DEFAULT_HALT_MS;
   const until = now + ms;
   if (until <= state.haltedUntil) return;   // 既に同等以上の停止中(ログも増やさない)
   state.haltedUntil = until;
   state.haltedAtSessionKey = state.keys.sessionKey;
+  state.haltedProvider = providerName;
   console.warn(`[llm:generator] ★従属停止: default プール(${providerName})が quota を踏みました — `
-    + `${Math.round(ms / 1000)}秒(A のポーズと同じ長さ)生成器を止めます(A の枠を食わない)`);
+    + `${Math.round(ms / 1000)}秒(A のポーズと同じ長さ)生成器を止めます(A の枠を食わない)`
+    + ` / 生成器のキー出どころ=${keySource ?? '不明'}(専用キー own|env なら止めません)`);
 }
 
 /** scalp-plan 生成の開始/終了。**全経路(A/B エンジン・route)が計上する**。
@@ -241,6 +341,35 @@ export function generatorGateSnapshot(now: number = Date.now()) {
     inFlight: state.inFlight,
     skipped: { ...state.skipped },
   };
+}
+
+/** ★従属停止の中身(いつまで・どのプロバイダの429で・どのセッションで発火したか)。
+ *  スナップショットの形(=既存の契約)を変えずに出すための別入口。キーの値は含まない。
+ *  止まっていなければ active:false / untilAt:0 / provider:null。 */
+export function generatorHaltInfo(now: number = Date.now()): {
+  active: boolean; untilAt: number; remainingMs: number; provider: string | null; sessionKey: string | null;
+} {
+  roll(now);
+  const active = isHalted(now);
+  return {
+    active,
+    untilAt: active ? state.haltedUntil : 0,
+    remainingMs: Math.max(0, state.haltedUntil - now),
+    provider: active ? state.haltedProvider : null,
+    sessionKey: active ? state.haltedAtSessionKey : null,
+  };
+}
+
+/** ★従属停止を **見送った** 回数と、その直近の内訳(専用キーなので止めなかった)。
+ *  スナップショットの形(=既存の契約)を変えずに出すための別入口(generatorHaltRemainingMs と同じ作法)。
+ *  ★これが無いと「A は429を踏んでいるのに生成器が止まっていない」を運用者が説明できない。
+ *  キーの値は含まない(出どころの名前だけ)。 */
+export function generatorQuotaIgnored(now: number = Date.now()): {
+  count: number;
+  last: { provider: string; source: GeneratorKeySource; at: number } | null;
+} {
+  roll(now);
+  return { count: state.quotaIgnored, last: state.lastQuotaIgnored ? { ...state.lastQuotaIgnored } : null };
 }
 
 /** ★従属停止の残り時間[ms](0=停止していない)。スナップショットの形(=既存の契約)を変えずに

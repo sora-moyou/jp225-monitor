@@ -49,6 +49,8 @@
             <span class="badge-free">無料 / 日次1500回</span>
           </label>
           <input type="password" id="key-gemini" autocomplete="off" />
+          <label class="model-label">モデル</label>
+          <input type="text" id="model-gemini" class="model-input" autocomplete="off" spellcheck="false" />
         </div>
 
         <div class="setting-row">
@@ -57,9 +59,11 @@
             <span class="badge-free">無料 / 日次14400回</span>
           </label>
           <input type="password" id="key-groq" autocomplete="off" />
+          <label class="model-label">モデル</label>
+          <input type="text" id="model-groq" class="model-input" autocomplete="off" spellcheck="false" />
         </div>
 
-        <div class="exit-hint">まずは無料キーだけで動きます。おすすめは Gemini（画像対応・無料枠が広い）。Groq はテキスト専用で高速な予備。</div>
+        <div class="exit-hint">まずは無料キーだけで動きます。おすすめは Gemini（画像対応・無料枠が広い）。Groq はテキスト専用で高速な予備。<br><strong>モデル欄は空欄でOK</strong>（既定値が使われます）。提供元がモデルを廃止/改名したときや、<strong>「キーを検証」で「このキーでは使えません」と出たとき</strong>だけ、一覧に出たモデル名を入れて保存してください（アプリの更新は不要です）。</div>
       </fieldset>
 
       <fieldset class="settings-section">
@@ -70,6 +74,8 @@
             <span class="badge-paid">有料 (500 円〜)</span>
           </label>
           <input type="password" id="key-openai" autocomplete="off" />
+          <label class="model-label">モデル</label>
+          <input type="text" id="model-openai" class="model-input" autocomplete="off" spellcheck="false" />
         </div>
 
         <div class="setting-row">
@@ -78,6 +84,9 @@
             <span class="badge-paid">有料 (従量・OpenAIより安い / テキスト専用)</span>
           </label>
           <input type="password" id="key-kimi" autocomplete="off" />
+          <label class="model-label">モデル</label>
+          <input type="text" id="model-kimi" class="model-input" autocomplete="off" spellcheck="false" />
+          <div class="exit-hint">Kimi は<strong>キーごとに使えるモデルが違います</strong>（"Not found the model … or Permission denied"）。404 が出たら「キーを検証」を押すと、<strong>そのキーで使えるモデルの一覧</strong>が下に出るので、そこから選んでこの欄に入れて保存してください。</div>
         </div>
 
         <div class="setting-row">
@@ -93,7 +102,7 @@
 <div class="setting-row">
         <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
         <div id="settings-test-result" class="update-result"></div>
-        <div class="exit-hint">各プロバイダへ極小(1トークン)のテストリクエストを1回ずつ送り、キーが実際に有効かを確認します（消費はごくわずか）。保存済みキーが対象です。<br>各キー左のマーク: 🟢 有効(設定済) / 🟡 待機中(429=枠切れで一時休止) / ⚪ 未設定 ／「キーを検証」後: ✅ 実際に通った / ❌ 無効(401等)。</div>
+        <div class="exit-hint">各プロバイダのモデル一覧(<code>GET /v1/models</code>)を取得して、<strong>①キーが有効か ②設定中のモデルがそのキーで使えるか</strong>を確認します（<strong>トークンは消費しません</strong>）。保存済みキーが対象です。モデルが使えない場合は<strong>そのキーで使えるモデルの一覧</strong>を出すので、上のモデル欄に入れて保存してください。<br>各キー左のマーク: 🟢 有効(設定済) / 🟡 待機中(429=枠切れで一時休止) / ⚪ 未設定 ／「キーを検証」後: ✅ キーもモデルもOK / ⚠️ キーは有効だがモデルが使えない / ❌ キーが無効(401等) / ⚪ 未設定。<br>※モデル一覧に対応していない提供元だけ、従来どおり極小(1トークン)の ping で判定します。</div>
       </div>
 
       <fieldset class="settings-section" id="generator-keys-fieldset">

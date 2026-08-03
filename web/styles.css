@@ -691,6 +691,14 @@ body {
 .gen-key-src { background: rgba(63,185,80,0.15); color: var(--up); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
 .gen-key-src.gen-key-shared { background: rgba(210,153,34,0.18); color: #d29922; }
 .gen-key-warn { border-left: 3px solid #d29922; padding-left: 8px; }
+/* ★LLM モデル欄(APIキーの直下)。キー欄より控えめ=「普段は触らない・空欄でよい」ことを見た目で示す。 */
+.setting-row label.model-label { font-size: 11px; color: var(--muted); margin: 6px 0 2px; }
+.setting-row input.model-input { font-size: 11px; padding: 5px 8px; }
+/* 「キーを検証」の結果: そのキーで使えるモデル一覧(モデルが使えないときだけ開く価値がある)。 */
+.model-list { margin: 3px 0 0 18px; font-size: 11px; color: var(--muted); }
+.model-list summary { cursor: pointer; }
+.model-list ul { margin: 4px 0 0; padding-left: 16px; max-height: 180px; overflow-y: auto; }
+.model-list code { font-family: monospace; }
 
 .settings-status { margin: 8px 0 14px; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-size: 12px; line-height: 1.7; }
 .settings-status.err { color: var(--down); }

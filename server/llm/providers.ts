@@ -1,7 +1,8 @@
 import OpenAI from 'openai';
 import { LLM_PROVIDERS } from '../config.js';
 import type { LLMProvider } from '../config.js';
-import { resolveApiKeyForPool } from '../configStore.js';
+import { resolveApiKeyForPool, resolveGeneratorKeySource } from '../configStore.js';
+import type { GeneratorKeySource, GeneratorProviderName } from '../configStore.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { notifyDefaultQuota } from './generatorGate.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
@@ -246,7 +247,14 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     //     生成器が同じ上流を食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば
     //     停止も自動で深くなる(=保護の目的は弱まらない)。旧実装のようにセッションの残り全部は捨てない。
     //   ★default 経路の挙動はこの呼び出しで1ミリも変わらない(このカウンタを読むのは生成器だけ)。
-    if (p.pool === DEFAULT_CALLER) notifyDefaultQuota(p.config.name, now, pause);
+    //   ★2026-08-03 修正: **キーの共有を見る**。生成器がこのプロバイダで専用キー(own/env)を
+    //     使っているなら上流クォータは分かれており、A の429は生成器の枠について何も語らない。
+    //     判定と「止める/止めない」の決定は generatorGate 側(=生成器の政策が1か所にある)。
+    //     ここは事実(どのプロバイダが・どれだけポーズし・生成器のキーはどこ由来か)を渡すだけ。
+    if (p.pool === DEFAULT_CALLER) {
+      notifyDefaultQuota(p.config.name, now, pause, generatorKeySourceOf(p.config.name),
+        generatorKeySourcesAll());
+    }
   } else if (kind === 'config') {
     // 設定不備(401/403/404): 再試行しても直らないので長くポーズ(30分)して次へフォールバック。
     //   これで Kimi 404 等の誤設定プロバイダを避けて他プロバイダで継続できる(連鎖全滅を防ぐ)。
@@ -260,6 +268,35 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     console.warn(`${logPrefix(p)}transient (${msg.slice(0, 60)}) — paused ${Math.round(TRANSIENT_PAUSE_MS / 1000)}s → 次へフォールバック`);
   }
   return true;
+}
+
+/** ★生成器プールが **そのプロバイダで** 実際に使うキーの出どころ(値は返さない)。
+ *  従属停止(generatorGate)が「A の429は生成器の枠について語るのか」を判断する唯一の材料。
+ *
+ *  ★絶対に throw させない: tripCircuit は callWithFallback の catch の **中** で呼ばれるので、
+ *    ここで例外が出ると **A が次プロバイダへフォールバックできなくなる**(実弾経路の破壊)。
+ *    解決できなかった場合は undefined を返し、generatorGate は従来どおり止める(保護側に倒す)。 */
+function generatorKeySourceOf(name: string): GeneratorKeySource | undefined {
+  try {
+    return resolveGeneratorKeySource(name as GeneratorProviderName);
+  } catch (e) {
+    console.warn(`[LLM] 生成器キーの出どころを解決できません(${name}): `
+      + `${e instanceof Error ? e.message : String(e)} — 共有とみなして従属停止します`);
+    return undefined;
+  }
+}
+
+/** ★生成器が **フォールバックで通りうる全プロバイダ** のキー出どころ(値は返さない)。
+ *
+ *  なぜ要るか: 従属停止は生成器 **全体** に効くので、守る対象も全体。
+ *  「429 を踏んだプロバイダが専用キーだから止めない」だけでは、
+ *  gemini=専用 / openai=共有 のときに生成器がフォールバックで共有 openai を食える。
+ *  ここは **事実を渡すだけ**(止める/止めないの決定は generatorGate 側=生成器の政策は1か所)。
+ *  ★generatorKeySourceOf と同じく絶対に throw しない(A のフォールバック経路を壊さない)。 */
+function generatorKeySourcesAll(): Record<string, GeneratorKeySource | undefined> {
+  const out: Record<string, GeneratorKeySource | undefined> = {};
+  for (const c of LLM_PROVIDERS) out[c.name] = generatorKeySourceOf(c.name);
+  return out;
 }
 
 function recordSuccess(p: ProviderState): void {

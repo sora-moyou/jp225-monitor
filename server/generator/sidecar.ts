@@ -8,7 +8,13 @@
 //
 // ★ロジックは server/generator/sidecarRun.ts。ここは「起動されたら走る」だけ
 //   (index.ts が run.ts を呼ぶのと同じ形。テストから import しても勝手に走り出さない)。
+//
+// ★★ファイルログは **何よりも先に** 有効にする(server/generator/sidecarLog.ts)。
+//   生成器の出力は Rust のコンソールにしか出ず、運用PC(別マシン)では読めない。前提検証で
+//   即終了する経路では「何も残らずに消える」ため、症状(有効なのに台帳が1行も無い)に対して
+//   理由を見る手段がゼロだった。落ちてから書くのでは間に合わないので、最初の1行を先に書く。
 
+import './sidecarLogInstall.js';   // ★1行目: これより後の import が評価される前にログを開く
 import { runSidecar } from './sidecarRun.js';
 
 runSidecar().catch((e) => {

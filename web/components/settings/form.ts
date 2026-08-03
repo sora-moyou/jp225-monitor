@@ -2,6 +2,7 @@
 // settingsModal.ts から純粋に切り出したもの(参照する input id・値の組み立て・条件は一切不変)。
 
 import { renderStatus, setKeyStatus, providerMark, generatorKeyLabel, setKeySourceLabel } from './status.js';
+import { applyLlmModelsToForm, collectLlmModels } from './llmModels.js';
 import { GENERATOR_PROVIDERS } from './types.js';
 import type {
   SettingsElements, SettingsResponse, SavePayload, KnobSource,
@@ -42,6 +43,8 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   // ★自動公開: チェックボックス + 直近結果サマリ。
   el.checkBasedataAutoPublish.checked = current ? !!current.basedataAutoPublish : false;
   el.basedataAutoStatus.textContent = current?.basedataAutoLastRun ? `直近: ${current.basedataAutoLastRun}` : '';
+  // ★LLM プロバイダのモデル欄(APIキーの直下・id 参照)。空欄=既定。
+  applyLlmModelsToForm(current);
   el.inputWebSearchModel.value = current?.webSearchModel ?? '';
   el.inputWebSearchModel.placeholder = 'gemini-flash-latest (既定)';
   el.inputWebSearchOpenaiModel.value = current?.webSearchOpenaiModel ?? '';
@@ -217,6 +220,8 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   if (ghTok) body.githubToken = ghTok;
   // ★自動公開: チェックボックス。常に true/false を送る。
   body.basedataAutoPublish = el.checkBasedataAutoPublish.checked;
+  // ★LLM プロバイダのモデル欄も可視フィールド(空欄='' → サーバで既定に戻る)。
+  collectLlmModels(body);
   // モデルは可視フィールド: 現在値を常に送る(空欄='' → サーバで既定 gemini-flash-latest に戻る)
   body.webSearchModel = el.inputWebSearchModel.value.trim();
   // OpenAI Web検索モデルも可視フィールド(空欄='' → サーバで既定 gpt-4o-mini-search-preview に戻る)

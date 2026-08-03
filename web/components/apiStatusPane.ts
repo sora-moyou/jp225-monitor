@@ -15,6 +15,20 @@ interface StatusResponse {
   };
   /** ★生成器サイドカーが有効化されているか(設定・既定 false)。公開版(lite)では返らない。 */
   generatorEnabled?: boolean;
+  /** ★収集デーモン(collector)の死活。**両 variant 共通**(収集デーモンは lite でも走る)。
+   *  判定は monitor(生きている側)が出す = 収集デーモンが死んでも判定は凍らない。
+   *  測れない環境(旧 monitor)では返らない=表示しない。 */
+  collector?: {
+    /** 'ok'=収集中 / 'idle'=生存・取引時間外 / 'stuck'=★生きているが記録が止まっている /
+     *  'dead'=★停止 / 'missing'=心拍が一度も無い。 */
+    state: 'ok' | 'idle' | 'stuck' | 'dead' | 'missing';
+    reason: string;
+    heartbeatAt: number | null;
+    ageMs: number | null;
+    inPollWindow: boolean;
+    pidAlive: boolean;
+    at: number;
+  };
 }
 
 /** 生成器が「止まった」と見なす無記録の分数。1サイクル=2分なので、数サイクル落ちても
@@ -84,6 +98,47 @@ export function renderGeneratorDot(
     + (stale ? ' — ★止まっている可能性があります' : ''));
 }
 
+/** ★「収集デーモン(Co)」の1点表示(純関数)。生成器の Ge ドットと **同じ流儀**。
+ *
+ *  ■ 何を防ぐか
+ *    実運用で collector のプロセスが 10:13:44 に停止し、ティック保管も台帳の毎時書き出しも
+ *    止まったのに、**画面には何も出なかった**。1年かけてティックを溜めている最中なので、
+ *    黙って死ぬとデータが虫食いになり、それに1年後に気づく。
+ *
+ *  ■ ★「取引時間外だから止まっている」と「死んでいる」を取り違えない
+ *    心拍(collector_heartbeat)は取引時間外でも打たれる(場中2秒/場外30秒)。だから
+ *    **心拍の凍結だけ** を死亡の根拠にし、セッションは「生きている時の言い方」を分けるためだけに使う。
+ *    ティックが増えない/書き出しが走らないは時間外でも正常なので、根拠にしない。
+ *
+ *  ■ ★判定は monitor(生きている側)が出す
+ *    収集デーモン自身に状態を書かせると、死んだ瞬間に「最後に生きていた時の状態」が固まる。
+ *    それが今回の誤診断の直接原因だった。 */
+export function renderCollectorDot(c: StatusResponse['collector']): string {
+  // 測れない環境(旧 monitor / 状態を返さない応答)は従来どおり無言。
+  if (!c) return '';
+  if (c.state === 'dead') {
+    return renderDot('Co', 'halted',
+      `データ収集: ★停止しています — ${c.reason}`
+      + '（アプリを起動し直すと収集デーモンも起動します）');
+  }
+  // ★「生きているが仕事をしていない」。プロセスは居るので dead とは直し方が違うが、
+  //   データが虫食いになるという被害は同じなので **見逃せない色(赤)** にする。
+  if (c.state === 'stuck') {
+    return renderDot('Co', 'halted',
+      `データ収集: ★生きていますが記録が止まっています — ${c.reason}`
+      + '（アプリを起動し直すと収集デーモンも起動し直します）');
+  }
+  if (c.state === 'missing') {
+    return renderDot('Co', 'paused', `データ収集: ${c.reason}`);
+  }
+  if (c.state === 'idle') {
+    // ★生きている。取引時間外に収集していないのは常態なので警告色にしない
+    //   (常態を警告色にすると警告が読まれなくなる)。
+    return renderDot('Co', 'off', `データ収集: 生存（取引時間外＝収集は待機中）— ${c.reason}`);
+  }
+  return renderDot('Co', 'ok', `データ収集: 稼働中 — ${c.reason}`);
+}
+
 function fmtRemaining(target: number, now: number): string {
   const sec = Math.max(0, Math.round((target - now) / 1000));
   if (sec < 60) return `${sec}s`;
@@ -130,7 +185,9 @@ export async function refreshApiStatus(container: HTMLElement): Promise<void> {
     const labelShort = p.name === 'gemini' ? 'G' : p.name === 'groq' ? 'Gr' : 'O';
     return renderDot(labelShort, state, tooltip);
   }).join('');
-  container.innerHTML = priceDot + llm + renderGeneratorDot(data.generatorLedger, data.generatorEnabled);
+  container.innerHTML = priceDot + llm
+    + renderCollectorDot(data.collector)
+    + renderGeneratorDot(data.generatorLedger, data.generatorEnabled);
 }
 
 export function initApiStatusPane(container: HTMLElement, intervalMs: number = 5000): void {
