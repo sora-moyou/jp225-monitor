@@ -74,6 +74,26 @@ describe('buildScalpMarketData', () => {
     expect(s).toContain('前日高値');
   });
 
+  it('節目が片側しか無くても1行フォーマットのまま出す(退化ケースで落ちない)', () => {
+    const levels: LevelsResult = { ...emptyLevels(), up: [], down: [level(38100, 1, 1.5, '押し安値')] };
+    const s = buildScalpMarketData({ bars: [], levels, alerts: [], now: NOW, currentPrice: 38250 });
+    expect(s).toContain('主要節目');
+    expect(s).toContain('38100 サポ -150円 ★ s1.5 押し安値');
+    expect(s).not.toContain('レジ');
+  });
+
+  it('遠くても強い節目(★★)はプロンプトに載せる(引きつけ先が見えなくならない)', () => {
+    // 近い4本は弱く、★★は5番目。従来の「距離順8本」だと反対側と競合して落ちうる位置。
+    const near = (p: number, lab: string): Level => level(p, 0, 0.3, lab);
+    const levels: LevelsResult = {
+      ...emptyLevels(),
+      up: [near(38260, 'A'), near(38270, 'B'), near(38280, 'C'), near(38290, 'D'), level(39050, 2, 9.9, '長期高')],
+      down: [near(38240, 'E'), near(38230, 'F'), near(38220, 'G'), near(38210, 'H')],
+    };
+    const s = buildScalpMarketData({ bars: [], levels, alerts: [], now: NOW, currentPrice: 38250 });
+    expect(s).toContain('39050 レジ +800円 ★★ s9.9 長期高');
+  });
+
   it('ボラ/レンジ: session の高安を正に位置%と距離を出す', () => {
     const bars: Bar1m[] = [];
     for (let i = 0; i < 16; i++) bars.push(bar(NOW - (16 - i) * MIN, 38000, 38020, 37980, 38010));

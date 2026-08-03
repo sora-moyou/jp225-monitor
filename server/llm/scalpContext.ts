@@ -14,6 +14,7 @@ import { rowKind } from '../alertHistory.js';
 import { classifySession, minutesFromOpen } from '../../core/session.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { computeIndicators } from '../indicators.js';
+import { selectPromptLevels } from './scalpLevelSelect.js';
 
 const MIN = 60_000;
 
@@ -134,19 +135,15 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
     }
   } catch { /* 省略 */ }
 
-  // B. 節目(強度つき)。up=レジスタンス/down=サポート。現在値に近い順 上位8。
+  // B. 節目(強度つき)。up=レジスタンス/down=サポート。現在値に近い順。
+  //    ★選抜は selectPromptLevels(純関数)に切り出し済み。従来は「上下を混ぜて距離順に8本」で強度が
+  //    まったく効かず、中距離(±600〜1000円)の★★が半数近く落ちていた(実データ計測は scalpLevelSelect.ts の
+  //    先頭コメント)。上下の最低本数保証 + tier>=2 の別枠 で「引きつけ先の強い節目」を必ず見せる。
+  //    1行フォーマット/距離順は従来のまま(AI が読む形は変えない)。
   try {
-    if (levels && (levels.up.length > 0 || levels.down.length > 0)) {
-      const all = [
-        ...levels.up.map(l => ({ l, kind: 'レジ' })),
-        ...levels.down.map(l => ({ l, kind: 'サポ' })),
-      ];
-      const near = all
-        .map(x => ({ ...x, ad: Math.abs(x.l.price - currentPrice) }))
-        .sort((a, b) => a.ad - b.ad)
-        .slice(0, 8);
-      const lines = near.map(({ l, kind }) => {
-        const d = l.price - currentPrice;
+    const near = selectPromptLevels(levels, currentPrice);
+    if (near.length > 0) {
+      const lines = near.map(({ level: l, kind, dist: d }) => {
         const star = l.tier >= 2 ? ' ★★' : l.tier >= 1 ? ' ★' : '';
         const lab = l.labels && l.labels.length > 0 ? ` ${l.labels[0]}` : '';
         return `${R(l.price)} ${kind} ${d >= 0 ? '+' : ''}${R(d)}円${star} s${l.score.toFixed(1)}${lab}`;
