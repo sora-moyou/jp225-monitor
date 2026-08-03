@@ -132,8 +132,11 @@ const pairKey = (a: number, b: number): string => (a < b ? `${a}|${b}` : `${b}|$
  *   - `\b\d+\b` をやめた。非公開の説明文は `peak ≥ <値>pt` の形で、数字と `p` の間に単語境界が
  *     無いため **単位付きの数値を丸ごと取り逃していた**(=一番ありそうな漏洩の形が素通り)。
  *   - 桁区切り(12_345 / 12,345)を1つの数に畳む(部分列が偶然一致するのを防ぐ)。
- *   - 小数・版番号は落とす。
- *   - **英字の直後の数字は拾わない**(識別子に埋まった数字・hex の断片)。
+ *   - 版番号(ドット2つ以上)は落とす。
+ *   - **小数(ドット1つ)は落とさず整数部を拾う**。落としていた時期は `<整数>.0pt` の形で
+ *     書かれた実値が行ごと素通りしていた(単語境界方式より検出力が落ちる後退だった)。
+ *     整数部が 0 の小数(割合の 0.x)は値ではないので丸ごと落とす。
+ *   - **英字の直後の数字は拾わない**(識別子に埋まった数字・hex の断片・小数部)。
  *  ★この doc コメントに具体的な数字を書かないこと(このファイル自身が走査対象で、例示の数字が
  *    たまたま実値と一致すると「検査が漏洩する」)。 */
 export function extractNumbers(line: string, contextTokens: readonly string[]): number[] {
@@ -143,7 +146,8 @@ export function extractNumbers(line: string, contextTokens: readonly string[]): 
   s = s.replace(/\b[0-9a-f]{8,}\b/gi, ' ');  // 長い hex(指紋・行ハッシュ・ID)。先頭の数字だけが値に見える事故を防ぐ
   s = s.replace(/\d{4}-\d{2}-\d{2}/g, ' ');  // ISO 日付(設計書のファイル名で頻出)
   s = s.replace(/#\d+/g, ' ');               // 指摘 #12
-  s = s.replace(/\d+(?:\.\d+)+/g, ' ');      // 小数 / 版番号
+  s = s.replace(/\d+(?:\.\d+){2,}/g, ' ');   // 版番号(ドット2つ以上)。小数はここでは落とさない
+  s = s.replace(/(\d+)\.\d+/g, (_m, intPart: string) => (/^0+$/.test(intPart) ? ' ' : `${intPart} `));   // 小数 → 整数部だけ残す
   return [...s.matchAll(/(?<![A-Za-z_$\d.])\d+/g)].map((m) => Number(m[0]));
 }
 
@@ -438,6 +442,9 @@ describe('★漏洩検査: 非公開の決済ロジックが公開リポへ渡�
       // 実行時に組み立てる = このソースには秘密の数字が残らない。
       writeFileSync(join(dir, 'leak-strong.ts'), `export const cfg = { ${key}: ${secret} };\n`, 'utf-8');
       writeFileSync(join(dir, 'leak-weak.ts'), `// 含み益ピークが ${pair[0]} を超えたら床は ${pair[1]}\n`, 'utf-8');
+      // ★小数表記の漏洩(非公開の説明文をそのまま貼ると `<整数>.0pt` の形になることがある)。
+      //   この形は抽出器が小数を丸ごと捨てていた時期に **素通り** していた。
+      writeFileSync(join(dir, 'leak-decimal.ts'), `// 含み益ピークが ${pair[0]}.0pt を超えたら床は ${pair[1]}.0pt\n`, 'utf-8');
       writeFileSync(join(dir, 'clean.ts'), `// 含み益ピークが ${safe} を超えたら床は ${safe} (実値ではない)\n`, 'utf-8');
 
       const strong = scanFiles(dir, ['leak-strong.ts'], h);
@@ -450,6 +457,13 @@ describe('★漏洩検査: 非公開の決済ロジックが公開リポへ渡�
       expect(weak.every((f) => f.paired), '段のペアとして検出されること').toBe(true);
       expect(() => assertNoLeak('段のペア', weak)).toThrowError(/漏洩/);
       report('段のペア', dir, weak);
+
+      // ★小数表記でも同じように赤くなる(単位付き `<整数>.0pt` を取り逃さない)。
+      const decimal = scanFiles(dir, ['leak-decimal.ts'], h);
+      expect(decimal.map((f) => f.kind), '小数表記の漏洩が検出されること').toEqual(['weak']);
+      expect(decimal.every((f) => f.paired), '小数表記でも段のペアとして検出されること').toBe(true);
+      expect(() => assertNoLeak('小数表記', decimal)).toThrowError(/漏洩/);
+      report('小数表記', dir, decimal);
 
       // 対照: 実値でない数字なら鳴らない(検出器が何でも赤くしているのではない)。
       expect(scanFiles(dir, ['clean.ts'], h)).toEqual([]);
@@ -471,10 +485,16 @@ describe('★漏洩検査: 非公開の決済ロジックが公開リポへ渡�
     expect(extractNumbers(`const c${ns} = f(); sh0${ns};`, [])).toEqual([]);
     // 桁区切りは1つの数として扱う(部分列の偶然一致を防ぐ)
     expect(extractNumbers(`price = ${ns}_000, ${ns},000`, [])).toEqual([Number(`${ns}000`), Number(`${ns}000`)]);
-    // 日付・小数・指摘番号は値ではない
+    // 日付・版番号・割合(0.x)・指摘番号は値ではない
     expect(extractNumbers('docs/2026-06-25-phase-exit-design.md', [])).toEqual([]);
     expect(extractNumbers(`v0.${ns}.${ns} / 0.${ns}`, [])).toEqual([]);
+    expect(extractNumbers(`${ns}.${ns}.${ns} は版番号`, [])).toEqual([]);
+    expect(extractNumbers(`v${ns}.0 で変更`, [])).toEqual([]);   // 2成分の版番号は英字直後なので拾わない
     expect(extractNumbers(`Finding #${ns}`, [])).toEqual([]);
+    // ★小数で書かれた値は **整数部を拾う**(`<整数>.0pt` の形で貼られた説明文を取り逃さない)
+    expect(extractNumbers(`peak >= ${ns}.0pt`, [])).toContain(ns);
+    expect(extractNumbers(`床=${ns}.5pt / trail ${ns}.0pt`, [])).toEqual([ns, ns]);
+    expect(extractNumbers(`peak ${ns}.${ns}`, [])).toEqual([ns]);   // 小数部は拾わない
     // 文脈トークンに含まれる数字は判定前に除去される
     expect(extractNumbers(`phase${ns}Step`, [`phase${ns}Step`])).toEqual([]);
     // 走査対象は実在し、秘密も実在する(空振りしていない)
