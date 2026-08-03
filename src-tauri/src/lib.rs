@@ -78,7 +78,7 @@ fn log_spawn(line: &str) {
 const MAIN_IMAGE: &str = concat!(env!("CARGO_PKG_NAME"), ".exe");
 
 // 相互排他の判断結果。★純粋に決めてからでないと「誰を kill するか」を間違える。
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Exclusion {
     /// 何もしない(自分がロックを取るだけ)。
     Proceed,
@@ -110,6 +110,35 @@ fn decide_exclusion(
         ("full", "lite") => Exclusion::KillOther(lock.pid),
         ("lite", "full") => Exclusion::Yield,
         _ => Exclusion::Proceed,
+    }
+}
+
+// ★譲る(Yield)ときは窓を1枚も作らせない。ここが「窓を作らない」の唯一の効く場所。
+//
+//   Tauri は config の windows を **user setup フックより前** に生成する
+//   (tauri 2.11.2 / src/app.rs fn setup: `WebviewWindowBuilder::from_config` のループ →
+//    そのあとに `(setup)(app)`)。したがって setup の中で何をしても
+//   ── 早期 return しても、その場で exit しても ── 窓はもう出来ている。
+//
+//   実測(是正前): lite が「起動できません」のダイアログを出しながら
+//     hwnd class="Tauri Window" title="JP225 Monitor" visible=True + 子プロセス msedgewebview2.exe
+//   を開いていた。ダイアログは別スレッドなので窓を塞がず、OK を押す前にその窓を触れてしまう。
+//   中身は **走っているフル版のサーバ(:3000)** に繋がった操作可能な2枚目のUIで、
+//   そこでの設定変更は実弾を動かしている側へ飛ぶ。
+//
+//   窓の生成を止められるのは `build()` に渡す **前** の Context の config だけ。
+//   `WindowConfig::create=false` は Tauri 自身が用意している「起動時に作らない」フラグ
+//   (上のループが `.filter(|w| w.create)` で見ている)。窓を後から閉じるのではなく
+//   **一度も作らせない**。
+fn apply_window_suppression(
+    windows: &mut [tauri::utils::config::WindowConfig],
+    decision: Exclusion,
+) {
+    if decision != Exclusion::Yield {
+        return;
+    }
+    for w in windows.iter_mut() {
+        w.create = false;
     }
 }
 
@@ -245,11 +274,76 @@ mod tests {
     fn main_image_is_the_cargo_binary_name() {
         assert_eq!(MAIN_IMAGE, "jp225-monitor.exe");
     }
+
+    use tauri::utils::config::WindowConfig;
+
+    // ★譲るときは窓を1枚も作らせない。setup から早期 return しても Tauri は
+    //   その前に config の窓を作り終えているので、config を落とすしかない。
+    #[test]
+    fn yield_suppresses_every_window() {
+        let mut windows = vec![WindowConfig::default(), WindowConfig::default()];
+        assert!(windows.iter().all(|w| w.create), "既定は作る");
+        apply_window_suppression(&mut windows, Exclusion::Yield);
+        assert!(windows.iter().all(|w| !w.create));
+    }
+
+    // 譲らないときは窓の設定に触らない(通常起動を1ミリも変えない)。
+    #[test]
+    fn non_yield_leaves_windows_alone() {
+        for decision in [Exclusion::Proceed, Exclusion::KillOther(42)] {
+            let mut windows = vec![WindowConfig::default()];
+            apply_window_suppression(&mut windows, decision);
+            assert!(windows[0].create, "{decision:?} で窓を消してはいけない");
+        }
+    }
+
+    // 窓が1枚も無い config でも落ちない(将来 windows を空にしても壊れない)。
+    #[test]
+    fn window_suppression_handles_empty_config() {
+        let mut windows: Vec<WindowConfig> = vec![];
+        apply_window_suppression(&mut windows, Exclusion::Yield);
+        assert!(windows.is_empty());
+    }
 }
 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── 相互排他は **アプリを build する前** に決める ──
+    //
+    // ★理由: Tauri は config の windows を user setup フックより前に生成するので、
+    //   「譲るときは窓を作らない」を成立させられるのは build() に渡す前の Context だけ
+    //   (apply_window_suppression のコメント参照)。
+    // ★判断は **1回だけ**。ここで判断して setup でもう一度判断すると、その隙にフル版が
+    //   終了した場合に「窓は抑止済みなのに Proceed」= 窓の無いゾンビになる。
+    // 型を明示するのは、まだ Builder に渡していない(=ランタイムが推論されない)ため。
+    // tauri::Builder::default() と同じ既定ランタイム。
+    let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+
+    // 製品バリアント判定(identifier ベース・1 Web バンドルで二重管理なし)。
+    // app.jp225monitor2 → full(monitor2)/ それ以外(app.jp225monitor)→ lite。
+    let variant: &'static str = if context.config().identifier == "app.jp225monitor2" {
+        "full"
+    } else {
+        "lite"
+    };
+    let our_pid = std::process::id();
+
+    // 生存判定は pid 実在＋イメージ名一致(誤 kill 防止)。file/parse 失敗はロック無し扱い。
+    let lock_path = instance_lock_path();
+    let decision = match &lock_path {
+        Some(path) => {
+            let existing = read_instance_lock(path);
+            let alive = |pid: u32| is_alive_with_image(pid, MAIN_IMAGE);
+            decide_exclusion(variant, existing.as_ref(), our_pid, &alive)
+        }
+        // ロックのパスすら解決できない(APPDATA 無し)ときは相互排他を諦めて通常起動する。
+        None => Exclusion::Proceed,
+    };
+
+    // ★譲るなら窓は1枚も作らせない(config を build 前に落とす)。
+    apply_window_suppression(&mut context.config_mut().app.windows, decision);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -257,59 +351,67 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![stop_collector])
         .manage(SidecarState(Mutex::new(None)))
-        .setup(|app| {
-            // ── 製品バリアント判定(identifier ベース・1 Web バンドルで二重管理なし)──
-            // app.jp225monitor2 → full(monitor2)/ それ以外(app.jp225monitor)→ lite。
-            let variant: &'static str = if app.config().identifier == "app.jp225monitor2" {
-                "full"
-            } else {
-                "lite"
-            };
-            let our_pid = std::process::id();
-
-            // ── 相互排他(共有ロック・monitor2 優先)──
-            // 生存判定は pid 実在＋イメージ名一致(誤 kill 防止)。file/parse 失敗はロック無し扱い。
+        .setup(move |app| {
+            // ── 相互排他(共有ロック・monitor2 優先)の **実行** ──
+            // 判断(decision)は build 前に済ませてある。ここは結果に従うだけ。
             let mut yielded = false;
-            if let Some(lock_path) = instance_lock_path() {
-                let existing = read_instance_lock(&lock_path);
-                let alive = |pid: u32| is_alive_with_image(pid, MAIN_IMAGE);
-                match decide_exclusion(variant, existing.as_ref(), our_pid, &alive) {
-                    Exclusion::KillOther(pid) => {
-                        // full(monitor2)優先: 生きている lite を落としてから自分が取る。
-                        log_spawn(&format!("[exclusion] full: kill lite pid={pid}"));
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/PID", &pid.to_string(), "/F", "/T"])
-                            .output();
-                        write_instance_lock(&lock_path, variant, our_pid);
+            match decision {
+                Exclusion::KillOther(pid) => {
+                    // full(monitor2)優先: 生きている lite を落としてから自分が取る。
+                    log_spawn(&format!("[exclusion] full: kill lite pid={pid}"));
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/PID", &pid.to_string(), "/F", "/T"])
+                        .output();
+                    if let Some(path) = &lock_path {
+                        write_instance_lock(path, variant, our_pid);
                     }
-                    Exclusion::Yield => {
-                        // lite: full(monitor2)が生きているので起動しない(ダイアログ→exit)。
-                        //
-                        // ★ダイアログは **メインスレッドで出さない**。tauri-plugin-dialog は
-                        //   blocking_show について「it cannot be executed on the main thread as it will
-                        //   freeze your application」と明示的に禁じており、ここ(setup)はメインスレッド。
-                        //   いまのスタックでは偶々固まらないだけで、依存を上げた瞬間に固まる構造だった。
-                        //   しかも相互排他自体がずっと壊れていた(イメージ名不一致)ので、この経路は
-                        //   **本番で一度も実行されたことがない** = 固まっても誰も気づけない。
-                        // ★別スレッドで出し、閉じられた時点で終了する。メインスレッドは即座に戻り、
-                        //   `yielded` によって **サイドカーを1本も spawn せずに** setup を終える
-                        //   (= 起動しない、という結末は1ミリも変えない)。
-                        log_spawn("[exclusion] lite: monitor2 is running — not starting");
-                        let handle = app.handle().clone();
-                        std::thread::spawn(move || {
+                }
+                Exclusion::Yield => {
+                    // lite: full(monitor2)が生きているので起動しない(理由を伝えて exit)。
+                    //
+                    // ここで両立させているのは3つ:
+                    //
+                    // (1) ★窓を作らない: build 前に WindowConfig.create=false へ落としてある
+                    //     (apply_window_suppression)。setup から早期 return するだけでは
+                    //     窓は既に出来ている = フル版のサーバに繋がった2枚目のUIが開く。
+                    // (2) ★メインスレッドを塞がない: tauri-plugin-dialog は blocking_show を
+                    //     「it cannot be executed on the main thread as it will freeze your
+                    //     application」と明示的に禁じており、setup はメインスレッド。
+                    //     だから別スレッドで出し、メインスレッドは即座にイベントループへ戻す。
+                    // (3) ★理由が伝わる: そのダイアログを閉じた時点で exit する。
+                    //     窓が無いので、ユーザーに見えるのはこのダイアログだけになる。
+                    log_spawn("[exclusion] lite: monitor2 is running - not starting (no window will be created)");
+                    let handle = app.handle().clone();
+                    std::thread::spawn(move || {
+                        // ダイアログが panic しても必ず exit する。ここで抜けないと
+                        // 窓の無いプロセスが黙って残る(見えないゾンビ)。
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             handle.dialog()
                                 .message("monitor2 が起動中のため monitor は起動できません。monitor2 を終了してから起動してください。")
                                 .title("JP225 Monitor")
                                 .blocking_show();
-                            std::process::exit(0);
+                        }));
+                        log_spawn("[exclusion] lite: dialog closed - exiting");
+                        std::process::exit(0);
+                    });
+
+                    // ★「メインスレッドが塞がっていない」ことを事実として残す。
+                    //   run_on_main_thread はイベントループが回っているときにしか実行されない
+                    //   ので、ダイアログを出したあとにこの行が出る = 固まっていない証拠。
+                    //   固まったら(将来 依存を上げて blocking_show の実装が変わった等)
+                    //   この行が **出ない** ことで気づける。
+                    let probe = app.handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let _ = probe.run_on_main_thread(|| {
+                            log_spawn("[exclusion] lite: main thread ran a task while the dialog was open - not blocked");
                         });
-                        // ★ダイアログを出したのに固まっていない、という事実そのものを残す
-                        //   (この行が spawn 記録に出る = メインスレッドが先へ進んだ証拠)。
-                        log_spawn("[exclusion] lite: dialog shown on a worker thread — main thread continues");
-                        yielded = true;
-                    }
-                    Exclusion::Proceed => {
-                        write_instance_lock(&lock_path, variant, our_pid);
+                    });
+                    yielded = true;
+                }
+                Exclusion::Proceed => {
+                    if let Some(path) = &lock_path {
+                        write_instance_lock(path, variant, our_pid);
                     }
                 }
             }
@@ -322,15 +424,28 @@ pub fn run() {
             // 衝突しないよう意図的に変えてある (同名だと dev モードで Rust 本体が
             // sidecar として spawn され fork-bomb 化する)。
             // variant を環境変数で渡す=server が /api/version で web に伝播(lite は表示縮小)。
-            let sidecar = app
-                .shell()
-                .sidecar("jp225-sidecar")
-                .expect("failed to create sidecar command")
-                .env("MONITOR_VARIANT", variant);
+            //
+            // ★spawn の成否は collector / 生成器と同じ経路(log_spawn)で残す。
+            //   ここだけ eprintln! のままだと Rust のコンソール止まりで、運用PCからは
+            //   「本体サーバがそもそも起動されたのか」が分からない(server.log が
+            //   1行も無いとき、spawn 失敗なのか起動直後に死んだのか切り分けられない)。
+            //   ★失敗時に panic する挙動は従来どおり(記録してから panic する)。
+            let sidecar = match app.shell().sidecar("jp225-sidecar") {
+                Ok(cmd) => cmd.env("MONITOR_VARIANT", variant),
+                Err(e) => {
+                    log_spawn(&format!("[sidecar] sidecar resolve failed: {e}"));
+                    panic!("failed to create sidecar command: {e}");
+                }
+            };
 
-            let (mut rx, child) = sidecar
-                .spawn()
-                .expect("failed to spawn sidecar — binaries/jp225-sidecar-<target>.exe is missing?");
+            let (mut rx, child) = match sidecar.spawn() {
+                Ok(v) => v,
+                Err(e) => {
+                    log_spawn(&format!("[sidecar] spawn failed: {e}"));
+                    panic!("failed to spawn sidecar (binaries/jp225-sidecar-<target>.exe is missing?): {e}");
+                }
+            };
+            log_spawn(&format!("[sidecar] spawned pid={}", child.pid()));
 
             app.state::<SidecarState>()
                 .0
@@ -347,8 +462,10 @@ pub fn run() {
                         CommandEvent::Stderr(line) => {
                             eprintln!("[sidecar:err] {}", String::from_utf8_lossy(&line).trim_end());
                         }
+                        // ★終了も残す(生成器と同じ)。本体サーバが黙って死んだ事実を
+                        //   コンソールだけに流さない。
                         CommandEvent::Terminated(payload) => {
-                            eprintln!("[sidecar] terminated, code={:?}", payload.code);
+                            log_spawn(&format!("[sidecar] terminated code={:?}", payload.code));
                         }
                         _ => {}
                     }
@@ -422,7 +539,9 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        // ★上で判断済みの context を渡す(generate_context! をここで呼び直すと
+        //   窓の抑止をしていない別物の config になる = 譲っても窓が開く)。
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
