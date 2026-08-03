@@ -215,15 +215,15 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
   });
 
   it('★既定は全 knob directive が manual + 既定値(現状の挙動)', () => {
-    expect(resolveScalpLcFloorYen()).toBe(45);
-    expect(resolveScalpLcFloorDirective()).toEqual({ mode: 'manual', value: 45 });
+    expect(resolveScalpLcFloorYen()).toBe(55);
+    expect(resolveScalpLcFloorDirective()).toEqual({ mode: 'manual', value: 55 });
     expect(resolveScalpLcCeilingDirective()).toEqual({ mode: 'manual', value: 65 });
     expect(resolveScalpTrendVetoDirective()).toEqual({ mode: 'manual', value: 100 });
     expect(resolveScalpCooldownDirective()).toEqual({ mode: 'manual', value: 90 });
     expect(resolveScalpBiasDirective()).toEqual({ mode: 'manual', value: 'none' });
     expect(resolveScalpRangeDirective()).toEqual({ mode: 'manual', value: false });
-    // LC安全上限: 既定 enabled=true / value=150。
-    expect(resolveScalpLcHardMax()).toEqual({ enabled: true, value: 150 });
+    // LC安全上限: 既定 enabled=true / value=159。
+    expect(resolveScalpLcHardMax()).toEqual({ enabled: true, value: 159 });
   });
 
   it('source=ai を反映(value は現行値のまま返す=記録/実測用)', () => {

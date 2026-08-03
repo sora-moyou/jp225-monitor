@@ -48,7 +48,8 @@ vi.mock('../configStore.js', async (orig) => ({
 }));
 
 let biasMock: () => 'long' | 'short' | 'none' = () => 'none';
-// ★初期LC下限の設定(mode/value)。既定は「手動・45円」= UI の既定表示と同じ。
+// ★初期LC下限の設定(mode/value)。ここはテスト固定値(手動・45円)であって、設定の既定値(55円)とは独立。
+//   目的は「設定した値がそのまま床として効くか」なので、既定が動いてもこのファイルの検証は変えない。
 //   'ai'(AI委任)に倒したケースでも下限が効くこと(=強制が委任に勝つ)を同じ経路で確かめる。
 let floorMock: () => { mode: 'manual' | 'ai'; value: number } = () => ({ mode: 'manual', value: 45 });
 

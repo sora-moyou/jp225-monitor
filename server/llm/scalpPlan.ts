@@ -136,8 +136,10 @@ function noneLegsFromDirectional(
 
 // 初期 LC(損切り)幅の既定レンジ。呼び出し側が /api/scalp-plan で lcFloorYen/lcCeilingYen を
 // 指定しない時のフォールバック(旧記述の「trade2」は誤り。呼び出し元は上の注記を参照)。★v0.7.39: 旧「原則45〜75/上限95」の二段を撤去し、
-// 単一上限「45〜65 に収める・65 超は出さない」へ collapse。パラメータで上下限を可変にする。
-export const DEFAULT_LC_FLOOR_YEN = 45;
+// 単一上限「下限〜65 に収める・65 超は出さない」へ collapse。パラメータで上下限を可変にする。
+// ★下限の既定は configStore の PARAM_BOUNDS.scalpLcFloorYen.default と同値に揃える(現行 55)。
+//   実経路(buildScalpPlan)は必ず設定値を渡すので、この定数は引数省略時のフォールバックのみ。
+export const DEFAULT_LC_FLOOR_YEN = 55;
 export const DEFAULT_LC_CEILING_YEN = 65;
 
 /** LC 幅の下限/上限を受けてスキャル戦略質問(ユーザー指定・日本語)を生成する。
@@ -764,7 +766,7 @@ export interface ScalpPlanInput {
   technical?: string | null;
   /** チャート画像(data URL: `data:image/png;base64,<...>`)。渡されるとビジョン対応プロバイダに添付する。 */
   chartImageDataUrl?: string | null;
-  /** 初期 LC(損切り)幅の下限[円]。未指定は monitor 設定(resolveScalpLcFloorYen・既定45)。
+  /** 初期 LC(損切り)幅の下限[円]。未指定は monitor 設定(resolveScalpLcFloorYen・既定55)。
    *  ★設定値より **低い値は受け付けない**(clampRequestedLcFloor で床止め)。厳しくする方向のみ有効。
    *  プロンプトに反映され、かつ enforcePlanConstraints で実強制される(下限未満のレッグを落とす)。 */
   lcFloorYen?: number;
@@ -1164,7 +1166,7 @@ export function resolveRefPrice(prices: Price[], symbol: string, now: number): R
 }
 
 /** lcFloorYen/lcCeilingYen をサニタイズ・クランプして [floor, ceiling] を返す。
- *  非数値/非有限、LC_YEN_MIN..LC_YEN_MAX の範囲外、floor>ceiling のいずれかなら既定(45/65)へフォールバック。 */
+ *  非数値/非有限、LC_YEN_MIN..LC_YEN_MAX の範囲外、floor>ceiling のいずれかなら既定(55/65)へフォールバック。 */
 export function resolveLcRange(
   floorYen?: number,
   ceilingYen?: number,
@@ -1173,9 +1175,9 @@ export function resolveLcRange(
     typeof v === 'number' && Number.isFinite(v) && v >= LC_YEN_MIN && v <= LC_YEN_MAX;
   const floor = inRange(floorYen) ? floorYen : DEFAULT_LC_FLOOR_YEN;
   const ceiling = inRange(ceilingYen) ? ceilingYen : DEFAULT_LC_CEILING_YEN;
-  // ceiling を既定 floor(45)より小さく締めた場合、floor を ceiling まで下げて **ユーザーの厳しい上限を尊重** する。
-  // ★従来は両方を既定(45/65)へ戻していたため、締めた上限が黙って無視され「緩む方向」へサイレント失敗するフットガンだった
-  //   (呼び出し側は floor 未指定=45 で呼ぶため、ceiling を 20〜44 にすると発火)。ceiling を単一の真実として優先する。
+  // ceiling を既定 floor(55)より小さく締めた場合、floor を ceiling まで下げて **ユーザーの厳しい上限を尊重** する。
+  // ★従来は両方を既定(55/65)へ戻していたため、締めた上限が黙って無視され「緩む方向」へサイレント失敗するフットガンだった
+  //   (呼び出し側は floor 未指定=既定下限 で呼ぶため、ceiling をそれより小さくすると発火)。ceiling を単一の真実として優先する。
   if (floor > ceiling) return { floorYen: ceiling, ceilingYen: ceiling };
   return { floorYen: floor, ceilingYen: ceiling };
 }
@@ -1185,7 +1187,7 @@ export function resolveLcRange(
  *  ★なぜ必要か: 下限はプロンプトに `【強制=委任対象外・コードで必ず適用】` と書いてあり、AI にも委任しない
  *    唯一の制約になっている。にもかかわらず `/api/scalp-plan` は body/query の lcFloorYen をそのまま
  *    buildScalpPlan へ渡しており、resolveLcRange は LC_YEN_MIN(=20)まで受理するので、
- *    **呼び出し側(trade2 や curl)が 20 を送れば床が 20 に下がっていた**。設定画面には 45 と表示されたまま
+ *    **呼び出し側(trade2 や curl)が 20 を送れば床が 20 に下がっていた**。設定画面には設定値(既定 55)と表示されたまま
  *    実際の強制は 20 になる=文言が嘘になる形。
  *
  *  ★クランプの向き(下限側だけ・上げるのは許可):

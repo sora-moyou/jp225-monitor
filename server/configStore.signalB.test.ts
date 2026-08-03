@@ -84,12 +84,12 @@ describe('configStore: System B(signalB) profile 解決', () => {
     expect(resolveScalpBias('B')).toBe('none');
   });
 
-  it('未設定時は A/B とも既定値(trendVeto=100 / lcFloor=45)', () => {
+  it('未設定時は A/B とも既定値(trendVeto=100 / lcFloor=55)', () => {
     writeConfig({});
     expect(resolveScalpTrendVetoDirective('A').value).toBe(100);
     expect(resolveScalpTrendVetoDirective('B').value).toBe(100);
-    expect(resolveScalpLcFloorDirective('A').value).toBe(45);
-    expect(resolveScalpLcFloorDirective('B').value).toBe(45);
+    expect(resolveScalpLcFloorDirective('A').value).toBe(55);
+    expect(resolveScalpLcFloorDirective('B').value).toBe(55);
     expect(resolveScalpLcFloorDirective('B').mode).toBe('manual');   // 既定 manual
   });
 });

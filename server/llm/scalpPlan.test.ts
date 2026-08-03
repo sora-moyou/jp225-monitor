@@ -659,9 +659,9 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
   it('SCALP_QUESTION(既定)にレッグ独立の LC 上限と指値のみ回避が含まれる', () => {
     expect(SCALP_QUESTION).toContain('それぞれ独立');
     expect(SCALP_QUESTION).toContain('指値のみ');
-    // ★新既定: 上限65・下限45(旧75/95 は撤去)。
+    // ★新既定: 上限65・下限55(旧75/95 は撤去)。
     expect(SCALP_QUESTION).toContain('65');
-    expect(SCALP_QUESTION).toContain('45');
+    expect(SCALP_QUESTION).toContain('55');
     expect(SCALP_QUESTION).not.toContain('95');
     expect(SCALP_QUESTION).not.toContain('75');
   });
@@ -681,8 +681,8 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
     expect(SCALP_SYSTEM_PROMPT).toContain('提案しない');
   });
 
-  it('既定(引数なし)は floor=45/ceiling=65 を使う', () => {
-    expect(DEFAULT_LC_FLOOR_YEN).toBe(45);
+  it('既定(引数なし)は floor=55/ceiling=65 を使う', () => {
+    expect(DEFAULT_LC_FLOOR_YEN).toBe(55);
     expect(DEFAULT_LC_CEILING_YEN).toBe(65);
     expect(buildScalpQuestion()).toBe(SCALP_QUESTION);
     expect(buildScalpSystemPrompt()).toBe(SCALP_SYSTEM_PROMPT);
@@ -787,26 +787,26 @@ describe('scalp プロンプト文言(レッグ独立・指値のみ回避・LC 
 });
 
 describe('resolveLcRange(サニタイズ/クランプ)', () => {
-  it('未指定は既定 45/65', () => {
-    expect(resolveLcRange()).toEqual({ floorYen: 45, ceilingYen: 65 });
-    expect(resolveLcRange(undefined, undefined)).toEqual({ floorYen: 45, ceilingYen: 65 });
+  it('未指定は既定 55/65', () => {
+    expect(resolveLcRange()).toEqual({ floorYen: 55, ceilingYen: 65 });
+    expect(resolveLcRange(undefined, undefined)).toEqual({ floorYen: 55, ceilingYen: 65 });
   });
   it('正常値はそのまま', () => {
     expect(resolveLcRange(50, 120)).toEqual({ floorYen: 50, ceilingYen: 120 });
   });
   it('非有限/非数値は既定へフォールバック', () => {
-    expect(resolveLcRange(NaN, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
-    expect(resolveLcRange(Infinity, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
+    expect(resolveLcRange(NaN, 80)).toEqual({ floorYen: 55, ceilingYen: 80 });
+    expect(resolveLcRange(Infinity, 80)).toEqual({ floorYen: 55, ceilingYen: 80 });
     // @ts-expect-error 実行時の不正入力を想定
-    expect(resolveLcRange('x', 'y')).toEqual({ floorYen: 45, ceilingYen: 65 });
+    expect(resolveLcRange('x', 'y')).toEqual({ floorYen: 55, ceilingYen: 65 });
   });
   it('範囲外(<20 / >300)は該当側を既定へ', () => {
-    expect(resolveLcRange(10, 80)).toEqual({ floorYen: 45, ceilingYen: 80 });
+    expect(resolveLcRange(10, 80)).toEqual({ floorYen: 55, ceilingYen: 80 });
     expect(resolveLcRange(50, 999)).toEqual({ floorYen: 50, ceilingYen: 65 });
   });
   it('floor>ceiling は floor を ceiling まで下げる(締めた上限を尊重・既定へ戻さない)', () => {
     expect(resolveLcRange(120, 50)).toEqual({ floorYen: 50, ceilingYen: 50 });
-    // ★フットガン: 呼び出し側 floor 未指定(=既定45)で ceiling を 20〜44 に締めても、上限が黙って緩まない。
+    // ★フットガン: 呼び出し側 floor 未指定(=既定55)で ceiling をそれより小さく締めても、上限が黙って緩まない。
     expect(resolveLcRange(undefined, 30)).toEqual({ floorYen: 30, ceilingYen: 30 });
   });
 });
@@ -835,9 +835,9 @@ describe('clampRequestedLcFloor(外部要求の LC 下限は設定値を下回�
 });
 
 describe('scalpJsonInstruction フィールド注記の LC 反映', () => {
-  it('既定(引数なし)の JSON 注記に LC幅45〜65 が入り 95/75 が入らない', () => {
+  it('既定(引数なし)の JSON 注記に LC幅55〜65 が入り 95/75 が入らない', () => {
     const j = scalpJsonInstruction(38250);
-    expect(j).toContain('LC幅45〜65円');
+    expect(j).toContain('LC幅55〜65円');
     expect(j).toContain('65円超は出さない');
     expect(j).not.toContain('95');
     expect(j).not.toContain('75');
@@ -2017,7 +2017,7 @@ describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
       expect(t).toContain('それぞれ独立');        // LC上限のレッグ独立
       expect(t).toContain('指値のみ');
       expect(t).toContain('ブレイク新規のみ');
-      expect(t).toContain('45〜65円');            // LC 幅
+      expect(t).toContain('55〜65円');            // LC 幅
       expect(t).toContain('5〜10円');             // 節目の内側オフセット
       expect(t).toContain('0〜5円');              // 節目の外側オフセット
       expect(t).toContain('400円以内');           // 両レッグの幅上限 / レンジ上下幅

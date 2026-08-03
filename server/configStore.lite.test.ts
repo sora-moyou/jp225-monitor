@@ -71,13 +71,13 @@ describe('configStore: lite 独立名前空間(config.lite)', () => {
     expect(full).toEqual({ bias: 'short', floor: 50, ceiling: 80, hard: { enabled: false, value: 200 } });
   });
 
-  it('config.lite も最上位も無ければ組み込み既定(45/65/150/有効/両方向)', () => {
+  it('config.lite も最上位も無ければ組み込み既定(55/65/159/有効/両方向)', () => {
     writeConfig({});
     asLite();
     expect(resolveScalpBias()).toBe('none');
-    expect(resolveScalpLcFloorYen()).toBe(45);
+    expect(resolveScalpLcFloorYen()).toBe(55);
     expect(resolveScalpLcCeiling()).toBe(65);
-    expect(resolveScalpLcHardMax()).toEqual({ enabled: true, value: 150 });
+    expect(resolveScalpLcHardMax()).toEqual({ enabled: true, value: 159 });
   });
 
   it('config.lite の一部だけ設定なら、残りは最上位へフォールバックする(項目ごと)', () => {
@@ -128,7 +128,7 @@ describe('configStore: lite 独立名前空間(config.lite)', () => {
     asFull();
     expect(resolveScalpBias()).toBe('none');          // 既定(lite は無視)
     expect(resolveScalpLcCeiling()).toBe(65);
-    expect(resolveScalpLcFloorYen()).toBe(45);
+    expect(resolveScalpLcFloorYen()).toBe(55);
     expect(resolveAllNumericParams().scalpLcCeilingYen).toBe(65);
   });
 

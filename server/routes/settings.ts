@@ -189,7 +189,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     scalpCooldownSource: resolveScalpCooldownDirective().mode,
     scalpBiasSource: resolveScalpBiasDirective().mode,
     scalpRangeSource: resolveScalpRangeDirective().mode,
-    // ★v0.7.56: LC安全上限(policy とは独立の安全系)。既定 enabled=true / value=150。
+    // ★v0.7.56: LC安全上限(policy とは独立の安全系)。既定 enabled=true / value=159。
     scalpLcHardMaxEnabled: resolveScalpLcHardMax().enabled,
     // ★v0.8.2: System B(紙専用)の設定。raw=signalB に保存された生値(未設定=A追従) /
     //   effective=実効値(A へフォールバック済み。UI のプレースホルダ/select 初期値の表示補助)。
@@ -280,8 +280,8 @@ interface SettingsBody {
   scalpRangeSource?: string | null;
   // ★v0.7.56: LC安全上限。
   scalpLcHardMaxEnabled?: boolean | null;   // true=有効(既定) / false=無効 / null=既定(true)に戻す
-  scalpLcHardMaxYen?: number | null;        // LC安全上限(円)。null=既定(150)に戻す
-  scalpLcFloorYen?: number | null;          // 初期LC下限(円)。null=既定(45)に戻す
+  scalpLcHardMaxYen?: number | null;        // LC安全上限(円)。null=既定(159)に戻す
+  scalpLcFloorYen?: number | null;          // 初期LC下限(円)。null=既定(55)に戻す
   // ★v0.8.2: System B(紙専用)の設定。ネストしたオブジェクトで送る。各フィールドは A と同名。
   //   値の空欄/未設定(null)=「A追従」(signalB から外す)/ source は ''(A追従)/'manual'/'ai'。
   signalB?: Record<string, unknown> | null;

@@ -33,6 +33,7 @@ import { currentSignalHandler } from './routes/currentSignal.js';
 import { exitStopHandler } from './routes/exitStop.js';
 import { startSignalEngine } from './signalTrade/engine.js';
 import { loadExitImpl } from './signalTrade/exit/index.js';
+import { warmExitConfigHash, markFallbackExitConfigVersion } from './signalTrade/exitConfigVersion.js';
 import { startPriceLoop } from './loops/priceLoop.js';
 import { startNewsLoop } from './loops/newsLoop.js';
 import { startCorrelationLoop } from './loops/correlationLoop.js';
@@ -50,6 +51,8 @@ import { startBasedataAutoScheduler } from './basedata/autoPublish.js';
 import { normalizeCorsPath } from './corsPolicy.js';
 import { startGeneratorHeartbeat, stopGeneratorHeartbeat } from './db/generatorHeartbeat.js';
 import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
+import type { DatabaseSync } from 'node:sqlite';
+import { openDb, resolveDbPath } from './db/store.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
@@ -173,7 +176,15 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   //   従来は loadExitImpl() が startSignalEngine() の中にしか無く、SIGNAL_TRADE=0 では一度も走らず、
   //   ルートだけが生きて公開フォールバック(初期LC固定=劣化)を 200 で返していた(呼び出し側に判別不能)。
   //   冪等なのでエンジン側の呼び出しと二重にはならない。ロード完了までの窓はハンドラが 503 で塞ぐ。
-  void loadExitImpl().then(kind => console.log(`[server] exit impl = ${kind}`));
+  void loadExitImpl().then(kind => {
+    console.log(`[server] exit impl = ${kind}`);
+    // ★指紋を焼くのは「実装が確定したこの瞬間」だけ(RECORD-ONLY)。
+    //   engine.start() も warm を呼ぶが、そちらは待たずに 'simple' を受け取る位置にあり、
+    //   確定前は焼かない(exitConfigVersion.ts)。ここが唯一の確定点。
+    warmExitConfigHash();
+    // ★過去に確定前の指紋で採番されてしまった版に印をつける(追記のみ・過去の行は書き換えない)。
+    auditExitConfigLedger();
+  });
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
   // ★提案生成器の状態(有効か/生きているか/標本/従属停止)を共有DBの meta に定期記録する。
@@ -213,6 +224,28 @@ const server = app.listen(PORT, '127.0.0.1', () => {
     })();
   }, 1500);
 });
+
+/** ★決済設定の版台帳の自己点検(RECORD-ONLY・追記のみ・取引には一切関与しない)。
+ *  実装が確定する前に採番されてしまった「公開フォールバックの指紋」の版に印を残す。
+ *  過去の行(hash/version/first_seen)も、既に取引へ刻まれた版番号も **書き換えない**
+ *  (追記のみの設計)。印は別表 exit_config_version_notes に1行入るだけ。
+ *  失敗は握りつぶす(記録専用なので起動を止めない)。 */
+function auditExitConfigLedger(): void {
+  let db: DatabaseSync | null = null;
+  try {
+    db = openDb(resolveDbPath());
+    const note = markFallbackExitConfigVersion(db, Date.now());
+    if (note) {
+      console.warn(`[exit-config] ★版 ${note.version} は公開フォールバックの指紋(${note.hash})です。`
+        + '非公開実装が有効なこのプロセスで採番されている=実装が確定する前に記録された誤りなので、'
+        + '台帳に印を付けました(exit_config_version_notes)。この版が刻まれた取引/runs は集計から外してください。');
+    }
+  } catch (e) {
+    console.warn('[exit-config] 版台帳の自己点検に失敗:', e instanceof Error ? e.message : String(e));
+  } finally {
+    try { db?.close(); } catch { /* close 失敗は無視 */ }
+  }
+}
 
 // 終了時にハートビート interval を止めてプロセスが即座に落ちられるようにする。
 function shutdown(): void {

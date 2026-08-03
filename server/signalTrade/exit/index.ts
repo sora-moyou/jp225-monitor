@@ -170,11 +170,34 @@ export function exitImplStatus(): ExitImplStatus {
   return implStatus;
 }
 
+// ─── ★「実装がまだ確定していない窓」を外から観測できるようにする ───────────────────
+//
+// ■ なぜ要るか(消すとまた同じ壊れ方をするので理由を残す)
+//   loadExitImpl() は **2人目以降の呼び出し元を待たせない**(loadAttempted が立っていれば、
+//   in-flight の import を待たずに「今の実装」を即返す)。だから起動直後は
+//     server/index.ts: void loadExitImpl()  → import が in-flight のまま
+//     server/index.ts: void startSignalEngine() → engine が await loadExitImpl() で **'simple' を即受領**
+//   となり、戻り値だけでは「本当に非公開実装が無い」のか「まだ来ていない」のかを **区別できない**。
+//   区別しないまま決済設定の指紋(exitConfigVersion.ts)をキャッシュすると、公開フォールバックの
+//   指紋がプロセスの寿命のあいだ固定され、記録(DB の版台帳・取引に刻む版・生成器の runs)が
+//   実際に走っている実装と食い違う。実運用で起きた事故がこれ。
+//
+// ★この関数は **観測だけ**。ロードの解決順序も戻り値も決済の挙動も1バイトも変えない
+//   (待たせるように直すと engine.start() の完了時刻が動く=取引の挙動に触れてしまう)。
+let loadPending = false;
+
+/** 非公開実装のロードが **まだ settle していない** = 実装が確定していない窓か。
+ *  true の間は「今の実装」を根拠に何かを **確定させてはいけない**(記録も含む)。 */
+export function exitImplLoadPending(): boolean {
+  return loadPending;
+}
+
 /** 起動時に一度だけ ./private.js を optional dynamic import する。
  *  在れば computeExitStopPrivate に差し替え('private')、無ければ簡易版のまま('simple')。 */
 export async function loadExitImpl(): Promise<'private' | 'simple'> {
   if (loadAttempted) return impl === computeExitStopSimple ? 'simple' : 'private';
   loadAttempted = true;
+  loadPending = true;      // ★ここから import が settle するまでは「実装が未確定」(観測のみ・挙動は不変)。
   implStatus = 'simple';   // ロードを試みた=以後 'unloaded' ではない(private が取れたら下で 'private' へ)。
   try {
     // 公開リポには private.ts が無い(gitignored)。string リテラル指定子は esbuild が
@@ -214,6 +237,9 @@ export async function loadExitImpl(): Promise<'private' | 'simple'> {
     }
   } catch {
     // private 不在(公開配布)→ 簡易版で継続。
+  } finally {
+    // ★成功/失敗/早期 return のどれで抜けても「未確定の窓」を必ず閉じる(finally は return より先に走る)。
+    loadPending = false;
   }
   return 'simple';
 }

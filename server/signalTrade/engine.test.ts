@@ -1259,21 +1259,21 @@ describe('buildSettingsSnapshot(config から実効設定)', () => {
     resetConfigCache();
   }
 
-  it('既定は全 knob manual + 既定値 + hardMax(enabled150)', () => {
+  it('既定は全 knob manual + 既定値 + hardMax(enabled159)', () => {
     const s = buildSettingsSnapshot();
-    expect(s.lcFloor).toEqual({ mode: 'manual', value: 45 });
+    expect(s.lcFloor).toEqual({ mode: 'manual', value: 55 });
     expect(s.lcCeiling).toEqual({ mode: 'manual', value: 65 });
     expect(s.trendVeto).toEqual({ mode: 'manual', value: 100 });
     expect(s.cooldown).toEqual({ mode: 'manual', value: 90 });
     expect(s.bias).toEqual({ mode: 'manual', value: 'none' });
     expect(s.range).toEqual({ mode: 'manual', value: false });
-    expect(s.lcHardMax).toEqual({ enabled: true, value: 150 });
+    expect(s.lcHardMax).toEqual({ enabled: true, value: 159 });
   });
   it('lcCeiling=ai + realizedLc は実測 LC を value に、他は mode のみ', () => {
     writeConfig({ scalpLcCeilingSource: 'ai', scalpTrendVetoSource: 'ai' });
     const s = buildSettingsSnapshot(118);
     expect(s.lcCeiling).toEqual({ mode: 'ai', value: 118 });
-    expect(s.lcFloor).toEqual({ mode: 'manual', value: 45 });   // floor は manual → 設定値
+    expect(s.lcFloor).toEqual({ mode: 'manual', value: 55 });   // floor は manual → 設定値(既定)
     expect(s.trendVeto).toEqual({ mode: 'ai' });                // trendVeto は LC 系でない → value 省略
   });
 
@@ -1286,7 +1286,7 @@ describe('buildSettingsSnapshot(config から実効設定)', () => {
     expect(a.bias).toEqual({ mode: 'manual', value: 'none' });
     expect(b.lcCeiling).toEqual({ mode: 'manual', value: 40 });   // signalB
     expect(b.bias).toEqual({ mode: 'manual', value: 'short' });   // signalB
-    expect(b.lcFloor).toEqual({ mode: 'manual', value: 45 });     // signalB 未設定 → A(既定)へフォールバック
+    expect(b.lcFloor).toEqual({ mode: 'manual', value: 55 });     // signalB 未設定 → A(既定)へフォールバック
   });
 });
 

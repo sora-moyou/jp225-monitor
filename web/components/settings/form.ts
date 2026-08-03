@@ -254,10 +254,10 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.scalpCooldownSource = el.selectCooldownMode.value as KnobSource;
   body.scalpBiasSource = el.selectBiasMode.value as KnobSource;
   body.scalpRangeSource = el.selectRangeMode.value as KnobSource;
-  // 初期LC下限: 可視フィールド。空欄=既定(45)に戻す(null)。数値なら上書き。
+  // 初期LC下限: 可視フィールド。空欄=既定(55)に戻す(null)。数値なら上書き。
   const lcFloorRaw = el.inputScalpLcFloor.value.trim();
   body.scalpLcFloorYen = lcFloorRaw === '' ? null : Number(lcFloorRaw);
-  // LC安全上限: 有効/無効(チェック)＋値。空欄=既定(150)に戻す(null)。
+  // LC安全上限: 有効/無効(チェック)＋値。空欄=既定(159)に戻す(null)。
   body.scalpLcHardMaxEnabled = el.checkScalpLcHardMaxEnabled.checked;
   const hardMaxRaw = el.inputScalpLcHardMax.value.trim();
   body.scalpLcHardMaxYen = hardMaxRaw === '' ? null : Number(hardMaxRaw);

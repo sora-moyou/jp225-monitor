@@ -31,7 +31,7 @@ import { isAnalysisEnabled } from '../analysisGate.js';
 
 interface Body {
   symbol?: string;
-  /** 初期 LC(損切り)幅の下限[円]。未指定は monitor 設定(既定45)。数値化して optional で受理する。
+  /** 初期 LC(損切り)幅の下限[円]。未指定は monitor 設定(既定55)。数値化して optional で受理する。
    *  ★これは「より厳しくする」要求としてのみ効く: buildScalpPlan(clampRequestedLcFloor)が設定値で床止めするので、
    *    設定より小さい値を送っても下限は緩まない(下限は AI にも外部にも委任しない唯一の制約)。 */
   lcFloorYen?: number;

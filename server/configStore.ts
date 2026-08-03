@@ -82,7 +82,7 @@ export interface UserConfig {
   scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
   scalpRangeEnabled?: boolean;       // AIエントリー: レンジ判断時の両面ストラドル(実験)。★v0.7.53で実験終了=未設定は false(OFF)。true で再有効化可。
   scalpTrendVetoYen?: number;        // AIエントリー: 直近10分でこの円以上動いたらトレンドと見なし逆行フェード新規を禁止。未設定は 100。0で無効。
-  scalpLcFloorYen?: number;          // ★AIエントリー 初期LC幅の下限[円]。プロンプト + **コードで強制**(下限未満のレッグを落とす)。未設定は 45。
+  scalpLcFloorYen?: number;          // ★AIエントリー 初期LC幅の下限[円]。プロンプト + **コードで強制**(下限未満のレッグを落とす)。未設定は 55。
   dotenEnabled?: boolean;            // ★ドテン(反転)許可。ON=AIが保有中に反転を判断してよい / 未設定/false=OFF(既定・挙動不変)。monitor2 専用UIで設定。
   rangeReevalEnabled?: boolean;      // ★レンジ両指値が平均以上未約定→ブレイク(両逆指値)再評価。未設定/true=ON(既定・ただしレンジ自体が既定OFFなのでレンジ使用時のみ実効) / false=OFF。monitor2 専用UIで設定。
   indicatorsEnabled?: boolean;       // ★テクニカル指標(RSI/SMA/BB)のパネル表示 + AI文脈供給。未設定/true=ON(既定) / false=OFF。表示/文脈のみ(検知は不変)。
@@ -100,7 +100,7 @@ export interface UserConfig {
   scalpRangeSource?: KnobSource;       // レンジ両面: manual→on/off設定どおり / ai→AIが採用可否(range許可)
   // ★v0.7.56: LC安全上限(実弾暴走防止・policy の scalpLcCeiling とは独立の安全系)。
   //   有効時は手動でもAIでも |entry−SL| がこの円超のレッグを必ず落とす(最後の安全網)。無効時はハード上限なし。
-  scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 150。
+  scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 159。
   scalpLcHardMaxEnabled?: boolean;     // LC安全上限を有効にするか。未設定は true(既定で安全網ON)。
   // ★v0.8.2: System B(紙専用の並走エンジン)の独立設定。A と同じ knob 一式を持つ(全て任意)。
   //   B リゾルバは signalB.<knob> を優先し、未設定は A(グローバル)値/directive にフォールバックする
@@ -198,8 +198,8 @@ export const PARAM_BOUNDS = {
   scalpLcCeilingYen:      { min: 20, max: 300, default: 65 },   // AIエントリー最大初期LC(円)。openai.ts LC_YEN_MIN/MAX と整合。
   scalpCooldownSec:       { min: 0, max: 3600, default: 90 },   // AIエントリー: 決済後の再ARM抑止秒数。0で無効。
   scalpTrendVetoYen:      { min: 0, max: 1000, default: 100 },  // AIエントリー: トレンド veto 閾値(円)。直近10分でこの円以上動いたら逆行フェードを禁止。0で無効。
-  scalpLcFloorYen:        { min: 20, max: 300, default: 45 },   // ★AIエントリー 初期LC幅の下限(円)。プロンプト + コードで強制(委任でも効く)。
-  scalpLcHardMaxYen:      { min: 20, max: 500, default: 150 },  // ★v0.7.56: LC安全上限(円)。有効時は手動/AIとも超過レッグを落とす。
+  scalpLcFloorYen:        { min: 20, max: 300, default: 55 },   // ★AIエントリー 初期LC幅の下限(円)。プロンプト + コードで強制(委任でも効く)。
+  scalpLcHardMaxYen:      { min: 20, max: 500, default: 159 },  // ★v0.7.56: LC安全上限(円)。有効時は手動/AIとも超過レッグを落とす。
 } as const;
 
 let cached: UserConfig | null = null;

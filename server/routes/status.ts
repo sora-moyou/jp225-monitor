@@ -5,7 +5,7 @@ import { getProviderStatus } from '../llm/openai.js';
 import { generatorGateSnapshot, generatorArmUsage } from '../llm/generatorGate.js';
 import { loadExitImpl } from '../signalTrade/exit/index.js';
 import { exitVariantImplKindAll, type ExitImplKind } from '../signalTrade/exitVariantImpl.js';
-import { exitConfigHash, lookupExitConfigVersion } from '../signalTrade/exitConfigVersion.js';
+import { exitConfigHashOrNull, lookupExitConfigVersion } from '../signalTrade/exitConfigVersion.js';
 import { openDb, resolveDbPath } from '../db/store.js';
 import { readGeneratorLedgerStatus, resolveGeneratorDbPath } from '../db/generatorStore.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
@@ -29,25 +29,31 @@ interface ExitStatus {
   variantImpl: ExitImplKind;
   /** 決済設定の版(DB 台帳の採番。まだ一度も決済していなければ null)。 */
   configVersion: number | null;
-  /** 決済設定の指紋(16桁hex・一方向)。 */
-  configHash: string;
+  /** 決済設定の指紋(16桁hex・一方向)。★実装がまだ確定していないあいだは null
+   *  (公開フォールバックの指紋を「現行の指紋」として返すと、それが記録に刻まれる)。 */
+  configHash: string | null;
 }
 
 // 版は台帳を **読むだけ** で解決する(表示のために採番しない)。解決できたら以後は固定
 // (指紋は起動中に変わらないため)。未採番のうちは毎回引くと DB を開き続けるので間隔を空ける。
+// ★キャッシュは **指紋で鍵づけ** する: 起動直後に未確定/別実装の指紋で引いた版を、
+//   確定後の指紋の版として使い回すと、番号だけが古いまま残る(本件と同じ壊れ方)。
 const VERSION_RETRY_MS = 60_000;
-let cachedVersion: number | null = null;
+let cachedVersion: { hash: string; version: number } | null = null;
 let lastVersionTry = 0;
+let lastVersionTryHash: string | null = null;
 
 function resolveConfigVersion(hash: string, now: number): number | null {
-  if (cachedVersion !== null) return cachedVersion;
-  if (lastVersionTry !== 0 && now - lastVersionTry < VERSION_RETRY_MS) return null;
+  if (cachedVersion && cachedVersion.hash === hash) return cachedVersion.version;
+  if (lastVersionTryHash === hash && lastVersionTry !== 0 && now - lastVersionTry < VERSION_RETRY_MS) return null;
   lastVersionTry = now;
+  lastVersionTryHash = hash;
   let db: DatabaseSync | null = null;
   try {
     db = openDb(resolveDbPath());
-    cachedVersion = lookupExitConfigVersion(db, hash);
-    return cachedVersion;
+    const version = lookupExitConfigVersion(db, hash);
+    if (version !== null) cachedVersion = { hash, version };
+    return version;
   } catch {
     return null;   // DB が開けない環境でも /api/status は落とさない(診断表示のため)。
   } finally {
@@ -56,7 +62,9 @@ function resolveConfigVersion(hash: string, now: number): number | null {
 }
 
 /** テスト用: 版キャッシュを捨てる。 */
-export function _resetExitStatusCacheForTest(): void { cachedVersion = null; lastVersionTry = 0; }
+export function _resetExitStatusCacheForTest(): void {
+  cachedVersion = null; lastVersionTry = 0; lastVersionTryHash = null;
+}
 
 /** 決済実装の実態(数値なし)。loadExitImpl は冪等なので、まだ走っていなければここで走る。
  *  ★診断表示なので、ここで例外を出して /api/status ごと 500 にしない
@@ -64,11 +72,13 @@ export function _resetExitStatusCacheForTest(): void { cachedVersion = null; las
 export async function exitStatus(now: number = Date.now()): Promise<ExitStatus | { error: string }> {
   try {
     const kind = await loadExitImpl();
-    const hash = exitConfigHash();
+    // ★実装が確定していないあいだは null(= まだ言えない)。前提検証(生成器)は指紋が無い期を
+    //   作らない設計なので、嘘の指紋で期を作るより「無い」と言うほうが常に安全。
+    const hash = exitConfigHashOrNull();
     return {
       impl: kind === 'private' ? 'private' : 'fallback',
       variantImpl: exitVariantImplKindAll(),
-      configVersion: resolveConfigVersion(hash, now),
+      configVersion: hash === null ? null : resolveConfigVersion(hash, now),
       configHash: hash,
     };
   } catch (e) {

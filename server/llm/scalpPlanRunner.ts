@@ -93,7 +93,7 @@ const NIKKEI_SYMBOL = 'NIY=F';
 export interface RunScalpPlanOverrides {
   /** 対象シンボル。未指定は NIY=F。 */
   symbol?: string;
-  /** 初期 LC(損切り)幅の下限[円]。未指定は buildScalpPlan 側の既定(45)。 */
+  /** 初期 LC(損切り)幅の下限[円]。未指定は buildScalpPlan 側の既定(=monitor 設定・既定55)。 */
   lcFloorYen?: number;
   /** 初期 LC(損切り)幅の上限[円]。未指定は monitor 設定(resolveScalpLcCeiling・既定65)。 */
   lcCeilingYen?: number;

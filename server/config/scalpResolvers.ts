@@ -32,7 +32,7 @@ export function resolveScalpRangeEnabled(profile?: SignalProfile): boolean {
   return typeof v === 'boolean' ? v : false;
 }
 
-// ★AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(45)。
+// ★AIエントリー 初期LC幅の下限(円)。未設定は PARAM_BOUNDS 既定(55)。
 //   プロンプトに加えて **コードで強制**する(enforcePlanConstraints が下限未満のレッグを落とす)。
 export function resolveScalpLcFloorYen(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpLcFloorYen'); }
 
@@ -120,7 +120,7 @@ export function resolveScalpRangeDirective(profile?: SignalProfile): KnobDirecti
 }
 
 /** ★LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。
- *  enabled 未設定は true(既定で安全網ON)。value 未設定は PARAM_BOUNDS 既定(150)。 */
+ *  enabled 未設定は true(既定で安全網ON)。value 未設定は PARAM_BOUNDS 既定(159)。 */
 export function resolveScalpLcHardMax(profile?: SignalProfile): { enabled: boolean; value: number } {
   const v = readKnobRaw(profile, 'scalpLcHardMaxEnabled');
   return { enabled: typeof v === 'boolean' ? v : true, value: resolveNumericProfile(profile, 'scalpLcHardMaxYen') };
