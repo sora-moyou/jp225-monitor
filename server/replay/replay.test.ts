@@ -19,7 +19,7 @@ import { openTickArchiveDb } from '../db/tickArchive.js';
 import { openShadowDb, countShadowRows, readShadowLadderMeta } from '../db/shadowStore.js';
 import { sessionDateRange } from '../db/tickArchive.js';
 import { SHADOW_HORIZON_MS } from '../signalTrade/shadow/sim.js';
-import { LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN } from '../signalTrade/decisions.js';
+import { LIMIT_FILL_MARGIN_YEN, STOP_SLIPPAGE_YEN } from '../signalTrade/decisions.js';
 import type { ExitState, ShadowExitLadder } from '../signalTrade/exit/index.js';
 import type { AiPlan } from '../llm/scalpPlan.js';
 import { replayDay, runReplay, isDayReplayable, lastIndexAtOrBefore, firstIndexAtOrAfter, type ReplayDeps } from './replay.js';
@@ -133,10 +133,10 @@ describe('再生の基本(提案 + ティック → 影)', () => {
     expect(rows[0]!.proposal_id).toBe(id);
     expect(String(rows[0]!.proposal_id).startsWith(`${GEN_EPOCH}/`)).toBe(true);
     expect(rows[0]!.source).toBe('generator');
-    // 本番の約定/決済の規約がそのまま出る(建値=指値・決済は成行1tick不利)。
+    // 本番の約定/決済の規約がそのまま出る(建値=指値・逆指値決済は逆指値価格ちょうど)。
     expect(rows[0]!.entry_price).toBe(38_000);
     expect(rows[0]!.outcome).toBe('exit');
-    expect(rows[0]!.exit_price).toBe(37_900 - SLIPPAGE_YEN);
+    expect(rows[0]!.exit_price).toBe(37_900 - STOP_SLIPPAGE_YEN);
     expect(rows[0]!.armed_price).toBe(38_050);   // ARM 時刻の価格(直前/同時刻のティック)
     // ★対応表(変種 ↔ spec)は行を書く前に記録されている。
     expect(readShadowLadderMeta(shadow, LADDER_EPOCH)).toEqual({ 'candidate-a': ratchetSpec.name, 'current': holdSpec.name });

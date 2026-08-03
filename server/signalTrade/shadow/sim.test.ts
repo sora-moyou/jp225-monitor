@@ -27,7 +27,7 @@ vi.mock('../decisions.js', async (importOriginal) => {
 });
 
 import { ShadowSim, SHADOW_HORIZON_MS, MAX_OPEN_SHADOWS, type ShadowRow } from './sim.js';
-import { detectFill, planToArmed, ARMED_TIMEOUT_MS, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN } from '../decisions.js';
+import { detectFill, planToArmed, ARMED_TIMEOUT_MS, LIMIT_FILL_MARGIN_YEN, STOP_SLIPPAGE_YEN } from '../decisions.js';
 import type { ExitState } from '../exit/index.js';
 import type { ShadowExitLadder } from '../exit/index.js';
 
@@ -136,12 +136,12 @@ describe('★再実装していないことの実証(本番と同じ関数を通
         expect(row.entryLeg, `price=${price}`).toBe(truth.leg);
       }
     }
-    // 逆指値レッグの建値には本番と同じ 1tick スリップが乗る(=独自の約定モデルではない)。
+    // 逆指値レッグの建値は本番と同じ規約(逆指値価格ちょうど)=独自の約定モデルではない。
     const sim = newSim([holdSpec]);
     sim.open({ proposalId: 'stop', source: 'generator', plan: { ...plan, limitEntry: undefined, stopLossForLimit: undefined }, now: T0 });
     sim.feed(38_100, T0 + 1_000);
     sim.closeAll();
-    expect(sim.drainRows()[0]!.entryPrice).toBe(38_100 + SLIPPAGE_YEN);
+    expect(sim.drainRows()[0]!.entryPrice).toBe(38_100 + STOP_SLIPPAGE_YEN);
   });
 });
 
@@ -158,8 +158,8 @@ describe('決済パラメータを振ると結果が変わる(影の存在理由
     expect(r.outcome).toBe('exit');
     expect(r.censored).toBe(false);
     expect(r.exitReason).toBe('ratchet_floor');
-    expect(r.exitPrice).toBe(38_050 - SLIPPAGE_YEN);   // 成行決済の 1tick 不利(本番と同じ)
-    expect(r.pnl).toBe(38_050 - SLIPPAGE_YEN - 38_000);
+    expect(r.exitPrice).toBe(38_050 - STOP_SLIPPAGE_YEN);   // 逆指値決済=床の価格ちょうど(本番と同じ)
+    expect(r.pnl).toBe(38_050 - STOP_SLIPPAGE_YEN - 38_000);
     expect(r.peakProfit).toBe(200);
     expect(r.mfe).toBe(200);
     expect(r.mae).toBe(-5);                            // 約定 tick の含み損益
@@ -173,7 +173,7 @@ describe('決済パラメータを振ると結果が変わる(影の存在理由
     const r2 = sim.drainRows()[0]!;
     expect(r2.spec).toBe('hold');
     expect(r2.exitReason).toBe('initial_stop');
-    expect(r2.pnl).toBe(37_900 - SLIPPAGE_YEN - 38_000);
+    expect(r2.pnl).toBe(37_900 - STOP_SLIPPAGE_YEN - 38_000);
   });
 });
 

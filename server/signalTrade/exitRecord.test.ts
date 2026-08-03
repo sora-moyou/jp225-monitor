@@ -71,7 +71,7 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
     };
     const { next, recorded } = advance({ phase: 'filled', position }, 37950, 2_000);
     expect(next.phase).toBe('flat');
-    expect(recorded!.exitPrice).toBe(37945);   // 決済価格は従来どおり(成行スリップ −5)
+    expect(recorded!.exitPrice).toBe(37950);   // 逆指値決済=逆指値価格ちょうど(実測)
     return recorded!;
   }
 
@@ -86,7 +86,7 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
     expect(up.recorded).toBeUndefined();
     const { next, recorded } = advance(up.next, 38040, 2_000);         // 床 38050 を割った → 決済
     expect(next.phase).toBe('flat');
-    expect(recorded!.exitPrice).toBe(38045);   // 床 38050 − 成行スリップ5
+    expect(recorded!.exitPrice).toBe(38050);   // 床 38050 ちょうど(逆指値決済=スリップ無し)
     return recorded!;
   }
 
@@ -172,7 +172,7 @@ describe('R2 exit_initial_stop: 代表レッグではなく **約定したレッ
   it('逆指値レッグが約定したら、その初期LC(38050)が記録される', () => {
     _setExitImpl(fakeRatchet);
     const filled = advance({ phase: 'armed', armed: bracket }, 38100, 1_000);   // 逆指値レッグ約定
-    expect(filled.next.position).toMatchObject({ entryPrice: 38105, initialStop: 38050 });
+    expect(filled.next.position).toMatchObject({ entryPrice: 38100, initialStop: 38050 });
     const { recorded } = advance(filled.next, 38050, 2_000);                    // 初期LC 到達
     expect(recorded!.exitReason).toBe<ExitReason>('initial_stop');
     expect(recorded!.exitInitialStop).toBe(38050);
@@ -187,15 +187,18 @@ describe('R2 exit_initial_stop: 代表レッグではなく **約定したレッ
   });
 
   it('★従来 meta.settings に載る「代表レッグ」の LC 幅とは食い違う(=これが記録を足した理由)', () => {
-    // 代表レッグ(realizedLcFromArmed)は指値優先 → 幅50。しかし逆指値レッグで約定すると実際の初期LC幅は 55
-    // (建値 38105 − 初期LC 38050)。従来の記録だけでは、この建玉の初期LC を 50 と誤って再現してしまう。
+    // 代表レッグ(realizedLcFromArmed)は指値優先 → 幅50。しかし逆指値レッグで約定すると実際の初期LC幅は 50
+    // ではなく建玉ごとの実値になる(建値 38100 − 初期LC 38050 = 50)。ここでは幅が一致するので、
+    // 「代表レッグでは再現できない」ことは 指値レッグ側(37950−37900=50 vs 逆指値レッグ 38100−38050=50)
+    // ではなく **initialStop の絶対値**(37900 vs 38050)で示す。
     expect(realizedLcFromArmed(bracket)).toBe(50);
     _setExitImpl(fakeRatchet);
     const filled = advance({ phase: 'armed', armed: bracket }, 38100, 1_000);
     const pos = filled.next.position!;
-    expect(Math.abs(pos.entryPrice - pos.initialStop)).toBe(55);
+    expect(Math.abs(pos.entryPrice - pos.initialStop)).toBe(50);
     const { recorded } = advance(filled.next, 38050, 2_000);
-    expect(Math.abs(recorded!.entryPrice - recorded!.exitInitialStop)).toBe(55);   // ★実際に効いた初期LC 幅
+    expect(Math.abs(recorded!.entryPrice - recorded!.exitInitialStop)).toBe(50);   // ★実際に効いた初期LC 幅
+    expect(recorded!.exitInitialStop).toBe(38050);   // ★代表レッグの初期LC(37900)ではない=これが記録を足した理由
   });
 
   it('レンジ/ドテンでも約定レッグの初期LC が載る', () => {
@@ -228,8 +231,8 @@ describe('R3 peak_profit: エンジンが追跡している含み益ピーク(�
     const { recorded } = advance(st, 38040, 4_000);   // 床 38050 割れ → 決済
     expect(recorded!.exitReason).toBe<ExitReason>('ratchet_floor');
     expect(recorded!.peakProfit).toBe(210);          // ★決済時点のピーク
-    // ★床の段の逆算: 記録された床(=決済価格+スリップ) − 建値 = +50pt。設定表と突き合わせて「どの段か」が分かる。
-    expect(recorded!.exitPrice + 5 - recorded!.entryPrice).toBe(50);
+    // ★床の段の逆算: 記録された決済価格(=床ちょうど) − 建値 = +50pt。設定表と突き合わせて「どの段か」が分かる。
+    expect(recorded!.exitPrice - recorded!.entryPrice).toBe(50);
   });
 
   it('sell 側も同じ(下落方向のピーク)', () => {
@@ -360,16 +363,16 @@ describe('E2E(engine → temp DB): 3点が実際に signal_trades へ書かれ�
 
   it('逆指値レッグ約定 → 床決済: exit_reason / exit_initial_stop(約定レッグ) / peak_profit が入る', async () => {
     const eng = await armedEngine();
-    eng.feed(38100, 2_000);   // 逆指値レッグ約定(建値 38105・初期LC 38050)
+    eng.feed(38100, 2_000);   // 逆指値レッグ約定(建値 38100=逆指値ちょうど・初期LC 38050)
     expect(eng.getPhase()).toBe('filled');
-    eng.feed(38250, 3_000);   // +145 → 床(建値+50=38155)発動
-    eng.feed(38150, 4_000);   // 床割れ → 決済
+    eng.feed(38250, 3_000);   // +150 → 床(建値+50=38150)発動
+    eng.feed(38140, 4_000);   // 床割れ → 決済
     expect(eng.getPhase()).toBe('flat');
     const r = rows();
     expect(r).toHaveLength(1);
     expect(r[0]!.exit_reason).toBe('ratchet_floor');
     expect(r[0]!.exit_initial_stop).toBe(38050);   // ★代表レッグ(37900)ではなく約定レッグの初期LC
-    expect(r[0]!.peak_profit).toBe(145);
+    expect(r[0]!.peak_profit).toBe(150);
     eng.stop();
   });
 
@@ -383,7 +386,7 @@ describe('E2E(engine → temp DB): 3点が実際に signal_trades へ書かれ�
     expect(r[0]!.exit_initial_stop).toBe(37900);
     expect(r[0]!.peak_profit).toBe(0);
     expect(r[0]!.signal_id).toBe(7);          // 既存の記録は不変
-    expect(r[0]!.exit_price).toBe(37895);     // 決済価格も不変(成行スリップ −5)
+    expect(r[0]!.exit_price).toBe(37900);     // 逆指値決済=逆指値価格ちょうど(実測)
     eng.stop();
   });
 
