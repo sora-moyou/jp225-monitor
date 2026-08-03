@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import {
   initSchema, insertSignalTrade, getSignalTrades, clearSignalTrades,
-  getSignalIdCounter, setSignalIdCounter, resetSignalIdCounter,
+  getSignalIdCounter, setSignalIdCounter, getSignalIdSeed, resetArmedTimeoutCounter,
+  bumpArmedTimeout, getArmedTimeoutStats,
 } from './store.js';
 
 // ★v0.8.2: signal_trades の system 列(A/B タグ)。NULL は 'A' 扱い(後方互換)。
@@ -92,40 +93,42 @@ describe('signal_meta signalId 永続カウンタ', () => {
     expect(seed + 1).toBe(6);
   });
 
-  it('(b) clearSignalTrades でカウンタが 0 にリセット(次の ARM は 1 から)', () => {
+  // ★旧仕様(〜v0.9.38): clearSignalTrades が last_signal_id を 0 化していた。実データではこれが 5 回発火し、
+  //   signal_id=1 が 5 建玉・両方向に存在する状態(=結合キーとして使用不能)になった。番号は単調増加に固定した。
+  it('(b) clearSignalTrades はカウンタを巻き戻さない(次の ARM は max+1・番号を再利用しない)', () => {
     const db = memDb();
     setSignalIdCounter(db, 'A', 12);
     clearSignalTrades(db, 'A');
-    expect(getSignalIdCounter(db, 'A')).toBe(0);
-    expect(getSignalIdCounter(db, 'A') + 1).toBe(1);   // 次の ARM = 1
+    expect(getSignalIdCounter(db, 'A')).toBe(12);       // 0 に戻らない
+    expect(getSignalIdSeed(db, 'A') + 1).toBe(13);      // 次の ARM = 13(1 ではない)
   });
 
-  it('(c) A/B は独立(A の消去は B を変えない)', () => {
+  it('(c) A/B は独立(A の消去は B のカウンタを変えない)', () => {
     const db = memDb();
     setSignalIdCounter(db, 'A', 7);
     setSignalIdCounter(db, 'B', 3);
-    expect(getSignalIdCounter(db, 'A')).toBe(7);
-    expect(getSignalIdCounter(db, 'B')).toBe(3);
     clearSignalTrades(db, 'A');                 // A のみ消去
-    expect(getSignalIdCounter(db, 'A')).toBe(0);
+    expect(getSignalIdCounter(db, 'A')).toBe(7);   // 据え置き
     expect(getSignalIdCounter(db, 'B')).toBe(3);   // B は不変
   });
 
-  it('clearSignalTrades(undefined=全件)は全系統をリセット', () => {
+  it('clearSignalTrades(undefined=全件)でもカウンタは全系統据え置き', () => {
     const db = memDb();
     setSignalIdCounter(db, 'A', 7);
     setSignalIdCounter(db, 'B', 3);
     clearSignalTrades(db);   // system 未指定 = 全件
-    expect(getSignalIdCounter(db, 'A')).toBe(0);
-    expect(getSignalIdCounter(db, 'B')).toBe(0);
+    expect(getSignalIdCounter(db, 'A')).toBe(7);
+    expect(getSignalIdCounter(db, 'B')).toBe(3);
   });
 
-  it('resetSignalIdCounter(system) は指定系統のみ 0 化', () => {
+  it('resetArmedTimeoutCounter(system) は失効件数のみ 0 化し signalId は触らない', () => {
     const db = memDb();
     setSignalIdCounter(db, 'A', 9);
     setSignalIdCounter(db, 'B', 4);
-    resetSignalIdCounter(db, 'B');
+    bumpArmedTimeout(db, 'B', 1000);
+    resetArmedTimeoutCounter(db, 'B');
     expect(getSignalIdCounter(db, 'A')).toBe(9);
-    expect(getSignalIdCounter(db, 'B')).toBe(0);
+    expect(getSignalIdCounter(db, 'B')).toBe(4);                        // signalId は不変
+    expect(getArmedTimeoutStats(db, 'B')).toEqual({ count: 0, lastAt: null });
   });
 });

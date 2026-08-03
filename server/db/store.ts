@@ -62,6 +62,15 @@ export function initSchema(db: DatabaseSync): void {
       system TEXT PRIMARY KEY,
       last_signal_id INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS signal_trades_clears (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      t INTEGER NOT NULL,
+      system_requested TEXT,
+      system_effective TEXT NOT NULL,
+      deleted_trades INTEGER NOT NULL,
+      max_signal_id_before INTEGER,
+      orphan_exit_stops INTEGER NOT NULL
+    );
   `);
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
@@ -106,6 +115,18 @@ export function initSchema(db: DatabaseSync): void {
   const smCols = (db.prepare('PRAGMA table_info(signal_meta)').all() as Array<{ name: string }>).map(c => c.name);
   if (!smCols.includes('armed_timeouts')) db.exec('ALTER TABLE signal_meta ADD COLUMN armed_timeouts INTEGER NOT NULL DEFAULT 0');
   if (!smCols.includes('last_armed_timeout_at')) db.exec('ALTER TABLE signal_meta ADD COLUMN last_armed_timeout_at INTEGER');
+  // ★履歴消去(POST /api/signal-trades/clear)の監査行。ゲートも認証も無い削除口で、実データでは 5 回発火した
+  //   痕跡が「signal_id が飛んでいる」という間接証拠でしか残っていなかった(誰が/いつ/何件は判定不能)。
+  //   削除のたびに1行残し、後からエポック境界と孤児化件数を機械的に復元できるようにする。
+  //   既存DB(この表が無い/列が欠けている)へは以下の冪等 ALTER で後付けする。
+  const scCols = (db.prepare('PRAGMA table_info(signal_trades_clears)').all() as Array<{ name: string }>).map(c => c.name);
+  if (scCols.length > 0) {
+    if (!scCols.includes('system_requested')) db.exec('ALTER TABLE signal_trades_clears ADD COLUMN system_requested TEXT');
+    if (!scCols.includes('system_effective')) db.exec('ALTER TABLE signal_trades_clears ADD COLUMN system_effective TEXT');
+    if (!scCols.includes('deleted_trades')) db.exec('ALTER TABLE signal_trades_clears ADD COLUMN deleted_trades INTEGER');
+    if (!scCols.includes('max_signal_id_before')) db.exec('ALTER TABLE signal_trades_clears ADD COLUMN max_signal_id_before INTEGER');
+    if (!scCols.includes('orphan_exit_stops')) db.exec('ALTER TABLE signal_trades_clears ADD COLUMN orphan_exit_stops INTEGER');
+  }
   const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
@@ -442,22 +463,83 @@ export function getSignalTrades(db: DatabaseSync, limit = 500, system?: SignalSy
     .all(...w.params, Math.max(1, Math.min(2000, limit))) as unknown as SignalTradeRow[];
 }
 
-/** 指定系統(未指定=全件)のトレードを削除し、削除件数を返す(設定からの履歴消去用)。
- *  ★signalId は「履歴消去でのみ」リセットする規約: 履歴を消したら、その系統の永続 signalId カウンタも
- *    0 に戻す(次の ARM は 1 から)。再起動では消えず、ここでだけ 0 化する(検証の結合キーの安定性)。 */
-export function clearSignalTrades(db: DatabaseSync, system?: SignalSystemFilter): number {
+/** 履歴消去の結果(監査行に書く値と同じ)。 */
+export interface ClearSignalTradesResult {
+  deleted: number;              // 実際に削除された signal_trades の行数(DELETE の changes)。
+  orphanExitStops: number;      // この削除で signal_trades 側の裏付けを失った signal_exit_stops の行数。
+  maxSignalIdBefore: number | null;  // 削除直前の、削除対象内の最大 signal_id(=このエポックの終端)。null=対象に採番済み行なし。
+}
+
+/** 「裏付けのある」exit-stop 行数 = signal_id が非 NULL で、同じ signal_id の signal_trades 行が存在するもの。
+ *  DELETE は裏付けを増やせないため、前後の差がそのまま「この削除で孤児化した件数」になる。 */
+function backedExitStopCount(db: DatabaseSync): number {
+  return (db.prepare(
+    'SELECT COUNT(*) AS n FROM signal_exit_stops es WHERE es.signal_id IS NOT NULL '
+    + 'AND EXISTS (SELECT 1 FROM signal_trades t WHERE t.signal_id = es.signal_id)',
+  ).get() as { n: number }).n;
+}
+
+/** 指定系統(未指定=全件)のトレードを削除し、削除件数+孤児化件数+削除前の最大 signalId を返す。監査行を1行残す。
+ *  ★signalId カウンタには一切触れない: 番号は機体の生涯で単調増加(下の resetArmedTimeoutCounter の注記を参照)。
+ *  ★signal_exit_stops は消さない(従来どおり)。消えないまま裏付けを失うので、その件数を数えて返す/記録する。 */
+export function clearSignalTradesAudited(
+  db: DatabaseSync,
+  opts: { system?: SignalSystemFilter; systemRequested?: string | null; t?: number } = {},
+): ClearSignalTradesResult {
+  const { system, systemRequested = null, t = Date.now() } = opts;
   const w = systemWhere(system);
-  const before = (db.prepare(`SELECT COUNT(*) AS n FROM signal_trades${w.clause}`).get(...w.params) as { n: number }).n;
-  db.prepare(`DELETE FROM signal_trades${w.clause}`).run(...w.params);
-  resetSignalIdCounter(db, system);   // ★履歴消去に合わせて永続 signalId カウンタも 0 化(この経路だけ)。
-  return before;
+  // 削除と監査行を1トランザクションに包む(=監査の残らない削除を物理的に起こさない)。
+  // 既にトランザクション中(呼び出し側が張っている)なら BEGIN は失敗するので、その場合は包まずに続ける。
+  let owns = false;
+  try { db.exec('BEGIN IMMEDIATE'); owns = true; } catch { /* 既存トランザクションに相乗り */ }
+  try {
+    const maxBefore = (db.prepare(`SELECT MAX(signal_id) AS m FROM signal_trades${w.clause}`).get(...w.params) as { m: number | null }).m ?? null;
+    // ★削除の前に、永続カウンタを「今の床」まで引き上げる(ラチェット)。床は永続値と既存記録の MAX の大きい方だが、
+    //   その記録をこれから消すので、消す前に永続へ焼き付けないと床が一緒に消える。実データ(signals_kabu.db)は
+    //   last_signal_id=0 で signal_id が 518 まで進んでおり、この一手が無いと全消去後の起動が 1 から採番し直した。
+    for (const sys of (system ? [system] : ['A', 'B'] as const)) {
+      setSignalIdCounter(db, sys, getSignalIdSeed(db, sys));
+    }
+    const backedBefore = backedExitStopCount(db);
+    // 削除件数は DELETE の実 changes を使う(事前 COUNT の推定値を書かない)。
+    const deleted = Number(db.prepare(`DELETE FROM signal_trades${w.clause}`).run(...w.params).changes);
+    const orphanExitStops = backedBefore - backedExitStopCount(db);
+    // ★未約定失効カウンタだけは従来どおり履歴に追随して 0 化(履歴と件数を食い違わせない)。signalId は据え置き。
+    resetArmedTimeoutCounter(db, system);
+    db.prepare(
+      'INSERT INTO signal_trades_clears (t, system_requested, system_effective, deleted_trades, max_signal_id_before, orphan_exit_stops) '
+      + 'VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(t, systemRequested, system ?? 'ALL', deleted, maxBefore, orphanExitStops);
+    if (owns) db.exec('COMMIT');
+    return { deleted, orphanExitStops, maxSignalIdBefore: maxBefore };
+  } catch (e) {
+    if (owns) { try { db.exec('ROLLBACK'); } catch { /* 既に巻き戻っている */ } }
+    throw e;
+  }
+}
+
+/** 指定系統(未指定=全件)のトレードを削除し、削除件数を返す(既存呼び出し互換の薄いラッパ)。
+ *  監査行はこの経路でも必ず残る(消去の入口を1本に絞るため)。 */
+export function clearSignalTrades(db: DatabaseSync, system?: SignalSystemFilter): number {
+  return clearSignalTradesAudited(db, { system }).deleted;
+}
+
+/** 履歴消去の監査行を新しい順で返す(分析/自己診断用)。 */
+export interface SignalTradesClearRow {
+  id: number; t: number;
+  system_requested: string | null; system_effective: string;
+  deleted_trades: number; max_signal_id_before: number | null; orphan_exit_stops: number;
+}
+export function getSignalTradesClears(db: DatabaseSync, limit = 200): SignalTradesClearRow[] {
+  return db.prepare('SELECT * FROM signal_trades_clears ORDER BY t DESC, id DESC LIMIT ?')
+    .all(Math.max(1, Math.min(2000, limit))) as unknown as SignalTradesClearRow[];
 }
 
 // ─── トレードシグナルの signalId 永続カウンタ(検証の結合キーを再起動で安定化) ───
 // signalId は ARM ごとに単調増加で採番する結合キー(monitor⇔trade2)。従来は in-memory のみで
 // プロセス再起動ごとに 1 へ戻り、trade2 が追従する signalId と乖離していた。これを DB に永続し、
-// 起動時にシード(=再起動を跨いで継続)、履歴消去でのみ 0 へ戻す。system 別(A=実売買 / B=紙専用)。
-// last_signal_id は「最後に採番した signalId」= 次の採番は +1(未設定/リセット後は 0 → 次は 1)。
+// 起動時にシード(=再起動を跨いで継続)する。★0 へ戻す経路は持たない(履歴消去でも戻さない)=機体の生涯で単調増加。
+// last_signal_id は「最後に採番した signalId」= 次の採番は +1(未設定なら 0 → 次は 1)。
 
 /** 指定系統の最後に採番した signalId を返す(未設定は 0)。起動時のシードに使う。 */
 export function getSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter): number {
@@ -471,13 +553,30 @@ export function setSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter,
     .run(system, value);
 }
 
-/** signalId 永続カウンタを 0 へリセットする(履歴消去時のみ)。未指定=全系統をリセット。
- *  ★未約定失効カウンタも同じ契機で 0 に戻す(履歴と食い違わせない)。 */
-export function resetSignalIdCounter(db: DatabaseSync, system?: SignalSystemFilter): void {
+/** 起動シードに使う「二度と下回ってはいけない signalId」= max(永続カウンタ, 既存記録の最大 signal_id)。
+ *  永続値(signal_meta.last_signal_id)だけに頼ると、永続に失敗した/値が壊れた/古いDBを持ち込んだ場合に
+ *  既存の記録より小さい番号を再発番してしまい、signal_id が結合キーとして使えなくなる(実データで発生済み)。
+ *  ★signal_exit_stops は system 列を持たない。signalId を書くのは A(hold を露出する側)だけなので、
+ *    A のときだけこの表の MAX も床に入れる(B に入れると B の採番が A の水準まで無意味に飛ぶ)。 */
+export function getSignalIdSeed(db: DatabaseSync, system: SignalSystemFilter): number {
+  const persisted = getSignalIdCounter(db, system);
+  const w = systemWhere(system);
+  const maxTrade = (db.prepare(`SELECT MAX(signal_id) AS m FROM signal_trades${w.clause}`).get(...w.params) as { m: number | null }).m ?? 0;
+  const maxStop = system === 'A'
+    ? ((db.prepare('SELECT MAX(signal_id) AS m FROM signal_exit_stops').get() as { m: number | null }).m ?? 0)
+    : 0;
+  return Math.max(persisted, maxTrade, maxStop);
+}
+
+/** 未約定失効(armed-timeout)カウンタを 0 へ戻す(履歴消去時のみ)。未指定=全系統。
+ *  ★signalId カウンタ(last_signal_id)には触れない。番号は機体の生涯で単調増加とし、履歴消去でも巻き戻さない:
+ *    巻き戻すと signal_id が再利用され、signal_exit_stops / trade2 側の記録と equijoin できなくなる
+ *    (実データでは 5 回の巻き戻しで signal_id=1 が 5 建玉・両方向に存在する状態になった)。 */
+export function resetArmedTimeoutCounter(db: DatabaseSync, system?: SignalSystemFilter): void {
   if (system) {
-    db.prepare('INSERT INTO signal_meta(system, last_signal_id) VALUES(?, 0) ON CONFLICT(system) DO UPDATE SET last_signal_id = 0, armed_timeouts = 0, last_armed_timeout_at = NULL').run(system);
+    db.prepare('UPDATE signal_meta SET armed_timeouts = 0, last_armed_timeout_at = NULL WHERE system = ?').run(system);
   } else {
-    db.exec('UPDATE signal_meta SET last_signal_id = 0, armed_timeouts = 0, last_armed_timeout_at = NULL');
+    db.exec('UPDATE signal_meta SET armed_timeouts = 0, last_armed_timeout_at = NULL');
   }
 }
 

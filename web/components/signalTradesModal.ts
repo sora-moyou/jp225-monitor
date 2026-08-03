@@ -180,10 +180,13 @@ export function initSignalClearButton(
     result.textContent = '消去中…';
     try {
       const res = await fetch(apiUrl(`/api/signal-trades/clear?system=${system}`), { method: 'POST' });
-      const data = await res.json() as { ok?: boolean; cleared?: number; error?: string };
+      const data = await res.json() as { ok?: boolean; cleared?: number; orphanExitStops?: number; error?: string };
       if (res.ok && data.ok) {
         result.className = 'update-result ok';
-        result.textContent = `✅ 消去しました (${data.cleared ?? 0}件)`;
+        // ★逆指値履歴(signal_exit_stops)は消さない設計。裏付けを失った件数が出たら黙って隠さず出す。
+        const orphans = data.orphanExitStops ?? 0;
+        result.textContent = `✅ 消去しました (${data.cleared ?? 0}件)`
+          + (orphans > 0 ? ` / 逆指値履歴 ${orphans}件は残置` : '');
         onCleared?.();
       } else {
         result.className = 'update-result err';

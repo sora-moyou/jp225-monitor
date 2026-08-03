@@ -23,7 +23,7 @@ import {
   getSignalTradeState, getSignalTradeStateB,
   getCurrentSignal, getSignalHold, getSignalPhase,
   _resetSignalEngine, _resetSignalEngineB,
-  SignalEngine, resetSignalEngineIdCounter,
+  SignalEngine, resetSignalEngineArmedTimeouts,
 } from './engine.js';
 import { openDb, resolveDbPath, setSignalIdCounter, getSignalIdCounter } from '../db/store.js';
 import { resetConfigCache, type KnobDirective } from '../configStore.js';
@@ -1590,8 +1590,8 @@ describe('directional は range 変更の影響を受けない(byte 互換)', ()
   });
 });
 
-// ★signalId 永続シード: 再起動を跨いで継続(1 に戻らない)/ reset() は 0 化するが start() が永続から復元 /
-//   履歴消去(resetSignalEngineIdCounter)でのみ 0 化。APPDATA を temp に向けて実 DB(signal_meta)で検証する。
+// ★signalId 永続シード: 再起動を跨いで継続(1 に戻らない)/ reset() は 0 化するが start() が永続+MAX から復元 /
+//   履歴消去でも巻き戻さない。APPDATA を temp に向けて実 DB(signal_meta)で検証する。
 describe('SignalEngine signalId 永続シード(再起動継続・履歴消去でのみリセット)', () => {
   let dir: string;
   let origAppData: string | undefined;
@@ -1629,23 +1629,26 @@ describe('SignalEngine signalId 永続シード(再起動継続・履歴消去�
     eng.stop();
   });
 
-  it('起動でシードした in-memory を resetSignalIdCounter が 0 化する(履歴消去=次の ARM は 1 から)', async () => {
+  // ★旧仕様(〜v0.9.38)は履歴消去で in-memory カウンタを 0 化していた(=次の ARM が 1 に戻り番号を再利用した)。
+  //   現仕様: 履歴消去では signalId を巻き戻さず、未約定失効カウンタだけを履歴に追随させる。
+  it('履歴消去(resetArmedTimeoutCounter)は signalId を巻き戻さない(失効件数のみ 0)', async () => {
     const db = openDb(resolveDbPath());
     setSignalIdCounter(db, 'A', 4);
     db.close();
     const eng = new SignalEngine(cfgA);
     await eng.start();
     expect(eng._peekSignalIdCounter()).toBe(4);   // 永続からシード
-    eng.resetSignalIdCounter();                    // 履歴消去に対応する in-memory 0 化
-    expect(eng._peekSignalIdCounter()).toBe(0);    // 次の ARM は 1 から
+    eng.resetArmedTimeoutCounter();                // 履歴消去に対応する in-memory リセット
+    expect(eng._peekSignalIdCounter()).toBe(4);    // ★巻き戻らない(次の ARM は 5)
+    expect(eng._peekArmedTimeouts()).toEqual({ count: 0, lastAt: null });
     eng.stop();
-    // 永続側は resetSignalIdCounter(in-memory)では変えない(clearSignalTrades が 0 化を担う)。
+    // 永続側も不変。
     const db2 = openDb(resolveDbPath());
     expect(getSignalIdCounter(db2, 'A')).toBe(4);
     db2.close();
-    // module-level ラッパも例外なく呼べる(A singleton の in-memory を触るだけ)。
-    resetSignalEngineIdCounter('A');
-    resetSignalEngineIdCounter();
+    // module-level ラッパも例外なく呼べる(A/B singleton の in-memory を触るだけ)。
+    resetSignalEngineArmedTimeouts('A');
+    resetSignalEngineArmedTimeouts();
   });
 });
 
