@@ -353,6 +353,17 @@ export class SignalEngine {
           if (result.rangeAnomaly) {
             console.log(`${this.logTag} ${result.rangeAnomaly.tag} ${result.rangeAnomaly.legs} ref=${Math.round(result.plan.refPrice)}`);
           }
+          // ★v0.9.57(記録専用): **片レッグだけ** 落ちた回の理由を1行残す。従来この情報は根拠文の
+          //   日本語(「（逆指値レッグは条件を満たさず不採用）」)にしか出ず、しかも plan-legs 行は
+          //   両レッグ落ち(見送り)のときしか出なかったため、「AI が逆指値を出さなかった(missing)」と
+          //   「向き違反/LC で落とした(geometry/stopSide/lc/lcFloor)」を後から区別できなかった。
+          //   見送りでない回(=最終プランが成立した回)にも出る。判定・採否には一切影響しない。
+          if (result.legDrops?.length) {
+            const drops = result.legDrops
+              .map(d => `${d.name}=${d.reason}${d.entry != null ? `@${Math.round(d.entry)}` : ''}`)
+              .join(' ');
+            console.log(`${this.logTag} plan-legdrop dir=${result.plan.direction} ref=${Math.round(result.plan.refPrice)} ${drops}`);
+          }
           if (result.plan.direction === 'none') {
             // 見送り: アンカーを記録し、価格が節目を跨ぐまで再計画を抑止する。
             //   ★②a: AI の見送り根拠(rationale)をログに残す=書き出し(serverlog)で「なぜ入らないか」を可視化。

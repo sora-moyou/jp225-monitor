@@ -82,6 +82,15 @@ export interface ProposalRow {
   // ── 見送り理由(応答に additive で載っているもの) ──
   noneReason: string | null;
   noneLegsJson: string | null;
+  /** ★レッグ1本ごとの脱落理由の JSON 配列(monitor の応答 legDrops をそのまま)。
+   *  例: `[{"name":"stop","reason":"missing"},{"name":"limit","reason":"lc","entry":38200,"stopLoss":38120}]`。
+   *  none_legs_json が **両レッグ落ちて見送りになった回** しか持たないのに対し、こちらは
+   *  **片レッグだけ落ちた回**(最終プランは成立しているが逆指値だけ消えた 等)も持つ。
+   *  ★NULL は2つの意味を持つ: ①この列を持たない版で記録された(観測不能) ②1本も落ちなかった。
+   *    どちらかは **同じ epoch の他の行に値が入っているか**(=その期の monitor がこの列を返す版か)で
+   *    判別する。epoch ごとの起動時刻は runs テーブルにある。
+   *  ★型上は optional(省略= NULL)。既存の呼び出し/テストが作る行をそのまま受け付けるため。 */
+  legDropsJson?: string | null;
   vetoFired: 0 | 1 | null;
   rangeAnomalyJson: string | null;
   // ── ★画像の同一性(①と②が同じ1枚を見たか) ──
@@ -138,6 +147,10 @@ export function initGeneratorSchema(db: DatabaseSync): void {
       confidence    REAL,
       none_reason   TEXT,
       none_legs_json TEXT,
+      -- ★レッグ1本ごとの脱落理由(JSON 配列)。none_legs_json が両レッグ落ち(=見送り)しか持たないのに対し、
+      --   **片レッグだけ落ちた回**(逆指値だけ消えた 等)も持つ。NULL = この列を持たない版で記録された
+      --   or 1本も落ちなかった(区別は同じ epoch の他行に値が在るかで読む)。
+      leg_drops_json TEXT,
       veto_fired    INTEGER,
       range_anomaly_json TEXT,
       shot_id       TEXT,
@@ -206,6 +219,8 @@ export function initGeneratorSchema(db: DatabaseSync): void {
   //   ここで足さないと、旧DBに対する INSERT が列不一致で毎回失敗して記録が丸ごと止まる。
   const cols = (db.prepare('PRAGMA table_info(proposals)').all() as Array<{ name: string }>).map(r => r.name);
   if (!cols.includes('context_omitted')) db.exec('ALTER TABLE proposals ADD COLUMN context_omitted TEXT');
+  // ★v0.9.57: 片レッグ脱落の理由。既存行は NULL のまま =「この列を持たない版で記録された」。
+  if (!cols.includes('leg_drops_json')) db.exec('ALTER TABLE proposals ADD COLUMN leg_drops_json TEXT');
 }
 
 /** 台帳 DB を開く(書き込み用)。
@@ -242,9 +257,9 @@ const INSERT_SQL = `
     status, skip_reason, http_status, error,
     retried, retry_count, pre_retry_reason,
     direction, plan_json, ref_price, regime, confidence,
-    none_reason, none_legs_json, veto_fired, range_anomaly_json,
+    none_reason, none_legs_json, leg_drops_json, veto_fired, range_anomaly_json,
     shot_id, shot_age_ms, shot_origin, context_omitted, created_at
-  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)
+  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?)
 `;
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
@@ -261,7 +276,7 @@ export function insertProposal(db: DatabaseSync, r: ProposalRow): boolean {
     r.status, r.skipReason, num(r.httpStatus), r.error,
     r.retried, r.retryCount, r.preRetryReason,
     r.direction, r.planJson, num(r.refPrice), r.regime, num(r.confidence),
-    r.noneReason, r.noneLegsJson, r.vetoFired, r.rangeAnomalyJson,
+    r.noneReason, r.noneLegsJson, r.legDropsJson ?? null, r.vetoFired, r.rangeAnomalyJson,
     r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null, r.createdAt,
   );
   return countProposals(db) > before;

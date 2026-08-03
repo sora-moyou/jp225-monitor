@@ -187,6 +187,9 @@ export function toProposalRow(
     confidence: typeof plan?.confidence === 'number' ? plan.confidence : null,
     noneReason: str(b?.noneReason),
     noneLegsJson: jsonOrNull(b?.noneLegs),
+    // ★レッグ1本ごとの脱落理由(片レッグだけ落ちた回を含む)。応答に無ければ NULL
+    //   = この列を返さない版の monitor と話した or 1本も落ちなかった。
+    legDropsJson: Array.isArray(b?.legDrops) ? JSON.stringify(b.legDrops) : null,
     vetoFired: typeof b?.vetoFired === 'boolean' ? (b.vetoFired ? 1 : 0) : null,
     rangeAnomalyJson: jsonOrNull(b?.rangeAnomaly),
     shotId: str(shot?.shotId),

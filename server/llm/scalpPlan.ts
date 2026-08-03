@@ -83,6 +83,30 @@ export interface NoneLeg {
 /** none 化される前に AI が出した direction と、そのレッグ群(記録専用)。 */
 export interface NoneLegs { dir: 'buy' | 'sell' | 'range'; legs: NoneLeg[]; }
 
+/** ★v0.9.57(記録専用): **レッグ1本ごと** の脱落。noneLegs が「両レッグ落ちて none になった回」しか
+ *  残さないため、**片レッグだけ落ちた回**(=最終プランは成立しているが逆指値だけ消えた 等)は
+ *  理由が構造的に残らず、根拠文の日本語(「（逆指値レッグは条件を満たさず不採用）」)しか手掛かりが無かった。
+ *  その結果、台帳では「AI が逆指値を出さなかった(missing)」と「向き違反で落とした(geometry/stopSide)」が
+ *  どちらも stopEntry:null に潰れて区別できず、実際に誤った測定(見送り行だけを grep して分母が偏る)が起きた。
+ *
+ *  ★意味づけ: 「そのステージが受け取っていたレッグを、どの検証で落としたか」。
+ *    - parse 段: AI が出さなかったレッグも 'missing' として1件残す(=「提案しなかった」を明示的に記録する)。
+ *    - enforce 段: **受け取った時点で在ったレッグだけ** を対象にする(parse で既に落ちた/不在のレッグは
+ *      ここでは何も落としていないので記録しない=同じ事実を二重に数えない)。
+ *  ★理由の語彙は既存の NoneReason をそのまま使う(新しい語彙を作らない)。実際に現れるのは
+ *    'missing' / 'stopSide' / 'geometry'(parse 段)と 'stopSide' / 'lc' / 'lcFloor' / 'trend' / 'bias'(enforce 段)。
+ *  ★記録専用: 採否・価格・veto・SSE・決済には一切影響しない。 */
+export interface LegDrop {
+  /** どのレッグか(NoneLeg と同じ語彙)。 */
+  name: NoneLeg['name'];
+  /** どの検証で落ちたか(NoneReason の語彙をそのまま再利用)。 */
+  reason: NoneReason;
+  /** AI が出していたエントリー価格。reason='missing'(そもそも出していない)では undefined。 */
+  entry?: number;
+  /** AI が出していた損切り価格。無ければ undefined。 */
+  stopLoss?: number;
+}
+
 // vetoFired(v0.7.54): buildScalpPlan が enforcePlanConstraints のトレンド veto が発火したかを surface する
 //   (挙動は不変=記録のみ)。regime/confidence は plan 側に載る。engine が meta へ保存し A/B 計測に使う。
 // noneReason/noneLegs(v0.9.44): 見送り(none)の経路と落としたレッグの生数値(記録のみ=engine のログ用)。
@@ -95,8 +119,10 @@ export interface NoneLegs { dir: 'buy' | 'sell' | 'range'; legs: NoneLeg[]; }
 //   scalpPlanRunner が caller!=='default'(生成器)のときだけ載せる=既存の呼び出し元は byte 不変。
 //   生成器では両腕とも紙成績の履歴を外している(母集団の独立性。理由は scalpPlanRunner.ts の
 //   GENERATOR_OMITTED_CONTEXT)。この情報が無い記録は「外していない版で取った標本」を意味する。
+// legDrops(v0.9.57): ★**片レッグだけ** 落ちた回も含む、レッグ1本ごとの脱落理由(記録のみ)。
+//   noneLegs(両レッグ落ち=none のときだけ)とは別のフィールドで、意味も形も互いに変えない。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[] }
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[] }
   | { ok: false; error: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
@@ -132,6 +158,19 @@ function noneLegsFromDirectional(
   if (v.limitEntry != null) legs.push({ name: 'limit', entry: v.limitEntry, stopLoss: v.stopLossForLimit ?? undefined, ok: limitOk });
   if (v.stopEntry != null) legs.push({ name: 'stop', entry: v.stopEntry, stopLoss: v.stopLossForStop ?? undefined, ok: stopOk });
   return legs.length ? { dir, legs } : undefined;
+}
+
+/** レッグ1本ぶんの脱落を記録用の配列へ足す純関数(記録専用)。reason が null(落ちていない)なら何もしない。
+ *  価格は分かる時だけ載せる(missing では entry/stopLoss を持たない=「出していない」ことが形からも読める)。 */
+function pushLegDrop(
+  out: LegDrop[], name: LegDrop['name'], reason: NoneReason | null,
+  entry?: number | null, stopLoss?: number | null,
+): void {
+  if (reason === null) return;
+  const d: LegDrop = { name, reason };
+  if (entry != null && Number.isFinite(entry)) d.entry = entry;
+  if (stopLoss != null && Number.isFinite(stopLoss)) d.stopLoss = stopLoss;
+  out.push(d);
 }
 
 // 初期 LC(損切り)幅の既定レンジ。呼び出し側が /api/scalp-plan で lcFloorYen/lcCeilingYen を
@@ -706,12 +745,17 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     //   内側/反対側(境界=幅0 も)の損切りを持つレッグは落とす(不正プランを出さない)。幾何(向き)のみ=LC 幅は enforce の責務。
     if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) { upper = null; upperReason = 'stopSide'; }
     if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) { lower = null; lowerReason = 'stopSide'; }
+    // ★v0.9.57(記録専用): 脚1本ごとの脱落を、**片脚だけ落ちた回でも** 構造化して残す(採否は不変)。
+    const rangeLegDrops: LegDrop[] = [];
+    pushLegDrop(rangeLegDrops, 'upper', upperReason, upper0?.entry, upper0?.stopLoss);
+    pushLegDrop(rangeLegDrops, 'lower', lowerReason, lower0?.entry, lower0?.stopLoss);
     if (!upper && !lower) {
       // 両脚とも落ちた見送り(none)は rationale を据え置く(enforce の両脚落ちと同じ既存挙動)。
       return {
         ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }),
         noneReason: pickNoneReason(upperReason, lowerReason),
         noneLegs: noneLegsFromRange(upper0, lower0),
+        legDrops: rangeLegDrops,
       };
     }
     // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
@@ -722,7 +766,10 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
-    return { ok: true, plan: withMeta({ direction: 'range', rationale: rangeRationale, refPrice, range }) };
+    const rangeOut: Extract<ScalpPlanResult, { ok: true }> =
+      { ok: true, plan: withMeta({ direction: 'range', rationale: rangeRationale, refPrice, range }) };
+    if (rangeLegDrops.length) rangeOut.legDrops = rangeLegDrops;
+    return rangeOut;
   }
   const num = (v: unknown): number | null =>
     (typeof v === 'number' && Number.isFinite(v)) ? v : null;
@@ -754,19 +801,28 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   両レッグとも違反で落ちたら「見送り(none)」を ok:true で返す。
   const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!) && entrySideOk(o.direction, 'limit', limitEntry!, refPrice);
   const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!) && entrySideOk(o.direction, 'stop', stopEntry!, refPrice);
+  // ★v0.9.44(記録専用): どの検証で落ちたかをレッグ単位で判定して残す(採否は不変)。
+  //   検証順(stopSideOk → entrySideOk)に合わせ、レッグ不在=missing / SL 向き違反=stopSide / 残りは geometry。
+  // ★v0.9.57: 判定を **両レッグ落ちの分岐の外** へ出した(値は従来と同一・null=そのレッグは落ちていない)。
+  //   片レッグだけ落ちた回にも同じ理由が要るため。両レッグ落ちの分岐では従来どおり必ず非 null になる
+  //   (=noneReason の値は一切変わらない)。
+  const limitReason: NoneReason | null =
+    limitLegOk ? null
+    : !hasLimitLeg ? 'missing'
+    : !stopSideOk(o.direction, limitEntry!, stopLossForLimit!) ? 'stopSide' : 'geometry';
+  const stopReason: NoneReason | null =
+    stopLegOk ? null
+    : !hasStopLeg ? 'missing'
+    : !stopSideOk(o.direction, stopEntry!, stopLossForStop!) ? 'stopSide' : 'geometry';
+  const legDrops: LegDrop[] = [];
+  pushLegDrop(legDrops, 'limit', limitReason, limitEntry, stopLossForLimit);
+  pushLegDrop(legDrops, 'stop', stopReason, stopEntry, stopLossForStop);
   if (!limitLegOk && !stopLegOk) {
-    // ★v0.9.44(記録専用): どの検証で落ちたかをレッグ単位で判定して残す(採否は不変)。
-    //   検証順(stopSideOk → entrySideOk)に合わせ、レッグ不在=missing / SL 向き違反=stopSide / 残りは geometry。
-    const limitReason: NoneReason =
-      !hasLimitLeg ? 'missing'
-      : !stopSideOk(o.direction, limitEntry!, stopLossForLimit!) ? 'stopSide' : 'geometry';
-    const stopReason: NoneReason =
-      !hasStopLeg ? 'missing'
-      : !stopSideOk(o.direction, stopEntry!, stopLossForStop!) ? 'stopSide' : 'geometry';
     return {
       ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }),
       noneReason: pickNoneReason(limitReason, stopReason),
       noneLegs: noneLegsFromDirectional(o.direction, { limitEntry, stopLossForLimit, stopEntry, stopLossForStop }, false, false),
+      legDrops,
     };
   }
   // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
@@ -796,7 +852,12 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     stopDropped: hasStopLeg && !stopLegOk,
   });
   if (legNote) plan.rationale = `${rationale} ${legNote}`;
-  return { ok: true, plan: withMeta(plan) };
+  // ★v0.9.57(記録専用): 片レッグだけ落ちた回の理由を構造化して返す。上の buildLegNote は日本語の
+  //   表示文にしかしないので、台帳では「AI が出さなかった(missing)」と「向き違反で落とした
+  //   (geometry/stopSide)」が区別できなかった。plan・rationale・採否は一切変えない。
+  const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: withMeta(plan) };
+  if (legDrops.length) out.legDrops = legDrops;
+  return out;
 }
 
 /** マルチモーダルなユーザメッセージ content を組み立てる。画像があればテキスト+image_url の配列、
@@ -1067,7 +1128,7 @@ export function rangeDropNote(
 export function enforcePlanConstraintsReport(
   plan: AiPlan,
   opts: EnforceOpts,
-): { plan: AiPlan; vetoFired: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs } {
+): { plan: AiPlan; vetoFired: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[] } {
   if (plan.direction === 'none') return { plan, vetoFired: false };
   const { ceilingYen, bias, trend, ceilingMode, lcHardMax, floorYen } = opts;
   // ★v0.7.56: レッグの LC 幅ドロップ判定(mode 分岐 + 安全網)。既定(引数省略)は従来と完全一致。
@@ -1131,12 +1192,18 @@ export function enforcePlanConstraintsReport(
       if (upper?.side === 'buy') { upper = undefined; upperReason = 'bias'; }
       if (lower?.side === 'buy') { lower = undefined; lowerReason = 'bias'; }
     }
+    // ★v0.9.57(記録専用): 脚1本ごとの脱落を、**片脚だけ落ちた回でも** 構造化して残す(採否は不変)。
+    //   ここで理由が付くのは「enforce が受け取った時点で在った脚」だけ(上の各分岐が脚の存在を確認している)。
+    const rangeLegDrops: LegDrop[] = [];
+    pushLegDrop(rangeLegDrops, 'upper', upperReason, upper0?.entry, upper0?.stopLoss);
+    pushLegDrop(rangeLegDrops, 'lower', lowerReason, lower0?.entry, lower0?.stopLoss);
     // 両脚とも落ちたら none(既存挙動: rationale は元のまま据え置き)。
     if (!upper && !lower) {
       return {
         plan: { direction: 'none', rationale: plan.rationale, refPrice: plan.refPrice }, vetoFired,
         noneReason: pickNoneReason(upperReason, lowerReason),
         noneLegs: noneLegsFromRange(upper0, lower0),
+        ...(rangeLegDrops.length ? { legDrops: rangeLegDrops } : {}),
       };
     }
     // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
@@ -1149,7 +1216,10 @@ export function enforcePlanConstraintsReport(
     const range: { upper?: RangeLeg; lower?: RangeLeg } = {};
     if (upper) range.upper = upper;
     if (lower) range.lower = lower;
-    return { plan: { direction: 'range', rationale, refPrice: plan.refPrice, range }, vetoFired };
+    return {
+      plan: { direction: 'range', rationale, refPrice: plan.refPrice, range }, vetoFired,
+      ...(rangeLegDrops.length ? { legDrops: rangeLegDrops } : {}),
+    };
   }
 
   // ★directional(buy/sell): leg side === direction。逆行(dropSide===direction: 強上昇の sell / 強下降の buy)なら
@@ -1179,6 +1249,19 @@ export function enforcePlanConstraintsReport(
   if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; }
   if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; }
 
+  // ★v0.9.57(記録専用): 片レッグだけ落ちた回も理由を残す。**enforce が受け取った時点で在ったレッグだけ**
+  //   を対象にする(parse で既に落ちた/AI が出さなかったレッグはここでは何も落としていない=二重に数えない。
+  //   その 'missing' は parse 段の legDrops が持っている)。判定順は下の legReason と同一。
+  const dirForLegDrop = plan.direction;
+  const dropReason = (ok: boolean, entry?: number, sl?: number): NoneReason | null =>
+    ok || entry == null || sl == null ? null
+    : !stopSideOk(dirForLegDrop, entry, sl) ? 'stopSide'
+    : lcReason(Math.abs(entry - sl)) ?? 'lc';
+  const legDrops: LegDrop[] = [];
+  pushLegDrop(legDrops, 'limit', dropReason(limitOk, plan.limitEntry, plan.stopLossForLimit), plan.limitEntry, plan.stopLossForLimit);
+  pushLegDrop(legDrops, 'stop', dropReason(stopOk, plan.stopEntry, plan.stopLossForStop), plan.stopEntry, plan.stopLossForStop);
+  const legDropsField = legDrops.length ? { legDrops } : {};
+
   // 両レッグ落ちたら見送り(価格を持たない none)。
   if (out.limitEntry == null && out.stopEntry == null) {
     // ★v0.9.44(記録専用): レッグ不在=missing / SL 向き違反=stopSide / それ以外は LC 幅(上限超=lc / 下限未満=lcFloor)。
@@ -1191,6 +1274,7 @@ export function enforcePlanConstraintsReport(
       plan: { direction: 'none', rationale: out.rationale, refPrice: out.refPrice }, vetoFired: false,
       noneReason: pickNoneReason(legReason(plan.limitEntry, plan.stopLossForLimit), legReason(plan.stopEntry, plan.stopLossForStop)),
       noneLegs: noneLegsFromDirectional(plan.direction, plan, false, false),
+      ...legDropsField,
     };
   }
 
@@ -1202,10 +1286,11 @@ export function enforcePlanConstraintsReport(
       noneReason: 'bias',
       // ここまで残ったレッグは幾何/LC を満たしている(=bias だけで消えた)ので ok:true で記録する。
       noneLegs: noneLegsFromDirectional(plan.direction, out, true, true),
+      ...legDropsField,
     };
   }
 
-  return { plan: out, vetoFired: false };
+  return { plan: out, vetoFired: false, ...legDropsField };
 }
 
 /** レンジ無効設定なのに direction:"range" が返った場合の防御多重化(純関数・プロンプト指示の保険)。
@@ -1454,6 +1539,12 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   null=観測不能になる。「プロンプトが効いていない」ことを知りたい母集団はまさにそこなので生出力を見る。
     const anomaly = describeRangeAnomaly(parsed.plan);
     if (anomaly) out.rangeAnomaly = anomaly;
+    // ★v0.9.57(記録専用): レッグ1本ごとの脱落を parse 段 → enforce 段の順に連結して載せる。
+    //   ここは **none でなくても** 載せるのが要点(片レッグだけ落ちた回=最終プランは成立している回が
+    //   まさに記録できていなかった)。同じレッグを二重に数えないことは各段の実装が担保する
+    //   (enforce は自分が受け取った時点で在ったレッグしか記録しない)。判定・採否には一切影響しない。
+    const legDrops: LegDrop[] = [...(parsed.legDrops ?? []), ...(enforced.legDrops ?? [])];
+    if (legDrops.length) out.legDrops = legDrops;
     // ★v0.9.44(記録専用): 見送り(none)の経路と落としたレッグの生数値を surface する。
     //   下流(rangeDisabled)→ enforce → parse の順に「最後に none 化したステージ」の理由を採る。
     if (finalPlan.direction === 'none') {
