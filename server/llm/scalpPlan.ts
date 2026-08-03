@@ -142,6 +142,63 @@ function noneLegsFromDirectional(
 export const DEFAULT_LC_FLOOR_YEN = 55;
 export const DEFAULT_LC_CEILING_YEN = 65;
 
+// ─── ★v0.9.56: LC 上限の「提示」を実効値に揃える(保存値のアンカー化を止める) ─────────────
+//
+// ★実測(同じ相場・同じ節目データで提示だけを変えた 6+3 サンプル):
+//   「下限55 / 上限65【AI委任】/ 安全上限159」と提示 → 出力 LC 幅 60,60,60,60,60,58(6レッグ全部 58〜60)。
+//     AI の説明は「本来幅55円+緩衝5円=60円」「55〜65円の許容帯の中央付近」= **委任しても 65 を実質の上限として読む**。
+//   「55〜159 の範囲」と提示   → 出力 LC 幅 65,75,110,125,80,70,90,100(65〜125・中央値85)。
+//     説明も「63250 の強いレジスタンスの上に余裕を持たせた結果として65円」= **節目起点でレッグごとに変わる**。
+//   原因: 保存値(65)がプロンプト内で 8 箇所も反復される一方、「あなたが決めてよい」は委任ノートの1文だけだった。
+//   帰結: プロンプト自身が指示する「隣接の節目が弱ければ一段先の強い節目まで引きつける」が、幅が 60 に固着して実行不能だった。
+//
+// ★方針: 上限が AI委任のときは **保存値を一切印字しない**。代わりにコードが実際に強制する上限
+//   (lcEffectiveCeiling = 安全上限が有効ならその値 / 無効なら背骨 LC_YEN_MAX)を「下限〜上限の範囲」として提示する。
+//   手動のときは従来どおり保存値をそのまま印字する(byte 一致)。
+/** LC 上限の提示モード。delegated=false(既定)は従来と byte 一致。 */
+export interface LcCeilingPresentation {
+  /** 上限が AI委任か。true=「下限〜上限の範囲で相場構造に応じて決める」形で提示する。 */
+  delegated: boolean;
+  /** 委任時に提示する上限の呼び名。安全上限 有効='安全上限' / 無効='コード上限'(背骨 LC_YEN_MAX)。 */
+  capLabel: string;
+}
+/** 手動(既定)。この値で呼ぶ限り全てのプロンプト生成は従来と byte 一致する。 */
+export const LC_CEIL_MANUAL: LcCeilingPresentation = { delegated: false, capLabel: '安全上限' };
+
+/** 設定(上限の値・委任モード・LC安全上限)から「プロンプトに印字してよい上限」を決める(純関数・SSOT)。
+ *  - 手動: 保存値をそのまま返す(=従来と完全一致。実効上限との差は enforce 側が担保する)。
+ *  - 委任: 保存値は返さず、実際に強制される上限(安全上限 有効=その値 / 無効=LC_YEN_MAX)を返す。 */
+export function resolveLcPresentation(opts: {
+  floorYen: number; ceilingYen: number; ceilingMode?: KnobSource; lcHardMax?: LcHardMax;
+}): { floorYen: number; ceilingYen: number; ceil: LcCeilingPresentation } {
+  if (opts.ceilingMode !== 'ai') return { floorYen: opts.floorYen, ceilingYen: opts.ceilingYen, ceil: LC_CEIL_MANUAL };
+  return {
+    floorYen: opts.floorYen,
+    ceilingYen: lcEffectiveCeiling({ ceilingYen: opts.ceilingYen, ceilingMode: 'ai', lcHardMax: opts.lcHardMax }),
+    ceil: { delegated: true, capLabel: opts.lcHardMax?.enabled ? '安全上限' : 'コード上限' },
+  };
+}
+
+/** ★③ 導出の順序(節目 → ストップ位置 → 幅)。A(委任)/B(手動)で完全に同一の1文。
+ *  「幅を先に決めて節目に当てはめる」誤りを名指しで禁じる(実測でこれが起きていた=両レッグ常に同じ幅)。 */
+export const LC_DERIVATION_ORDER =
+  '★【導出の順序(必ずこの順)】①まず根拠にする節目/スイングを選ぶ → ②その外側に本来のストップ位置を置き、'
+  + '往復のダマシを吸収する緩衝として さらに5円 外側へずらして損切り価格を決める → ③その結果として LC幅(|エントリー − 損切り|)が決まる。'
+  + 'LC幅は②の結果であって出発点ではない。先に幅(下限や上限の数値)を決めてから節目に当てはめるのは誤り。'
+  + 'ゆえにレッグごと・場面ごとに幅が違ってよい(毎回ほぼ同じ幅になっているなら、節目ではなく数値から逆算している)。';
+
+/** ★② +5円の緩衝が「何に」加わるのかの明示。下限に足すものではないことを名指しで否定する。 */
+export const LC_BUFFER_NOTE =
+  '★+5円の緩衝は「節目/スイングから導いた本来のストップ位置」に対して、その外側へさらに5円ずらすもの'
+  + '(買いは下へ・売りは上へ)。LC幅の下限に5円を足すという意味ではない(下限は満たすべき最低条件であって、幅を組み立てる基準ではない)。';
+
+/** LC 幅の許容レンジの提示文(SSOT)。手動=従来の「A〜B円に収め」/ 委任=「下限A円〜{capLabel}B円 の範囲で…決める」。 */
+export function lcRangePhrase(floorYen: number, ceilingYen: number, ceil: LcCeilingPresentation): string {
+  return ceil.delegated
+    ? `下限${floorYen}円〜${ceil.capLabel}${ceilingYen}円 の範囲で、相場構造(節目/スイングの位置)に応じてあなたが決め`
+    : `${floorYen}〜${ceilingYen}円に収め`;
+}
+
 /** LC 幅の下限/上限を受けてスキャル戦略質問(ユーザー指定・日本語)を生成する。
  *  初期 LC 幅を {floor}〜{ceiling} 円に収め、{ceiling} 円超は出さない(単一上限)。
  *  上限はレッグ独立(v0.7.37)・指値のみ/逆指値のみの回避を保持。 */
@@ -150,6 +207,9 @@ export function buildScalpQuestion(
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
   rangeEnabled = true,
   trendVetoYen: number = DEFAULT_TREND_VETO_YEN,
+  // ★v0.9.56: 上限が AI委任のときだけ提示の形を変える(既定=手動=従来と byte 一致)。
+  //   ceilingYen には委任時 **実効上限**(安全上限 or 背骨)が入る=保存値はここまで届かない。
+  lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
 ): string {
   // レンジ両面ストラドルの追記(実験・紙で別枠計測)。rangeEnabled=false のときは range を禁止する。
   // ★v0.9.44: 1行に詰め込んでいた説明を複数行の箇条書きに開き、「fade / breakout の2択(組で選ぶ)」に書き直す。
@@ -162,9 +222,15 @@ export function buildScalpQuestion(
       '   ・fade(両側指値/type:"limit")の組 = 上(upper)は 売り指値[side:"sell"/type:"limit"] / 下(lower)は 買い指値[side:"buy"/type:"limit"]\n' +
       '   ・breakout(両側ブレイク新規/type:"stop")の組 = 上(upper)は 買いのブレイク新規[side:"buy"/type:"stop"] / 下(lower)は 売りのブレイク新規[side:"sell"/type:"stop"]\n' +
       '   ※組を混ぜると上下が同じ方向の注文になり、それはレンジではなく通常の buy/sell プランと同じものになるため。\n' +
-      `  ★どちらの組を選ぶか(重要): 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、` +
-      `${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。\n` +
-      `   理由: 損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下だと逆張りの利幅が損切り幅を上回らず成立しない。狭い横這いは抜けに追随する方が正しい。\n` +
+      // ★委任時は「最大損切り幅の2倍」を保存値(65)でも安全上限(159)でもなく **そのレンジで自分が置く損切り幅** に対して言う。
+      //   保存値を書けばアンカーになり、安全上限を書けば 318円 という非現実的な閾値になってどちらも規則の意図を壊すため。
+      (lcCeil.delegated
+        ? `  ★どちらの組を選ぶか(重要): 上下の反応帯の幅が、そのレンジで置く損切り幅の2倍より広ければ fade(両側指値)の組、` +
+          `損切り幅の2倍以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。\n` +
+          `   理由: 上下幅が損切り幅の2倍以下だと逆張りの利幅が損切り幅を上回らず成立しない。狭い横這いは抜けに追随する方が正しい。\n`
+        : `  ★どちらの組を選ぶか(重要): 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、` +
+          `${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。\n` +
+          `   理由: 損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下だと逆張りの利幅が損切り幅を上回らず成立しない。狭い横這いは抜けに追随する方が正しい。\n`) +
       '  ★上下の位置(無条件): upper.entry > 現在値 > lower.entry。この不等式を満たさない数値は出力しないこと。\n' +
       '   ※買いのブレイク新規は必ず現在値より上・売りのブレイク新規は必ず現在値より下なので、' +
       '「下(lower)に買いのブレイク新規」「上(upper)に売りのブレイク新規」は定義上ありえない。絶対に出さないこと。\n' +
@@ -208,11 +274,15 @@ export function buildScalpQuestion(
     'この場合は現在値との距離の上限は無いが、指値とブレイク新規の価格差[両者の幅]は400円以内にする=幅が広すぎる両面は出さない。\n' +
     '  片方だけ[指値のみ/ブレイク新規のみ]を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める。' +
     '現在値から200円を超えて離れた片レッグは出さない[約定不能・古い価格になりやすいため]。\n' +
-    '\n③それぞれのストップ(損切り)を定めてください。ただしストップ幅に5円加えること。\n' +
+    // ★v0.9.56 ②: 「ストップ幅に5円加える」は下限に足す指示だと読まれていた(AI が『本来のストップ幅=下限55』と解釈し 60 を出した)。
+    //   +5円 が何に加わるのかを明示する。
+    `\n③それぞれのストップ(損切り)を定めてください。${LC_BUFFER_NOTE}\n` +
     '  損切りは必ずエントリーの外側に置く(買いは各エントリーより下・売りは各エントリーより上)。' +
     '指値レッグの損切りは limitEntry の外側・ブレイク新規レッグの損切りは stopEntry の外側。内側/反対側には置かないこと。\n' +
+    // ★v0.9.56 ③: 節目 → ストップ位置 → 幅 の順であることを明示(幅を先に決めて節目に当てはめるのは誤り)。
+    `  ${LC_DERIVATION_ORDER}\n` +
     '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。\n' +
-    `  ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)。\n` +
+    `  ゆえに初期の損切り(LC)幅は${lcRangePhrase(floorYen, ceilingYen, lcCeil)}、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)。\n` +
     '  損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。' +
     `${ceilingYen}円を超える損切りは出さない。\n` +
     `  この LC 上限(≤${ceilingYen}円)は、指値レッグ・ブレイク新規レッグ それぞれ独立に満たすこと。\n` +
@@ -275,12 +345,14 @@ export function buildScalpSystemPrompt(
   rangeEnabled = true,
   trendVetoYen: number = DEFAULT_TREND_VETO_YEN,
   aiTechnicalEnabled = false,   // ★true でテクニカル指標(RSI/BB)許可の1行を追記。false(既定)は byte 一致=従来不変。
+  // ★v0.9.56: 上限が AI委任のときだけ提示の形を変える(既定=手動=従来と byte 一致)。
+  lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
 ): string {
   // ★テクニカル許可(RSI/BB)。ON のときだけ追記=OFF(既定)では byte 単位で従来の system prompt と一致。
   const techLine = aiTechnicalEnabled
     ? `\n- ★【テクニカル指標(RSI/BB)の活用が許可されています】渡す「テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ)」を、エントリーの"タイミング"判断に使ってよい(例: RSI が売られすぎ[≤30]からの反転や BB 下限からの反発で押し目買い指値、RSI 買われすぎ[≥70]や BB 上限での戻り売り指値など)。ただしテクニカルだけで逆張りせず、上のトレンド判断(生きたトレンドはフェードしない)と節目/勢いを優先すること。※決済(手仕舞い)は既定のロジックが担当するので、テクニカルを根拠に手仕舞いを指示することはしない。`
     : '';
-  return buildScalpSystemPromptBody(floorYen, ceilingYen, rangeEnabled, trendVetoYen, techLine);
+  return buildScalpSystemPromptBody(floorYen, ceilingYen, rangeEnabled, trendVetoYen, techLine, lcCeil);
 }
 
 /** system prompt 本体(techLine を末尾に差し込む)。buildScalpSystemPrompt から呼ぶ内部関数。 */
@@ -290,18 +362,24 @@ function buildScalpSystemPromptBody(
   rangeEnabled: boolean,
   trendVetoYen: number,
   techLine: string,
+  lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
 ): string {
   // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
   // ★v0.9.44: 1行に詰め込んでいたレンジ指示を複数行に開き、「fade / breakout の2択(組で選ぶ)」へ書き直す。
   //   4通り(上下×指値/逆指値)の並列表記だと AI が組を混ぜて「下=買い逆指値」等の定義上ありえない配置を出し、
   //   lower.entry<現在値 と両立せず parse で落ちて見送りになっていた。
+  // ★v0.9.56: レンジの組(fade/breakout)を選ぶ閾値。手動=従来どおり保存値の2倍を印字 / 委任=「自分が置く損切り幅の2倍」。
+  //   委任時に保存値(65)を書けばアンカーになり、安全上限(159)を書けば 318円 という非現実的な閾値になる。
+  const rangePairChoice = lcCeil.delegated
+    ? `★どちらの組を選ぶか[重要]: 上下の反応帯の幅が、そのレンジで置く損切り幅の2倍より広ければ fade(両側指値)の組、損切り幅の2倍以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。上下幅が損切り幅の2倍以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。`
+    : `★どちらの組を選ぶか[重要]: 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。`;
   const rangeLine = rangeEnabled
     ? `\n- ★レンジ両面(direction:"range"): 明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随のブレイク新規)・entry・stopLoss を出す。
   ★【レンジは2択(組で選ぶ・必須)】次の2つの「組」のどちらか一方を丸ごと選ぶこと。組を混ぜない(4通りから好きな2つを拾わない)。
    ・fade(両側指値/type:"limit")の組 = 上(upper)は 売り指値[side:"sell"/type:"limit"] / 下(lower)は 買い指値[side:"buy"/type:"limit"]
    ・breakout(両側ブレイク新規/type:"stop")の組 = 上(upper)は 買いのブレイク新規[side:"buy"/type:"stop"] / 下(lower)は 売りのブレイク新規[side:"sell"/type:"stop"]
    ※組を混ぜると上下が同じ方向の注文になり、それはレンジではなく通常の buy/sell プランと同じものになるため。
-  ★どちらの組を選ぶか[重要]: 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。
+  ${rangePairChoice}
   ★上下の位置(無条件): upper.entry > 現在値 > lower.entry。この不等式を満たさない数値は出力しないこと。※買いのブレイク新規は必ず現在値より上・売りのブレイク新規は必ず現在値より下なので、「下(lower)に買いのブレイク新規」「上(upper)に売りのブレイク新規」は定義上ありえない。絶対に出さないこと。
   各レッグの初期LCも上限(≤${ceilingYen}円)内に収める。
   ★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く。方向性が明確なら従来どおり buy/sell を優先。`
@@ -338,9 +416,10 @@ function buildScalpSystemPromptBody(
 - ★【指値・ブレイク新規の距離(必須)】
   両方を出すときは現在値がその2つの価格の間に入るように置く(買い: limitEntry<refPrice<stopEntry / 売り: stopEntry<refPrice<limitEntry。この場合は現在値との距離の上限は無いが、指値とブレイク新規の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない)。
   片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること。現在値から200円を超えて離れた片レッグは出さない(約定不能・古い価格になりやすいため)。
-- それぞれの約定時の損切り(stopLossForLimit / stopLossForStop)を出す。損切りは「本来のストップ幅に5円を加えた」水準にする。指値レッグは limitEntry+stopLossForLimit、ブレイク新規レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
+- それぞれの約定時の損切り(stopLossForLimit / stopLossForStop)を出す。${LC_BUFFER_NOTE}指値レッグは limitEntry+stopLossForLimit、ブレイク新規レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
 - ★【損切りの向き(必須)】損切り(stopLossForLimit / stopLossForStop)は必ずエントリーの外側に置くこと: 買い(long)は各エントリーより下、売り(short)は各エントリーより上。指値レッグの損切りは limitEntry の外側、ブレイク新規レッグの損切りは stopEntry の外側に置く。損切りをエントリーの内側や反対側(買いなのに上・売りなのに下)に置いてはならない(その建玉を保護しない不正なストップになる)。range の各レッグも同様に、buy レッグの stopLoss は entry の下・sell レッグの stopLoss は entry の上に置く。
-- この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${floorYen}〜${ceilingYen}円に収め、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。${ceilingYen}円を超える損切りは出さない。
+- ${LC_DERIVATION_ORDER}
+- この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${lcRangePhrase(floorYen, ceilingYen, lcCeil)}、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。損切りは直近の節目/スイングの外側に置き、狭すぎ(往復のダマシ)・広すぎ(ドカン)を避ける。${ceilingYen}円を超える損切りは出さない。
 - ★この LC 上限(≤${ceilingYen}円)は 指値レッグ・ブレイク新規レッグ それぞれ独立に 満たすこと。ブレイク新規(stopEntry)は現在値/節目から離れるほど LC が広がりやすい。ブレイク新規レッグの LC が${ceilingYen}円を超えるなら、(a)ブレイク新規の価格を SL 側に近づけて LC≤${ceilingYen} に収めるか、(b)ブレイク新規レッグを省いて「指値のみ」で取引する(stopEntry / stopLossForStop を出さない=省略)。対称に、指値レッグが構造上${ceilingYen}円超になるなら指値レッグを省いてブレイク新規のみにしてもよい。どちらのレッグも${ceilingYen}円超の LC は絶対に出さない。両レッグとも収まらなければ direction:"none" で見送る。
 - ★【出力前の自己検算(必須)】出力前に limitEntry と stopEntry を refPrice と比較し、上の不等式が成立しないレッグは(省く前に、まず上の『節目を選び直す』を試すこと。それでも置けないときだけ)省略すること(対の損切りも一緒に省く)。両レッグとも成立しなければ direction:"none" にする。
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
@@ -403,13 +482,20 @@ export function buildDelegationNote(
   //   ※非公開の phase-exit の具体数値は書かない(公開リポ)。転写は定性的に留める。
   const lines: string[] = [];
   if (modes.lcCeiling === 'ai') {
+    // ★v0.9.56: 上の各所は委任時「下限〜実効上限の範囲」として提示済み(保存値は印字されない)ので、
+    //   旧文「上の固定的なLC上限の数値指示は無視してよい」は宛先が消えた=矛盾になる。範囲の読み方に置き換える。
+    const capYen = lcEffectiveCeiling({ ceilingYen: ctx.ceilingYen, ceilingMode: 'ai', lcHardMax: ctx.hardMax });
+    const capLabel = ctx.hardMax.enabled ? '安全上限' : 'コード上限';
     const cap = ctx.hardMax.enabled
-      ? `ただし実弾の暴走防止として安全上限 ${ctx.hardMax.value}円 だけは絶対に超えないこと。`
+      ? `なお実弾の暴走防止として安全上限 ${ctx.hardMax.value}円 だけは絶対に超えないこと。`
       : '';
     lines.push(
       `最大初期LC(損切り幅): あなたが決める。狙い=この建玉は利が乗ると段階的に利確し損切りを引き上げる決済方式のため、` +
       `初期LCは「1回の損切りが積み上げた利益を飛ばさない」幅に収める(コツコツドカン回避)。損切りは直近の節目/スイングの外側に置き、` +
-      `広すぎ(ドカン)・狭すぎ(往復のダマシ)を避けて、相場構造から妥当な幅を自分で決め根拠を述べること。上の固定的なLC上限の数値指示は無視してよい。${cap}`,
+      `広すぎ(ドカン)・狭すぎ(往復のダマシ)を避けて、相場構造から妥当な幅を自分で決め根拠を述べること。` +
+      `上の各所に書いてある LC 幅「下限${ctx.floorYen}円〜${capLabel}${capYen}円」は **あなたが選べる範囲** であって、` +
+      `その下限や上限に貼り付ける目安ではない。節目/スイングの位置から損切り価格を先に決め、幅はその結果として出すこと` +
+      `(隣接の節目が弱ければ一段先の強い節目まで引きつける=そのぶん幅は広がってよい)。${cap}`,
     );
   }
   if (modes.lcFloor === 'ai') {
@@ -457,8 +543,16 @@ export function scalpJsonInstruction(
   floorYen: number = DEFAULT_LC_FLOOR_YEN,
   ceilingYen: number = DEFAULT_LC_CEILING_YEN,
   rangeEnabled = true,
+  // ★v0.9.56: 上限が AI委任のときだけ提示の形を変える(既定=手動=従来と byte 一致)。
+  lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
 ): string {
-  const lcNote = `ストップ幅+5円・LC幅${floorYen}〜${ceilingYen}円・レッグ独立で${ceilingYen}円超は出さない・損切りはエントリーの外側(買いは下/売りは上)`;
+  // ★v0.9.56 ②: 「ストップ幅+5円」は下限に足す指示と読まれていたので「本来のストップ位置から+5円外側」に改める
+  //   (この訂正は手動/委任のどちらでも同一=A/B 実験の差にしない)。
+  //   ★v0.9.56 ①: LC 幅の書き方だけが手動(保存値)/委任(実効上限までの範囲)で分かれる。
+  const lcWidth = lcCeil.delegated
+    ? `LC幅は${floorYen}〜${ceilingYen}円の範囲で節目から導いてあなたが決める`
+    : `LC幅${floorYen}〜${ceilingYen}円`;
+  const lcNote = `本来のストップ位置から+5円外側・${lcWidth}・レッグ独立で${ceilingYen}円超は出さない・損切りはエントリーの外側(買いは下/売りは上)`;
   const dirEnum = rangeEnabled ? `"buy" | "sell" | "none" | "range"` : `"buy" | "sell" | "none"`;
   // レンジ両面ストラドルの JSON 形(direction:"range" の時のみ)。数値は円単位の実数。
   const rangeShape = rangeEnabled
@@ -841,16 +935,26 @@ function knobTag(mode: KnobSource): string {
 const LC_FLOOR_TAG = '【強制=委任対象外・コードで必ず適用】';
 export function buildStrategySpec(i: StrategySpecInput): string {
   const cap = i.hardMax.enabled ? `安全上限 ${i.hardMax.value}円(有効=手動でもAIでも絶対に超えない)` : '安全上限 無効';
+  // ★v0.9.56: 上限が AI委任のときは保存値を印字しない。実効上限(安全上限 or 背骨)を範囲として提示する。
+  const lcPres = resolveLcPresentation({
+    floorYen: i.floor.value, ceilingYen: i.ceiling.value, ceilingMode: i.ceiling.mode, lcHardMax: i.hardMax,
+  });
+  const lcLine = lcPres.ceil.delegated
+    ? `- 初期LC(損切り)幅: 下限${i.floor.value}円${LC_FLOOR_TAG} / 上限=あなたが決める${knobTag(i.ceiling.mode)} / ${cap}`
+      + `。★提示する許容範囲は 下限${i.floor.value}円〜${lcPres.ceil.capLabel}${lcPres.ceilingYen}円。この範囲の中から相場構造(節目/スイングの位置)に応じて選ぶこと(下限や上限に貼り付ける目安ではない)`
+    : `- 初期LC(損切り)幅: 下限${i.floor.value}円${LC_FLOOR_TAG} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`;
   const biasLabel = i.bias.value === 'long' ? '買い中心(売り新規は見送り)' : i.bias.value === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
   return [
     '',
     '【戦略ロジック仕様(完全版・定数込み)】以下のロジックと数値をすべて理解した上で計画すること。各項目末尾の【】は現在の委任設定(手動=固定・厳守 / AI=あなたが決めてよい)。AI委任の項目はその値を自分で決め、手動の項目は記載の値・ルールを厳守する。',
     '■ エントリー',
-    `- 初期LC(損切り)幅: 下限${i.floor.value}円${LC_FLOOR_TAG} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`,
+    lcLine,
     `- ★初期LC下限は例外なく強制する: |エントリー − 損切り| が ${i.floor.value}円 未満のレッグはコードが自動で落とす(両方落ちれば見送り)。`
       + `理由: この建玉の決済は「含み益が一定に達して初めて利益ロックの床が発動する」方式なので、下限より狭い初期LCは床が働く前に被弾し、決済ロジックが構造的に成立しない。`
       + `節目までの距離が近すぎて下限を満たせないなら、そのレッグは出さずに別の節目を選ぶこと(幅だけ機械的に広げた損切りは置き直さない)。`,
-    '- 損切りは本来のストップ幅に +5円 加える(往復のダマシ緩衝)',
+    // ★v0.9.56 ②③: +5円 が何に加わるのか / 導出の順序(節目 → ストップ位置 → 幅)。A(委任)・B(手動)で完全に同一。
+    `- 損切りの緩衝: ${LC_BUFFER_NOTE}`,
+    `- ${LC_DERIVATION_ORDER}`,
     '- 指値/ブレイク新規は現在値からそれぞれ最低 50円 離す(この最低距離は buy/sell のみ。range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)',
     // ★v0.9.44: 語彙は system prompt / question と統一する(stopEntry=ブレイク新規 / stopLossFor*=損切り)。
     //   ただし spec は「設定値＋委任タグ」が役割なので、規則の全文は重複させず不等式(最重要)だけを置く
@@ -1242,6 +1346,11 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★LC下限は【強制=委任対象外】= 設定値が絶対の床。外部要求(HTTP body/query)で **緩める(下げる)ことは許さない**。
   //   厳しくする(上げる)方向だけ受理する(clampRequestedLcFloor の注記に根拠)。
   const { floorYen, ceilingYen } = resolveLcRange(clampRequestedLcFloor(input.lcFloorYen, floorD.value), ceilingInput);
+  // ★v0.9.56: プロンプトに **印字してよい** 上限を決める(enforce は従来どおり ceilingYen + ceilingMode + hardMax)。
+  //   手動 → 保存値そのまま(従来と byte 一致)/ 委任 → 保存値を印字せず実効上限(安全上限 or 背骨)を範囲として提示。
+  const lcPres = resolveLcPresentation({ floorYen, ceilingYen, ceilingMode, lcHardMax: hardMax });
+  const promptCeilingYen = lcPres.ceilingYen;
+  const lcCeil = lcPres.ceil;
   // レジーム/トレンド veto の閾値[円](0=無効)。manual は閾値・ai は数値veto無効(=0)。プロンプト文言に反映し、
   // トレンド veto 自体は input.trend で駆動する(0 のとき trend を渡さない=veto なし)。
   const trendVetoYen = trendD.mode === 'manual' ? trendD.value : 0;
@@ -1276,9 +1385,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★レンジ再評価(未約定→ブレイク): armedContext が渡された時だけ注入する。未指定(通常)では '' = 従来と byte 一致。
   const armedNote = buildArmedNote(input.armedContext);
   const monitorCtx = buildMonitorContext(now);
-  const scalpQuestion = buildScalpQuestion(floorYen, ceilingYen, rangeEnabled, trendVetoYen);
+  const scalpQuestion = buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, ceilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled)}${biasNote}${strategySpec}${delegationNote}${heldNote}${armedNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil)}${biasNote}${strategySpec}${delegationNote}${heldNote}${armedNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
@@ -1300,7 +1409,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const img = input.chartImageDataUrl && input.chartImageDataUrl.startsWith('data:image/')
     ? input.chartImageDataUrl : null;
   const visionNote = buildVisionNote(!!img);
-  const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, ceilingYen, rangeEnabled)}`;
+  const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil)}`;
 
   try {
     // ★v0.9.46 修正: parse は runScalpPlanResult の中で1回だけ走らせ、その結果をここで受け取る。

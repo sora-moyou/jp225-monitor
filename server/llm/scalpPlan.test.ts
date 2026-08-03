@@ -9,7 +9,8 @@ import {
   pickNoneReason, enforceRangeEnabled,
   buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN, LC_YEN_MAX,
-  type ToolHandlers, type AiPlan, type KnobModes,
+  resolveLcPresentation, LC_CEIL_MANUAL, LC_BUFFER_NOTE, LC_DERIVATION_ORDER,
+  type ToolHandlers, type AiPlan, type KnobModes, type LcCeilingPresentation,
 } from './openai.js';
 import { describeRangeAnomaly } from '../signalTrade/rangeShape.js';
 import { formatMomentumLine, type Regime } from '../signalTrade/regime.js';
@@ -2543,6 +2544,10 @@ const PROMPT_CASES: [string, string][] = [
   // ⑨ JSON 出力指示
   ['jsonInstruction(range ON)', scalpJsonInstruction(38250)],
   ['jsonInstruction(range OFF)', scalpJsonInstruction(38250, 45, 65, false)],
+  // ⑨' ★v0.9.56: LC上限=AI委任 の提示(保存値ではなく実効上限を範囲で提示する分岐)
+  ['systemPrompt(LC上限=AI委任)', buildScalpSystemPrompt(55, 159, true, 100, true, { delegated: true, capLabel: '安全上限' })],
+  ['question(LC上限=AI委任)', buildScalpQuestion(55, 159, true, 100, { delegated: true, capLabel: '安全上限' })],
+  ['jsonInstruction(LC上限=AI委任)', scalpJsonInstruction(38250, 55, 159, true, { delegated: true, capLabel: '安全上限' })],
   // ⑩ 勢い1行(technical に載る・レンジ許可/競合/ギャップの各注記)
   ['momentum(横ばい+range ON)', formatMomentumLine(regimeOf({ trendDir: 'flat' }), true)],
   ['momentum(横ばい+range OFF)', formatMomentumLine(regimeOf({ trendDir: 'flat' }), false)],
@@ -2585,6 +2590,106 @@ describe('全生成箇所: 意味ルール(混在形の示唆・狭いレンジ�
       if (text.includes('fade') || text.includes('breakout')) {
         expect(text, `${name} が fade/breakout に触れているのに「組」の枠組みが無い`).toContain('組');
       }
+    }
+  });
+});
+
+// ─── ★v0.9.56: LC 上限の「提示」を実効値に揃える(保存値のアンカー化を止める) ─────────────
+//   実測(同じ相場・同じ節目データで提示だけを変えた 6+3 サンプル):
+//     「下限55 / 上限65【AI委任】/ 安全上限159」→ LC幅 60,60,60,60,60,58(6レッグ全部 58〜60・幅が固着)
+//     「55〜159 の範囲」               → LC幅 65,75,110,125,80,70,90,100(節目起点でレッグごとに変わる)
+//   A系統(上限=AI委任)と B系統(上限=手動65)の実験では、**プロンプトの改善は完全に同一** で、
+//   差は「上限の設定値とモード」だけから生じなければならない。ここではそれを機械的に固定する。
+describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従来どおり保存値)', () => {
+  const HARD = { enabled: true, value: 159 };
+  const CEIL_STORED = 65, FLOOR = 55, VETO = 100;
+  const specOf = (mode: 'manual' | 'ai', hard = HARD) => buildStrategySpec({
+    floor: { mode: 'manual', value: FLOOR }, ceiling: { mode, value: CEIL_STORED },
+    trendVeto: { mode: 'manual', value: VETO }, cooldown: { mode: 'manual', value: 90 },
+    bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: true },
+    hardMax: hard, exitDesc: '【決済】(固定文言)',
+  });
+  const delegOf = (mode: 'manual' | 'ai', hard = HARD) => buildDelegationNote(
+    { lcFloor: 'manual', lcCeiling: mode, trendVeto: 'manual', cooldown: 'manual', bias: 'manual', range: 'manual' },
+    { floorYen: FLOOR, ceilingYen: CEIL_STORED, hardMax: hard },
+  );
+  /** buildScalpPlan と同じ組み立て(市況データは A/B 同一なので除く)。 */
+  const compose = (mode: 'manual' | 'ai', hard = HARD): string => {
+    const p = resolveLcPresentation({ floorYen: FLOOR, ceilingYen: CEIL_STORED, ceilingMode: mode, lcHardMax: hard });
+    return [
+      buildScalpSystemPrompt(p.floorYen, p.ceilingYen, true, VETO, true, p.ceil),
+      specOf(mode, hard), delegOf(mode, hard),
+      buildScalpQuestion(p.floorYen, p.ceilingYen, true, VETO, p.ceil),
+      scalpJsonInstruction(38250, p.floorYen, p.ceilingYen, true, p.ceil),
+    ].join('\n');
+  };
+
+  it('resolveLcPresentation: 手動=保存値そのまま / 委任=実効上限(安全上限 有効=その値・無効=背骨)', () => {
+    expect(resolveLcPresentation({ floorYen: 55, ceilingYen: 65, ceilingMode: 'manual', lcHardMax: HARD }))
+      .toEqual({ floorYen: 55, ceilingYen: 65, ceil: LC_CEIL_MANUAL });
+    expect(resolveLcPresentation({ floorYen: 55, ceilingYen: 65, ceilingMode: 'ai', lcHardMax: HARD }))
+      .toEqual({ floorYen: 55, ceilingYen: 159, ceil: { delegated: true, capLabel: '安全上限' } });
+    expect(resolveLcPresentation({ floorYen: 55, ceilingYen: 65, ceilingMode: 'ai', lcHardMax: { enabled: false, value: 159 } }))
+      .toEqual({ floorYen: 55, ceilingYen: LC_YEN_MAX, ceil: { delegated: true, capLabel: 'コード上限' } });
+    // mode 省略(既存の直呼び)は手動扱い=従来と一致。
+    expect(resolveLcPresentation({ floorYen: 55, ceilingYen: 65 }).ceilingYen).toBe(65);
+  });
+
+  it('★委任(A系統): 保存値 65 がプロンプトのどこにも現れない(全文走査)', () => {
+    expect(compose('ai')).not.toContain('65');
+    expect(compose('ai', { enabled: false, value: 159 })).not.toContain('65');
+  });
+
+  it('★委任(A系統): 実効上限が「下限〜上限の範囲」として提示される(8箇所すべて実効値)', () => {
+    const a = compose('ai');
+    expect(a).toContain('下限55円〜安全上限159円');          // 提示の要(system 本文 / question / 仕様ブロック / 委任ノート)
+    expect(a).toContain('上限=あなたが決める');                // 仕様ブロックの LC 行
+    expect(a).toContain('LC幅は55〜159円の範囲');             // JSON スキーマ注記
+    expect(a).toContain('そのレンジで置く損切り幅の2倍');       // レンジ2択の閾値(保存値の2倍を印字しない)
+    expect(countOf(a, '159')).toBeGreaterThan(8);            // 実効上限が全箇所に行き渡っている
+  });
+
+  it('★手動(B系統): 上限の提示は従来どおり「下限55 / 上限65」(保存値を印字する)', () => {
+    const b = compose('manual');
+    expect(b).toContain('上限65円【手動=固定・厳守】');
+    expect(b).toContain('初期の損切り(LC)幅は55〜65円に収め');
+    expect(b).toContain('LC幅55〜65円');
+    expect(b).toContain('上下の反応帯の幅が130円より広ければ');
+    expect(b).not.toContain('あなたが決める');                 // 委任の文言は混入しない
+  });
+
+  it('★A と B の差は「上限の提示」だけ: ②緩衝・③導出順序は byte 単位で同一・同回数', () => {
+    const a = compose('ai'), b = compose('manual');
+    expect(countOf(a, LC_BUFFER_NOTE)).toBe(countOf(b, LC_BUFFER_NOTE));
+    expect(countOf(a, LC_DERIVATION_ORDER)).toBe(countOf(b, LC_DERIVATION_ORDER));
+    expect(countOf(a, LC_BUFFER_NOTE)).toBeGreaterThanOrEqual(3);
+    expect(countOf(a, LC_DERIVATION_ORDER)).toBeGreaterThanOrEqual(3);
+    // JSON 注記の +5円 表現も A/B 同一。
+    expect(countOf(a, '本来のストップ位置から+5円外側')).toBe(countOf(b, '本来のストップ位置から+5円外側'));
+  });
+
+  it('★②: +5円 が「下限」ではなく「本来のストップ位置」に加わると読める(旧文言が残っていない)', () => {
+    for (const t of [compose('ai'), compose('manual')]) {
+      expect(t).not.toContain('ストップ幅に5円加える');
+      expect(t).not.toContain('本来のストップ幅に5円を加えた');
+      expect(t).not.toContain('損切りは本来のストップ幅に +5円 加える');
+      expect(t).not.toContain('ストップ幅+5円');
+      expect(t).toContain('LC幅の下限に5円を足すという意味ではない');
+    }
+  });
+
+  it('★③: 節目 → ストップ位置 → 幅 の順序が明示され、幅を先に決めるのは誤りと書いてある', () => {
+    for (const t of [compose('ai'), compose('manual')]) {
+      expect(t).toContain('導出の順序(必ずこの順)');
+      expect(t).toContain('先に幅(下限や上限の数値)を決めてから節目に当てはめるのは誤り');
+    }
+  });
+
+  it('既存の指示(節目の引きつけ・不等式・レッグ独立)は A/B とも維持されている', () => {
+    for (const t of [compose('ai'), compose('manual')]) {
+      expect(t).toContain('もう一つ先の');            // 一段先の強い節目まで引きつける
+      expect(t).toContain('stopEntry < refPrice < limitEntry');
+      expect(t).toContain('それぞれ独立');
     }
   });
 });
