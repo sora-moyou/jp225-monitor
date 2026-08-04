@@ -35,6 +35,10 @@ vi.mock('../configStore.js', () => ({
   resolveScalpTrendVetoYen: () => trendVetoYenMock(),
   resolveScalpChartFallbackText: () => chartFallbackMock(),
   resolveIndicatorsEnabled: () => true,
+  // ★バンドウォーク判定の依存(v0.9.61)。目線 'none' = 判定しない = 従来と同じ文脈になる。
+  resolveBandwalkEnabled: () => true,
+  resolveEffectiveScalpBias: () => 'none',
+  resolveShockParams: () => ({ move1: 45, move2: 55, shock1: 50, shock2: 70, accelTh: 10, avgLen: 30, avgMult: 2.0, breakLen: 10, sameDirLen: 3, sameDirNeed: 2, scoreNeed: 5 }),
 }));
 
 // ★v0.9.38: レジームの入力はリアルタイム足(feedBars・分内高安つき)を直接使う。

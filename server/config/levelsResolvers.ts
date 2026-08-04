@@ -30,6 +30,11 @@ export function resolveLevelsConfig(): {
 export function resolveNwaveEnabled(): boolean {
   return loadConfig().nwaveEnabled !== false;
 }
+// ★バンドウォークの tunable リゾルバ。既定 ON(未設定/true=ON)。false のときだけ OFF
+//   (アラートを出さず、AI 文脈のバンドウォーク行も出さない)。閾値は server/bandwalk.ts が SSOT。
+export function resolveBandwalkEnabled(): boolean {
+  return loadConfig().bandwalkEnabled !== false;
+}
 // N波動の最小1波幅 |B−A|(円)。未設定は既定 300。境界は PARAM_BOUNDS.nwaveMinSwingYen。
 export function resolveNwaveMinSwingYen(): number {
   return resolveNumeric('nwaveMinSwingYen');

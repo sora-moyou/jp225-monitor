@@ -4,8 +4,9 @@ import type { IndicatorSnapshot } from '../types.js';
 
 // buildIndicatorHtml / rsiClass は DOM 非依存の純関数。表示整形と RSI 色分類を検証する。
 // 表示仕様(ユーザー指定)は「ヘッダ1行 + データ1行」の4列表:
-//   RSI   14MA    1.5σ    -1.5σ
-//   64.1  72,010  72,310  71,810
+//   RSI   0.7σ    14MA    -0.7σ
+//   64.1  72,310  72,010  71,810
+// ★列の並びは「上バンド → 中央(14MA) → 下バンド」= 値の大小と並びが一致する(ユーザー指定・v0.9.61)。
 
 const base: IndicatorSnapshot = {
   rsi: 62, sma: 41230, bbUpper: 41410, bbMid: 41230, bbLower: 41050,
@@ -18,20 +19,23 @@ function count(html: string, cls: string): number {
 }
 
 describe('buildIndicatorHtml', () => {
-  it('ヘッダは指定どおり RSI / 14MA / 1.5σ / -1.5σ の4列', () => {
+  it('ヘッダは指定どおり RSI / 0.7σ / 14MA / -0.7σ の4列(この順)', () => {
     const html = buildIndicatorHtml(base);
     expect(count(html, 'ind-th')).toBe(4);
-    for (const c of ['RSI', '14MA', '1.5σ', '-1.5σ']) expect(html).toContain(`>${c}<`);
+    for (const c of ['RSI', '0.7σ', '14MA', '-0.7σ']) expect(html).toContain(`>${c}<`);
+    // ★並び順そのものを固定する(列名だけ直して値の順を直し忘れる事故を防ぐ)。
+    const heads = [...html.matchAll(/class="ind-th"[^>]*>(?:<span class="ind-mark">[^<]*<\/span>)?<span>([^<]+)<\/span>/g)].map(m => m[1]);
+    expect(heads).toEqual(['RSI', '0.7σ', '14MA', '-0.7σ']);
   });
 
-  it('データ行は RSI=小数第1位 / 他3列=桁区切り整数(1.5σ=上限, -1.5σ=下限)', () => {
+  it('データ行は RSI=小数第1位 / 他3列=桁区切り整数(0.7σ=上限, 14MA=中央, -0.7σ=下限)', () => {
     const html = buildIndicatorHtml(base);
     expect(count(html, 'ind-td')).toBe(4);
     const tds = html.split('class="ind-td').slice(1);
     expect(tds[0]).toContain('62.0');       // RSI(小数第1位)
-    expect(tds[1]).toContain('41,230');     // 14MA
-    expect(tds[2]).toContain('41,410');     // 1.5σ(上限)
-    expect(tds[3]).toContain('41,050');     // -1.5σ(下限)
+    expect(tds[1]).toContain('41,410');     // 0.7σ(上限)
+    expect(tds[2]).toContain('41,230');     // 14MA(中央)
+    expect(tds[3]).toContain('41,050');     // -0.7σ(下限)
     expect(html).not.toContain('蓄積中');
   });
 
@@ -90,7 +94,7 @@ describe('buildIndicatorHtml — 蓄積状況の自己診断表示', () => {
     const html = buildIndicatorHtml({ ...base, progress: { state: 'closed', remaining: 0 } });
     expect(count(html, 'ind-td')).toBe(4);
     expect(html).toContain('62.0');
-    expect(html).toContain('41,410');            // 1.5σ は残る
+    expect(html).toContain('41,410');            // 0.7σ は残る
     expect(html).toContain('取引時間外');
     expect(html).not.toContain('蓄積中');
   });

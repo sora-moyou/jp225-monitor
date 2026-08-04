@@ -7,13 +7,14 @@ import {
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
   lcLegExceeds, lcLegBelowFloor, lcEffectiveCeiling, buildDelegationNote, buildStrategySpec, buildLegNote,
   pickNoneReason, enforceRangeEnabled,
-  buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote,
+  buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote, buildBandwalkNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN, LC_YEN_MAX,
   resolveLcPresentation, LC_CEIL_MANUAL, LC_BUFFER_NOTE, LC_DERIVATION_ORDER,
   type ToolHandlers, type AiPlan, type KnobModes, type LcCeilingPresentation,
 } from './openai.js';
 import { describeRangeAnomaly } from '../signalTrade/rangeShape.js';
 import { formatMomentumLine, type Regime } from '../signalTrade/regime.js';
+import type { Bandwalk } from '../bandwalk.js';
 
 // LLM 応答テキスト→AiPlan の検証(refPrice は必ず monitor 側の値で上書きされる)。
 const REF = 38250;
@@ -2547,6 +2548,12 @@ const regimeOf = (over: Partial<Regime>): Regime => ({
   dir: 'flat', strong: false, trendDir: 'flat', longDir: 'flat', trendStrong: false, ret10StaleMin: null, ...over,
 });
 
+/** ★v0.9.61: バンドウォーク成立中のサンプル(注記の生成に使う)。 */
+const BANDWALK_UP: Bandwalk = {
+  direction: 'up', ratio: 0.83, bars: 12, sinceT: 1_800_000_000_000, t: 1_800_003_300_000,
+  close: 38300, band: 38250, rsi: 62.5,
+};
+
 /** AI に届く文字列の生成箇所(全分岐)。[名前, 文字列] */
 const PROMPT_CASES: [string, string][] = [
   // ① system prompt 本体(rangeLine / techLine / trendGuidance を内包)
@@ -2580,6 +2587,9 @@ const PROMPT_CASES: [string, string][] = [
   ['heldNote(sell)', buildHeldNote({ dir: 'sell', entry: 38200 })],
   ['armedNote', buildArmedNote({ mode: 'range-fade', ageMs: 900_000, avgMs: 600_000 })],
   ['visionNote', buildVisionNote(true)],
+  // ⑧' ★v0.9.61: バンドウォーク成立中の緩和注記(距離と節目だけを緩める)
+  ['bandwalkNote(up)', buildBandwalkNote(BANDWALK_UP)],
+  ['bandwalkNote(down)', buildBandwalkNote({ ...BANDWALK_UP, direction: 'down', band: 38100 })],
   // ⑨ JSON 出力指示
   ['jsonInstruction(range ON)', scalpJsonInstruction(38250)],
   ['jsonInstruction(range OFF)', scalpJsonInstruction(38250, 45, 65, false)],

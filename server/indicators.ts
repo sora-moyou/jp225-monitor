@@ -4,13 +4,17 @@
 // 与えられた close 配列だけから指標を計算する(テスト容易・SSOT)。
 //   ・rsi14  = Wilder の RSI(期間14・最初の14変化を単純平均でシードし以降を Wilder 平滑化)。
 //   ・sma    = 単純移動平均(直近 period 本)。
-//   ・bollinger = 中央=SMA14 / 上下=中央 ± 1.5σ(σ は直近14本の母集団標準偏差=alertDetector.stdDev を再利用)。
+//   ・bollinger = 中央=SMA14 / 上下=中央 ± BB_SIGMA·σ(σ は直近14本の母集団標準偏差=alertDetector.stdDev を再利用)。
+//     ★倍率は core/indicatorSpec.ts の BB_SIGMA が唯一の定義(表示ラベルも同ファイル)。ここに数値を書かない。
 //   ・pctB   = (現値 − 下限)/(上限 − 下限)= バンド内の相対位置(0=下限・1=上限)。
 //
 // 呼び出し側(indicatorsLoop / scalpContext)は、安定値のために「確定した(まだ形成中でない)足の close」を渡し、
 // 別途「形成中の足を含む速報 close」で live 値も計算できる(computeIndicators を2回呼ぶ)。
 
 import { stdDev } from './alertDetector.js';
+import { BB_SIGMA } from '../core/indicatorSpec.js';
+
+export { BB_SIGMA };
 
 const MIN = 60_000;
 
@@ -65,9 +69,10 @@ export function sma(closes: number[], period: number): number | null {
 }
 
 /** ボリンジャーバンド。中央=SMA(period)/ 上下=中央 ± mult·σ(σ=直近 period 本の母集団標準偏差)。
- *  本数不足は全て null。σ=0(全同値)のとき上下=中央(幅0)。 */
+ *  本数不足は全て null。σ=0(全同値)のとき上下=中央(幅0)。
+ *  ★既定倍率は core/indicatorSpec.ts の BB_SIGMA(=画面/AI 文脈のラベルと同一の真実)。 */
 export function bollinger(
-  closes: number[], period = 14, mult = 1.5,
+  closes: number[], period = 14, mult: number = BB_SIGMA,
 ): { mid: number | null; upper: number | null; lower: number | null } {
   const mid = sma(closes, period);
   if (mid === null) return { mid: null, upper: null, lower: null };
@@ -144,13 +149,13 @@ export function computeIndicators(closes: number[], times?: number[]): Indicator
   const price = n > 0 ? closes[n - 1]! : 0;
   const rsi = rsi14(closes);
   const smaV = sma(closes, 14);
-  const bb = bollinger(closes, 14, 1.5);
+  const bb = bollinger(closes, 14, BB_SIGMA);
   const pctB = pctBOf(price, bb.upper, bb.lower);
   const series: IndicatorPoint[] = [];
   const points = Math.min(12, n);
   for (let k = n - points; k < n; k++) {
     const prefix = closes.slice(0, k + 1);
-    const b = bollinger(prefix, 14, 1.5);
+    const b = bollinger(prefix, 14, BB_SIGMA);
     const pt: IndicatorPoint = {
       close: closes[k]!,
       rsi: rsi14(prefix),

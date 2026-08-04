@@ -14,6 +14,8 @@ import { rowKind } from '../alertHistory.js';
 import { classifySession, minutesFromOpen } from '../../core/session.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { computeIndicators } from '../indicators.js';
+import { BB_BAND_LABEL } from '../../core/indicatorSpec.js';
+import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 import { selectPromptLevels } from './scalpLevelSelect.js';
 
 const MIN = 60_000;
@@ -87,6 +89,10 @@ export interface ScalpMarketDataInput {
   /** ★テクニカル指標ブロック(G)を出すか。未指定は true(既定ON)。false でブロック G を省略する
    *  (indicatorsEnabled=false のとき runner が渡す=AI へテクニカルを供給しない)。 */
   indicatorsEnabled?: boolean;
+  /** ★バンドウォークの判定結果(server/bandwalk.ts)。呼び出し側が算出して渡す。
+   *  Bandwalk=成立中 / null=非成立(その旨を1行書く)/ **undefined=行そのものを出さない**
+   *  (機能OFF・目線なし等で「判定していない」ときに、成立/非成立の嘘を書かないための3値)。 */
+  bandwalk?: Bandwalk | null;
 }
 
 /** 構造化された市場データ(数値主軸)ブロックをコンパクトな日本語で組み立てる純関数。
@@ -122,7 +128,7 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
         if (ind.rsi != null) parts.push(`RSI14=${ind.rsi.toFixed(1)}${ind.rsi >= 70 ? '(買われすぎ)' : ind.rsi <= 30 ? '(売られすぎ)' : ''}`);
         if (ind.sma != null) parts.push(`SMA14=${R(ind.sma)}`);
         // 範囲区切りは U+FF5E(～)。U+301C(〜)は cp932 環境で '?' に化ける。
-        if (ind.bbLower != null && ind.bbUpper != null) parts.push(`BB[±1.5σ]=${R(ind.bbLower)}～${R(ind.bbUpper)}`);
+        if (ind.bbLower != null && ind.bbUpper != null) parts.push(`BB[${BB_BAND_LABEL}]=${R(ind.bbLower)}～${R(ind.bbUpper)}`);
         if (ind.pctB != null) parts.push(`%B=${ind.pctB.toFixed(2)}(${ind.pctB >= 0.8 ? 'バンド上寄り' : ind.pctB <= 0.2 ? 'バンド下寄り' : '中央'})`);
         const lines: string[] = [];
         if (parts.length > 0) lines.push('現在値: ' + parts.join(' / '));
@@ -130,7 +136,14 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
         const tail = ind.series.slice(-12);
         const rsiSeq = tail.map(p => p.rsi != null ? String(Math.round(p.rsi)) : '—').join(' ');
         if (rsiSeq.trim()) lines.push(`RSI推移(直近${tail.length}点・古→新): ${rsiSeq}`);
-        if (lines.length > 0) blocks.push('テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ):\n' + lines.join('\n'));
+        // ★バンドウォーク(成立/非成立)。判定は server/bandwalk.ts が SSOT で、アラートと **同じ値** を渡す
+        //   (画面のアラートと AI の文脈が食い違わないように、ここでは計算し直さず受け取ったものを書く)。
+        //   ・成立: 向き・継続時間・占有率を1行で。
+        //   ・非成立: 「成立していない」ことを明示する(欠落=情報なし、と AI に読ませない)。
+        if (input.bandwalk !== undefined) {
+          lines.push('バンドウォーク: ' + (input.bandwalk ? describeBandwalk(input.bandwalk) : `成立していない(RSI50 と ${BB_BAND_LABEL} の関係が一方向に揃っていない)`));
+        }
+        if (lines.length > 0) blocks.push(`テクニカル指標(5分足・RSI14/SMA14/BB${BB_BAND_LABEL}):\n` + lines.join('\n'));
       }
     }
   } catch { /* 省略 */ }

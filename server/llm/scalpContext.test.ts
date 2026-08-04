@@ -336,7 +336,7 @@ describe('parseTradeSettings', () => {
   });
 });
 
-// ─── ★ブロック G: テクニカル指標(RSI14/SMA14/BB±1.5σ・5分足) ───
+// ─── ★ブロック G: テクニカル指標(RSI14/SMA14/BB±0.7σ・5分足) ───
 describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
   // 5分足で16本以上(=確定足15本以上)が必要。1分足を 16*5+5 本作る(最後の1本は形成中として落ちる)。
   function longBars(): Bar1m[] {
@@ -352,10 +352,10 @@ describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
 
   it('十分な本数があれば RSI14/SMA14/BB/%B と RSI推移を出す', () => {
     const s = buildScalpMarketData({ bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
-    expect(s).toContain('テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ)');
+    expect(s).toContain('テクニカル指標(5分足・RSI14/SMA14/BB±0.7σ)');
     expect(s).toContain('RSI14=');
     expect(s).toContain('SMA14=');
-    expect(s).toContain('BB[±1.5σ]=');
+    expect(s).toContain('BB[±0.7σ]=');
     expect(s).toContain('%B=');
     expect(s).toContain('RSI推移');
   });
@@ -363,7 +363,7 @@ describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
   // U+301C(WAVE DASH)は cp932 環境で '?' に化ける。BB の範囲区切りは U+FF5E(FULLWIDTH TILDE)。
   it('BB の範囲区切りは U+FF5E(～)で U+301C を使わない', () => {
     const s = buildScalpMarketData({ bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
-    const bbLine = s.split('\n').find(l => l.includes('BB[±1.5σ]='))!;
+    const bbLine = s.split('\n').find(l => l.includes('BB[±0.7σ]='))!;
     expect(bbLine).toContain('～');
     expect(bbLine).not.toContain('〜');
   });
@@ -384,5 +384,32 @@ describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
     }
     const s = buildScalpMarketData({ bars, levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38024 });
     expect(s).not.toContain('テクニカル指標(5分足');
+  });
+
+  // ★v0.9.61: バンドウォーク行。判定は server/bandwalk.ts が SSOT で、ここは受け取って書くだけ。
+  //   3値(成立 / 非成立 / 未判定)を取り違えると「判定していないのに非成立と書く」嘘になるので固定する。
+  it('bandwalk 未指定(=判定していない)ではバンドウォーク行を出さない', () => {
+    const s = buildScalpMarketData({ bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000 });
+    expect(s).toContain('テクニカル指標(5分足');
+    expect(s).not.toContain('バンドウォーク');
+  });
+
+  it('bandwalk=null(判定した結果 非成立)は「成立していない」と明示する', () => {
+    const s = buildScalpMarketData({
+      bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000, bandwalk: null,
+    });
+    expect(s).toContain('バンドウォーク: 成立していない');
+  });
+
+  it('bandwalk=成立中 は向き・継続時間・占有率を1行で出す', () => {
+    const s = buildScalpMarketData({
+      bars: longBars(), levels: emptyLevels(), alerts: [], now: NOW, currentPrice: 38000,
+      bandwalk: {
+        direction: 'up', ratio: 0.75, bars: 12, sinceT: NOW - 55 * MIN, t: NOW - 5 * MIN,
+        close: 38300, band: 38250, rsi: 61.2,
+      },
+    });
+    expect(s).toContain('バンドウォーク: 上昇バンドウォーク継続中');
+    expect(s).toContain('75%');
   });
 });

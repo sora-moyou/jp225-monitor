@@ -3,7 +3,11 @@ import { buildScalpPlan, firstAvailableVisionProvider, resolveEffectiveRangeEnab
 import { getPrices, getNews } from '../cache.js';
 import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPngCached, type ChartShotIdentity } from '../chart/chartShot.js';
-import { resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, resolveIndicatorsEnabled, type SignalProfile } from '../configStore.js';
+import {
+  resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, resolveIndicatorsEnabled,
+  resolveBandwalkEnabled, resolveEffectiveScalpBias, resolveShockParams, type SignalProfile,
+} from '../configStore.js';
+import { buildBandwalkSamples, evaluateBandwalk, DEFAULT_BANDWALK, type Bandwalk } from '../bandwalk.js';
 import { getRealtimeOHLCBars } from '../feedBars.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
@@ -40,7 +44,16 @@ export const GENERATOR_OMITTED_CONTEXT: readonly string[] = ['paper-trade-histor
 export function buildRichScalpContext(
   symbol: string, currentPrice: number, now: number, profile?: SignalProfile, caller: LlmCaller = DEFAULT_CALLER,
 ): string {
-  if (!(typeof currentPrice === 'number' && currentPrice > 0)) return '';
+  return buildRichScalpContextResult(symbol, currentPrice, now, profile, caller).text;
+}
+
+/** buildRichScalpContext と同じ処理で、文脈テキストに加えて **バンドウォークの判定結果** も返す。
+ *  ★1回の足取得で「AI 文脈に書く行」と「プロンプトの緩和判断」の両方を賄うためのもの(DB を二度開かない)。
+ *  bandwalk: Bandwalk=成立中 / null=非成立 / undefined=判定していない(機能OFF・目線なし・足不足)。 */
+export function buildRichScalpContextResult(
+  symbol: string, currentPrice: number, now: number, profile?: SignalProfile, caller: LlmCaller = DEFAULT_CALLER,
+): { text: string; bandwalk?: Bandwalk | null } {
+  if (!(typeof currentPrice === 'number' && currentPrice > 0)) return { text: '' };
   // ★DB が開けなくても止めない: メモリ内ライブ足だけで足/ボラ/スイング/テクニカルは組める。
   //   indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で AI 文脈をゼロにしない。
   //   DB 依存のブロック(アラート履歴/セッションOHLC/紙成績)だけが欠落し、各ブロックは元々欠損で省略される。
@@ -62,15 +75,31 @@ export function buildRichScalpContext(
     //   GENERATOR_OMITTED_CONTEXT。A/B(default)は従来どおり=1ミリも変わらない。
     const omitHistory = caller !== DEFAULT_CALLER;
     const trades = db && !omitHistory ? getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A') : [];
+    // ★バンドウォーク: アラート(detect/registry)と **同じ純関数・同じパラメータ・同じ目線** で判定する。
+    //   機能OFF / テクニカルOFF では判定しない(undefined=文脈に行を出さない)。
+    //   目線 'none'(未設定/AI委任)は「方向一致を問わない」= 判定は行う(上下とも成立しうる)。
+    //   ★判定の失敗は **バンドウォークの行が消えるだけ** に閉じ込める(この1機能で文脈全体を落とさない)。
+    const indicatorsOn = resolveIndicatorsEnabled();
+    let bandwalk: Bandwalk | null | undefined;
+    try {
+      if (indicatorsOn && resolveBandwalkEnabled()) {
+        bandwalk = evaluateBandwalk(
+          buildBandwalkSamples(bars, DEFAULT_BANDWALK.windowBars, resolveShockParams()),
+          resolveEffectiveScalpBias(profile), DEFAULT_BANDWALK,
+        );
+      }
+    } catch (e) {
+      console.warn('[scalp-plan] bandwalk 判定失敗(省略):', e instanceof Error ? e.message : String(e));
+    }
     // ★テクニカル指標(ブロックG)は indicatorsEnabled=false のとき省略(AIへ供給しない)。
-    const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: resolveIndicatorsEnabled() });
+    const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: indicatorsOn, bandwalk });
     // 外した回は buildScalpTradeHistory を呼ばない(空配列で呼んで '' を得るのと結果は同じだが、
     // 「読んでいない」ことをコード上でも一意にする)。
     const history = omitHistory ? '' : buildScalpTradeHistory(trades, now);
-    return [marketData, history].filter(Boolean).join('\n\n');
+    return { text: [marketData, history].filter(Boolean).join('\n\n'), bandwalk };
   } catch (e) {
     console.warn('[scalp-plan] rich context 構築失敗(省略):', e instanceof Error ? e.message : String(e));
-    return '';
+    return { text: '' };
   } finally {
     try { db?.close(); } catch { /* close 失敗は無視 */ }
   }
@@ -209,7 +238,8 @@ async function runScalpPlanWithChartInner(
   // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
   //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
   //   ★caller を渡す: 生成器では紙成績の履歴ブロックを外す(母集団の独立性)。default は不変。
-  const rich = buildRichScalpContext(symbol, price ?? 0, Date.now(), overrides.profile, caller);
+  const richResult = buildRichScalpContextResult(symbol, price ?? 0, Date.now(), overrides.profile, caller);
+  const rich = richResult.text;
   if (caller !== DEFAULT_CALLER) {
     // 外したことは server.log にも残す(台帳が読めない状況でも「いつから外したか」が追える)。
     console.log(`[scalp-plan] ${caller}: 文脈から除外=${GENERATOR_OMITTED_CONTEXT.join(',')}(母集団の独立性・両腕とも同一)`);
@@ -234,6 +264,9 @@ async function runScalpPlanWithChartInner(
     armedContext: overrides.armedContext,   // ★レンジ再評価: 未約定レンジのブレイク切替評価は armed-context を注入(通常は未指定=不変)。
     caller,                                 // ★プロバイダ・プールの選択のみに効く(プロンプト/parse/enforce は不変)。
     exitVariant: overrides.exitVariant,      // ★未指定(エンジン/既存 route)は undefined = 決済ブロックは従来どおり。
+    // ★バンドウォーク: 成立中のときだけプロンプトの「距離50円 / 節目起点」を緩める(LC は緩めない)。
+    //   AI 文脈(ブロックG)に書いたものと **同じ判定結果** を渡す(画面/文脈/プロンプトで食い違わせない)。
+    bandwalk: richResult.bandwalk,
   }), caller, chartShot);
 }
 

@@ -26,6 +26,11 @@ import { getSessionOHLC } from '../server/db/store.js';
 import { computeDailyBands, dailyCloseSeries } from '../server/dailyBand.js';
 import { classifySession } from '../core/session.js';
 import { LEVELS_TUNING as T, yenPct } from '../server/loops/levelsLoop.js';
+import {
+  buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
+  createBandwalkFireState, DEFAULT_BANDWALK,
+} from '../server/bandwalk.js';
+import { resolveShockParams, resolveEffectiveScalpBias } from '../server/configStore.js';
 import type { AlertSignal } from '../server/signals/types.js';
 
 const SYMBOL = 'NIY=F';
@@ -125,6 +130,34 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
     if (now - (lastEmit[ck] ?? -1e15) <= cd) continue;
     lastEmit[ck] = now; if (a.types.includes('break')) lastBreakDir[a.direction] = now;
     bump(a.type, `${hm(now)} ${a.direction === 'up' ? '▲' : '▼'} ${a.text}`);
+  }
+}
+
+// ── バンドウォーク(bandwalk): 本番の純関数(server/bandwalk.ts)をそのまま使ってリプレイ ──
+// ★目線(scalpBias)は設定値であって時系列に残らない。**実効の目線**での発火(=実際に鳴る数)を主として数え、
+//   参考として 'long'/'short' に設定した場合も併記する('none'=上下とも成立しうる)。
+{
+  const bw1m = (db.prepare('SELECT t,o,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t')
+    .all(SYMBOL, start - 7 * 3600000) as Array<{ t: number; o: number; h: number; l: number; c: number }>);
+  const samples = buildBandwalkSamples(bw1m, Number.MAX_SAFE_INTEGER, resolveShockParams());
+  const effBias = resolveEffectiveScalpBias();
+  const biasJa = { none: '目線なし=上下とも', long: '買い目線=上のみ', short: '売り目線=下のみ' } as const;
+  const replay = (bias: 'none' | 'long' | 'short', label: string): void => {
+    const st = createBandwalkFireState();
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i]!;
+      if (s.t < start) continue;
+      const bw = evaluateBandwalk(samples.slice(0, i + 1), bias, DEFAULT_BANDWALK);
+      if (shouldFireBandwalk(st, bw, DEFAULT_BANDWALK) && bw) {
+        bump(label, `${hm(bw.t)} ${bw.direction === 'up' ? '▲' : '▼'} ${describeBandwalk(bw).slice(0, 44)}`);
+      }
+    }
+  };
+  replay(effBias, 'bandwalk');   // ← 実効設定での実発火(合計にも入る)
+  console.log(`\n[bandwalk] 実効の目線(scalpBias)=${effBias}(${biasJa[effBias]})。以下 bandwalk は この設定での実発火。`);
+  for (const b of ['none', 'long', 'short'] as const) {
+    if (b === effBias) continue;
+    replay(b, `(参考)bandwalk[目線=${biasJa[b]}]`);
   }
 }
 

@@ -26,18 +26,20 @@ describe('検知種別 SSOT', () => {
   it('全種別(この一覧が唯一の関所。増減したら上のチェックリストを確認すること)', () => {
     expect([...DETECTION_KINDS]).toEqual([
       'slope', 'magnitude', 'shock', 'crash',
-      'double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dailyband', 'nwave',
+      'double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dailyband', 'nwave', 'bandwalk',
       'granville', 'dtb', 'ma', 'swingdtb',
     ]);
   });
 
   it('L2(テクニカル)種別の一覧 — バナー固定文/「直近の状況」/LLM の急変文抑止が全てこの集合で決まる', () => {
     expect(DETECTION_KINDS.filter(isTechnicalKind)).toEqual([
-      'double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dailyband', 'nwave',
+      'double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dailyband', 'nwave', 'bandwalk',
       'granville', 'dtb', 'ma', 'swingdtb',
     ]);
     // ★v0.9.36 の取りこぼし本体。L1 に落ちると「[トレンド]」表示・LLM 呼び出し(→400)・AI 文脈からの脱落が同時に起きる。
     expect(isTechnicalKind('nwave')).toBe(true);
+    // ★v0.9.61 追加。L2 に居ないとバナーが「[トレンド]」になり、/api/explain が LLM を呼びに行って 400 になる。
+    expect(isTechnicalKind('bandwalk')).toBe(true);
     expect(isTechnicalKind('dailyband')).toBe(true);
   });
 

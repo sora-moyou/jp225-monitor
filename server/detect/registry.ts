@@ -24,6 +24,7 @@ import {
   getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars, getDailyCloses, upsertDailyClose,
   type SessionOHLC, type Tick,
 } from '../db/store.js';
+import { collectRecentBars } from '../barsSource.js';
 import { computeVolumeProfile } from '../volumeProfile.js';
 import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeTrendLines } from '../trendLines.js';
@@ -38,7 +39,15 @@ import { detectNWave, nwaveLevelCandidates, type NWave } from '../nwave.js';
 import { aggregateSignals, DEFAULT_AGGREGATE, recentMomentumDir } from '../signals/aggregate.js';
 import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
 import type { AlertSignal } from '../signals/types.js';
-import { resolveLevelsConfig, resolveBreakScore, resolveDoubleFormingEnabled, resolveSlopeConfluenceBonus, resolveNwaveEnabled, resolveNwaveMinSwingYen } from '../configStore.js';
+import {
+  resolveLevelsConfig, resolveBreakScore, resolveDoubleFormingEnabled, resolveSlopeConfluenceBonus,
+  resolveNwaveEnabled, resolveNwaveMinSwingYen, resolveBandwalkEnabled, resolveEffectiveScalpBias,
+  resolveShockParams,
+} from '../configStore.js';
+import {
+  buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
+  createBandwalkFireState, DEFAULT_BANDWALK, type BandwalkFireState,
+} from '../bandwalk.js';
 import { evaluateBarsNiy, createBarDetectState, type BarDetectState, type AlertSink } from '../alertEngine.js';
 import { DEFAULT_PARAMS, type DetectorParams } from '../alertDetector.js';
 import type { InstrumentMeta } from '../types.js';
@@ -68,6 +77,9 @@ const PIVOT_FORMED_MIN_PCT = 0.005;
 const SWING_DOUBLE_CHECK_MS = 60_000;
 // ★N波動(値幅観測論): 節目/アラートとも主要スイング(swingDouble と同じ抽出)から算出。約60秒間引き +
 //   方向×round(B) の 30 分クールダウン(別の B は即再発火・同一 B は30分ごとに再アラート)。
+// ★バンドウォーク用の1分足の取得窓。indicatorsLoop / scalpContext / scalpPlanRunner と **同じ6時間**に
+//   合わせる(同じ足・同じ算出経路にしないと「アラートは成立・AI文脈は非成立」の食い違いが起きる)。
+const BANDWALK_BARS_WINDOW_MS = 6 * 60 * 60_000;
 const NWAVE_CHECK_MS = 60_000;
 const NWAVE_COOLDOWN_MS = 30 * 60_000;
 const SWING_LOOKBACK_DAYS = 4;
@@ -165,6 +177,8 @@ export interface LevelDetectState {
   pivotSeeded: boolean;   // ★起動時に既存の確定ピボットを「既知」化したか(再起動で古いピボットが『形成』と誤発火するのを防ぐ)。
   lastSwingCheck: number;
   lastNwaveFire: Map<string, number>;   // ★N波動アラートの方向×round(B) の30分クールダウン(別Bは即再発火・同一Bは30分毎)。
+  // ★バンドウォーク: 直近に判定した確定5分足・成立中の向き・方向別クールダウン(server/bandwalk.ts)。
+  bandwalk: BandwalkFireState;
   lastDailyBandEmit: Map<string, number>;
   lastDailyMaEmit: Map<string, number>;
 }
@@ -180,6 +194,7 @@ export function createLevelDetectState(): LevelDetectState {
     lastDailyBandCheck: 0, confirmedDailyCloses: [],
     lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, pivotSeeded: false, lastSwingCheck: 0,
     lastNwaveFire: new Map(),
+    bandwalk: createBandwalkFireState(),
     lastDailyBandEmit: new Map(), lastDailyMaEmit: new Map(),
   };
 }
@@ -485,6 +500,37 @@ export function runLevelDetectors(
     }
   } catch (err) {
     console.warn('[detect] nwave emit failed:', err instanceof Error ? err.message : err);
+  }
+  // ── バンドウォーク(bandwalk): BB±σ に沿った一方向の推移。判定は server/bandwalk.ts(純関数)が SSOT。
+  //    ・確定した5分足が新しくなった時だけ評価する(同じ足で二度鳴らさない=間引きも兼ねる)。
+  //    ・足は collectRecentBars(DB ∪ メモリ内ライブ足)。★ここだけ兄弟検知器(getRecentBars=DB のみ)と
+  //      違うのは、この判定が **AI 文脈にも同じ内容で出る** ため。DB だけに繋いで collector 停止時に
+  //      無音で死ぬ事故(v0.9.37)を繰り返さない。
+  //    ・目線(scalpBias): 'long'=上のみ / 'short'=下のみ / 'none'(未設定/AI委任)=上下とも(ユーザー確定仕様)。
+  try {
+    if (resolveBandwalkEnabled()) {
+      const bias = resolveEffectiveScalpBias();
+      const bars1m = collectRecentBars(db, SYMBOL, now - BANDWALK_BARS_WINDOW_MS);
+      const samples = buildBandwalkSamples(bars1m, DEFAULT_BANDWALK.windowBars, resolveShockParams());
+      const lastT = samples.length > 0 ? samples[samples.length - 1]!.t : 0;
+      if (lastT > state.bandwalk.lastBarT) {
+        state.bandwalk.lastBarT = lastT;
+        const bw = evaluateBandwalk(samples, bias, DEFAULT_BANDWALK);
+        if (shouldFireBandwalk(state.bandwalk, bw, DEFAULT_BANDWALK) && bw) {
+          const note = describeBandwalk(bw);
+          console.log(`[detect] bandwalk ${bw.direction} ratio=${bw.ratio.toFixed(2)} bars=${bw.bars} band=${Math.round(bw.band)} bias=${bias}`);
+          sink({
+            symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+            changePercent: 0, windowSeconds: 60, detectionKind: 'bandwalk', direction: bw.direction,
+            triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+            level: Math.round(bw.band), note,
+            referenceKind: 'bb', referencePrice: Math.round(bw.band),
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[detect] bandwalk detect failed:', err instanceof Error ? err.message : err);
   }
   // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
   try {

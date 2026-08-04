@@ -75,6 +75,10 @@ export interface UserConfig {
   // ★N波動(値幅観測論): スイング A→B→C の N値/V値/E値 を節目に出し、B 抜け確認で nwave アラート。
   nwaveEnabled?: boolean;            // N波動の節目/アラートを出すか。未設定/true=ON(既定)。false=OFF。
   nwaveMinSwingYen?: number;         // N波動の最小1波幅 |B−A|(円)。これ未満の浅い波は捨てる。未設定は 300。
+  // ★バンドウォーク(BB沿いの一方向推移): 占有率で判定し、逆方向の急変(shock)で打ち切る。
+  //   閾値(窓/占有率/最小本数/クールダウン)は server/bandwalk.ts の DEFAULT_BANDWALK が SSOT
+  //   (実データの掃引で決めた値なので、ここでは ON/OFF だけを設定にする)。
+  bandwalkEnabled?: boolean;         // バンドウォークのアラート/AI文脈を出すか。未設定/true=ON(既定)。false=OFF。
   breakScore?: number;               // break 単独スコア。既定 0.9(minScore=1未満→単独breakは出さず、コンフルエンス時のみ生きる)。
   slopeConfluenceBonus?: number;     // slope と同方向の直近モメンタムに一致したクラスタへの加点。既定 0.5。
   scalpLcCeilingYen?: number;        // AIエントリー: 最大初期LC(損切り)幅[円]。未設定は 65。buildScalpPlan の上限既定。
@@ -554,7 +558,7 @@ export function resetConfigCache(): void {
 // 既存 importer は従来どおり './configStore.js' から同じシンボルを import できる。
 export {
   resolveScalpLcCeiling, resolveScalpCooldownSec, resolveScalpTrendVetoYen,
-  resolveScalpBias, resolveScalpRangeEnabled, resolveScalpLcFloorYen,
+  resolveScalpBias, resolveEffectiveScalpBias, resolveScalpRangeEnabled, resolveScalpLcFloorYen,
   resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText,
   resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled,
   parseKnobSource,
@@ -568,4 +572,4 @@ export {
   resolveGranvilleMaMid, resolveGranvilleMaLong, resolveHitThreshold,
   resolveDoubleFormingEnabled, resolveBreakScore, resolveSlopeConfluenceBonus,
 } from './config/alertResolvers.js';
-export { resolveLevelsConfig, resolveNwaveEnabled, resolveNwaveMinSwingYen } from './config/levelsResolvers.js';
+export { resolveLevelsConfig, resolveNwaveEnabled, resolveNwaveMinSwingYen, resolveBandwalkEnabled } from './config/levelsResolvers.js';

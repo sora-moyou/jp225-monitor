@@ -51,6 +51,7 @@ export const DETECTION_KIND_SPEC = {
   trend:     { layer: 'L2', label: 'トレンド転換',   promptLabel: 'トレンド転換' },
   dailyband: { layer: 'L2', label: '日足バンド',     promptLabel: '日足バンド/MA' },
   nwave:     { layer: 'L2', label: 'N波動',          promptLabel: 'N波動(値幅観測)' },
+  bandwalk:  { layer: 'L2', label: 'バンドウォーク', promptLabel: 'バンドウォーク(BB沿い推移)' },
   // ── L2(後方互換: 過去履歴にのみ現れる旧種別) ────────────────────────────
   granville: { layer: 'L2', label: 'グランビル',     promptLabel: 'グランビル' },
   dtb:       { layer: 'L2', label: 'Wトップ/ボトム', promptLabel: 'ダブル天井/大底' },

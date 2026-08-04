@@ -1,10 +1,13 @@
 import type { IndicatorSnapshot } from '../types.js';
+import { BB_UPPER_LABEL, BB_LOWER_LABEL } from '../../core/indicatorSpec.js';
 
 // テクニカル指標(RSI/SMA/BB)のコンパクトな読み取り表示。価格ボードの右隣(旧・相関カードの空き枠)に
 // 価格カードと同じ見た目のカードとして置き、SSE 'indicators' で更新する。
 // 表示はユーザー指定の「ヘッダ1行 + データ1行」の4列表(見出し行や %B は出さない):
-//   RSI   14MA    1.5σ    -1.5σ
-//   64.1  72,010  72,310  71,810
+//   RSI   0.7σ    14MA    -0.7σ
+//   64.1  72,310  72,010  71,810
+// ★列の並びは「上バンド → 中央(14MA) → 下バンド」= 値の大小と並びが一致する(ユーザー指定)。
+// ★σ の倍率と列名は core/indicatorSpec.ts が唯一の定義(計算側 server/indicators.ts と同じ真実)。
 // RSI≥70=買われすぎ / ≤30=売られすぎ は色で示す(既存仕様を維持)。
 // データ未到達(null / 未算出)は「蓄積中…」を出す(検知ではなく表示専用)。
 
@@ -22,7 +25,8 @@ export function rsiClass(rsi: number | null): 'ind-rsi-ob' | 'ind-rsi-os' | 'ind
 }
 
 const BAR_MINUTES = 5;   // 1本=5分足。残り本数から待ち時間を出す(「あと13本」だけでは何分待ちか分からない)。
-const COLS = ['RSI', '14MA', '1.5σ', '-1.5σ'] as const;   // 列名(ユーザー指定の表記どおり)
+// 列名(ユーザー指定の並び: RSI / 上バンド / 14MA / 下バンド)。σ 表記は core/indicatorSpec.ts が SSOT。
+const COLS = ['RSI', BB_UPPER_LABEL, '14MA', BB_LOWER_LABEL] as const;
 
 /** ヘッダ行の4セル。mark(取引時間外 / OFF)は左端セルの空きに置く=行数を増やさない。 */
 function headerCells(mark = ''): string {
@@ -74,10 +78,11 @@ export function buildIndicatorHtml(snap: IndicatorSnapshot | null): string {
   // 更新が止まっている理由は「印」としてヘッダ行に付ける(値は消さない=引け後にセッション最終値を読める)。
   const mark = snap.progress?.state === 'closed' ? '取引時間外'
     : snap.progress?.state === 'disabled' ? 'OFF' : '';
+  // ★セルの並びは COLS と同じ(RSI / 上バンド / 14MA / 下バンド)。片方だけ入れ替えると列名と値がずれる。
   const dataCells = [
     `<div class="ind-td ${rsiClass(snap.rsi)}">${snap.rsi == null ? '—' : snap.rsi.toFixed(1)}</div>`,
-    `<div class="ind-td">${yen(snap.sma)}</div>`,
     `<div class="ind-td">${yen(snap.bbUpper)}</div>`,
+    `<div class="ind-td">${yen(snap.sma)}</div>`,
     `<div class="ind-td">${yen(snap.bbLower)}</div>`,
   ].join('');
   return grid(headerCells(mark) + dataCells);

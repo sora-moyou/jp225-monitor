@@ -9,6 +9,8 @@ import { describeExitLogic, describeExitLogicVariant, loadExitImpl, type ExitVar
 // ★v0.9.44: レンジの形の観測は依存ゼロの leaf(signalTrade/rangeShape.ts)に置く。engine.ts が LLM スタックを
 //   遅延ロードしている設計を壊さないため(engine は result.rangeAnomaly を読むだけ=静的 import 不要)。
 import { describeRangeAnomaly, type RangeAnomaly } from '../signalTrade/rangeShape.js';
+import { BB_BAND_LABEL } from '../../core/indicatorSpec.js';
+import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 // 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
 import type { ChartShotIdentity } from '../chart/chartShot.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
@@ -422,7 +424,7 @@ export function buildScalpSystemPrompt(
 ): string {
   // ★テクニカル許可(RSI/BB)。ON のときだけ追記=OFF(既定)では byte 単位で従来の system prompt と一致。
   const techLine = aiTechnicalEnabled
-    ? `\n- ★【テクニカル指標(RSI/BB)の活用が許可されています】渡す「テクニカル指標(5分足・RSI14/SMA14/BB±1.5σ)」を、エントリーの"タイミング"判断に使ってよい(例: RSI が売られすぎ[≤30]からの反転や BB 下限からの反発で押し目買い指値、RSI 買われすぎ[≥70]や BB 上限での戻り売り指値など)。ただしテクニカルだけで逆張りせず、上のトレンド判断(生きたトレンドはフェードしない)と節目/勢いを優先すること。※決済(手仕舞い)は既定のロジックが担当するので、テクニカルを根拠に手仕舞いを指示することはしない。`
+    ? `\n- ★【テクニカル指標(RSI/BB)の活用が許可されています】渡す「テクニカル指標(5分足・RSI14/SMA14/BB${BB_BAND_LABEL})」を、エントリーの"タイミング"判断に使ってよい(例: RSI が売られすぎ[≤30]からの反転や BB 下限からの反発で押し目買い指値、RSI 買われすぎ[≥70]や BB 上限での戻り売り指値など)。ただしテクニカルだけで逆張りせず、上のトレンド判断(生きたトレンドはフェードしない)と節目/勢いを優先すること。※決済(手仕舞い)は既定のロジックが担当するので、テクニカルを根拠に手仕舞いを指示することはしない。`
     : '';
   return buildScalpSystemPromptBody(floorYen, ceilingYen, rangeEnabled, trendVetoYen, techLine, lcCeil);
 }
@@ -533,6 +535,28 @@ export function buildArmedNote(ctx?: { mode: 'range-fade'; ageMs: number; avgMs:
   return `\n\n【レンジ未約定(ブレイク再評価)】現在レンジ両指値を ARM後 ${Math.round(ctx.ageMs / 60_000)}分 未約定`
     + `(平均 ${Math.round(ctx.avgMs / 60_000)}分 を超過)。レンジが反発せず抜けそうなら breakout(両側ブレイク新規・range 各レッグ type:"stop")の組へ`
     + `切替えたプランを返してよい(組は混ぜない)。反発継続が見込めるなら現状維持(同じ fade=両側指値の組)。場面が崩れたなら direction:none。`;
+}
+
+/** ★v0.9.61: バンドウォーク成立中だけの注記(未成立/未判定は '' = プロンプトは従来と byte 一致)。
+ *
+ *  緩めるのは **エントリーまでの距離と、節目を起点にせよという要求の2つだけ**。
+ *  ★損切り(LC)の下限・上限・安全上限、および 価格/損切りの向きの不等式は **一切緩めない**
+ *   (この注記の中でもそれを明記して、AI が「全部自由になった」と読まないようにする)。
+ *  理由: バンドウォーク中は価格がバンドに沿って動き続けるため、節目まで引きつけた 50円以上離れた指値は
+ *  置いていかれて約定しない。ユーザー指定「節目にこだわらず近くの逆指値や指値も可」。 */
+export function buildBandwalkNote(bw?: Bandwalk | null): string {
+  if (!bw) return '';
+  const dirJa = bw.direction === 'up' ? '上昇(買い方向)' : '下降(売り方向)';
+  return `\n\n【バンドウォーク成立中(${dirJa})】${describeBandwalk(bw)}\n`
+    + 'この局面に限り、上に書いた次の2点だけを緩めてよい:\n'
+    + '  ①指値・ブレイク新規を現在値から最低50円離す、という最低距離は課さない(現在値のすぐ近く=数円〜数十円 に置いてよい)。\n'
+    + '  ②エントリーを節目(サポート/レジスタンス)から導く要求も課さない(近くに節目が無くてもよい。'
+    + `バンドウォークの向き(${bw.direction === 'up' ? '買い' : '売り'})に沿って、押し目/戻りの浅い指値(limitEntry) や `
+    + '直近高安をすぐ抜けるブレイク新規(stopEntry) を、現在値の近くに置いてよい)。\n'
+    + '  ★緩むのはこの2点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】と【最優先: 損切りの向き】の不等式、'
+    + '距離の上限(片レッグ200円以内/両レッグ幅400円以内)は **一切変わらない**(そのまま厳守すること)。\n'
+    + '  ★バンドウォークは「価格の急変が起きるまで続く」と見なしてよいが、逆方向に強く反転したと判断したら'
+    + ' 無理にこの向きへ入らず direction:"none" で見送ること。';
 }
 
 /** チャート画像を添付した時だけの注記。 */
@@ -1022,6 +1046,10 @@ export interface ScalpPlanInput {
    *  ★プロンプトの決済ブロック **だけ** が変わる。parse/enforce/実際の決済計算には一切影響しない
    *    (実弾の決済は常に現行仕様の computeExitStop が算出する)。 */
   exitVariant?: ExitVariant;
+  /** ★v0.9.61: バンドウォークの判定結果(server/bandwalk.ts)。runner が算出して渡す。
+   *  成立中のときだけプロンプト末尾に緩和注記(buildBandwalkNote)を足す。
+   *  未指定/null(非成立)では systemPrompt は従来と **byte 一致**(緩和は一切起きない)。 */
+  bandwalk?: Bandwalk | null;
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -1551,10 +1579,14 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const heldNote = buildHeldNote(input.heldPosition);
   // ★レンジ再評価(未約定→ブレイク): armedContext が渡された時だけ注入する。未指定(通常)では '' = 従来と byte 一致。
   const armedNote = buildArmedNote(input.armedContext);
+  // ★バンドウォーク成立中だけの緩和注記(距離と節目のみ)。非成立/未指定は '' = 従来と byte 一致。
+  const bandwalkNote = buildBandwalkNote(input.bandwalk);
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil);
   const systemPrompt =
-    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil)}${biasNote}${strategySpec}${delegationNote}${heldNote}${armedNote}\n\n` +
+    // ★bandwalkNote は strategySpec / delegationNote の **後ろ**(= 距離50円・節目起点を書いている
+    //   ブロックより後)に置く。緩和は「直前の指示を上書きする」形なので、読み順で後に来る必要がある。
+    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil)}${biasNote}${strategySpec}${delegationNote}${bandwalkNote}${heldNote}${armedNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +

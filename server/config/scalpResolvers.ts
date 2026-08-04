@@ -25,6 +25,16 @@ export function resolveScalpBias(profile?: SignalProfile): ScalpBias {
   return v === 'long' || v === 'short' ? v : 'none';
 }
 
+/** ★実効の売買バイアス(=画面で言う「買い目線 / 売り目線」)。
+ *  手動(mode='manual')なら保存値をそのまま、AI委任(mode='ai')なら **'none'**(方向の強制なし)を返す。
+ *  ★この分岐は buildScalpPlan の `bias = biasD.mode === 'manual' ? … : 'none'` と同じ規則
+ *   (AI に委任した項目の保存値は効かない、という既存の約束)。バンドウォーク判定が「システムが実際に
+ *   veto に使う向き」と食い違わないよう、同じ規則をこの1関数に名前を付けて置く。 */
+export function resolveEffectiveScalpBias(profile?: SignalProfile): ScalpBias {
+  const d = resolveScalpBiasDirective(profile);
+  return d.mode === 'manual' ? d.value : 'none';
+}
+
 // AIエントリー: レンジ両面ストラドルの許可。★実験終了(v0.7.53)により既定OFF。
 // 未設定/非boolean は false(実験終了・紙計測で不利=フェードを既定で出さない)。true で再有効化可(コード温存)。
 export function resolveScalpRangeEnabled(profile?: SignalProfile): boolean {

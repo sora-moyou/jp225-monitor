@@ -29,6 +29,10 @@ vi.mock('../configStore.js', () => ({
   resolveScalpTrendVetoYen: () => 0,
   resolveScalpChartFallbackText: () => true,
   resolveIndicatorsEnabled: () => true,
+  // ★バンドウォーク判定の依存(v0.9.61)。目線 'none' = 判定しない = 従来と同じ文脈になる。
+  resolveBandwalkEnabled: () => true,
+  resolveEffectiveScalpBias: () => 'none',
+  resolveShockParams: () => ({ move1: 45, move2: 55, shock1: 50, shock2: 70, accelTh: 10, avgLen: 30, avgMult: 2.0, breakLen: 10, sameDirLen: 3, sameDirNeed: 2, scoreNeed: 5 }),
 }));
 
 // ★紙成績の取得そのものを観測する(呼ばれたかどうかが論点)。
