@@ -1062,6 +1062,14 @@ function knobTag(mode: KnobSource): string {
 }
 /** ★LC下限のタグ。下限は委任対象外(常にコードで強制)なので mode を取らない固定文にする。 */
 const LC_FLOOR_TAG = '【強制=委任対象外・コードで必ず適用】';
+/** ★バイアスの提示(純関数・SSOT)。委任(mode==='ai')のときは **保存値を印字しない**。
+ *  最大初期LC の resolveLcPresentation と同じ手当て。委任した項目の保存値を見せると
+ *  「買い中心【AI委任=あなたが決めてよい】」+ 委任ノート「売買方向: あなたが自由に決めてよい」= 正面から矛盾する
+ *  プロンプトになる(実測)。委任時に実際に効いている値は 'none'(方向veto なし)なので、保存値は宛先が無い。 */
+export function biasSpecLabel(bias: ScalpBias, mode: KnobSource): string {
+  if (mode === 'ai') return 'あなたが決める(買い/売り/両方向のどれでもよい)';
+  return bias === 'long' ? '買い中心(売り新規は見送り)' : bias === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
+}
 export function buildStrategySpec(i: StrategySpecInput): string {
   const cap = i.hardMax.enabled ? `安全上限 ${i.hardMax.value}円(有効=手動でもAIでも絶対に超えない)` : '安全上限 無効';
   // ★v0.9.56: 上限が AI委任のときは保存値を印字しない。実効上限(安全上限 or 背骨)を範囲として提示する。
@@ -1072,7 +1080,7 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     ? `- 初期LC(損切り)幅: 下限${i.floor.value}円${LC_FLOOR_TAG} / 上限=あなたが決める${knobTag(i.ceiling.mode)} / ${cap}`
       + `。★提示する許容範囲は 下限${i.floor.value}円〜${lcPres.ceil.capLabel}${lcPres.ceilingYen}円。この範囲の中から相場構造(節目/スイングの位置)に応じて選ぶこと(下限や上限に貼り付ける目安ではない)`
     : `- 初期LC(損切り)幅: 下限${i.floor.value}円${LC_FLOOR_TAG} / 上限${i.ceiling.value}円${knobTag(i.ceiling.mode)} / ${cap}`;
-  const biasLabel = i.bias.value === 'long' ? '買い中心(売り新規は見送り)' : i.bias.value === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
+  const biasLabel = biasSpecLabel(i.bias.value, i.bias.mode);
   return [
     '',
     '【戦略ロジック仕様(完全版・定数込み)】以下のロジックと数値をすべて理解した上で計画すること。各項目末尾の【】は現在の委任設定(手動=固定・厳守 / AI=あなたが決めてよい)。AI委任の項目はその値を自分で決め、手動の項目は記載の値・ルールを厳守する。',

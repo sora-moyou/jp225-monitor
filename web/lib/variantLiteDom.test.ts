@@ -51,13 +51,19 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     }
   });
 
-  it('★委任モード select は 3項目(初期LC下限/最大初期LC/バイアス)にあり、LC安全上限には無い', () => {
+  // ★変更(委任対象外の項目にはモード select を置かない): 以前は初期LC下限にも select があり、
+  //   「AI委任」を選ぶと値入力が灰色になるのに、下限はモードに関係なくコードが必ず強制していた
+  //   (実測: source=ai でも noneReason:lcFloor)。委任できない項目に委任の選択肢を出さないことで、
+  //   「委任した=編集不可」という誤った対応付けを断つ。LC安全上限と同じ扱いに揃えた。
+  it('★委任モード select は 2項目(最大初期LC/バイアス)にあり、委任対象外(初期LC下限/LC安全上限)には無い', () => {
     const withMode = keepRows.toArray()
       .filter(r => $(r).find('.ab-col:not(.ab-col-b) ' + LITE_SCALP.modeSelect).length > 0)
       .map(labelOf);
-    expect(withMode).toEqual(['初期LC下限(円)', '最大初期LC(円)', 'バイアス']);
-    const hardMax = keepRows.toArray().find(r => labelOf(r) === 'LC安全上限(円)')!;
-    expect($(hardMax).find(LITE_SCALP.modeSelect).length).toBe(0);   // A/B とも無い=安全弁は委任対象外
+    expect(withMode).toEqual(['最大初期LC(円)', 'バイアス']);
+    for (const label of ['初期LC下限(円)', 'LC安全上限(円)']) {
+      const row = keepRows.toArray().find(r => labelOf(r) === label)!;
+      expect($(row).find(LITE_SCALP.modeSelect).length).toBe(0);   // A/B とも無い=委任対象外
+    }
   });
 
   // ★このテストは「文言が説明として揃っているか」しか見られない(DOM の静的検査なので、

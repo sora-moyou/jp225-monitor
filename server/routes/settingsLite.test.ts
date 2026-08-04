@@ -240,6 +240,58 @@ describe('/api/settings の lite 独立保存', () => {
     expect((raw.lite as Record<string, unknown>).openaiKey).toBeUndefined();
   });
 
+  // ★実測(新規インストールの lite で「保存」を1回押しただけ)で、画面に無い項目が最上位へ
+  //   「その時の既定値」で焼き付いていた。値は当時の既定と同じなので即時の挙動は変わらないが、
+  //   将来リリースで既定を変えても、その機だけ古い値のまま無音で走り続ける。
+  it('★新規 config の lite で保存しても、最上位に画面外のキーが増えない(既定の焼き付き防止)', () => {
+    writeConfig({ pricePollMs: 2000, newsPollMs: 60000, port: 3000, cooldownMin: 15 });
+    const before = Object.keys(readRaw()).sort();
+    asLite();
+    expect(post(liteFormBody()).code).toBe(200);
+    const after = Object.keys(readRaw()).sort();
+    // 増えてよいのは lite 名前空間だけ。scalpRangeEnabled / dotenEnabled / indicatorsEnabled …は入らない。
+    expect(after).toEqual([...before, 'lite'].sort());
+  });
+
+  it('★lite の保存は最上位の数値(ポーリング/クールダウン等)も書き換えない=再起動も要求しない', () => {
+    writeConfig({ ...BASE, pricePollMs: 2000, cooldownMin: 15, port: 3000 });
+    asLite();
+    const r = post(liteFormBody({ pricePollMs: 9000, cooldownMin: 45, port: 3999 }));
+    expect(r.code).toBe(200);
+    expect(r.body.portRequiresRestart).toBe(false);
+    const raw = readRaw();
+    expect(raw.pricePollMs).toBe(2000);
+    expect(raw.cooldownMin).toBe(15);
+    expect(raw.port).toBe(3000);
+  });
+
+  it('★lite でも「画面にある」API キー欄とモデル欄は最上位へ書ける(消去=null も含む)', () => {
+    writeConfig({ ...BASE, groqKey: 'gsk-old', geminiModel: 'old-model' });
+    asLite();
+    expect(post(liteFormBody({ groqKey: null, geminiModel: 'gemini-3-pro' })).code).toBe(200);
+    const raw = readRaw();
+    expect(raw.groqKey).toBeUndefined();          // 消去できる
+    expect(raw.geminiModel).toBe('gemini-3-pro'); // モデル欄も lite の画面にある
+  });
+
+  it('★full の保存は従来どおり全キーを最上位へ書ける(lite の関門は full に効かない)', () => {
+    writeConfig({});
+    asFull();
+    expect(post({
+      scalpRangeEnabled: true, dotenEnabled: true, indicatorsEnabled: false,
+      scalpCooldownSec: 45, scalpTrendVetoYen: 130, basedataAutoPublish: true,
+      pricePollMs: 4000,
+    }).code).toBe(200);
+    const raw = readRaw();
+    expect(raw.scalpRangeEnabled).toBe(true);
+    expect(raw.dotenEnabled).toBe(true);
+    expect(raw.indicatorsEnabled).toBe(false);
+    expect(raw.scalpCooldownSec).toBe(45);
+    expect(raw.scalpTrendVetoYen).toBe(130);
+    expect(raw.basedataAutoPublish).toBe(true);
+    expect(raw.pricePollMs).toBe(4000);
+  });
+
   it('lite で範囲外の値は 400 で拒否し、config は書き換わらない', () => {
     writeConfig(BASE);
     asLite();

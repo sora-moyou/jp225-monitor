@@ -37,21 +37,11 @@
         <strong>保存先:</strong> <code id="config-file-path">~/.jp225-monitor/config.json</code> (ローカルのみ、送信されません)
       </p>
 
-      <div id="settings-status-area"></div>
-
       <div class="settings-cols">
       <div class="scol">
-      <!-- ★ユーザー指示(v0.9.59): 「更新」は設定パネルの一番上(左カラムの先頭=最初の fieldset)。
-           移動しただけで中身・id・イベント配線は不変。lite の表示/非表示は id 指定(main.ts)なので影響なし。 -->
-      <fieldset class="settings-section">
-        <legend>更新</legend>
-        <div class="version-row">
-          現在のバージョン: <span id="settings-current-version">…</span>
-          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
-        </div>
-        <div id="settings-update-result" class="update-result"></div>
-        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
-      </fieldset>
+      <!-- ★ユーザー指示: プロバイダ状態(gemini/groq/kimi/openai)は左半分に収める。
+           2カラムの外(全幅)から左カラムの先頭へ移しただけ。id/要素の性質(JS が innerHTML を流し込む div)は不変。 -->
+      <div id="settings-status-area"></div>
 
       <fieldset class="settings-section">
         <legend>APIキー（無料）</legend>
@@ -110,6 +100,15 @@
         </div>
         <div class="exit-hint">OpenAI は画像対応で安定運用の要（少額課金）。Kimi はテキスト専用の安い従量課金で、無料枠が枯渇/失敗したとき OpenAI より先に使われる予備（画像は非対応）。Web検索キーは<strong>任意</strong>: チャットの Web 検索で使う専用キーで、空欄なら上の Gemini キーを流用します（課金 Gemini グラウンディング用）。<strong>Gemini キーが無い/枠切れでも、OpenAI キーがあれば OpenAI 側で Web 検索できます。</strong></div>
       </fieldset>
+
+<!-- ★キーの撤回導線: 「空欄=変更なし」(うっかり全消去の防止)はそのままに、明示チェックのときだけ
+           空欄の欄を消せるようにする。生成器キーの「消去」(#genkey-clear)と同じ作法。lite でも表示する
+           (従来は誤って貼ったキーを取り消す手段が config.json の手編集しか無かった)。 -->
+      <label class="exit-check" style="margin-top:8px">
+        <input type="checkbox" id="keys-clear" />
+        保存時に、空欄のままの API キー欄を消去する（＝そのキーを未設定に戻す）
+      </label>
+      <div class="exit-hint">通常は<strong>空欄＝変更なし</strong>です（うっかり全消去しないための既定）。誤って貼ったキーを取り消したいときだけ、その欄を空欄にしたままこれをチェックして保存してください。対象は上の Gemini / Groq / OpenAI / Kimi / Web検索用 の5欄で、<strong>入力した欄はその値で保存されます</strong>（消えるのは空欄の欄だけ）。このチェックは保存後・画面を開き直すたびに外れます。</div>
 
 <div class="setting-row">
         <button type="button" id="settings-test-keys" class="btn-secondary">キーを検証</button>
@@ -173,6 +172,43 @@
       </div>
 
       <div class="scol">
+      <!-- ★ユーザー指示: 「更新」は右カラムの先頭(=プロバイダ状態の右隣・基礎データの上)。
+           移動しただけで中身・id・イベント配線は不変。lite の表示/非表示は id 指定(main.ts)なので影響なし。 -->
+      <fieldset class="settings-section">
+        <legend>更新</legend>
+        <div class="version-row">
+          現在のバージョン: <span id="settings-current-version">…</span>
+          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
+        </div>
+        <div id="settings-update-result" class="update-result"></div>
+        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
+      </fieldset>
+
+      <fieldset class="settings-section">
+        <legend>終了</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="settings-full-exit" />
+          完全終了（ウィンドウ×／終了でデーモンの価格収集も停止する）
+        </label>
+        <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
+      </fieldset>
+
+<fieldset class="settings-section">
+        <legend>売買シグナル</legend>
+        <label class="exit-check">
+          <input type="checkbox" id="settings-signal-sound" checked />
+          シグナル発生時にアラート音を鳴らす
+        </label>
+        <div class="version-row" style="margin-top:8px">
+          <button type="button" id="settings-clear-signal" class="btn-secondary">トレードシグナル履歴を消去</button>
+        </div>
+        <div id="settings-clear-signal-result" class="update-result"></div>
+        <div class="exit-hint">AI が値動きやニュースから提案する売買シグナルです。履歴の消去は元に戻せません。</div>
+      </fieldset>
+
+      <!-- ★ユーザー指示: 「基礎データ(225labo)」は右カラムの最後(monitor2 メンテナ専用で、lite では
+           非表示になる=末尾に置くと lite では最後の1つが消えるだけで隙間ができない)。
+           移動しただけで中身・id(basedata-publish-fieldset)・イベント配線・文言は不変。 -->
       <fieldset class="settings-section" id="basedata-publish-fieldset">
         <legend>基礎データ(225labo)</legend>
         <div class="setting-row">
@@ -202,28 +238,6 @@
         </div>
         <div id="basedata-publish-result" class="update-result"></div>
         <div class="exit-hint">225labo にログインして N225 mini 1分足 xlsx を取得し、パース→GitHub リリース(basedata-latest)へ公開＋このPCへ即取込します。<strong>monitor2 専用</strong>(メンテナ運用)。認証情報はローカルにのみ保存されます。xlsx/gz/meta の3点は保存先フォルダ(既定=Downloads)へ固定名で上書き保存されます(gh 未認証の別PCへコピーしやすい)。<strong>GitHub トークン</strong>を設定すると gh CLI 無しで公開できます(fine-grained PAT で jp225-monitor の Contents: Read and write、または classic PAT の <code>public_repo</code> スコープ)。</div>
-      </fieldset>
-
-      <fieldset class="settings-section">
-        <legend>終了</legend>
-        <label class="exit-check">
-          <input type="checkbox" id="settings-full-exit" />
-          完全終了（ウィンドウ×／終了でデーモンの価格収集も停止する）
-        </label>
-        <div class="exit-hint">未チェック（既定）＝閉じてもバックグラウンドで価格収集を継続。起動時は常に未チェック。</div>
-      </fieldset>
-
-<fieldset class="settings-section">
-        <legend>売買シグナル</legend>
-        <label class="exit-check">
-          <input type="checkbox" id="settings-signal-sound" checked />
-          シグナル発生時にアラート音を鳴らす
-        </label>
-        <div class="version-row" style="margin-top:8px">
-          <button type="button" id="settings-clear-signal" class="btn-secondary">トレードシグナル履歴を消去</button>
-        </div>
-        <div id="settings-clear-signal-result" class="update-result"></div>
-        <div class="exit-hint">AI が値動きやニュースから提案する売買シグナルです。履歴の消去は元に戻せません。</div>
       </fieldset>
       </div>
       </div>
@@ -263,25 +277,20 @@
         <legend>AIエントリー</legend>
         <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。<br>★v0.8.2: 各行は <b>A(実売買・trade2が追従)</b> と <b>B(📝紙のみ・並走比較)</b> を横並びで設定します。B は空欄/「A追従」なら A と同じ設定で動きます(B だけ差分を付けて比較)。B は実売買に一切渡りません。</div>
         <!-- ★lite 専用の説明(既定 hidden・variant=lite のときだけ表示。full の見た目は不変)。 -->
-        <div class="exit-hint lite-hint" hidden>AIエントリーの<b>損切り幅</b>と<b>バイアス(狙う方向)</b>の設定です。変更したら「保存」を押すと、次のエントリーから反映されます。<br><b>手動</b>＝設定した数値を必ず守らせます（コードで判定し、外れた注文は出しません）。<b>AI委任</b>＝この項目はAIが場面ごとに決めます（設定値は使いません）。<br>★<b>初期LC下限だけは委任の対象外</b>です。「AI委任」を選んでもコードで必ず強制します（決済ロジックが成立するための前提条件のため）。</div>
+        <div class="exit-hint lite-hint" hidden>AIエントリーの<b>損切り幅</b>と<b>バイアス(狙う方向)</b>の設定です。変更したら「保存」を押すと、次のエントリーから反映されます。<br><b>手動</b>＝設定した数値を必ず守らせます（コードで判定し、外れた注文は出しません）。<b>AI委任</b>＝この項目はAIが場面ごとに決めます（設定値は使いません）。<br>★<b>初期LC下限だけは委任の対象外</b>です（そのためモード選択がありません）。ここに入れた数値はコードで必ず強制します（決済ロジックが成立するための前提条件のため）。</div>
+        <!-- ★初期LC下限には委任モード select を置かない(LC安全上限と同じ扱い=委任対象外の項目)。
+             下限はモードに関係なくコードが必ず強制するので、「AI委任」を選べる形にすると
+             「委任したつもり + 値が編集できない(灰色)」のに実際はその値が強制される、という
+             正反対の誤解が生まれる(実測: source=ai でも下限は効き noneReason:lcFloor になる)。 -->
         <div class="setting-row ab-row" data-lite="1">
           <label>初期LC下限(円)</label>
           <span class="ab-col"><span class="ab-tag">A</span>
-            <select id="scalp-lc-floor-mode" class="knob-mode">
-              <option value="manual">手動</option>
-              <option value="ai">AI委任</option>
-            </select>
             <input type="number" id="scalp-lc-floor" autocomplete="off" min="20" max="300" step="1" placeholder="55 (既定)" />
           </span>
           <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
-            <select id="scalp-lc-floor-mode-b" class="knob-mode">
-              <option value="">A追従</option>
-              <option value="manual">手動</option>
-              <option value="ai">AI委任</option>
-            </select>
             <input type="number" id="scalp-lc-floor-b" autocomplete="off" min="20" max="300" step="1" placeholder="A追従" />
           </span>
-          <div class="exit-hint lite-hint" hidden>損切り幅の下限。<code>|エントリー価格 − 損切り価格|</code> がこれより狭い計画は出しません(狭かったその注文は見送り)。狭すぎるとダマシの往復で切られやすく、利益を段階的にロックする決済が働き出す前に切られます。★この下限は決済ロジックの前提条件なので、<b>「AI委任」にしても必ず強制されます</b>。既定 55円。</div>
+          <div class="exit-hint lite-hint" hidden>損切り幅の下限。<code>|エントリー価格 − 損切り価格|</code> がこれより狭い計画は出しません(狭かったその注文は見送り)。狭すぎるとダマシの往復で切られやすく、利益を段階的にロックする決済が働き出す前に切られます。★この下限は決済ロジックの前提条件なので<b>委任の対象外</b>です(モード選択がありません)。AIに何を委ねていても<b>必ず強制されます</b>。既定 55円。</div>
         </div>
         <div class="setting-row ab-row" data-lite="1">
           <label>最大初期LC(円)</label>
@@ -402,7 +411,7 @@
             </select>
             <input type="number" id="scalp-lc-hardmax-b" autocomplete="off" min="20" max="500" step="1" placeholder="A追従" />
           </span>
-          <div class="exit-hint lite-hint" hidden>上の設定とは独立した最後の安全網。左のチェックが入っていれば、どんな場合でもこの幅を超える損切りは出しません(チェックを外すと上限なし)。既定=有効・159円。</div>
+          <div class="exit-hint lite-hint" hidden>上の設定とは独立した最後の安全網。左のチェックが入っていれば、どんな場合でもこの幅を超える損切りは出しません。★<b>チェックを外しても上限が無くなるわけではありません</b>：コード側の上限<b>300円</b>が常に残り（AIへの指示にも「コード上限300円」と伝わります）、「最大初期LC」が手動ならその値も引き続き効きます。既定=有効・159円。</div>
         </div>
         <div class="setting-row">
           <label>ドテン許可(反転)</label>

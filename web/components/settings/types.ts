@@ -176,7 +176,6 @@ export interface SettingsElements {
   checkScalpChartFallback: HTMLInputElement; // ★チャート撮影失敗でもテキストで継続(既定ON)
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor: HTMLInputElement;
-  selectLcFloorMode: HTMLSelectElement;
   selectLcCeilingMode: HTMLSelectElement;
   selectTrendVetoMode: HTMLSelectElement;
   selectCooldownMode: HTMLSelectElement;
@@ -191,7 +190,6 @@ export interface SettingsElements {
   inputScalpTrendVetoB: HTMLInputElement;
   selectRangeEnabledB: HTMLSelectElement;      // tri-state('' A追従/'true'/'false')
   inputScalpLcFloorB: HTMLInputElement;
-  selectLcFloorModeB: HTMLSelectElement;
   selectLcCeilingModeB: HTMLSelectElement;
   selectTrendVetoModeB: HTMLSelectElement;
   selectCooldownModeB: HTMLSelectElement;
@@ -228,6 +226,7 @@ export interface SettingsElements {
   inputGenOpenai: HTMLInputElement;
   inputGenKimi: HTMLInputElement;
   checkGenKeysClear: HTMLInputElement;      // 保存時に専用キーを消去(=共通キーへ戻す)
+  checkKeysClear: HTMLInputElement;         // ★保存時に空欄の共通 API キー欄を消去(=未設定に戻す)
   inputGeneratorBudget: HTMLInputElement;   // 日次予算(回/取引日・空欄=既定)
   checkGeneratorEnabled: HTMLInputElement;  // ★生成器サイドカーを動かすか(既定オフ=待機のみ)
   testGenKeysBtn: HTMLButtonElement;        // 生成器プールのキー検証

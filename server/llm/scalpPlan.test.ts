@@ -2732,3 +2732,33 @@ describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従�
     }
   });
 });
+
+// ★バイアスを AI委任にしたのに、戦略仕様ブロックが保存値(買い中心/売り中心)を印字していた。
+//   同じ本文の委任ノートは「売買方向: あなたが自由に決めてよい」と言うので、正面から矛盾していた
+//   (最大初期LC で先に直した resolveLcPresentation と同じ形の不具合)。委任時は保存値を印字しない。
+describe('★バイアスの委任(保存値を印字しない)', () => {
+  const specWithBias = (mode: 'manual' | 'ai', value: 'long' | 'short' | 'none'): string =>
+    buildStrategySpec({
+      floor: { mode: 'manual', value: 55 }, ceiling: { mode: 'manual', value: 65 },
+      trendVeto: { mode: 'manual', value: 100 }, cooldown: { mode: 'manual', value: 90 },
+      bias: { mode, value }, range: { mode: 'manual', value: false },
+      hardMax: { enabled: true, value: 159 }, exitDesc: '【決済】(固定文言)',
+    });
+  const biasLine = (s: string): string => s.split('\n').find(l => l.startsWith('- バイアス:'))!;
+
+  it('手動: 保存値をそのまま印字する(従来どおり)', () => {
+    expect(biasLine(specWithBias('manual', 'long'))).toBe('- バイアス: 買い中心(売り新規は見送り)【手動=固定・厳守】');
+    expect(biasLine(specWithBias('manual', 'short'))).toBe('- バイアス: 売り中心(買い新規は見送り)【手動=固定・厳守】');
+    expect(biasLine(specWithBias('manual', 'none'))).toBe('- バイアス: 両方向【手動=固定・厳守】');
+  });
+
+  it('★委任: 保存値(買い中心/売り中心)を印字せず「あなたが決める」だけを出す', () => {
+    for (const v of ['long', 'short', 'none'] as const) {
+      const spec = specWithBias('ai', v);
+      expect(biasLine(spec)).toBe('- バイアス: あなたが決める(買い/売り/両方向のどれでもよい)【AI委任=あなたが決めてよい】');
+      // 仕様ブロック全体を走査しても、保存値に由来する語が残っていないこと。
+      expect(spec).not.toContain('買い中心');
+      expect(spec).not.toContain('売り中心');
+    }
+  });
+});

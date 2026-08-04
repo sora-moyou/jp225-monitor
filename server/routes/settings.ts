@@ -385,6 +385,33 @@ function buildLiteConfig(existing: LiteConfig | undefined, body: Record<string, 
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+// ★lite(公開版)の保存が **最上位 config に書いてよいキー**。
+//   理由: web の buildSavePayload は「画面に出しているか」を知らないので、lite で隠している項目
+//   (レンジ両面/ドテン/指標トグル/クールダウン/トレンドveto/自動公開 …)の値も往復でそのまま送り返す。
+//   これを素通しにすると **新規インストールの lite で「保存」を1回押すだけで、画面に無い項目が
+//   最上位へ「その時の既定値」で焼き付く**(実測)。値は当時の既定と同じなので即時の挙動は変わらないが、
+//   将来リリースで既定を変えても、その機だけ古い値のまま無音で走り続ける。
+//   ここに載っていないキーは lite では **保存前の既存値へ戻す**(applyLiteTopLevelGuard)。
+//   ★lite の AIエントリー 4項目(LITE_OWNED_KEYS)はここに入れない: 最上位ではなく config.lite に書くため。
+const LITE_TOP_LEVEL_WRITABLE_KEYS = [
+  // 「APIキー(無料/有料)」fieldset は lite でも表示する = キー本体と各行のモデル欄は lite でも書ける。
+  'geminiKey', 'groqKey', 'openaiKey', 'kimiKey', 'webSearchKey',
+  'geminiModel', 'groqModel', 'kimiModel', 'openaiModel',
+  'lite',   // ★lite 独立設定ブロックそのもの(buildLiteConfig の結果)
+] as const satisfies readonly (keyof UserConfig)[];
+const LITE_TOP_LEVEL_WRITABLE: ReadonlySet<string> = new Set(LITE_TOP_LEVEL_WRITABLE_KEYS);
+
+/** ★lite の保存の関門(純関数・単一の権威)。lite の画面に無いキーは保存前の値へ戻す。
+ *  next は {...existing, ...decided} 済みのものを渡す。allow に載ったキーだけが next の値で残る。 */
+export function applyLiteTopLevelGuard(existing: UserConfig, next: UserConfig): UserConfig {
+  const ex = existing as Record<string, unknown>;
+  const out = { ...next } as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(out), ...Object.keys(ex)])) {
+    if (!LITE_TOP_LEVEL_WRITABLE.has(key)) out[key] = ex[key];
+  }
+  return out as UserConfig;
+}
+
 // ★提案生成器の専用 API キー。既存の秘密フィールド(applyStringField)と同じ規約に、
 //   「専用キーを外して共通キーへ戻す」ための明示クリア(null)を足したもの。
 //   ・incoming 未指定           → 変更なし
@@ -545,8 +572,9 @@ export function postSettingsHandler(req: Request, res: Response): void {
     groqModel: applyVisibleField(existing.groqModel, body.groqModel),
     kimiModel: applyVisibleField(existing.kimiModel, body.kimiModel),
     openaiModel: applyVisibleField(existing.openaiModel, body.openaiModel),
-    // ★lite は最上位の bias を据え置く(lite の変更は config.lite にだけ入る)。full は従来どおり。
-    scalpBias: isLite ? existing.scalpBias : biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
+    // ★lite の「最上位を据え置く」は applyLiteTopLevelGuard(下)が一括で担う=ここは variant を見ない
+    //   (以前は lite に露出した数項目だけ個別に据え置いており、画面に無い項目は素通しで焼き付いていた)。
+    scalpBias: biasResult.value,   // AIエントリー: バイアス(none は未設定で保存)
     scalpRangeEnabled: rangeEnabledValue,   // AIエントリー: レンジ両面(既定ONは未設定で保存)
     dotenEnabled: dotenEnabledValue,   // ★ドテン(反転)許可(既定OFFは未設定で保存)
     rangeReevalEnabled: rangeReevalEnabledValue,   // ★レンジ再評価(未約定→ブレイク)許可(既定ONに戻すときは null→未設定で保存)
@@ -555,16 +583,15 @@ export function postSettingsHandler(req: Request, res: Response): void {
     scalpChartFallbackText: chartFallbackValue,   // ★チャート撮影失敗時のテキスト縮退(既定ONに戻すときは null→未設定で保存)
     doubleFormingEnabled: doubleFormingValue,   // ★検知チューニング: double 形成通知(既定OFFは未設定で保存)
     nwaveEnabled: nwaveEnabledValue,   // ★N波動の節目/アラート(既定ONに戻すときは null→未設定で保存)
-    // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。
-    //   ★lite に露出した 3つ(初期LC下限/最大初期LC/バイアス)は最上位を据え置く(変更は config.lite へ)。
-    scalpLcFloorSource: isLite ? existing.scalpLcFloorSource : applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
-    scalpLcCeilingSource: isLite ? existing.scalpLcCeilingSource : applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),
+    // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。lite の据え置きは下の関門が担う。
+    scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
+    scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),
     scalpTrendVetoSource: applySourceField(existing.scalpTrendVetoSource, bodyRec.scalpTrendVetoSource),
     scalpCooldownSource: applySourceField(existing.scalpCooldownSource, bodyRec.scalpCooldownSource),
-    scalpBiasSource: isLite ? existing.scalpBiasSource : applySourceField(existing.scalpBiasSource, bodyRec.scalpBiasSource),
+    scalpBiasSource: applySourceField(existing.scalpBiasSource, bodyRec.scalpBiasSource),
     scalpRangeSource: applySourceField(existing.scalpRangeSource, bodyRec.scalpRangeSource),
-    // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。★lite は最上位を据え置く。
-    scalpLcHardMaxEnabled: isLite ? existing.scalpLcHardMaxEnabled : hardMaxEnabledValue,
+    // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。
+    scalpLcHardMaxEnabled: hardMaxEnabledValue,
     // ★v0.8.2: System B(紙専用)の設定(空=undefined で保存=全て A追従)。
     signalB: signalBValue,
     // ★lite 独立設定(full では existing.lite をそのまま持ち越す=触らない)。
@@ -581,26 +608,27 @@ export function postSettingsHandler(req: Request, res: Response): void {
   //   将来足されるフィールドも自動的に生き残る。
   //   なお decided の値が undefined のキーは「上書きして undefined」になり、saveConfig の
   //   JSON 直列化でキーごと落ちる=従来どおり「既定に戻す」規約が保たれる。
-  const next: UserConfig = { ...existing, ...decided };
-  const nextRec = next as Record<string, unknown>;
+  const merged: UserConfig = { ...existing, ...decided };
+  const mergedRec = merged as Record<string, unknown>;
   for (const key of NUMERIC_PARAM_KEYS) {
-    nextRec[key] = results[key]!.value;
+    mergedRec[key] = results[key]!.value;
   }
-  // ★lite: 露出した数値 3項目は config.lite に書いたので、最上位は保存前の値へ戻す(monitor2 の設定を壊さない)。
-  if (isLite) {
-    for (const key of LITE_NUMERIC_KEYS) nextRec[key] = existing[key];
-  }
+  // ★lite: 画面に無い項目は最上位へ書かない(単一の関門)。露出した 4項目は config.lite に書き済み。
+  const next: UserConfig = isLite ? applyLiteTopLevelGuard(existing, merged) : merged;
   saveConfig(next);
   reloadProviders();
 
   // restart は元の4キーのみ。shock 系は resolver が次評価で拾うので何もしない。
-  if (results.pricePollMs!.changed) restartPriceLoop();
-  if (results.newsPollMs!.changed) restartNewsLoop();
-  if (results.cooldownMin!.changed) setCooldownMs(resolveCooldownMin() * 60_000);
+  // ★lite ではこの4キーは保存されない(関門で据え置き)ので、再起動する理由も無い=変化なし扱いにする。
+  const numChanged = (key: 'pricePollMs' | 'newsPollMs' | 'cooldownMin' | 'port'): boolean =>
+    !isLite && results[key]!.changed;
+  if (numChanged('pricePollMs')) restartPriceLoop();
+  if (numChanged('newsPollMs')) restartNewsLoop();
+  if (numChanged('cooldownMin')) setCooldownMs(resolveCooldownMin() * 60_000);
 
   res.json({
     ok: true,
     providers: getProviderStatus(),
-    portRequiresRestart: results.port!.changed,
+    portRequiresRestart: numChanged('port'),
   });
 }

@@ -79,6 +79,7 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
     genInputs[n].value = '';   // 秘密フィールド: 反映のたびに空へ戻す(値はサーバから来ない)
   }
   el.checkGenKeysClear.checked = false;   // 消去チェックは毎回オフから(誤って消さない)
+  el.checkKeysClear.checked = false;     // ★共通キーの消去チェックも毎回オフから(同上)
   // ★生成器サイドカーの有効/無効: 既定オフ(=同梱されていても、明示的にオンにするまで走らない)。
   el.checkGeneratorEnabled.checked = current ? current.generatorEnabled === true : false;
   // 日次予算: 可視フィールド。実効値を出し、空欄で既定に戻せる。
@@ -98,7 +99,6 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.checkScalpChartFallback.checked = current ? current.scalpChartFallbackText !== false : true;   // ★チャート撮影失敗テキスト縮退=既定ON
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限を反映し、AI委任の項目は数値/enum入力を無効化(灰色)。
   el.inputScalpLcFloor.value = current ? String(current.scalpLcFloorYen) : '';
-  el.selectLcFloorMode.value = current?.scalpLcFloorSource ?? 'manual';
   el.selectLcCeilingMode.value = current?.scalpLcCeilingSource ?? 'manual';
   el.selectTrendVetoMode.value = current?.scalpTrendVetoSource ?? 'manual';
   el.selectCooldownMode.value = current?.scalpCooldownSource ?? 'manual';
@@ -126,7 +126,6 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.selectScalpBiasB.value = b.scalpBias ?? '';
   el.selectRangeEnabledB.value = rawBoolSel(b.scalpRangeEnabled);
   el.selectHardMaxEnabledB.value = rawBoolSel(b.scalpLcHardMaxEnabled);
-  el.selectLcFloorModeB.value = b.scalpLcFloorSource ?? '';
   el.selectLcCeilingModeB.value = b.scalpLcCeilingSource ?? '';
   el.selectTrendVetoModeB.value = b.scalpTrendVetoSource ?? '';
   el.selectCooldownModeB.value = b.scalpCooldownSource ?? '';
@@ -140,7 +139,6 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
 //   B の LC安全上限 value は enabled tri-state が 'true' のときだけ編集可。bias/range の値は mode で連動。
 export function syncKnobDisabledB(el: SettingsElements): void {
   const pairs: Array<[HTMLSelectElement, HTMLInputElement | HTMLSelectElement]> = [
-    [el.selectLcFloorModeB, el.inputScalpLcFloorB],
     [el.selectLcCeilingModeB, el.inputScalpLcCeilingB],
     [el.selectTrendVetoModeB, el.inputScalpTrendVetoB],
     [el.selectCooldownModeB, el.inputScalpCooldownB],
@@ -159,9 +157,12 @@ export function syncKnobDisabledB(el: SettingsElements): void {
 
 // AI委任(mode==='ai')の項目は数値/enum入力を無効化して「AI が決める」ことを視覚化する。
 // LC安全上限は最大初期LCのモードと独立の安全系なので、有効チェックが外れた時だけ値入力を無効化する。
+// ★初期LC下限(inputScalpLcFloor)はここに **入れない**: 委任対象外でモード select 自体が無く、
+//   入れた数値はモードに関係なくコードが必ず強制する=常に編集できなければならない。
+//   (旧: [selectLcFloorMode, inputScalpLcFloor] を対にしていたため、「AI委任」を選ぶと
+//    実際には強制され続ける値が灰色になって編集できない、という正反対の表示になっていた。)
 export function syncKnobDisabled(el: SettingsElements): void {
   const pairs: Array<[HTMLSelectElement, HTMLInputElement | HTMLSelectElement]> = [
-    [el.selectLcFloorMode, el.inputScalpLcFloor],
     [el.selectLcCeilingMode, el.inputScalpLcCeiling],
     [el.selectTrendVetoMode, el.inputScalpTrendVeto],
     [el.selectCooldownMode, el.inputScalpCooldown],
@@ -187,11 +188,20 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   const kv = el.inputKimi.value.trim();
   const ov = el.inputOpenai.value.trim();
   const wsk = el.inputWebSearch.value.trim();
-  if (gv) body.geminiKey = gv;
-  if (grv) body.groqKey = grv;
-  if (kv) body.kimiKey = kv;
-  if (ov) body.openaiKey = ov;
-  if (wsk) body.webSearchKey = wsk;   // 秘密: 空欄は送らない(=変更なし)
+  // ★秘密フィールドの規約は不変: 入力があれば保存 / 空欄は **送らない**(=変更なし)。
+  //   「消去」チェックが入っているときだけ、空欄の欄を null で送って消せる(=未設定に戻す)。
+  //   生成器キー(下)と同じ作法。これが無いと、誤って貼ったキーを撤回する手段が
+  //   設定ファイルの手編集しか無かった(空欄保存では消えない=仕様どおり動いてしまう)。
+  const clearKeys = el.checkKeysClear.checked;
+  const keyField = (value: string, set: (v: string | null) => void): void => {
+    if (value) set(value);
+    else if (clearKeys) set(null);
+  };
+  keyField(gv, v => { body.geminiKey = v; });
+  keyField(grv, v => { body.groqKey = v; });
+  keyField(kv, v => { body.kimiKey = v; });
+  keyField(ov, v => { body.openaiKey = v; });
+  keyField(wsk, v => { body.webSearchKey = v; });
   // ★提案生成器の専用キー(秘密)。入力があれば保存、消去チェックが入っていれば未入力分を null で消去。
   //   どちらも無ければフィールドごと送らない(=変更なし)。
   const genInputs = genKeyInputs(el);
@@ -248,7 +258,10 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.aiTechnicalEnabled = el.checkAiTechnicalEnabled.checked;
   body.scalpChartFallbackText = el.checkScalpChartFallback.checked;
   // ★v0.7.56: 委任 source(手動/AI)。select は常に値あり('manual'|'ai')。
-  body.scalpLcFloorSource = el.selectLcFloorMode.value as KnobSource;
+  // ★初期LC下限は委任対象外=UI にモード select が無い。保存のたびに 'manual' へ正規化する
+  //   (過去に 'ai' を保存した config が残っていると、書き出し[entry_meta の knob スナップショット]に
+  //    「委任」と記録され続けるが、実際には常に強制されている=記録が嘘になるため)。
+  body.scalpLcFloorSource = 'manual';
   body.scalpLcCeilingSource = el.selectLcCeilingMode.value as KnobSource;
   body.scalpTrendVetoSource = el.selectTrendVetoMode.value as KnobSource;
   body.scalpCooldownSource = el.selectCooldownMode.value as KnobSource;
@@ -273,7 +286,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
     scalpBias: el.selectScalpBiasB.value,
     scalpRangeEnabled: el.selectRangeEnabledB.value,
     scalpLcHardMaxEnabled: el.selectHardMaxEnabledB.value,
-    scalpLcFloorSource: el.selectLcFloorModeB.value,
+    scalpLcFloorSource: '',   // ★委任対象外=B にもモード select は無い(''=A追従で unset)
     scalpLcCeilingSource: el.selectLcCeilingModeB.value,
     scalpTrendVetoSource: el.selectTrendVetoModeB.value,
     scalpCooldownSource: el.selectCooldownModeB.value,

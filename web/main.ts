@@ -170,7 +170,6 @@ const settingsCtl = initSettingsModal({
   checkScalpChartFallback: document.getElementById('scalp-chart-fallback') as HTMLInputElement,
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor:   document.getElementById('scalp-lc-floor') as HTMLInputElement,
-  selectLcFloorMode:   document.getElementById('scalp-lc-floor-mode') as HTMLSelectElement,
   selectLcCeilingMode: document.getElementById('scalp-lc-ceiling-mode') as HTMLSelectElement,
   selectTrendVetoMode: document.getElementById('scalp-trend-veto-mode') as HTMLSelectElement,
   selectCooldownMode:  document.getElementById('scalp-cooldown-mode') as HTMLSelectElement,
@@ -185,7 +184,6 @@ const settingsCtl = initSettingsModal({
   inputScalpTrendVetoB: document.getElementById('scalp-trend-veto-b') as HTMLInputElement,
   selectRangeEnabledB:  document.getElementById('scalp-range-enabled-b') as HTMLSelectElement,
   inputScalpLcFloorB:   document.getElementById('scalp-lc-floor-b') as HTMLInputElement,
-  selectLcFloorModeB:   document.getElementById('scalp-lc-floor-mode-b') as HTMLSelectElement,
   selectLcCeilingModeB: document.getElementById('scalp-lc-ceiling-mode-b') as HTMLSelectElement,
   selectTrendVetoModeB: document.getElementById('scalp-trend-veto-mode-b') as HTMLSelectElement,
   selectCooldownModeB:  document.getElementById('scalp-cooldown-mode-b') as HTMLSelectElement,
@@ -220,6 +218,7 @@ const settingsCtl = initSettingsModal({
   inputGenOpenai: document.getElementById('genkey-openai') as HTMLInputElement,
   inputGenKimi:   document.getElementById('genkey-kimi') as HTMLInputElement,
   checkGenKeysClear: document.getElementById('genkey-clear') as HTMLInputElement,
+  checkKeysClear: document.getElementById('keys-clear') as HTMLInputElement,
   inputGeneratorBudget: document.getElementById('generator-budget') as HTMLInputElement,
   checkGeneratorEnabled: document.getElementById('generator-enabled') as HTMLInputElement,
   testGenKeysBtn: document.getElementById('settings-test-genkeys') as HTMLButtonElement,
