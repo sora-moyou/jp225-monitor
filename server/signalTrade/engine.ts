@@ -17,7 +17,7 @@ import { loadExitImpl } from './exit/index.js';
 import { checkSanity } from './sanity.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
-import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, getSignalIdSeed, setSignalIdCounter, getArmedTimeoutStats, bumpArmedTimeout } from '../db/store.js';
+import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, insertSignalPlan, getSignalIdStart, SIGNAL_ID_SPACE_BASE, setSignalIdCounter, getArmedTimeoutStats, bumpArmedTimeout, type SignalPlanInsert } from '../db/store.js';
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
@@ -34,11 +34,14 @@ import {
 import type { ScalpPlanResult } from '../llm/openai.js';
 import { checkRefDrift, recheckArmedSanity } from './armGate.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
+import { buildSignalPlanInsert } from './planLedger.js';
 import { exitConfigStamp, warmExitConfigHash } from './exitConfigVersion.js';
+import type { SignalSettingsSnapshot } from '../types.js';
 
 // 純粋な決定コア(型/純関数)と永続化ビルダーは従来どおり engine.js から公開する(import 元を変えない)。
 export * from './decisions.js';
 export * from './persist.js';
+export * from './planLedger.js';
 
 const NIKKEI_SYMBOL = 'NIY=F';
 
@@ -92,6 +95,14 @@ export class SignalEngine {
   //   再起動を跨いで継続し(1 へ戻らない)、履歴消去でも巻き戻さない=機体の生涯で単調増加(番号を再利用しない)。
   private signalIdCounter = 0;
   private currentSignal: CurrentSignal | null = null;
+  // ★直近 ARM で採番した signalId(**内部専用・A/B 共通**)。
+  //   A では currentSignal.signalId と常に同値(= A の記録は従来と一致する)。
+  //   B は currentSignal を持たないため従来 signal_id が常に NULL で、B のトレードは自分の判定とも
+  //   trade2 とも原理的に結合できなかった。B の番号は **別空間**(SIGNAL_ID_SPACE_BASE)から採るので
+  //   A の番号と決して重ならない。B にも采番するが、この値は **露出経路を一切通らない**:
+  //   SSE / /api/current-signal / hold はすべて signalForState()(=B では null)を通るので、
+  //   B の signalId が trade2 に流れることは無い。記録(signal_trades.signal_id / signal_plans.signal_id)専用。
+  private armedSignalId: number | null = null;
   private running = false;
   private planning = false;
   private lastPlanAt = 0;
@@ -133,10 +144,13 @@ export class SignalEngine {
    *    console.warn で握りつぶす経路があり、そこで永続が欠けても「次回起動が MAX から救う」形にしておく。
    *  失敗しても致命的にしない(表示専用ゆえ 0 のまま=最悪でも従来挙動へ劣化)。 */
   private loadSignalIdCounter(): void {
+    // ★DB を開く前に系統の番号空間の起点を入れておく: 下の try が失敗しても B が A の番号空間へ落ちない
+    //   (失敗して 0 のままだと B が 1 から採番し、A の過去の番号と重なる=分けた意味が消える)。
+    this.signalIdCounter = SIGNAL_ID_SPACE_BASE[this.counterKey];
     try {
       const db = openDb(resolveDbPath());
       try {
-        this.signalIdCounter = getSignalIdSeed(db, this.counterKey);
+        this.signalIdCounter = getSignalIdStart(db, this.counterKey);
         // ★未約定失効の累計も同じ契機でシード(再起動で件数が 0 に戻ると「無音の失敗」が数えられなくなる)。
         this.armedTimeouts = getArmedTimeoutStats(db, this.counterKey);
       } finally { db.close(); }
@@ -177,6 +191,9 @@ export class SignalEngine {
 
   /** テスト用: 現在の signalId カウンタ(=最後に採番した signalId)を覗く。 */
   _peekSignalIdCounter(): number { return this.signalIdCounter; }
+
+  /** テスト用: 直近 ARM の采番(記録専用・露出しない値)を覗く。 */
+  _peekArmedSignalId(): number | null { return this.armedSignalId; }
 
   /** SSE/hold に載せる現在シグナル。A は currentSignal / B は常に null(currentSignal を露出しない)。 */
   private signalForState(): CurrentSignal | null {
@@ -240,8 +257,10 @@ export class SignalEngine {
   /** テスト/リセット用: エンジン内部状態を初期化する。 */
   reset(): void {
     this.state = { phase: 'flat' };
-    this.signalIdCounter = 0;
+    // ★系統の番号空間の起点まで戻す(A は 0=従来と同じ / B は下駄を外さない=A の番号空間へ入らない)。
+    this.signalIdCounter = SIGNAL_ID_SPACE_BASE[this.counterKey];
     this.currentSignal = null;
+    this.armedSignalId = null;
     this.planning = false;
     this.lastPlanAt = 0;
     this.lastHeldEvalAt = 0;
@@ -265,7 +284,9 @@ export class SignalEngine {
         // ★決済設定の版(RECORD-ONLY): この取引がどの決済設定で閉じられたかを後から特定できるようにする。
         //   値は載せない(整数版番号 + 振る舞いハッシュのみ)。取得に失敗しても null で記録は続行する。
         const exitCfg = exitConfigStamp(db, t.exitT);
-        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag, this.currentSignal?.signalId, exitCfg));
+        // ★結合キー: 直近 ARM の采番。A では従来どおり currentSignal.signalId と同値。
+        //   B は currentSignal を持たないため従来 NULL だったが、これで B も自分の判定と結合できる。
+        insertSignalTrade(db, buildSignalTradeInsert(t, this.cfg.systemTag, this.armedSignalId, exitCfg));
       } finally { db.close(); }
     } catch (e) {
       console.warn(`${this.logTag} persist failed:`, e instanceof Error ? e.message : String(e));
@@ -284,6 +305,18 @@ export class SignalEngine {
       this.exitStopTracker = { openedAt: rec.openedAt, value: rec.exitStop };
     } catch (e) {
       console.warn(`${this.logTag} exit-stop record failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 非公開(RECORD-ONLY): 計画サイクルの台帳(signal_plans)へ1行記録する。
+  //   ★書き込みの失敗で取引の判断を止めない(記録は握りつぶす)。ただし **握りつぶしたことが分かる**
+  //     1行を必ず残す(無音の失敗を作らない)。
+  private persistPlanRecord(row: SignalPlanInsert): void {
+    try {
+      const db = openDb(resolveDbPath());
+      try { insertSignalPlan(db, row); } finally { db.close(); }
+    } catch (e) {
+      console.warn(`${this.logTag} plan-ledger record failed:`, e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -329,11 +362,18 @@ export class SignalEngine {
     this.lastPlanAt = now;   // 起動直後の多重要求を防ぐため、要求時点で更新する。
     const anchorPrice = price;   // 見送りが返った場合のアンカー(要求時点の現在値)。
     void (async () => {
+      // ★台帳(signal_plans)用: このサイクルの結末をここに集め、**どの分岐で抜けても**(途中の return も
+      //   例外も)finally で1行残す。例外で計画が得られなかった回は catch が ok:false の形を入れる
+      //   =「1サイクル=必ず1行」を守る。
+      let planResult: ScalpPlanResult | null = null;
+      let armedSignalId: number | null = null;
+      let armedSettings: SignalSettingsSnapshot | null = null;
       try {
         // route(/api/scalp-plan・trade2)と同一の共通関数を使う。profile で A/B の設定を解決する
         // (A=グローバル=trade2 と同条件 / B=signalB)。画像未生成/LLM 失敗は result.ok=false → FLAT 維持(見送り)。
         const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile });
+        planResult = result;
         if (this.state.phase === 'flat' && result.ok) {
           // ★正規シグナルのゲート(A/B 共通): trade2 の送信直前サニティ(src/ai/sanity.ts)を先取りして
           //   検証し、trade2 が REJECT する構造の計画は「正規シグナル」として出さない(=紙 ARM もしない・
@@ -438,15 +478,21 @@ export class SignalEngine {
             if (armed) {
               // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
               armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
+              armedSettings = armed.settings;   // ★台帳にも **同じもの** を載せる(二重に組み立てない)。
               // ★遡り解析用(RECORD-ONLY): ARM 時点で monitor が見ていた価格を armed に焼き付ける(ARM 経路①=flat計画)。
               //   同じ live(stale plan veto と同一の新鮮値)を使う=事後の「通過済みだったか」判定と武装判定が同じ数値になる。
               if (live != null) armed.armedPrice = live;
               this.state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
               this.planSuppressedAnchor = null;         // actionable で抑止解除。
+              // ARM ごとに signalId を単調増加で採番する(★A/B 共通。カウンタは系統別=signal_meta の system キー)。
+              // ★採番のたびに永続(再起動後もこの値+1 から継続=決して再利用しない)。
+              this.signalIdCounter += 1;
+              this.persistSignalIdCounter();
+              this.armedSignalId = this.signalIdCounter;
+              armedSignalId = this.signalIdCounter;
               if (this.cfg.maintainsCurrentSignal) {
-                // ARM ごとに signalId を単調増加で採番し、現在シグナルを更新(A のみ・filled 後も保持・none では更新しない)。
-                this.signalIdCounter += 1;
-                this.persistSignalIdCounter();   // ★採番のたびに永続(再起動後もこの値+1 から継続=決して再利用しない)。
+                // 現在シグナル(=露出する側)の更新は A のみ(filled 後も保持・none では更新しない)。
+                // B はここを通らない=SSE / /api/current-signal / hold に B の signalId は決して出ない。
                 this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
               }
               this.broadcastSignalState(Date.now());    // ARM 時に即 broadcast(A は trade2 が即追従できるよう)。
@@ -454,9 +500,24 @@ export class SignalEngine {
           }
         }
       } catch (e) {
-        console.warn(`${this.logTag} plan request failed:`, e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`${this.logTag} plan request failed:`, msg);
+        // ★例外で計画が得られなかったサイクルも台帳に1行残す(見送りと区別できる形=error 列)。
+        if (!planResult) planResult = { ok: false, error: msg };
       } finally {
         this.planning = false;
+        // ★1計画サイクル=1行(ARM でも見送りでも不成立でも)。記録の失敗は取引の判断を止めない。
+        //   planResult は try が値を入れるか catch が ok:false を入れるかのどちらかなので、
+        //   ここで null になる経路は無い(型の絞り込みのためのガード)。
+        if (planResult) this.persistPlanRecord(buildSignalPlanInsert({
+          t: Date.now(),
+          system: this.counterKey,
+          result: planResult,
+          signalId: armedSignalId,
+          // ARM した回は arm 時に確定したスナップショット(=signal_trades.meta と同一)。
+          // それ以外は「そのサイクルで有効だった設定」を同じ組み立て関数で解決する。
+          settings: armedSettings ?? buildSettingsSnapshot(undefined, this.cfg.profile),
+        }));
       }
     })();
   }
@@ -561,6 +622,7 @@ export class SignalEngine {
     this.planSuppressedAnchor = null;
     this.signalIdCounter += 1;
     this.persistSignalIdCounter();
+    this.armedSignalId = this.signalIdCounter;   // ★記録用の采番も新 ARM に追従(A では currentSignal と同値)。
     this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
     // ③ 反対建玉は以降 detectFill の交差で filled になる(paper と live が同じタイミング/価格で約定)。
     this.recordExitStopChange(now);
@@ -576,6 +638,7 @@ export class SignalEngine {
     this.state = { phase: 'filled', position };
     this.currentSignal = signal;
     this.signalIdCounter = signal.signalId;
+    this.armedSignalId = signal.signalId;   // 実運用の ARM 後と同じ状態にする(記録用の采番も揃える)。
   }
 
   /** テスト用: held-eval の要求ゲートを叩き、in-flight(planning)になったか(=要求したか)を返す。
@@ -603,7 +666,11 @@ export class SignalEngine {
   /** テスト用: armed 状態(+現在シグナル)を直接セットする(レンジ再評価の単体テスト用)。 */
   _setArmedForTest(armed: ArmedBracket, signal?: CurrentSignal): void {
     this.state = { phase: 'armed', armed };
-    if (signal) { this.currentSignal = signal; this.signalIdCounter = signal.signalId; }
+    if (signal) {
+      this.currentSignal = signal;
+      this.signalIdCounter = signal.signalId;
+      this.armedSignalId = signal.signalId;
+    }
   }
 
   // 非公開: ARMED のレンジ両指値(fade)が平均約定所要を超えて未約定なら、AI に「両逆指値(ブレイク)へ切替えるか」を問う。
@@ -712,6 +779,7 @@ export class SignalEngine {
     const oldSignalId = identity.signalId;
     this.signalIdCounter += 1;
     this.persistSignalIdCounter();
+    this.armedSignalId = this.signalIdCounter;   // ★記録用の采番も差替え後の ARM に追従。
     this.currentSignal = armedToCurrentSignal(armed, this.signalIdCounter);
     this.broadcastSignalState(now);
     console.log(`${this.logTag} range-reeval swap oldSignalId=${oldSignalId} newSignalId=${this.signalIdCounter} `
@@ -760,7 +828,7 @@ export class SignalEngine {
         if (prevArmed?.range?.lower) legDesc.push(`lower=${dist(prevArmed.range.lower.entry)}`);
         console.log(`${this.logTag} armed-timeout 未約定ブラケットを取消→FLAT`
           + `(${Math.round(ARMED_TIMEOUT_MS / 60_000)}分 未約定・再計画へ) `
-          + `signalId=${this.currentSignal?.signalId ?? '-'} dir=${prevArmed?.direction ?? '-'} `
+          + `signalId=${this.armedSignalId ?? '-'} dir=${prevArmed?.direction ?? '-'} `
           + `armedPrice=${prevArmed?.armedPrice != null ? Math.round(prevArmed.armedPrice) : '-'} `
           + `price=${Math.round(price)} ${legDesc.join(' ') || '(レッグ不明)'} `
           + `累計未約定失効=${this.armedTimeouts.count}回`);

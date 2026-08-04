@@ -71,6 +71,34 @@ export function initSchema(db: DatabaseSync): void {
       max_signal_id_before INTEGER,
       orphan_exit_stops INTEGER NOT NULL
     );
+    -- ★計画サイクルの台帳(RECORD-ONLY)。**約定したか見送ったかに関わらず、1サイクル=1行**。
+    --   signal_trades は「約定して決済された」ときにしか行が出ないため、A/B 実験の主要指標である
+    --   「見送り率」と「レッグが落ちた理由の内訳」が DB に一切残っていなかった(実測: サーバログには
+    --   plan-suppress 415件 / plan-legdrop 46件 あるのに signal_trades には0件)。ログはローテートする。
+    --   ★対象は flat からの計画サイクル(maybeRequestPlan)のみ。保有中の反転評価(held-eval)と
+    --     レンジ再評価(range-reeval)は A だけの別種のサイクルなので、この表には入れない(A/B 対称を保つ)。
+    CREATE TABLE IF NOT EXISTS signal_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      t INTEGER NOT NULL,           -- 計画が解決した時刻(epoch ms)
+      -- ★系統。signal_trades と違い A も明示的に 'A' を入れる(NULL=A の後方互換規約を新表に持ち込まない)。
+      system TEXT NOT NULL,
+      signal_id INTEGER,            -- ARM した回のみ采番値。見送り/不成立は NULL。
+      direction TEXT,               -- 'buy'|'sell'|'none'|'range'。計画が得られなかった回(error)は NULL。
+      none_reason TEXT,             -- NoneReason の語彙(ai/geometry/stopSide/lc/lcFloor/bias/trend/rangeDisabled/missing/stale)
+      veto_fired INTEGER,           -- トレンド veto が発火したか(0/1)。不明は NULL。
+      ref_price REAL,               -- 計画が見た現在値(NIY=F)
+      regime TEXT,                  -- AI 自己レジーム(trend_up/trend_down/range/unclear)
+      confidence REAL,              -- AI 自己確信度 0-100
+      limit_entry REAL,             -- 最終プランの価格。無い/none/range では NULL。
+      stop_entry REAL,
+      stop_loss_for_limit REAL,
+      stop_loss_for_stop REAL,
+      leg_drops_json TEXT,          -- レッグ1本ごとの脱落理由(LegDrop[] の JSON)。1本も落ちなければ NULL。
+      settings_json TEXT,           -- そのサイクルの実効設定(signal_trades.meta の settings と同じ組み立て)
+      rationale TEXT,               -- AI の判断理由(上限 PLAN_RATIONALE_MAX_CHARS 文字で切る)
+      error TEXT                    -- 計画が得られなかった回の理由(chart-not-generated 等)。取れた回は NULL。
+    );
+    CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
@@ -471,11 +499,15 @@ export interface ClearSignalTradesResult {
 }
 
 /** 「裏付けのある」exit-stop 行数 = signal_id が非 NULL で、同じ signal_id の signal_trades 行が存在するもの。
- *  DELETE は裏付けを増やせないため、前後の差がそのまま「この削除で孤児化した件数」になる。 */
+ *  DELETE は裏付けを増やせないため、前後の差がそのまま「この削除で孤児化した件数」になる。
+ *  ★A に限定する: signal_exit_stops へ書くのは A(hold を露出する側)だけで、A と B の signalId は
+ *    **別々のカウンタ**(signal_meta の system キー)なので数列が重なる。B にも采番するようになった今、
+ *    系統を絞らないと「A の孤児が、たまたま同じ番号の B のトレードに裏付けられている」と誤判定する。 */
 function backedExitStopCount(db: DatabaseSync): number {
   return (db.prepare(
     'SELECT COUNT(*) AS n FROM signal_exit_stops es WHERE es.signal_id IS NOT NULL '
-    + 'AND EXISTS (SELECT 1 FROM signal_trades t WHERE t.signal_id = es.signal_id)',
+    + 'AND EXISTS (SELECT 1 FROM signal_trades t WHERE t.signal_id = es.signal_id '
+    + "AND (t.system IS NULL OR t.system = 'A'))",
   ).get() as { n: number }).n;
 }
 
@@ -551,6 +583,18 @@ export function getSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter)
 export function setSignalIdCounter(db: DatabaseSync, system: SignalSystemFilter, value: number): void {
   db.prepare('INSERT INTO signal_meta(system, last_signal_id) VALUES(?, ?) ON CONFLICT(system) DO UPDATE SET last_signal_id = excluded.last_signal_id')
     .run(system, value);
+}
+
+// ★系統ごとの「番号空間」の起点。B を 1,000,000 から始めて A(現在 536 付近)と **絶対に重ならない** ようにする。
+//   理由: system を落とした join が **誤った行に当たり、しかも当たったように見える** から。空間を分けてあれば
+//   同じ間違いは「1件も当たらない」で済み、その場で気づける(重なっていると静かに嘘の集計が出る)。
+//   実際、このリポにも system を見ない突合が1つ在った(backedExitStopCount)。人間の約束ではなく番号で分ける。
+export const SIGNAL_ID_SPACE_BASE: Readonly<Record<SignalSystemFilter, number>> = { A: 0, B: 1_000_000 };
+
+/** 起動時に採番カウンタへ入れる値 = max(既存記録の床, その系統の番号空間の起点)。
+ *  ★既に採番済みの番号があればそこから連続させる(下駄で巻き戻さない=単調増加の原則)。 */
+export function getSignalIdStart(db: DatabaseSync, system: SignalSystemFilter): number {
+  return Math.max(getSignalIdSeed(db, system), SIGNAL_ID_SPACE_BASE[system]);
 }
 
 /** 起動シードに使う「二度と下回ってはいけない signalId」= max(永続カウンタ, 既存記録の最大 signal_id)。
@@ -631,6 +675,72 @@ export function insertSignalExitStop(db: DatabaseSync, e: SignalExitStopInsert):
     INSERT INTO signal_exit_stops (t, signal_id, opened_at, direction, exit_stop, phase)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(e.t, e.signalId ?? null, e.openedAt, e.direction, e.exitStop, e.phase ?? null);
+}
+
+// ─── 計画サイクルの台帳(signal_plans・RECORD-ONLY) ───────────────────────────
+// 1計画サイクル=1行。ARM(約定に向けて武装)・見送り(none)・計画が得られなかった回 のすべてを残す。
+// 取引の判断には一切使わない(書き込みに失敗しても engine は握りつぶして続行する)。
+
+export interface SignalPlanRow {
+  id: number;
+  t: number; system: string; signal_id: number | null;
+  direction: string | null; none_reason: string | null; veto_fired: number | null;
+  ref_price: number | null; regime: string | null; confidence: number | null;
+  limit_entry: number | null; stop_entry: number | null;
+  stop_loss_for_limit: number | null; stop_loss_for_stop: number | null;
+  leg_drops_json: string | null; settings_json: string | null;
+  rationale: string | null; error: string | null;
+}
+
+export interface SignalPlanInsert {
+  t: number;
+  system: 'A' | 'B';
+  signalId?: number | null;
+  direction?: string | null;
+  noneReason?: string | null;
+  vetoFired?: boolean | null;
+  refPrice?: number | null;
+  regime?: string | null;
+  confidence?: number | null;
+  limitEntry?: number | null;
+  stopEntry?: number | null;
+  stopLossForLimit?: number | null;
+  stopLossForStop?: number | null;
+  legDropsJson?: string | null;
+  settingsJson?: string | null;
+  rationale?: string | null;
+  error?: string | null;
+}
+
+/** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
+function finiteOrNull(v: number | null | undefined): number | null {
+  return v != null && Number.isFinite(v) ? v : null;
+}
+
+/** 計画サイクルを1行記録する(追記のみ・更新も削除もしない)。 */
+export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
+  db.prepare(`
+    INSERT INTO signal_plans (
+      t, system, signal_id, direction, none_reason, veto_fired, ref_price, regime, confidence,
+      limit_entry, stop_entry, stop_loss_for_limit, stop_loss_for_stop,
+      leg_drops_json, settings_json, rationale, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
+    p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
+    finiteOrNull(p.refPrice), p.regime ?? null, finiteOrNull(p.confidence),
+    finiteOrNull(p.limitEntry), finiteOrNull(p.stopEntry),
+    finiteOrNull(p.stopLossForLimit), finiteOrNull(p.stopLossForStop),
+    p.legDropsJson ?? null, p.settingsJson ?? null, p.rationale ?? null, p.error ?? null,
+  );
+}
+
+/** 計画サイクルを新しい順(直近が先)で最大 limit 件返す(分析/テスト用)。system で系統を絞れる。 */
+export function getSignalPlans(db: DatabaseSync, limit = 500, system?: SignalSystemFilter): SignalPlanRow[] {
+  const clause = system ? ' WHERE system = ?' : '';
+  const params = system ? [system] : [];
+  return db.prepare(`SELECT * FROM signal_plans${clause} ORDER BY t DESC, id DESC LIMIT ?`)
+    .all(...params, Math.max(1, Math.min(5000, limit))) as unknown as SignalPlanRow[];
 }
 
 /** exit-stop 遷移を新しい順(直近が先)で最大 limit 件返す(分析/テスト用)。 */
