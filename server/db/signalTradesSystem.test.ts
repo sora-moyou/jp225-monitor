@@ -129,6 +129,6 @@ describe('signal_meta signalId 永続カウンタ', () => {
     resetArmedTimeoutCounter(db, 'B');
     expect(getSignalIdCounter(db, 'A')).toBe(9);
     expect(getSignalIdCounter(db, 'B')).toBe(4);                        // signalId は不変
-    expect(getArmedTimeoutStats(db, 'B')).toEqual({ count: 0, lastAt: null });
+    expect(getArmedTimeoutStats(db, 'B')).toEqual({ count: 0, streak: 0, lastAt: null });
   });
 });

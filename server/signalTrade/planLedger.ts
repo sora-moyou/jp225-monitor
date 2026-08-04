@@ -22,6 +22,7 @@
 import type { SignalSettingsSnapshot } from '../types.js';
 import type { ScalpPlanResult } from '../llm/scalpPlan.js';
 import type { SignalPlanInsert } from '../db/store.js';
+import type { ArmWaitDecision } from './armWait.js';
 
 /** rationale(AI の判断理由)の上限文字数。
  *
@@ -54,6 +55,9 @@ export interface SignalPlanRecordInput {
   signalId?: number | null;
   /** そのサイクルで有効だった実効設定(buildSettingsSnapshot の戻り値をそのまま)。 */
   settings?: SignalSettingsSnapshot | null;
+  /** ★ARM した回だけ: 未約定待ち時間(armed-timeout までの猶予)の決定内訳。
+   *  「なぜこの待ち時間になったか」を後から読めるようにするための記録(採否には一切影響しない)。 */
+  armWait?: ArmWaitDecision | null;
 }
 
 /** 1計画サイクルぶんの挿入行を組み立てる(純関数)。
@@ -64,6 +68,14 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   const row: SignalPlanInsert = { t, system };
   if (input.signalId != null) row.signalId = input.signalId;
   if (input.settings) row.settingsJson = JSON.stringify(input.settings);
+  // ★待ち時間の決定内訳(ARM した回のみ)。error 分岐より前に載せる: 「ARM したのに ok=false」は
+  //   起こり得ないが、載せ忘れの経路を作らないため分岐の外で1回だけ書く。
+  if (input.armWait) {
+    row.armWaitMs = input.armWait.waitMs;
+    row.armWaitDistance = input.armWait.distanceYen;
+    row.armWaitSigma = input.armWait.sigma1m;
+    row.armWaitReason = input.armWait.reason;
+  }
   if (!result.ok) {
     row.error = result.error;
     return row;

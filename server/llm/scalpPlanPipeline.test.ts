@@ -77,11 +77,13 @@ function countOf(s: string, sub: string): number {
   return s.split(sub).length - 1;
 }
 
-const NOTE_LIMIT_ONLY = '（実際の注文: 指値のみ・逆指値レッグなし）';
-const NOTE_STOP_ONLY = '（実際の注文: 逆指値のみ・指値レッグなし）';
-const NOTE_BOTH = '（実際の注文: 指値+逆指値）';
-const TAG_STOP_DROPPED = '（逆指値レッグは条件を満たさず不採用）';
-const TAG_LIMIT_DROPPED = '（指値レッグは条件を満たさず不採用）';
+// ★v0.9.59(ユーザー指示): 注記は「プランの言い直し」を止め、**片方が無い理由だけ** を書く形に変わった。
+//   両レッグ揃っている回は注記そのものが出ない(=旧 NOTE_BOTH は存在しない)。
+const NOTE_STOP_MISSING = '（逆指値なし: AIが提案せず）';
+const NOTE_STOP_GEOMETRY = '（逆指値は不採用: エントリーが現在値の逆側）';
+const NOTE_LIMIT_GEOMETRY = '（指値は不採用: エントリーが現在値の逆側）';
+const NOTE_STOP_LC = '（逆指値は不採用: 損切り幅が設定の上限より広い）';
+const NOTE_STOP_LC_FLOOR = '（逆指値は不採用: 損切り幅が設定の下限より狭い）';
 
 beforeEach(() => {
   biasMock = () => 'none';
@@ -89,7 +91,7 @@ beforeEach(() => {
 });
 
 describe('buildScalpPlan パイプライン: レッグ注記は1回だけ(directional)', () => {
-  it('★再現: AI の逆指値レッグが落ちた指値のみプラン→基本文も不採用タグも各1回', async () => {
+  it('★再現: AI の逆指値レッグが落ちた指値のみプラン→理由注記は1回だけ', async () => {
     // buy: 指値は正。逆指値 entry 38200(現在値38250より下=buy には不正)→ 逆指値レッグを落とす。
     const raw = JSON.stringify({
       direction: 'buy', rationale: '押し目買い。逆指値も置いたつもり', refPrice: 1,
@@ -100,11 +102,11 @@ describe('buildScalpPlan パイプライン: レッグ注記は1回だけ(direct
     expect(r.plan.direction).toBe('buy');
     expect(r.plan.limitEntry).toBe(38200);
     expect(r.plan.stopEntry).toBeUndefined();
-    expect(countOf(r.plan.rationale, NOTE_LIMIT_ONLY)).toBe(1);
-    expect(countOf(r.plan.rationale, TAG_STOP_DROPPED)).toBe(1);
+    expect(countOf(r.plan.rationale, NOTE_STOP_GEOMETRY)).toBe(1);
+    expect(r.plan.rationale).not.toContain('実際の注文');
   });
 
-  it('AI が指値レッグを落とされた逆指値のみプラン→基本文も不採用タグも各1回', async () => {
+  it('AI が指値レッグを落とされた逆指値のみプラン→理由注記は1回だけ', async () => {
     // buy: 逆指値は正(38350>REF)。指値 entry 38400(現在値より上=buy の指値として不正)→ 指値レッグを落とす。
     const raw = JSON.stringify({
       direction: 'buy', rationale: 'ブレイク追随。指値も置いたつもり', refPrice: 1,
@@ -114,30 +116,28 @@ describe('buildScalpPlan パイプライン: レッグ注記は1回だけ(direct
     const r = await planFrom(raw);
     expect(r.plan.stopEntry).toBe(38350);
     expect(r.plan.limitEntry).toBeUndefined();
-    expect(countOf(r.plan.rationale, NOTE_STOP_ONLY)).toBe(1);
-    expect(countOf(r.plan.rationale, TAG_LIMIT_DROPPED)).toBe(1);
+    expect(countOf(r.plan.rationale, NOTE_LIMIT_GEOMETRY)).toBe(1);
+    expect(r.plan.rationale).not.toContain('実際の注文');
   });
 
-  it('AI が最初から指値のみ(逆指値を出さない)→基本文1回・不採用タグなし', async () => {
+  it('AI が最初から指値のみ(逆指値を出さない)→「AIが提案せず」1回・「不採用」とは書かない', async () => {
     const raw = JSON.stringify({
       direction: 'buy', rationale: '押し目買いのみ', refPrice: 1,
       limitEntry: 38200, stopLossForLimit: 38150,
     });
     const r = await planFrom(raw);
-    expect(countOf(r.plan.rationale, NOTE_LIMIT_ONLY)).toBe(1);
+    expect(countOf(r.plan.rationale, NOTE_STOP_MISSING)).toBe(1);
     expect(r.plan.rationale).not.toContain('不採用');
   });
 
-  it('両レッグ正常→「指値+逆指値」1回のみ(他の基本文は付かない)', async () => {
+  it('★両レッグ正常→注記なし(rationale は AI の原文のまま=シグナル表示で分かる)', async () => {
     const raw = JSON.stringify({
       direction: 'buy', rationale: '両面で待つ', refPrice: 1,
       limitEntry: 38200, stopLossForLimit: 38150,
       stopEntry: 38350, stopLossForStop: 38300,
     });
     const r = await planFrom(raw);
-    expect(countOf(r.plan.rationale, NOTE_BOTH)).toBe(1);
-    expect(countOf(r.plan.rationale, NOTE_LIMIT_ONLY)).toBe(0);
-    expect(countOf(r.plan.rationale, NOTE_STOP_ONLY)).toBe(0);
+    expect(r.plan.rationale).toBe('両面で待つ');
   });
 
   it('★混在: parse 段で逆指値・enforce 段で指値が落ちて none→注記(parse 段)は各1回だけ', async () => {
@@ -149,11 +149,14 @@ describe('buildScalpPlan パイプライン: レッグ注記は1回だけ(direct
     });
     const r = await planFrom(raw);
     expect(r.plan.direction).toBe('none');
-    expect(countOf(r.plan.rationale, NOTE_LIMIT_ONLY)).toBe(1);
-    expect(countOf(r.plan.rationale, TAG_STOP_DROPPED)).toBe(1);
+    // none 化した回の rationale は parse 段の注記(逆指値が落ちた理由)を据え置く(既存挙動)。
+    expect(countOf(r.plan.rationale, NOTE_STOP_GEOMETRY)).toBe(1);
   });
 
-  it('enforce で逆指値レッグが LC 上限超により落ちても、注記は enforce 前の1回だけ(重複しない)', async () => {
+  // ★v0.9.59 で直した表示バグ: enforce 段(LC 上限超/下限未満)で片レッグが消えた回、
+  //   旧実装は parse 段で付けた「（実際の注文: 指値+逆指値）」をそのまま残していた=
+  //   **実プランは指値だけなのに画面は両レッグと言う** 矛盾。しかも最多の脱落理由(下限未満)は無説明だった。
+  it('★enforce で逆指値が LC 上限超により落ちた→その理由が1回だけ付く(「指値+逆指値」とは言わない)', async () => {
     // 指値 LC=50(<=65 で残る) / 逆指値 LC=|38350-38200|=150(>65)→ enforce で落ちる。
     const raw = JSON.stringify({
       direction: 'buy', rationale: '両面で待つ', refPrice: 1,
@@ -163,9 +166,23 @@ describe('buildScalpPlan パイプライン: レッグ注記は1回だけ(direct
     const r = await planFrom(raw);
     expect(r.plan.direction).toBe('buy');
     expect(r.plan.stopEntry).toBeUndefined();
-    // parse 段では両レッグ有効だったので注記は「指値+逆指値」のまま1回(enforce は注記を触らない)。
-    expect(countOf(r.plan.rationale, NOTE_BOTH)).toBe(1);
-    expect(countOf(r.plan.rationale, NOTE_LIMIT_ONLY)).toBe(0);
+    expect(countOf(r.plan.rationale, NOTE_STOP_LC)).toBe(1);
+    expect(r.plan.rationale).not.toContain('実際の注文');
+  });
+
+  it('★enforce で逆指値が LC 下限未満により落ちた→「設定の下限より狭い」が1回だけ(実データ最多の経路)', async () => {
+    // 指値 LC=50(下限45以上で残る) / 逆指値 LC=|38350-38345|=5(<45)→ enforce で落ちる。
+    const raw = JSON.stringify({
+      direction: 'buy', rationale: '両面で待つ', refPrice: 1,
+      limitEntry: 38200, stopLossForLimit: 38150,
+      stopEntry: 38350, stopLossForStop: 38345,
+    });
+    const r = await planFrom(raw);
+    expect(r.plan.direction).toBe('buy');
+    expect(r.plan.stopEntry).toBeUndefined();
+    expect(countOf(r.plan.rationale, NOTE_STOP_LC_FLOOR)).toBe(1);
+    // ★非公開の決済数値(下限の実数)を書かない。
+    expect(r.plan.rationale).not.toContain('45');
   });
 });
 

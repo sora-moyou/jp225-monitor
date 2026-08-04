@@ -48,6 +48,10 @@ export interface ArmedBracket {
   //     価格列になり monitor が feed した価格と一致しない=「武装時点で通過済みだったか」を誤判定する。
   //   取れない/stale なら欠落(=記録は NULL)。engine が ARM の3経路(flat計画/ドテン反対建て/レンジ再評価差替え)で据える。
   armedPrice?: number;
+  // ★v0.9.59: このブラケット固有の未約定待ち時間[ms]。ARM 時にエントリーまでの距離とその時間帯の
+  //   ボラティリティから決める(armWait.ts の computeArmWait)。欠落なら従来どおり ARMED_TIMEOUT_MS(15分)。
+  //   ADD-ONLY: 据えない呼び出し元(テスト/影シミュ)は byte 一致で従来挙動のまま。
+  waitMs?: number;
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -389,6 +393,13 @@ export function equitySeries(trades: Array<{ exit_t: number; pnl: number }>): Eq
  *    弾かれてエンジンが全シグナルを停止する(2026-07-21 の System B 停止の実原因)。 */
 export const ARMED_TIMEOUT_MS = 15 * 60_000;
 
+/** このブラケットに適用する待ち時間[ms]。armed.waitMs が据わっていればそれ、無ければ従来の一律 15分。
+ *  ★可変化(armWait.ts)後も「据えなかった呼び出し元は従来と完全に同じ」を保証するための単一の入口。 */
+export function armedWaitMsOf(a: { waitMs?: number } | null | undefined): number {
+  const v = a?.waitMs;
+  return v != null && Number.isFinite(v) && v > 0 ? v : ARMED_TIMEOUT_MS;
+}
+
 /** advance の任意オプション。**実弾に繋がる呼び出し元は渡さない**(渡さなければ従来と byte 一致)。 */
 export interface AdvanceOptions {
   /** 決済逆指値の算出を差し替える(既定=computeExitStop=実運用の非公開 phase-exit)。
@@ -406,7 +417,8 @@ export function advance(
   if (st.phase === 'armed' && st.armed) {
     // ★未約定タイムアウト: どちらのレッグも約定しないまま一定時間経過 → 取消して FLAT(再計画可能に)。
     //   armed.at はブラケット武装時刻。約定判定より前に評価する(タイムアウトが最優先)。
-    if (st.armed.at != null && now - st.armed.at >= ARMED_TIMEOUT_MS) {
+    //   ★待ち時間はブラケット固有(armed.waitMs)。据わっていなければ従来の一律 ARMED_TIMEOUT_MS。
+    if (st.armed.at != null && now - st.armed.at >= armedWaitMsOf(st.armed)) {
       return { next: { phase: 'flat', lastExit: st.lastExit }, armedTimedOut: true };
     }
     // ★レンジ両面ストラドル: mode/range で gating(direction では判定しない)。上下どちらか跨いだ side を約定。
@@ -543,6 +555,17 @@ export function advance(
   return { next: st };
 }
 
+/** 未約定失効の表示材料(engine が保持し SSE へ載せる)。
+ *  count=累計(生涯・消さない=無音の失敗を数える指標) / streak=連続(約定のたびに 0)。
+ *  lastWaitMs / lastBias は **直前に失効したブラケット** の実際の待ち時間と向き(待機表示用・不明なら欠落)。 */
+export interface ArmedTimeoutView {
+  count: number;
+  streak: number;
+  lastAt: number | null;
+  lastWaitMs?: number | null;
+  lastBias?: 'buy' | 'sell' | 'range' | null;
+}
+
 /** エンジン状態 + 現在値 + now から SSE state を組み立てる純関数。
  *  signal(現在シグナル・trade2 追従用)は在れば付与する。既存フィールドは不変=パネル表示互換。
  *  ★lastExitedSignalId(RECORD/ADD-ONLY): 直近に決済(filled→flat)したシグナルの signalId。
@@ -550,7 +573,7 @@ export function advance(
 export function toSignalTradeState(
   st: EngineState, price: number | null, now: number, signal?: CurrentSignal | null,
   lastExitedSignalId?: number,
-  armedTimeout?: { count: number; lastAt: number | null } | null,
+  armedTimeout?: ArmedTimeoutView | null,
 ): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
@@ -614,9 +637,19 @@ export function toSignalTradeState(
   }
   // ★直近決済シグナルID(ADD-ONLY): 在るときだけ露出(初回決済まで欠落=既存 JSON 不変)。
   if (lastExitedSignalId != null) s.lastExitedSignalId = lastExitedSignalId;
-  // ★未約定失効の累計(ADD-ONLY): 1件以上あるときだけ露出(0件=欠落=既存 JSON 不変=dedupe を壊さない)。
+  // ★未約定失効(ADD-ONLY): 1件以上あるときだけ露出(0件=欠落=既存 JSON 不変=dedupe を壊さない)。
+  //   count=累計(生涯) / streak=連続(約定でリセット・待機表示が使う)。waitMin/bias は在るときだけ足す
+  //   (欠落=パネル側が該当部分を出さない=「不明」や空括弧を作らない)。
   if (armedTimeout && armedTimeout.count > 0) {
-    s.armedTimeout = { count: armedTimeout.count, lastAt: armedTimeout.lastAt ?? 0 };
+    s.armedTimeout = {
+      count: armedTimeout.count,
+      streak: armedTimeout.streak ?? 0,
+      lastAt: armedTimeout.lastAt ?? 0,
+    };
+    if (armedTimeout.lastWaitMs != null && Number.isFinite(armedTimeout.lastWaitMs)) {
+      s.armedTimeout.waitMin = Math.round(armedTimeout.lastWaitMs / 60_000);
+    }
+    if (armedTimeout.lastBias) s.armedTimeout.bias = armedTimeout.lastBias;
   }
   return s;
 }

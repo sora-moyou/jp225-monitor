@@ -64,8 +64,9 @@ describe('★片レッグだけ落ちた回の理由が構造的に残る(parse 
     expect(r.plan.stopEntry).toBeUndefined();     // 採否は従来どおり(落とす)
     expect(drops(r.legDrops)).toEqual([['stop', 'stopSide']]);
     expect(r.legDrops?.[0]).toEqual({ name: 'stop', reason: 'stopSide', entry: 38350, stopLoss: 38400 });
-    // 従来の表示用注記(日本語)も従来どおり出る=既存の見え方は変えていない。
-    expect(r.plan.rationale).toContain('逆指値レッグは条件を満たさず不採用');
+    // 表示用注記(日本語)も同じ理由を語る=台帳(legDrops)と画面が食い違わない。
+    // ★v0.9.59: 文面は「条件を満たさず不採用」(無内容)から具体的な理由へ差し替え(ユーザー指示)。
+    expect(r.plan.rationale).toContain('（逆指値は不採用: 損切りがエントリーの逆側）');
   });
 
   it('向き違反(現在値との上下): 買いの逆指値が現在値より下 → stop=geometry', () => {

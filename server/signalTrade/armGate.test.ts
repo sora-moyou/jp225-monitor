@@ -312,19 +312,20 @@ describe('作業3: 未約定失効(armed-timeout)の記録', () => {
     } finally { spy.mockRestore(); }
 
     expect(eng.getPhase()).toBe('flat');
-    // ① in-memory カウンタ
-    expect(eng._peekArmedTimeouts()).toEqual({ count: 1, lastAt: timedOutAt });
+    // ① in-memory カウンタ(★v0.9.59: 累計 count と 連続 streak の両方が立つ)
+    expect(eng._peekArmedTimeouts()).toMatchObject({ count: 1, streak: 1, lastAt: timedOutAt });
     // ② 永続(signal_meta)
     const db = openDb(resolveDbPath());
-    try { expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 1, lastAt: timedOutAt }); } finally { db.close(); }
+    try { expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 1, streak: 1, lastAt: timedOutAt }); } finally { db.close(); }
     // ③ SSE(可視化の供給源)
-    expect(eng.getState(timedOutAt).armedTimeout).toEqual({ count: 1, lastAt: timedOutAt });
+    expect(eng.getState(timedOutAt).armedTimeout).toMatchObject({ count: 1, streak: 1, lastAt: timedOutAt });
     // ④ ログ: 「なぜ約定しなかったか」= 各レッグが現在値からどれだけ離れていたか
     const line = logs.find(l => l.includes('armed-timeout'));
     expect(line).toBeTruthy();
     expect(line).toContain('signalId=1');
     expect(line).toContain('limit=63805(現値差155円)');
     expect(line).toContain('累計未約定失効=1回');
+    expect(line).toContain('連続未約定失効=1回');
   });
 
   it('約定してから決済した場合は加算されない(失効だけを数える)', async () => {
@@ -336,10 +337,10 @@ describe('作業3: 未約定失効(armed-timeout)の記録', () => {
   });
 
   it('件数0では SSE に付与しない(既存 JSON 不変=broadcast dedupe を壊さない)', () => {
-    const s0 = toSignalTradeState({ phase: 'flat' }, 63865, NOW, null, undefined, { count: 0, lastAt: null });
+    const s0 = toSignalTradeState({ phase: 'flat' }, 63865, NOW, null, undefined, { count: 0, streak: 0, lastAt: null });
     expect('armedTimeout' in s0).toBe(false);
-    const s1 = toSignalTradeState({ phase: 'flat' }, 63865, NOW, null, undefined, { count: 3, lastAt: 123 });
-    expect(s1.armedTimeout).toEqual({ count: 3, lastAt: 123 });
+    const s1 = toSignalTradeState({ phase: 'flat' }, 63865, NOW, null, undefined, { count: 3, streak: 2, lastAt: 123 });
+    expect(s1.armedTimeout).toEqual({ count: 3, streak: 2, lastAt: 123 });
   });
 
   it('planToArmed→armedToPlan は往復で同じ形になる(再検証の対象が「実際に発注される形」であること)', () => {

@@ -100,6 +100,16 @@ export function initSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
+  // ★v0.9.59(RECORD-ONLY): ARM した回の「待ち時間(armed-timeout までの猶予)がどう決まったか」の全材料。
+  //   待ち時間を距離×ボラで可変にしたので、**なぜこの時間になったか** が後から読めないと検証できない。
+  //   arm_wait_ms=採用した待ち / arm_wait_distance=ARM 時価格から最寄エントリーまでの距離[円] /
+  //   arm_wait_sigma=直近1分足終値変化の標準偏差[円/分] / arm_wait_reason=どの枝で決まったか。
+  //   既存DBへ後付けマイグレーション(NULL 可=旧行 / ARM しなかった回)。
+  const spCols = (db.prepare('PRAGMA table_info(signal_plans)').all() as Array<{ name: string }>).map(c => c.name);
+  if (!spCols.includes('arm_wait_ms')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_ms INTEGER');
+  if (!spCols.includes('arm_wait_distance')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_distance REAL');
+  if (!spCols.includes('arm_wait_sigma')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_sigma REAL');
+  if (!spCols.includes('arm_wait_reason')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_reason TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -143,6 +153,10 @@ export function initSchema(db: DatabaseSync): void {
   const smCols = (db.prepare('PRAGMA table_info(signal_meta)').all() as Array<{ name: string }>).map(c => c.name);
   if (!smCols.includes('armed_timeouts')) db.exec('ALTER TABLE signal_meta ADD COLUMN armed_timeouts INTEGER NOT NULL DEFAULT 0');
   if (!smCols.includes('last_armed_timeout_at')) db.exec('ALTER TABLE signal_meta ADD COLUMN last_armed_timeout_at INTEGER');
+  // ★連続未約定失効(streak): 約定のたびに 0 へ戻る。累計(armed_timeouts)とは **別列** に持つ:
+  //   累計は「無音の失敗が何件あったか」という機体の生涯の健全性指標で、リセットしてはいけない。
+  //   一方で待機表示に出したいのは「いま何回続けて空振りしているか」なので、混ぜずに両方を残す。
+  if (!smCols.includes('armed_timeout_streak')) db.exec('ALTER TABLE signal_meta ADD COLUMN armed_timeout_streak INTEGER NOT NULL DEFAULT 0');
   // ★履歴消去(POST /api/signal-trades/clear)の監査行。ゲートも認証も無い削除口で、実データでは 5 回発火した
   //   痕跡が「signal_id が飛んでいる」という間接証拠でしか残っていなかった(誰が/いつ/何件は判定不能)。
   //   削除のたびに1行残し、後からエポック境界と孤児化件数を機械的に復元できるようにする。
@@ -618,9 +632,9 @@ export function getSignalIdSeed(db: DatabaseSync, system: SignalSystemFilter): n
  *    (実データでは 5 回の巻き戻しで signal_id=1 が 5 建玉・両方向に存在する状態になった)。 */
 export function resetArmedTimeoutCounter(db: DatabaseSync, system?: SignalSystemFilter): void {
   if (system) {
-    db.prepare('UPDATE signal_meta SET armed_timeouts = 0, last_armed_timeout_at = NULL WHERE system = ?').run(system);
+    db.prepare('UPDATE signal_meta SET armed_timeouts = 0, armed_timeout_streak = 0, last_armed_timeout_at = NULL WHERE system = ?').run(system);
   } else {
-    db.exec('UPDATE signal_meta SET armed_timeouts = 0, last_armed_timeout_at = NULL');
+    db.exec('UPDATE signal_meta SET armed_timeouts = 0, armed_timeout_streak = 0, last_armed_timeout_at = NULL');
   }
 }
 
@@ -630,21 +644,33 @@ export function resetArmedTimeoutCounter(db: DatabaseSync, system?: SignalSystem
 // trade2 が6秒おきに147回拒否したのに monitor 側の記録は1行ログのみ・件数はどこにも残らなかった。
 // 系統別(A=実売買 / B=紙専用)に永続し、履歴消去でのみ 0 に戻る。
 
-export interface ArmedTimeoutStats { count: number; lastAt: number | null }
+/** count=累計(生涯・約定でも減らない) / streak=連続(約定のたびに 0 へ戻る)。両方を永続する。 */
+export interface ArmedTimeoutStats { count: number; streak: number; lastAt: number | null }
 
-/** 指定系統の未約定失効の累計と最終発生時刻(未発生は {0, null})。 */
+/** 指定系統の未約定失効の累計/連続と最終発生時刻(未発生は {0, 0, null})。 */
 export function getArmedTimeoutStats(db: DatabaseSync, system: SignalSystemFilter): ArmedTimeoutStats {
-  const row = db.prepare('SELECT armed_timeouts, last_armed_timeout_at FROM signal_meta WHERE system = ?').get(system) as
-    { armed_timeouts: number | null; last_armed_timeout_at: number | null } | undefined;
-  return { count: row?.armed_timeouts ?? 0, lastAt: row?.last_armed_timeout_at ?? null };
+  const row = db.prepare('SELECT armed_timeouts, armed_timeout_streak, last_armed_timeout_at FROM signal_meta WHERE system = ?').get(system) as
+    { armed_timeouts: number | null; armed_timeout_streak: number | null; last_armed_timeout_at: number | null } | undefined;
+  return { count: row?.armed_timeouts ?? 0, streak: row?.armed_timeout_streak ?? 0, lastAt: row?.last_armed_timeout_at ?? null };
 }
 
-/** 未約定失効を1件加算し、発生時刻を記録する。加算後の累計を返す。 */
+/** 未約定失効を1件加算し(累計+連続の両方)、発生時刻を記録する。加算後の値を返す。 */
 export function bumpArmedTimeout(db: DatabaseSync, system: SignalSystemFilter, at: number): ArmedTimeoutStats {
   db.prepare(
-    'INSERT INTO signal_meta(system, last_signal_id, armed_timeouts, last_armed_timeout_at) VALUES(?, 0, 1, ?) '
-    + 'ON CONFLICT(system) DO UPDATE SET armed_timeouts = signal_meta.armed_timeouts + 1, last_armed_timeout_at = excluded.last_armed_timeout_at',
+    'INSERT INTO signal_meta(system, last_signal_id, armed_timeouts, armed_timeout_streak, last_armed_timeout_at) VALUES(?, 0, 1, 1, ?) '
+    + 'ON CONFLICT(system) DO UPDATE SET armed_timeouts = signal_meta.armed_timeouts + 1, '
+    + 'armed_timeout_streak = signal_meta.armed_timeout_streak + 1, last_armed_timeout_at = excluded.last_armed_timeout_at',
   ).run(system, at);
+  return getArmedTimeoutStats(db, system);
+}
+
+/** ★約定したら連続失効(streak)だけを 0 へ戻す。累計(armed_timeouts)と最終発生時刻は触らない
+ *  (累計は生涯の健全性指標・lastAt は「最後に空振りしたのはいつか」なので約定で消してはいけない)。 */
+export function resetArmedTimeoutStreak(db: DatabaseSync, system: SignalSystemFilter): ArmedTimeoutStats {
+  db.prepare(
+    'INSERT INTO signal_meta(system, last_signal_id, armed_timeouts, armed_timeout_streak) VALUES(?, 0, 0, 0) '
+    + 'ON CONFLICT(system) DO UPDATE SET armed_timeout_streak = 0',
+  ).run(system);
   return getArmedTimeoutStats(db, system);
 }
 
@@ -690,6 +716,8 @@ export interface SignalPlanRow {
   stop_loss_for_limit: number | null; stop_loss_for_stop: number | null;
   leg_drops_json: string | null; settings_json: string | null;
   rationale: string | null; error: string | null;
+  arm_wait_ms: number | null; arm_wait_distance: number | null;
+  arm_wait_sigma: number | null; arm_wait_reason: string | null;
 }
 
 export interface SignalPlanInsert {
@@ -710,6 +738,11 @@ export interface SignalPlanInsert {
   settingsJson?: string | null;
   rationale?: string | null;
   error?: string | null;
+  // ★ARM した回の待ち時間の決定内訳(RECORD-ONLY)。ARM しなかった回は全て null。
+  armWaitMs?: number | null;
+  armWaitDistance?: number | null;
+  armWaitSigma?: number | null;
+  armWaitReason?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -723,8 +756,9 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     INSERT INTO signal_plans (
       t, system, signal_id, direction, none_reason, veto_fired, ref_price, regime, confidence,
       limit_entry, stop_entry, stop_loss_for_limit, stop_loss_for_stop,
-      leg_drops_json, settings_json, rationale, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      leg_drops_json, settings_json, rationale, error,
+      arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -732,6 +766,8 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     finiteOrNull(p.limitEntry), finiteOrNull(p.stopEntry),
     finiteOrNull(p.stopLossForLimit), finiteOrNull(p.stopLossForStop),
     p.legDropsJson ?? null, p.settingsJson ?? null, p.rationale ?? null, p.error ?? null,
+    finiteOrNull(p.armWaitMs), finiteOrNull(p.armWaitDistance), finiteOrNull(p.armWaitSigma),
+    p.armWaitReason ?? null,
   );
 }
 

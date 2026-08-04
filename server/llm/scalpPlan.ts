@@ -664,27 +664,60 @@ export function entrySideOk(direction: 'buy' | 'sell', kind: 'limit' | 'stop', e
 
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
  *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
-/** ★表示整合(v0.7.41): 最終 plan に実際に採用されたエントリーレッグを、日本語の短い注記文字列にする純関数。
- *  パネルは plan.rationale をそのまま表示するため、AI の自由文が「出していないレッグ(逆指値等)を置いた」と
- *  語っても、この注記を末尾に足すことで表示が実プランと矛盾しないようにする。private 定数は一切出さない。
+/** ★v0.9.59: レッグが最終プランに残らなかった理由の表示文(SSOT)。**非公開の決済数値は一切書かない**
+ *  (下限/上限は「設定の下限/上限」と呼ぶだけで、値は設定画面にしか出さない)。
+ *  語彙は NoneReason をそのまま使う(新しい理由を作らない)。実際に現れるのは
+ *  missing / stopSide / geometry(parse 段)と stopSide / lcFloor / lc / trend / bias(enforce 段)。 */
+const LEG_DROP_REASON_TEXT: Record<NoneReason, string> = {
+  missing:       'AIが提案せず',
+  ai:            'AIが提案せず',
+  stopSide:      '損切りがエントリーの逆側',
+  geometry:      'エントリーが現在値の逆側',
+  lcFloor:       '損切り幅が設定の下限より狭い',
+  lc:            '損切り幅が設定の上限より広い',
+  trend:         'トレンドに逆行',
+  bias:          'バイアス設定と逆',
+  stale:         '現在値が既にエントリーを通過',
+  rangeDisabled: 'レンジ設定が無効',
+};
+
+/** 「AI がそもそも出さなかった」理由。ここだけ『なし』と書き、それ以外は『出したが不採用』と書き分ける
+ *  (ユーザーにとって意味が違う: 前者は AI の判断・後者はコードの検証で落ちた)。 */
+const LEG_NOT_PROPOSED: readonly NoneReason[] = ['missing', 'ai'];
+
+/** レッグ1本ぶんの脱落注記(短文・純関数)。 */
+function legDropPhrase(name: '指値' | '逆指値', reason: NoneReason): string {
+  const text = LEG_DROP_REASON_TEXT[reason];
+  return LEG_NOT_PROPOSED.includes(reason)
+    ? `（${name}なし: ${text}）`
+    : `（${name}は不採用: ${text}）`;
+}
+
+/** ★表示整合(v0.7.41 / 文面刷新 v0.9.59): 最終 plan に **残らなかった** レッグの理由を、日本語の短い注記に
+ *  する純関数。パネルは plan.rationale をそのまま表示するため、AI の自由文が「出していないレッグ(逆指値等)を
+ *  置いた」と語っても、この注記を末尾に足すことで表示が実プランと矛盾しないようにする。
+ *  ★v0.9.59(ユーザー指示): 「（実際の注文: 指値+逆指値）」のような **プラン内容の言い直しは書かない**
+ *    (画面のシグナル欄を見れば分かるため)。書くのは「なぜ片方が無いのか」だけ。
  *  - hasLimit/hasStop: 最終 plan に指値/逆指値レッグが入っているか(plan.limitEntry/stopEntry != null)。
- *  - limitDropped/stopDropped: AI が出したが検証(向き/対の整合)で落とされたレッグ=「不採用」タグを付す。
- *  レッグ皆無(理論上は directional で起きない)なら空文字を返す(追記しない)。 */
+ *  - drops: そのステージが記録した LegDrop 群(記録専用の配列をそのまま渡す=表示と記録が同じ理由を指す)。
+ *  両レッグ揃っている / 落ちた理由が分からない場合は空文字を返す(追記しない)。private 定数は一切出さない。 */
 export function buildLegNote(
-  args: { hasLimit: boolean; hasStop: boolean; limitDropped?: boolean; stopDropped?: boolean },
+  args: { hasLimit: boolean; hasStop: boolean; drops?: readonly LegDrop[] },
 ): string {
-  const { hasLimit, hasStop, limitDropped, stopDropped } = args;
-  const base =
-    hasLimit && hasStop ? '（実際の注文: 指値+逆指値）'
-    : hasLimit ? '（実際の注文: 指値のみ・逆指値レッグなし）'
-    : hasStop ? '（実際の注文: 逆指値のみ・指値レッグなし）'
-    : '';
-  if (!base) return '';
-  // AI が出したが検証で落ちたレッグの理由タグ(短く・定数非開示)。
-  const drop =
-    (limitDropped ? '（指値レッグは条件を満たさず不採用）' : '') +
-    (stopDropped ? '（逆指値レッグは条件を満たさず不採用）' : '');
-  return base + drop;
+  const { hasLimit, hasStop, drops } = args;
+  if (hasLimit && hasStop) return '';   // 両方あるなら説明することは無い(シグナル表示そのもの)。
+  const reasonOf = (name: LegDrop['name']): NoneReason | undefined =>
+    drops?.find(d => d.name === name)?.reason;
+  const parts: string[] = [];
+  if (!hasLimit) {
+    const r = reasonOf('limit');
+    if (r) parts.push(legDropPhrase('指値', r));
+  }
+  if (!hasStop) {
+    const r = reasonOf('stop');
+    if (r) parts.push(legDropPhrase('逆指値', r));
+  }
+  return parts.join('');
 }
 
 export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
@@ -845,11 +878,11 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   画面の根拠文が『（実際の注文: 指値のみ…）（逆指値レッグは…不採用） （実際の注文: 指値のみ…）』と二重になっていた
   //   (レンジ側も、既に落ちた脚が2回目には「AIが提示しなかった」と誤って追記されていた)。再 parse そのものを廃止して解消。
   //   ここで文字列を見て「もう付いているか」を判定するような対症療法はしない(生 rationale を汚さない)。
+  // ★v0.9.59: 注記の理由は **記録用の legDrops と同じ配列** から引く(表示と台帳が同じ理由を指す)。
   const legNote = buildLegNote({
     hasLimit: plan.limitEntry != null,
     hasStop: plan.stopEntry != null,
-    limitDropped: hasLimitLeg && !limitLegOk,
-    stopDropped: hasStopLeg && !stopLegOk,
+    drops: legDrops,
   });
   if (legNote) plan.rationale = `${rationale} ${legNote}`;
   // ★v0.9.57(記録専用): 片レッグだけ落ちた回の理由を構造化して返す。上の buildLegNote は日本語の
@@ -1533,6 +1566,21 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // 落ちることがあるため parsed.plan から再付与する(ゲートには使わない=挙動不変)。
     if (parsed.plan.regime !== undefined) finalPlan.regime = parsed.plan.regime;
     if (parsed.plan.confidence !== undefined) finalPlan.confidence = parsed.plan.confidence;
+    // ★v0.9.59(表示専用): **enforce 段で落ちたレッグ**の理由も根拠文へ足す。
+    //   parse 段の注記(buildLegNote)は AI 応答の幾何しか説明できず、実データで最多の脱落理由
+    //   (損切り幅が設定の下限より狭い=lcFloor / 上限より広い=lc)は画面に何の説明も残らなかった。
+    //   しかも旧文言では parse 時点の「（実際の注文: 指値+逆指値）」がそのまま残り、片レッグが
+    //   enforce で消えた回に **実プランと矛盾する** 表示になっていた。
+    //   drops は enforce が受け取った時点で在ったレッグだけ=parse 段の注記と二重にならない。
+    //   採否・価格・legDrops の記録内容は一切変えない(足すのは表示文字列だけ)。
+    if (finalPlan.direction === 'buy' || finalPlan.direction === 'sell') {
+      const enforceNote = buildLegNote({
+        hasLimit: finalPlan.limitEntry != null,
+        hasStop: finalPlan.stopEntry != null,
+        drops: enforced.legDrops,
+      });
+      if (enforceNote) finalPlan.rationale = `${finalPlan.rationale} ${enforceNote}`;
+    }
     const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: finalPlan, vetoFired: enforced.vetoFired };
     // ★v0.9.44(記録専用): レンジの規約違反は **parsed.plan(AI の生出力)** に対して判定する。
     //   enforce 後の plan で判定すると、トレンド veto / バイアスで片脚が落ちた回が upper/lower 不揃いになり

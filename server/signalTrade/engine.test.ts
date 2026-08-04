@@ -1640,7 +1640,7 @@ describe('SignalEngine signalId 永続シード(再起動継続・履歴消去�
     expect(eng._peekSignalIdCounter()).toBe(4);   // 永続からシード
     eng.resetArmedTimeoutCounter();                // 履歴消去に対応する in-memory リセット
     expect(eng._peekSignalIdCounter()).toBe(4);    // ★巻き戻らない(次の ARM は 5)
-    expect(eng._peekArmedTimeouts()).toEqual({ count: 0, lastAt: null });
+    expect(eng._peekArmedTimeouts()).toEqual({ count: 0, streak: 0, lastAt: null });
     eng.stop();
     // 永続側も不変。
     const db2 = openDb(resolveDbPath());

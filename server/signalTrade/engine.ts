@@ -17,7 +17,8 @@ import { loadExitImpl } from './exit/index.js';
 import { checkSanity } from './sanity.js';
 import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
-import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, insertSignalPlan, getSignalIdStart, SIGNAL_ID_SPACE_BASE, setSignalIdCounter, getArmedTimeoutStats, bumpArmedTimeout, type SignalPlanInsert } from '../db/store.js';
+import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, insertSignalPlan, getSignalIdStart, SIGNAL_ID_SPACE_BASE, setSignalIdCounter, getArmedTimeoutStats, bumpArmedTimeout, resetArmedTimeoutStreak, type SignalPlanInsert } from '../db/store.js';
+import { collectRecentBars } from '../barsSource.js';
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
@@ -28,9 +29,19 @@ import {
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
   AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_FACTOR, REEVAL_CAP_MS,
+  armedWaitMsOf,
   type SignalPhase, type EngineState, type CurrentSignal, type SignalHold, type RecordedTrade,
   type OpenPosition, type HeldIdentity, type ArmedBracket, type ArmedIdentity, type StaleLegReport,
+  type ArmedTimeoutView,
 } from './decisions.js';
+import {
+  computeArmWait, describeArmWait, entryLegsOf, nearestEntryDistance, sigma1mFromBars,
+  ARM_WAIT_SIGMA_BARS, type ArmWaitDecision,
+} from './armWait.js';
+import {
+  bracketSignature, describeArmBlock, isArmBlocked, noteArmExpiry, noteArmFilled,
+  EMPTY_ARM_REPEAT, type ArmRepeatState,
+} from './armRepeat.js';
 import type { ScalpPlanResult } from '../llm/openai.js';
 import { checkRefDrift, recheckArmedSanity } from './armGate.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
@@ -129,9 +140,50 @@ export class SignalEngine {
   private lastRangeReevalAt = 0;
   // ★未約定失効(armed-timeout)の累計と最終発生時刻。start() で DB(signal_meta)からシードし、発生ごとに
   //   加算+永続し、SSE(SignalTradeState.armedTimeout)へ載せる。0件のあいだは SSE に出ない(既存 JSON 不変)。
-  private armedTimeouts: { count: number; lastAt: number | null } = { count: 0, lastAt: null };
+  private armedTimeouts: ArmedTimeoutView = { count: 0, streak: 0, lastAt: null };
+  // ★(d) 歯止め: 同じ価格の計画が連続で失効し続けるのを止める(armRepeat.ts)。in-memory
+  //   (再起動でクリア=許容。ブロックは最長1時間の一時的なものなので永続する価値が無い)。
+  private armRepeat: ArmRepeatState = { ...EMPTY_ARM_REPEAT };
 
   constructor(private readonly cfg: EngineConfig) {}
+
+  /** ★ARM 時の待ち時間を決める(IO=1分足の取得 + 純関数 computeArmWait)。
+   *  距離 = ARM 時価格から最も近いエントリー価格まで / σ = 直近 ARM_WAIT_SIGMA_BARS 本の1分足終値変化の標準偏差。
+   *  足が取れない/材料が欠ける場合は computeArmWait が必ず下限(=従来の15分)へ落とす(fail-safe)。 */
+  private resolveArmWait(armed: ArmedBracket, live: number | null): ArmWaitDecision {
+    const distance = nearestEntryDistance(live ?? armed.armedPrice ?? null, entryLegsOf(armed));
+    let sigma: number | null = null;
+    try {
+      const db = openDb(resolveDbPath());
+      try {
+        const since = Date.now() - (ARM_WAIT_SIGMA_BARS + 3) * 60_000;
+        sigma = sigma1mFromBars(collectRecentBars(db, NIKKEI_SYMBOL, since), ARM_WAIT_SIGMA_BARS);
+      } finally { db.close(); }
+    } catch (e) {
+      // ★無音にしない: σ が測れなければ待ちは下限へ落ちる(=挙動が変わる)ので必ず1行残す。
+      console.warn(`${this.logTag} arm-wait σ 取得失敗(下限へ):`, e instanceof Error ? e.message : String(e));
+    }
+    return computeArmWait(distance, sigma);
+  }
+
+  /** ★ARM の3経路で共通の後処理: 待ち時間を決めて armed に焼き付け、決定内訳を1行ログして返す。 */
+  private applyArmWait(armed: ArmedBracket, live: number | null, tag: string): ArmWaitDecision {
+    const w = this.resolveArmWait(armed, live);
+    armed.waitMs = w.waitMs;
+    console.log(`${this.logTag} arm-wait ${tag} dir=${armed.mode === 'range' ? 'range' : armed.direction} ${describeArmWait(w)}`);
+    return w;
+  }
+
+  /** ★(d) 歯止め: この形のブラケットが今ブロックされていれば true(ログ付き)。 */
+  private armBlocked(armed: ArmedBracket, now: number): boolean {
+    const sig = bracketSignature(armed);
+    if (!isArmBlocked(this.armRepeat, sig, now)) return false;
+    console.log(`${this.logTag} arm-repeat-block ${describeArmBlock(this.armRepeat, now)}`);
+    return true;
+  }
+
+  /** テスト用: (d) の歯止め状態を覗く。 */
+  _peekArmRepeat(): ArmRepeatState { return this.armRepeat; }
 
   /** ログ接頭辞(A=[signalTrade] で従来ログと byte 一致 / B=[signalTradeB])。 */
   private get logTag(): string { return this.cfg.profile === 'B' ? '[signalTradeB]' : '[signalTrade]'; }
@@ -159,19 +211,50 @@ export class SignalEngine {
     }
   }
 
-  /** ★未約定失効を1件記録する(永続 + in-memory)。失敗しても致命的にしない(件数は落ちるがログは残る)。 */
-  private recordArmedTimeout(at: number): void {
-    this.armedTimeouts = { count: this.armedTimeouts.count + 1, lastAt: at };
+  /** ★未約定失効を1件記録する(永続 + in-memory)。累計と連続の **両方** を加算する。
+   *  waitMs/bias は「直前に失効したブラケット」の材料で、待機表示(連続失効 N分M回 / 現在○目線)に使う。
+   *  失敗しても致命的にしない(件数は落ちるがログは残る)。 */
+  private recordArmedTimeout(at: number, expired: ArmedBracket | undefined): void {
+    const lastWaitMs = armedWaitMsOf(expired);
+    // ★目線: **既にある値** = そのブラケットの向き(パネルの「買い目線/売り目線/レンジ」と同じ語彙)。
+    //   range は direction がプレースホルダなので mode/range で判定する(既存の分岐規約と同じ)。
+    const lastBias: 'buy' | 'sell' | 'range' | null = expired
+      ? (expired.mode === 'range' || expired.range != null ? 'range' : expired.direction)
+      : null;
+    this.armedTimeouts = {
+      count: this.armedTimeouts.count + 1,
+      streak: this.armedTimeouts.streak + 1,
+      lastAt: at, lastWaitMs, lastBias,
+    };
     try {
       const db = openDb(resolveDbPath());
-      try { this.armedTimeouts = bumpArmedTimeout(db, this.counterKey, at); } finally { db.close(); }
+      try {
+        const p = bumpArmedTimeout(db, this.counterKey, at);
+        this.armedTimeouts = { ...p, lastWaitMs, lastBias };
+      } finally { db.close(); }
     } catch (e) {
       console.warn(`${this.logTag} armed-timeout persist failed:`, e instanceof Error ? e.message : String(e));
     }
   }
 
-  /** テスト用: 未約定失効の累計を覗く。 */
-  _peekArmedTimeouts(): { count: number; lastAt: number | null } { return this.armedTimeouts; }
+  /** ★約定したら「連続失効」だけを 0 に戻す(累計は残す=無音の失敗を数える指標を壊さない)。
+   *  waitMin/bias も落とす: 連続 0 のあいだは待機表示が従来どおり「シグナル待機」になり材料は不要。 */
+  private clearArmedTimeoutStreak(): void {
+    if (this.armedTimeouts.streak === 0) return;   // 既に 0 なら DB も触らない(無駄書き込みを避ける)。
+    this.armedTimeouts = { ...this.armedTimeouts, streak: 0, lastWaitMs: null, lastBias: null };
+    try {
+      const db = openDb(resolveDbPath());
+      try {
+        const p = resetArmedTimeoutStreak(db, this.counterKey);
+        this.armedTimeouts = { ...p, lastWaitMs: null, lastBias: null };
+      } finally { db.close(); }
+    } catch (e) {
+      console.warn(`${this.logTag} armed-timeout streak reset failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** テスト用: 未約定失効の累計/連続を覗く。 */
+  _peekArmedTimeouts(): ArmedTimeoutView { return this.armedTimeouts; }
 
   /** ARM で採番するたびに、最後に採番した signalId を永続する(再起動後のシード元)。失敗は握りつぶす。 */
   private persistSignalIdCounter(): void {
@@ -186,7 +269,7 @@ export class SignalEngine {
   /** 履歴消去に合わせて in-memory の未約定失効カウンタを 0 に戻す(DB 側は resetArmedTimeoutCounter が 0 化)。
    *  ★signalId カウンタは触らない: 履歴を消しても採番は巻き戻さない(番号の再利用=結合キーの破壊を防ぐ)。 */
   resetArmedTimeoutCounter(): void {
-    this.armedTimeouts = { count: 0, lastAt: null };
+    this.armedTimeouts = { count: 0, streak: 0, lastAt: null };
   }
 
   /** テスト用: 現在の signalId カウンタ(=最後に採番した signalId)を覗く。 */
@@ -272,7 +355,8 @@ export class SignalEngine {
     this.lastExitedSignalId = undefined;
     this.fillDurations = [];
     this.lastRangeReevalAt = 0;
-    this.armedTimeouts = { count: 0, lastAt: null };
+    this.armedTimeouts = { count: 0, streak: 0, lastAt: null };
+    this.armRepeat = { ...EMPTY_ARM_REPEAT };
   }
 
   // 非公開: DB へ決済を1行記録(失敗は握りつぶす=表示専用ゆえ致命的にしない)。系統タグ(A=null/B='B')を付与する。
@@ -368,6 +452,8 @@ export class SignalEngine {
       let planResult: ScalpPlanResult | null = null;
       let armedSignalId: number | null = null;
       let armedSettings: SignalSettingsSnapshot | null = null;
+      // ★ARM した回だけ据わる待ち時間の決定内訳(台帳 signal_plans に載せる=なぜこの時間かを後から読める)。
+      let armWait: ArmWaitDecision | null = null;
       try {
         // route(/api/scalp-plan・trade2)と同一の共通関数を使う。profile で A/B の設定を解決する
         // (A=グローバル=trade2 と同条件 / B=signalB)。画像未生成/LLM 失敗は result.ok=false → FLAT 維持(見送り)。
@@ -475,6 +561,12 @@ export class SignalEngine {
                 return;   // ★finally で planning=false に戻る。
               }
             }
+            if (armed && this.armBlocked(armed, Date.now())) {
+              // ★(d) 歯止め: 同じ価格が連続で失効し続けている → 見送り(none)と同じ扱いにして節目まで抑止する。
+              //   エンジン全体は止まらない(価格が節目を跨げば別の計画は普通に出る)。
+              this.planSuppressedAnchor = anchorPrice;
+              return;   // ★finally で planning=false に戻る。
+            }
             if (armed) {
               // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
               armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
@@ -482,6 +574,8 @@ export class SignalEngine {
               // ★遡り解析用(RECORD-ONLY): ARM 時点で monitor が見ていた価格を armed に焼き付ける(ARM 経路①=flat計画)。
               //   同じ live(stale plan veto と同一の新鮮値)を使う=事後の「通過済みだったか」判定と武装判定が同じ数値になる。
               if (live != null) armed.armedPrice = live;
+              // ★v0.9.59: このブラケット固有の待ち時間を確定して焼き付ける(ARM 経路①=flat計画)。
+              armWait = this.applyArmWait(armed, live, 'plan');
               this.state = { phase: 'armed', armed };   // 新規 armed で直近決済表示はクリア。
               this.planSuppressedAnchor = null;         // actionable で抑止解除。
               // ARM ごとに signalId を単調増加で採番する(★A/B 共通。カウンタは系統別=signal_meta の system キー)。
@@ -517,6 +611,7 @@ export class SignalEngine {
           // ARM した回は arm 時に確定したスナップショット(=signal_trades.meta と同一)。
           // それ以外は「そのサイクルで有効だった設定」を同じ組み立て関数で解決する。
           settings: armedSettings ?? buildSettingsSnapshot(undefined, this.cfg.profile),
+          armWait,
         }));
       }
     })();
@@ -618,6 +713,7 @@ export class SignalEngine {
     armed.settings = buildSettingsSnapshot(realizedLcFromArmed(armed), this.cfg.profile);
     // ★遡り解析用(RECORD-ONLY): ドテンの反対建ても「新しい ARM」= ARM 時刻(armed.at=now)と ARM 時点価格を焼き付ける(経路②)。
     if (live != null) armed.armedPrice = live;
+    this.applyArmWait(armed, live, 'doten');   // ★v0.9.59: 待ち時間も新 ARM として決め直す(経路②)。
     this.state = { ...rev.next, armed };   // ★通過済みレッグを落とした後のブラケットを武装する。
     this.planSuppressedAnchor = null;
     this.signalIdCounter += 1;
@@ -774,6 +870,7 @@ export class SignalEngine {
     // ★遡り解析用(RECORD-ONLY): 差替えは「新しい ARM」= 新 armed の at(=now)と ARM 時点価格を焼き付ける(経路③)。
     //   古い armed の時刻/価格は引き継がない(armed0 は planToArmed で新規生成=旧値は載っていない)。
     if (live != null) armed.armedPrice = live;
+    this.applyArmWait(armed, live, 'reeval');   // ★v0.9.59: 待ち時間も新 ARM として決め直す(経路③)。
     this.state = { phase: 'armed', armed, lastExit: this.state.lastExit };
     this.planSuppressedAnchor = null;
     const oldSignalId = identity.signalId;
@@ -812,6 +909,10 @@ export class SignalEngine {
       // ★fill latency: armed→filled に遷移したら position.at−armed.at を移動平均サンプルへ記録(平均約定所要=再評価閾値の元)。
       if (prevPhase === 'armed' && next.phase === 'filled' && next.position && prevArmedAt != null) {
         this.recordFillDuration(next.position.at - prevArmedAt);
+        // ★約定した=空振りの連鎖が切れた。連続失効(streak)を 0 に戻し、(d) の歯止めもクリアする
+        //   (その価格帯は「到達する」と実証されたので数え直す)。累計(count)は触らない。
+        this.clearArmedTimeoutStreak();
+        this.armRepeat = noteArmFilled();
       }
       if (armedTimedOut) {
         // ★未約定ブラケットの取消。以降 phase=flat で maybeRequestPlan が再計画できる(固着解除)。
@@ -819,7 +920,9 @@ export class SignalEngine {
         //   monitor が武装 → trade2 が受信後ずっと拒否 → 15分で黙って失効、という乖離の終着点がここ。
         //   実測 sid=361(2026-07-30 23:45)は trade2 が6秒おきに147回拒否したのに、monitor 側にも trade2 側にも
         //   警告もカウンタも一切無かった。ログには「各レッグが現在値からどれだけ離れていたか」を必ず添える。
-        this.recordArmedTimeout(now);
+        this.recordArmedTimeout(now, prevArmed);
+        // ★(d) 歯止め: 同じ形のブラケットが連続で失効した回数を数える(3回で1時間ブロック)。
+        this.armRepeat = noteArmExpiry(this.armRepeat, bracketSignature(prevArmed), now);
         const legDesc: string[] = [];
         const dist = (v: number): string => `${Math.round(v)}(現値差${Math.round(Math.abs(v - price))}円)`;
         if (prevArmed?.limitEntry != null) legDesc.push(`limit=${dist(prevArmed.limitEntry)}`);
@@ -827,11 +930,12 @@ export class SignalEngine {
         if (prevArmed?.range?.upper) legDesc.push(`upper=${dist(prevArmed.range.upper.entry)}`);
         if (prevArmed?.range?.lower) legDesc.push(`lower=${dist(prevArmed.range.lower.entry)}`);
         console.log(`${this.logTag} armed-timeout 未約定ブラケットを取消→FLAT`
-          + `(${Math.round(ARMED_TIMEOUT_MS / 60_000)}分 未約定・再計画へ) `
+          + `(${Math.round(armedWaitMsOf(prevArmed) / 60_000)}分 未約定・再計画へ) `
           + `signalId=${this.armedSignalId ?? '-'} dir=${prevArmed?.direction ?? '-'} `
           + `armedPrice=${prevArmed?.armedPrice != null ? Math.round(prevArmed.armedPrice) : '-'} `
           + `price=${Math.round(price)} ${legDesc.join(' ') || '(レッグ不明)'} `
-          + `累計未約定失効=${this.armedTimeouts.count}回`);
+          + `連続未約定失効=${this.armedTimeouts.streak}回 累計未約定失効=${this.armedTimeouts.count}回 `
+          + `同一価格連続=${this.armRepeat.streak}回`);
       }
       if (recorded) {
         this.persistTrade(recorded);

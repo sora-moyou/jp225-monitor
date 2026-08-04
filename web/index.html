@@ -41,6 +41,18 @@
 
       <div class="settings-cols">
       <div class="scol">
+      <!-- ★ユーザー指示(v0.9.59): 「更新」は設定パネルの一番上(左カラムの先頭=最初の fieldset)。
+           移動しただけで中身・id・イベント配線は不変。lite の表示/非表示は id 指定(main.ts)なので影響なし。 -->
+      <fieldset class="settings-section">
+        <legend>更新</legend>
+        <div class="version-row">
+          現在のバージョン: <span id="settings-current-version">…</span>
+          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
+        </div>
+        <div id="settings-update-result" class="update-result"></div>
+        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
+      </fieldset>
+
       <fieldset class="settings-section">
         <legend>APIキー（無料）</legend>
         <div class="setting-row">
@@ -158,15 +170,6 @@
         </div>
       </fieldset>
 
-      <fieldset class="settings-section">
-        <legend>更新</legend>
-        <div class="version-row">
-          現在のバージョン: <span id="settings-current-version">…</span>
-          <button type="button" id="settings-check-update" class="btn-secondary">更新をチェック</button>
-        </div>
-        <div id="settings-update-result" class="update-result"></div>
-        <div class="exit-hint">アプリ本体と基礎データ（履歴1分足）の両方を確認します。基礎データの「取り込み」はローカルDBへ追記/更新のみで、既存の新しいデータは消えません。</div>
-      </fieldset>
       </div>
 
       <div class="scol">

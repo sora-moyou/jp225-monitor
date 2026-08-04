@@ -11,19 +11,23 @@ describe('buildSignalView(シグナル枠)', () => {
   // ★未約定失効(armed-timeout)= 武装したのに一度も約定せず15分で失効した件数。
   //   monitor が武装 → trade2 が受信後ずっと拒否 → 黙って失効、という乖離が **画面から見えない** のが
   //   実害だった(実測 sid=361 は trade2 が147回拒否したのに、monitor 側の画面には何も出なかった)。
-  it('★未約定失効が起きていれば待機表示に件数を出す(0件/欠落では従来と同じ文字列)', () => {
-    expect(buildSignalView({ phase: 'flat', updatedAt: 0, armedTimeout: { count: 3, lastAt: 1 } }).main)
-      .toBe('シグナル待機（未約定失効 3回）');
+  //   ★v0.9.59: 表示は「累計」から「連続失効(約定でリセット)」へ切り替え、待ち時間と目線を添える。
+  //     累計(count)は無音の失敗を数える指標として state には残るが、画面には出さない。
+  it('★未約定失効が起きていれば待機表示に連続回数を出す(0件/欠落では従来と同じ文字列)', () => {
+    expect(buildSignalView({ phase: 'flat', updatedAt: 0, armedTimeout: { count: 27, streak: 3, lastAt: 1, waitMin: 15, bias: 'buy' } }).main)
+      .toBe('シグナル待機（連続失効 15分3回 / 現在買い目線）');
     // 決済済みシグナルで待機に戻る経路でも出る(同じ待機文言を共有する)。
     const exited: SignalTradeState = {
       phase: 'flat', updatedAt: 0,
       signal: { direction: 'buy', limitEntry: 65395, at: 10 },
       lastExit: { exitPrice: 65400, pnl: 5, at: 20 },
-      armedTimeout: { count: 1, lastAt: 1 },
+      armedTimeout: { count: 1, streak: 1, lastAt: 1, waitMin: 15, bias: 'sell' },
     };
-    expect(buildSignalView(exited).main).toBe('シグナル待機（未約定失効 1回）');
-    // 0件は従来どおり。
-    expect(buildSignalView({ phase: 'flat', updatedAt: 0, armedTimeout: { count: 0, lastAt: 0 } }).main)
+    expect(buildSignalView(exited).main).toBe('シグナル待機（連続失効 15分1回 / 現在売り目線）');
+    // 0件は従来どおり。★累計が積み上がっていても連続 0 なら「シグナル待機」に戻る。
+    expect(buildSignalView({ phase: 'flat', updatedAt: 0, armedTimeout: { count: 0, streak: 0, lastAt: 0 } }).main)
+      .toBe('シグナル待機');
+    expect(buildSignalView({ phase: 'flat', updatedAt: 0, armedTimeout: { count: 27, streak: 0, lastAt: 1 } }).main)
       .toBe('シグナル待機');
   });
 

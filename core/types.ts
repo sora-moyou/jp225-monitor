@@ -178,7 +178,12 @@ export interface SignalTradeState {
   //   monitor が正規シグナルを出したのに trade2 が受信後ずっと拒否する乖離は、必ずここに終着する。
   //   実測 sid=361(2026-07-30)は trade2 が147回拒否したが monitor 側には件数がどこにも残らず完全に無音だった。
   //   count===0 のときは付与しない=既存 SSE JSON 不変(broadcast dedupe と旧クライアント互換を壊さない)。
-  armedTimeout?: { count: number; lastAt: number };
+  //   ★v0.9.59: 表示は「累計」ではなく streak(連続失効=約定のたびに 0 へ戻る)を使う。count(累計)は
+  //     「無音の失敗を数える」ための別指標として残す(消さない)。waitMin/bias は待機表示の材料:
+  //     waitMin=直前に失効したブラケットで **実際に使われた** 待ち時間[分](可変なので固定文字列にしない)、
+  //     bias=直前に失効したブラケットの向き(パネルの「買い目線/売り目線/レンジ」と同じ語彙)。
+  //     不明なら欠落させる(空括弧や「不明」を出さない)。
+  armedTimeout?: { count: number; streak: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' };
   updatedAt: number;
 }
 

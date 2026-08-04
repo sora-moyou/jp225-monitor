@@ -23,15 +23,15 @@ describe('signal_meta: 未約定失効カウンタ', () => {
 
   it('未発生は {count:0, lastAt:null}', () => {
     const db = memDb();
-    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 0, lastAt: null });
-    expect(getArmedTimeoutStats(db, 'B')).toEqual({ count: 0, lastAt: null });
+    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 0, streak: 0, lastAt: null });
+    expect(getArmedTimeoutStats(db, 'B')).toEqual({ count: 0, streak: 0, lastAt: null });
   });
 
   it('加算されて最終発生時刻が残る(再起動を跨いで読み直せる)', () => {
     const db = memDb();
-    expect(bumpArmedTimeout(db, 'A', 1000)).toEqual({ count: 1, lastAt: 1000 });
-    expect(bumpArmedTimeout(db, 'A', 2000)).toEqual({ count: 2, lastAt: 2000 });
-    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 2, lastAt: 2000 });
+    expect(bumpArmedTimeout(db, 'A', 1000)).toEqual({ count: 1, streak: 1, lastAt: 1000 });
+    expect(bumpArmedTimeout(db, 'A', 2000)).toEqual({ count: 2, streak: 2, lastAt: 2000 });
+    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 2, streak: 2, lastAt: 2000 });
   });
 
   it('A / B は独立に数える', () => {
@@ -48,7 +48,7 @@ describe('signal_meta: 未約定失効カウンタ', () => {
     setSignalIdCounter(db, 'A', 361);
     bumpArmedTimeout(db, 'A', 1785455141000);
     expect(getSignalIdCounter(db, 'A')).toBe(361);
-    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 1, lastAt: 1785455141000 });
+    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 1, streak: 1, lastAt: 1785455141000 });
     // 逆順(先に失効 → 後から signalId)でも同じ。
     bumpArmedTimeout(db, 'B', 5);
     setSignalIdCounter(db, 'B', 7);
@@ -61,6 +61,6 @@ describe('signal_meta: 未約定失効カウンタ', () => {
     bumpArmedTimeout(db, 'A', 1000);
     bumpArmedTimeout(db, 'A', 2000);
     clearSignalTrades(db, 'A');
-    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 0, lastAt: null });
+    expect(getArmedTimeoutStats(db, 'A')).toEqual({ count: 0, streak: 0, lastAt: null });
   });
 });

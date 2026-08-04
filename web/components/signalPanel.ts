@@ -54,10 +54,13 @@ export interface SignalTradeState {
   };
   // 直近決済 (保有枠に「決済79000」を一時表示するため)
   lastExit?: { exitPrice: number; pnl: number; at: number };
-  // ★未約定失効(armed-timeout)の累計。「武装したのに一度も約定せず15分で失効した」回数。
-  //   monitor が武装 → trade2 が受信後ずっと拒否 → 15分で黙って失効、という乖離の終着点。
-  //   件数が伸びていること自体が異常のサインなので、待機表示に必ず出す(0件では欠落=表示も従来どおり)。
-  armedTimeout?: { count: number; lastAt: number };
+  // ★未約定失効(armed-timeout)。「武装したのに一度も約定せず失効した」回数。
+  //   monitor が武装 → trade2 が受信後ずっと拒否 → 黙って失効、という乖離の終着点。
+  //   count  = 累計(機体の生涯・約定でも減らない=無音の失敗を数える指標。表示には使わない)。
+  //   streak = 連続(約定のたびに 0 へ戻る)。★待機表示はこちらを出す。
+  //   waitMin= 直前に失効したブラケットで **実際に使われた** 待ち時間[分](距離とボラで可変なので固定文字列にしない)。
+  //   bias   = 直前に失効したブラケットの向き(=いまどっち向きで待っているか)。不明なら欠落。
+  armedTimeout?: { count: number; streak?: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' };
   updatedAt: number;
 }
 
@@ -105,15 +108,33 @@ export interface PanelView {
   rationale: string; // AI生成文字列 (呼び出し側で textContent 描画)
 }
 
+// 目線ラベル。**新しい語彙を作らない**: 既存の目線行(buildSignalView の bias)と同じ言い回しを使う。
+const BIAS_JA: Record<'buy' | 'sell' | 'range', string> = { buy: '買い目線', sell: '売り目線', range: 'レンジ目線' };
+
+/** 純関数: 待機中(シグナル無し)のメイン行。
+ *  ・連続失効 0 回(またはフィールド欠落)…… 従来どおり「シグナル待機」(既存表示は不変)。
+ *  ・連続失効 N 回 ……「シグナル待機（連続失効 15分2回 / 現在買い目線）」
+ *      - 「15分」は **そのとき実際に使われた待ち時間**(waitMin)。距離とボラで可変なので固定文字列にしない。
+ *        waitMin が無い(古い server / 材料欠落)ときは分数を出さず「連続失効 2回」に縮退する。
+ *      - 目線(bias)が無い/不明なら、その部分ごと出さない(空括弧や「不明」を作らない)。
+ *  ★累計(count)は表示しない。累計は「無音の失敗を数える」ための別指標として state に残る。 */
+export function buildWaitMain(
+  at?: { count: number; streak?: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' } | null,
+): string {
+  const n = at?.streak ?? 0;
+  if (!(n > 0)) return 'シグナル待機';
+  const w = at?.waitMin;
+  const wLabel = typeof w === 'number' && Number.isFinite(w) && w > 0 ? `${Math.round(w)}分` : '';
+  const parts: string[] = [`連続失効 ${wLabel}${n}回`];
+  const bias = at?.bias ? BIAS_JA[at.bias] : undefined;
+  if (bias) parts.push(`現在${bias}`);
+  return `シグナル待機（${parts.join(' / ')}）`;
+}
+
 /** 純関数: シグナル枠の表示モデル。現在シグナル(s.signal)を優先し、無ければ armed の entry、
  *  それも無ければ「シグナル待機」。★保有(filled)でも s.signal がある限りシグナルを描き続ける。 */
 export function buildSignalView(s: SignalTradeState | null): PanelView {
-  // ★待機表示の文言。未約定失効(=武装したのに約定せず失効)が起きていれば必ず件数を出す。
-  //   件数 0(=フィールド欠落)では従来と完全に同じ文字列=既存表示は不変。
-  const waitMain = (): string => {
-    const n = s?.armedTimeout?.count ?? 0;
-    return n > 0 ? `シグナル待機（未約定失効 ${n}回）` : 'シグナル待機';
-  };
+  const waitMain = (): string => buildWaitMain(s?.armedTimeout);
   const sig: SignalCurrent | undefined = s?.signal ?? (s?.entry ? { ...s.entry } : undefined);
   if (!sig) return { cls: 'flat', main: waitMain(), rationale: '' };
 

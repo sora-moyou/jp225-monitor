@@ -174,48 +174,85 @@ describe('parseScalpPlan', () => {
   });
 });
 
-// ─── 表示整合: buildLegNote(採用レッグの機械生成注記・純関数) ───
-describe('buildLegNote(採用レッグ注記・純関数)', () => {
-  it('両レッグ→「指値+逆指値」', () => {
-    expect(buildLegNote({ hasLimit: true, hasStop: true })).toBe('（実際の注文: 指値+逆指値）');
+// ─── 表示整合: buildLegNote(片レッグが無い理由の注記・純関数) ───
+// ★v0.9.59(ユーザー指示で文面刷新): 旧実装は「（実際の注文: 指値+逆指値）」のように **プランを言い直す**
+//   だけで、画面のシグナル表示を見れば分かる情報しか無かった(しかも落ちた理由は「条件を満たさず不採用」= 無内容)。
+//   新仕様: ①両レッグ揃っているときは何も書かない ②片方が無いときだけ **具体的な理由** を書く
+//   ③「AI が提案しなかった(missing)」と「出したが検証で落とした(stopSide/lcFloor/lc/geometry…)」を書き分ける。
+//   ★非公開の決済数値(下限/上限の実数)は絶対に書かない=「設定の下限/上限」と呼ぶだけ。
+describe('buildLegNote(片レッグ欠落の理由注記・純関数)', () => {
+  it('★両レッグ揃い→空文字(シグナル表示を見れば分かるので注記しない)', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: true })).toBe('');
+    // 落ちた記録があっても、両レッグ残っているなら書かない。
+    expect(buildLegNote({
+      hasLimit: true, hasStop: true, drops: [{ name: 'stop', reason: 'lcFloor' }],
+    })).toBe('');
   });
-  it('指値のみ→「指値のみ・逆指値レッグなし」', () => {
-    expect(buildLegNote({ hasLimit: true, hasStop: false })).toBe('（実際の注文: 指値のみ・逆指値レッグなし）');
+
+  it('★逆指値なし(AI が提案せず=missing)→「AIが提案せず」', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason: 'missing' }] }))
+      .toBe('（逆指値なし: AIが提案せず）');
   });
-  it('逆指値のみ→「逆指値のみ・指値レッグなし」', () => {
-    expect(buildLegNote({ hasLimit: false, hasStop: true })).toBe('（実際の注文: 逆指値のみ・指値レッグなし）');
+
+  it('★逆指値なし(損切りが逆側=stopSide)→「不採用」と書き分ける', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason: 'stopSide' }] }))
+      .toBe('（逆指値は不採用: 損切りがエントリーの逆側）');
   });
-  it('レッグ皆無→空文字(追記しない)', () => {
+
+  it('★逆指値なし(LC 下限未満=lcFloor)→「損切り幅が設定の下限より狭い」', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason: 'lcFloor' }] }))
+      .toBe('（逆指値は不採用: 損切り幅が設定の下限より狭い）');
+  });
+
+  it('★逆指値なし(LC 上限超=lc)→「損切り幅が設定の上限より広い」', () => {
+    expect(buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason: 'lc' }] }))
+      .toBe('（逆指値は不採用: 損切り幅が設定の上限より広い）');
+  });
+
+  it('指値なし(現在値の逆側=geometry)も同じ形で書ける', () => {
+    expect(buildLegNote({ hasLimit: false, hasStop: true, drops: [{ name: 'limit', reason: 'geometry' }] }))
+      .toBe('（指値は不採用: エントリーが現在値の逆側）');
+  });
+
+  it('レッグ皆無/理由不明→空文字(追記しない)', () => {
     expect(buildLegNote({ hasLimit: false, hasStop: false })).toBe('');
+    expect(buildLegNote({ hasLimit: true, hasStop: false })).toBe('');          // 理由が無ければ黙る
+    expect(buildLegNote({ hasLimit: true, hasStop: false, drops: [] })).toBe('');
   });
-  it('AI が出した逆指値レッグが落とされた→不採用タグを付す', () => {
-    const s = buildLegNote({ hasLimit: true, hasStop: false, stopDropped: true });
-    expect(s).toBe('（実際の注文: 指値のみ・逆指値レッグなし）（逆指値レッグは条件を満たさず不採用）');
+
+  it('落ちたレッグの記録は名前で引く(別レッグの理由を流用しない)', () => {
+    // 指値の理由しか無い状態で逆指値が欠けていても、指値の理由を逆指値に書かない。
+    expect(buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'limit', reason: 'lcFloor' }] })).toBe('');
   });
-  it('AI が出した指値レッグが落とされた→不採用タグを付す', () => {
-    const s = buildLegNote({ hasLimit: false, hasStop: true, limitDropped: true });
-    expect(s).toBe('（実際の注文: 逆指値のみ・指値レッグなし）（指値レッグは条件を満たさず不採用）');
+
+  it('★非公開の決済数値は文面に出ない(数字を一切含まない)', () => {
+    const all = (['missing', 'stopSide', 'geometry', 'lcFloor', 'lc', 'trend', 'bias', 'stale'] as const)
+      .map(reason => buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason }] }));
+    for (const s of all) {
+      expect(s).not.toMatch(/[0-9０-９]/);
+      expect(s).not.toContain('条件を満たさず');   // 無内容な旧文言は使わない
+    }
   });
 });
 
 // ─── 表示整合: parseScalpPlan が rationale 末尾にレッグ注記を追記する ───
 describe('parseScalpPlan レッグ注記(表示整合)', () => {
-  it('指値のみプラン(AI が逆指値を出さない)→ rationale 末尾が「指値のみ・逆指値レッグなし」・元テキストは前置で保持', () => {
+  it('指値のみプラン(AI が逆指値を出さない)→ rationale 末尾が「逆指値なし: AIが提案せず」・元テキストは前置で保持', () => {
     const { stopEntry, stopLossForStop, ...limitOnly } = goodPlan;
     void stopEntry; void stopLossForStop;
     const r = parseScalpPlan(JSON.stringify(limitOnly), REF);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.plan.rationale.startsWith('押し目買い。直近安値38200が支持。')).toBe(true);
-      expect(r.plan.rationale.endsWith('（実際の注文: 指値のみ・逆指値レッグなし）')).toBe(true);
+      expect(r.plan.rationale.endsWith('（逆指値なし: AIが提案せず）')).toBe(true);
       // ★endsWith だけでは「…A A」の二重でも通ってしまうので出現回数で固定する。
-      expect(countOf(r.plan.rationale, '（実際の注文: 指値のみ・逆指値レッグなし）')).toBe(1);
-      // AI は逆指値を出していないので不採用タグは付かない。
+      expect(countOf(r.plan.rationale, '（逆指値なし: AIが提案せず）')).toBe(1);
+      // AI は逆指値を出していないので「不採用」ではない(書き分け)。
       expect(r.plan.rationale).not.toContain('不採用');
     }
   });
 
-  it('AI が逆指値レッグを出したが entrySideOk 違反で落ちた→指値レッグ維持+「逆指値レッグ…不採用」注記', () => {
+  it('AI が逆指値レッグを出したが entrySideOk 違反で落ちた→指値レッグ維持+「逆指値は不採用: …」注記', () => {
     // buy: 指値は正。逆指値 entry 38200(現在値38250より下=buy には不正)→ 逆指値レッグを落とす。
     const raw = JSON.stringify({
       direction: 'buy', rationale: '押し目・逆指値も置いたつもり', refPrice: 1,
@@ -228,17 +265,19 @@ describe('parseScalpPlan レッグ注記(表示整合)', () => {
       expect(r.plan.direction).toBe('buy');
       expect(r.plan.limitEntry).toBe(38200);
       expect(r.plan.stopEntry).toBeUndefined();
-      // ★注記も不採用タグも「1回だけ」(部分一致では二重を捕まえられない)。
-      expect(countOf(r.plan.rationale, '（実際の注文: 指値のみ・逆指値レッグなし）')).toBe(1);
-      expect(countOf(r.plan.rationale, '（逆指値レッグは条件を満たさず不採用）')).toBe(1);
+      // ★注記は「1回だけ」(部分一致では二重を捕まえられない)。理由は幾何ではなく損切りの向き(stopSide)。
+      //   entry 38200 は現在値より下だが、先に stopSideOk(38150<38200 は buy として正)を通るので geometry。
+      expect(countOf(r.plan.rationale, '（逆指値は不採用: エントリーが現在値の逆側）')).toBe(1);
+      expect(r.plan.rationale).not.toContain('実際の注文');
     }
   });
 
-  it('正しい両レッグ→注記は「指値+逆指値」', () => {
+  it('★正しい両レッグ→注記なし(rationale は AI の原文のまま=シグナル表示を見れば分かる)', () => {
     const r = parseScalpPlan(JSON.stringify(goodPlan), REF);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(countOf(r.plan.rationale, '（実際の注文: 指値+逆指値）')).toBe(1);
+      expect(r.plan.rationale).toBe(goodPlan.rationale);
+      expect(r.plan.rationale).not.toContain('実際の注文');
       expect(r.plan.rationale).not.toContain('不採用');
     }
   });
