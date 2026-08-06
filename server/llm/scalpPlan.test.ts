@@ -9,7 +9,7 @@ import {
   pickNoneReason, enforceRangeEnabled,
   buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote, buildBandwalkNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN, LC_YEN_MAX,
-  resolveLcPresentation, LC_CEIL_MANUAL, LC_BUFFER_NOTE, LC_DERIVATION_ORDER,
+  resolveLcPresentation, LC_CEIL_MANUAL, LC_BUFFER_NOTE, LC_DERIVATION_ORDER, PLAN_BAD_EXAMPLES,
   type ToolHandlers, type AiPlan, type KnobModes, type LcCeilingPresentation,
 } from './openai.js';
 import { describeRangeAnomaly } from '../signalTrade/rangeShape.js';
@@ -2723,7 +2723,11 @@ describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従�
       expect(t).not.toContain('本来のストップ幅に5円を加えた');
       expect(t).not.toContain('損切りは本来のストップ幅に +5円 加える');
       expect(t).not.toContain('ストップ幅+5円');
-      expect(t).toContain('LC幅の下限に5円を足すという意味ではない');
+      // ★v0.9.63: 否定の散文「LC幅の下限に5円を足す/エントリー価格に5円を足し引きする という意味ではない」は、
+      //   同じ誤読が **実際に起きた形**(✗①: 買い stopEntry=R1+5 に stopLossForStop=R1)へ置き換えた。
+      //   規則は失われていないので、検証も「+5円は緩衝であって幅ではない」を残しつつ、置き換え先の例を固定する。
+      expect(t).toContain('緩衝(買いは下へ・売りは上へ)で、LC幅を作る量ではない');
+      expect(t).toContain('節目の緩衝(5円)を幅そのものと読んだ形');
     }
   });
 
@@ -2770,5 +2774,72 @@ describe('★バイアスの委任(保存値を印字しない)', () => {
       expect(spec).not.toContain('買い中心');
       expect(spec).not.toContain('売り中心');
     }
+  });
+});
+
+// ─── v0.9.63: 「だめな例」ブロック(規則の散文 → 実際に起きた失敗の形) ─────────────
+// ★このブロックの存在意義は「例が新しいアンカーにならないこと」なので、そこを回帰で固定する。
+//   過去2回、目立つ数値(上限65 / 下限)がそのまま LC 幅として選ばれる固着が起きている。
+describe('PLAN_BAD_EXAMPLES(実出力に在った誤りの例示・アンカー対策)', () => {
+  it('★アンカー対策: 例の本文に LC の下限/上限の設定値が1つも現れない(印字回数を増やさない)', () => {
+    // 実運用値(55/65/159)・テストで使う別値(45/50/120)のいずれも例の中には出さない。
+    for (const v of ['45', '50', '55', '65', '75', '95', '120', '159']) {
+      expect(PLAN_BAD_EXAMPLES).not.toContain(v);
+    }
+  });
+
+  it('★アンカー対策: 例の本文に実価格(4桁以上の数値)が1つも現れない=記号(P/R1/R2/S1/S2)で書く', () => {
+    expect(PLAN_BAD_EXAMPLES).not.toMatch(/\d{3,}/);
+    expect(PLAN_BAD_EXAMPLES).toContain('P=現在値');
+    expect(PLAN_BAD_EXAMPLES).toContain('R1');
+    expect(PLAN_BAD_EXAMPLES).toContain('S2');
+  });
+
+  it('★アンカー対策: 「下限ちょうどは禁止」とは書かない(『下限+一定』という別の固着を作らないため)', () => {
+    expect(PLAN_BAD_EXAMPLES).toContain('たまたま下限ちょうどの場面はある');
+    expect(PLAN_BAD_EXAMPLES).toContain('誤りは毎回そうなること');
+  });
+
+  it('検証ラベルは実装(LegDrop.reason)の語彙をそのまま使う', () => {
+    // 台帳(leg_drops)と画面注記に出る語と、プロンプトの語を1本にする。
+    expect(PLAN_BAD_EXAMPLES).toContain('[lcFloor=損切り幅が設定の下限より狭い]');
+    expect(PLAN_BAD_EXAMPLES).toContain('[stopSide=損切りがエントリーの逆側]');
+    // 画面注記(buildLegNote)と同じ日本語であること=語彙の一致を実測で固定する。
+    const noteFloor = buildLegNote({ hasLimit: false, hasStop: true, drops: [{ name: 'limit', reason: 'lcFloor' }] });
+    const noteSide = buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason: 'stopSide' }] });
+    expect(noteFloor).toContain('損切り幅が設定の下限より狭い');
+    expect(noteSide).toContain('損切りがエントリーの逆側');
+  });
+
+  it('④⑤(固着・両レッグ同幅)はコードが落とさないと明示する(免責の逆=自分で防ぐ)', () => {
+    expect(PLAN_BAD_EXAMPLES).toContain('どの検証にも掛からない');
+    expect(PLAN_BAD_EXAMPLES).toContain('防げるのはあなただけ');
+  });
+
+  it('良い例は1つだけ・幅は数値でなく「揃わないこと」で示す', () => {
+    expect(PLAN_BAD_EXAMPLES).toContain('2つの幅が揃わないこと');
+    expect(PLAN_BAD_EXAMPLES).toContain('2つの幅は違う数値になる');
+    expect((PLAN_BAD_EXAMPLES.match(/○/g) ?? []).length).toBe(1);
+    expect((PLAN_BAD_EXAMPLES.match(/✗/g) ?? []).length).toBe(5);
+  });
+
+  it('注入は質問文(user message)の1箇所だけ=散文の複写を増やさない', () => {
+    expect(buildScalpQuestion()).toContain(PLAN_BAD_EXAMPLES);
+    expect(buildScalpSystemPrompt()).not.toContain('過去の実出力に在った誤り');
+    expect(buildStrategySpec({
+      floor: { mode: 'manual', value: 55 },
+      ceiling: { mode: 'manual', value: 65 },
+      trendVeto: { mode: 'manual', value: 100 },
+      cooldown: { mode: 'manual', value: 90 },
+      bias: { mode: 'manual', value: 'none' },
+      range: { mode: 'manual', value: true },
+      hardMax: { enabled: true, value: 159 },
+      exitDesc: '【決済ロジック】…',
+    })).not.toContain('過去の実出力に在った誤り');
+  });
+
+  it('★自己検算の直前に置かれる(検算の各項目が「見たことのある形」と結びつく)', () => {
+    const q = buildScalpQuestion();
+    expect(q.indexOf(PLAN_BAD_EXAMPLES)).toBeLessThan(q.indexOf('出力前に limitEntry と stopEntry を refPrice と比較し'));
   });
 });
