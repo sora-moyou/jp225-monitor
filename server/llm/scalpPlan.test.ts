@@ -1923,7 +1923,11 @@ describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決�
     expect(s).toContain('上限65円');
     expect(s).toContain('±100円');            // トレンド閾値(定数)
     expect(s).toContain('90秒');               // クールダウン(定数)
-    expect(s).toContain('+5円');               // ストップ緩衝
+    // ★v0.9.64: 緩衝の注記から数値「+5円」を撤去した(実測 2026-08-07: 損切りが 建値±5 に汚染。
+    //   この「+5円」は v0.9.60 以降 参照先を失ったまま、損切りに足し引きする量を名指しする唯一の数値だった)。
+    //   規則(「節目からわずかに離すだけ・幅を作る量ではない」)は残っているので、そちらを固定する。
+    expect(s).toContain('この緩衝は LC幅を作る量ではない');  // ストップ緩衝(量を持たない表現)
+    expect(s).not.toContain('★この「+5円」は');
     expect(s).toContain('50円');               // 最低距離
     expect(s).toContain('安全上限 150円');
     expect(s).toContain('ラチェット');          // 決済ロジックが注入される
@@ -1937,11 +1941,15 @@ describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決�
     const s = buildStrategySpec({ ...base, hardMax: { enabled: false, value: 150 } });
     expect(s).toContain('安全上限 無効');
   });
-  it('節目への置き方(指値=5〜10円内側 / 逆指値=0〜5円外側)を含む', () => {
+  // ★v0.9.64: ブレイク新規のずらし量「0〜5円」を撤去(実測 2026-08-07: ≤10円 の損切り43件が
+  //   ほぼ逆指値レッグに集中。stopEntry の隣にある小さい数値が損切りの代入に流用されていた)。
+  //   指値側の「5〜10円」は健全なので残す=片側だけ量を持たない表現にする。
+  it('節目への置き方(指値=5〜10円内側 / 逆指値=すぐ外側・量は決めない)を含む', () => {
     const s = buildStrategySpec(base);
     expect(s).toContain('節目への置き方');
     expect(s).toContain('5〜10円');
-    expect(s).toContain('0〜5円');
+    expect(s).toContain('すぐ外側(抜ける方向・量は決めない)');
+    expect(s).not.toContain('0〜5円');
     expect(s).toContain('内側');
     expect(s).toContain('外側');
   });
@@ -1951,8 +1959,10 @@ describe('節目への指値/逆指値プレースメント規則(約定重視)'
   it('system prompt と question にも同じ規則(節目オフセット)を注入する', () => {
     for (const t of [buildScalpSystemPrompt(), buildScalpQuestion()]) {
       expect(t).toContain('節目');
-      expect(t).toContain('5〜10円');    // 指値=内側オフセット
-      expect(t).toContain('0〜5円');     // 逆指値=外側オフセット
+      expect(t).toContain('5〜10円');    // 指値=内側オフセット(数量は維持=健全な側)
+      // ★v0.9.64: 逆指値=外側オフセットの数量(0〜5円)は撤去。規則(すぐ外側=抜ける方向)は残す。
+      expect(t).toContain('すぐ外側');
+      expect(t).not.toContain('0〜5円');
       expect(t).toContain('内側');
       expect(t).toContain('外側');
     }
@@ -2059,8 +2069,9 @@ describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
       expect(t).toContain('指値のみ');
       expect(t).toContain('ブレイク新規のみ');
       expect(t).toContain('55〜65円');            // LC 幅
-      expect(t).toContain('5〜10円');             // 節目の内側オフセット
-      expect(t).toContain('0〜5円');              // 節目の外側オフセット
+      expect(t).toContain('5〜10円');             // 節目の内側オフセット(指値=数量維持)
+      expect(t).toContain('すぐ外側');            // ★v0.9.64: 節目の外側オフセットは量を持たない表現へ
+      expect(t).not.toContain('0〜5円');
       expect(t).toContain('400円以内');           // 両レッグの幅上限 / レンジ上下幅
       expect(t).toContain('200円以内');           // 片レッグの距離上限
       expect(t).toContain('レンジの距離');
@@ -2398,7 +2409,8 @@ describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
     expect(s).toContain('上限65円');
     expect(s).toContain('±100円');
     expect(s).toContain('90秒');
-    expect(s).toContain('+5円');
+    // ★v0.9.64: 緩衝の注記は「+5円」という数値を持たない表現へ(規則は不変)。
+    expect(s).toContain('この緩衝は LC幅を作る量ではない');
     expect(s).toContain('50円');
     expect(s).toContain('安全上限 150円');
     expect(s).toContain('ラチェット');
@@ -2726,8 +2738,11 @@ describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従�
       // ★v0.9.63: 否定の散文「LC幅の下限に5円を足す/エントリー価格に5円を足し引きする という意味ではない」は、
       //   同じ誤読が **実際に起きた形**(✗①: 買い stopEntry=R1+5 に stopLossForStop=R1)へ置き換えた。
       //   規則は失われていないので、検証も「+5円は緩衝であって幅ではない」を残しつつ、置き換え先の例を固定する。
-      expect(t).toContain('緩衝(買いは下へ・売りは上へ)で、LC幅を作る量ではない');
-      expect(t).toContain('節目の緩衝(5円)を幅そのものと読んだ形');
+      // ★v0.9.64: 主語だった数値「+5円」を撤去(参照先を失ったまま、損切りに足し引きする量を
+      //   名指しする唯一の数値になっていた)。規則そのもの=「節目からわずかに離すだけ・幅を作る量ではない」を固定する。
+      expect(t).toContain('わずかに離すだけ(買いは下へ・売りは上へ)。この緩衝は LC幅を作る量ではない');
+      expect(t).toContain('緩衝を、損切りの幅そのものと読んだ形');
+      expect(t).not.toContain('節目の緩衝(5円)');
     }
   });
 
@@ -2820,7 +2835,8 @@ describe('PLAN_BAD_EXAMPLES(実出力に在った誤りの例示・アンカー�
     expect(PLAN_BAD_EXAMPLES).toContain('2つの幅が揃わないこと');
     expect(PLAN_BAD_EXAMPLES).toContain('2つの幅は違う数値になる');
     expect((PLAN_BAD_EXAMPLES.match(/○/g) ?? []).length).toBe(1);
-    expect((PLAN_BAD_EXAMPLES.match(/✗/g) ?? []).length).toBe(5);
+    // ★v0.9.64: 2026-08-07 の実出力で新たに現れた2形(⑥申告と実物の食い違い / ⑦「省略」と述べて価格を出す)を追加=7。
+    expect((PLAN_BAD_EXAMPLES.match(/✗/g) ?? []).length).toBe(7);
   });
 
   it('注入は質問文(user message)の1箇所だけ=散文の複写を増やさない', () => {
