@@ -72,6 +72,14 @@ export interface NewsItem {
   //   スコアには混ぜない(混ぜると未確認=減点になり、相場が最も動く第一報が沈む)。
   //   表示のバッジと、後からの検証(DB の confidence 列)にだけ使う。
   confidence?: NewsConfidence;
+  // ★訳文(ADD-ONLY・任意・**表示専用**)。原文は title のまま絶対に置き換えない。
+  //   理由: AI(explain / formatNewsForChat / scalp-plan)は title を読む。ここを訳文にすると
+  //   **AI が見るものが変わり、取引の判断が変わる**。それは別途測るべき変更なので混ぜない。
+  //   → 訳文は必ずこの別フィールドに置き、AI 側は 1 行も変更しない(server/llm/** は titleJa を参照禁止)。
+  titleJa?: string;
+  // 訳せなかった理由(短い1行)。★無言の失敗を作らないための欄で、画面には控えめな印で出す。
+  //   欠落 = まだ訳していない(これから訳す) / 値あり = 試して失敗した。両者を混同しないこと。
+  translateError?: string;
 }
 
 export interface InstrumentMeta {

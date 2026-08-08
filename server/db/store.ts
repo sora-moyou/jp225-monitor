@@ -58,7 +58,13 @@ export function initSchema(db: DatabaseSync): void {
       --   これを残すと「未確認のまま出した第一報が実際どれだけ当たっていたか」を
       --   インパクト推定の検証と同じ枠組みで測れる。
       confidence TEXT,                  -- 'confirmed' | 'unconfirmed'
-      confidence_basis TEXT             -- 'primary' | 'wire' | 'corroborated' | 'single'
+      confidence_basis TEXT,            -- 'primary' | 'wire' | 'corroborated' | 'single'
+      -- ★訳文は「取得のたび」ではなく「記事ごとに一度だけ」訳して、ここに貯める。
+      --   title(原文)は絶対に上書きしない= AI が読む面を変えないため、かつ訳の誤りを
+      --   後から原文で検証できるようにするため。
+      title_ja TEXT,                    -- 日本語訳(表示専用)。NULL=未訳 or 失敗。
+      translate_error TEXT,             -- 訳せなかった理由(短い)。NULL=失敗していない。
+      translated_at INTEGER             -- 訳した時刻(再訳しないための印でもある)
     );
     CREATE INDEX IF NOT EXISTS idx_news_published ON news (published_at);
     CREATE TABLE IF NOT EXISTS daily_closes (
@@ -234,6 +240,10 @@ export function initSchema(db: DatabaseSync): void {
   if (nCols.length > 0) {
     if (!nCols.includes('confidence')) db.exec('ALTER TABLE news ADD COLUMN confidence TEXT');
     if (!nCols.includes('confidence_basis')) db.exec('ALTER TABLE news ADD COLUMN confidence_basis TEXT');
+    // ★訳文列。既に news 表を持つ DB へ後付け(冪等)。
+    if (!nCols.includes('title_ja')) db.exec('ALTER TABLE news ADD COLUMN title_ja TEXT');
+    if (!nCols.includes('translate_error')) db.exec('ALTER TABLE news ADD COLUMN translate_error TEXT');
+    if (!nCols.includes('translated_at')) db.exec('ALTER TABLE news ADD COLUMN translated_at INTEGER');
   }
   // v0.6.0: アラートに基準(reference)を記録。既存DBへ後付けマイグレーション。
   const aCols = (db.prepare('PRAGMA table_info(alerts)').all() as Array<{ name: string }>).map(c => c.name);
@@ -370,6 +380,9 @@ export interface NewsRow {
   impact_json: string | null;
   confidence: string | null;
   confidence_basis: string | null;
+  title_ja: string | null;
+  translate_error: string | null;
+  translated_at: number | null;
 }
 
 /** 永続化するニュース 1 件(store は core の型に依存しないよう構造的に受ける)。 */
@@ -432,6 +445,32 @@ export function upsertNewsBatch(db: DatabaseSync, items: readonly NewsInsert[], 
 export function getRecentNews(db: DatabaseSync, since: number, limit = 500): NewsRow[] {
   return db.prepare('SELECT * FROM news WHERE published_at >= ? ORDER BY published_at DESC LIMIT ?')
     .all(since, limit) as unknown as NewsRow[];
+}
+
+/** ★訳文の記録。title(原文)には一切触れない。
+ *  成功時は titleJa を入れて translate_error を消し、失敗時は理由だけ残す(次回の再訳判定に使う)。 */
+export function setNewsTranslation(
+  db: DatabaseSync, id: string, titleJa: string | null, error: string | null, at: number,
+): void {
+  db.prepare('UPDATE news SET title_ja = ?, translate_error = ?, translated_at = ? WHERE id = ?')
+    .run(titleJa, error, at, id);
+}
+
+export interface NewsTranslationRow { id: string; title_ja: string | null; translate_error: string | null }
+
+/** 指定 id 群の既訳を引く。★これが「同じ記事を2回訳さない」ための唯一の判定材料。 */
+export function getNewsTranslations(db: DatabaseSync, ids: readonly string[]): NewsTranslationRow[] {
+  if (ids.length === 0) return [];
+  // SQLite の変数上限(既定 999)に収まるよう分割して引く。
+  const out: NewsTranslationRow[] = [];
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    const holes = chunk.map(() => '?').join(',');
+    out.push(...db.prepare(
+      `SELECT id, title_ja, translate_error FROM news WHERE id IN (${holes})`,
+    ).all(...chunk) as unknown as NewsTranslationRow[]);
+  }
+  return out;
 }
 
 /** cutoff より古いニュースを削除して削除件数を返す。 */

@@ -43,10 +43,17 @@ export function renderNews(listEl: HTMLElement, items: NewsItem[]): void {
       li.title = n.impact.reasons.map(r => `${r.label}: ${r.points > 0 ? '+' : ''}${r.points}`).join('\n');
     }
 
+    // ★表示は訳文。原文(n.title)は捨てない = ツールチップで必ず確認できるようにする。
+    //   優先順: サーバが取得時に訳したもの → この画面で手動翻訳したもの → 原文。
     const cached = translationCache.get(n.title);
-    const titleHtml = cached ?? escapeHtml(n.title);
-    const translateBtn = n.lang === 'en' && !cached
-      ? '<button class="news-translate-btn" type="button" title="日本語に翻訳">訳</button>'
+    const shown = n.titleJa ?? cached ?? null;
+    const titleHtml = shown ? escapeHtml(shown) : escapeHtml(n.title);
+    // 訳を出しているときだけ、原文をツールチップに入れる(訳の誤りを原文で確かめられるように)。
+    const titleAttr = shown ? ` title="${escapeAttr(`原文: ${n.title}`)}"` : '';
+    // ★「訳」ボタンは **まだ訳が無いときだけ** 残す = 手動リトライの手段。
+    //   常時翻訳が効いていれば出ないので、ボタンが見えること自体が「訳せていない」の合図になる。
+    const translateBtn = n.lang === 'en' && !shown
+      ? '<button class="news-translate-btn" type="button" title="日本語に翻訳(再試行)">訳</button>'
       : '';
 
     const chips: string[] = [];
@@ -59,12 +66,17 @@ export function renderNews(listEl: HTMLElement, items: NewsItem[]): void {
     if (badge) {
       chips.push(`<span class="news-chip news-unconfirmed" title="${escapeAttr(confidenceTooltip(n.confidence))}">${escapeHtml(badge)}</span>`);
     }
+    // ★訳せなかったことを黙って隠さない。ただし画面は汚さないので、極小の灰色印にとどめる。
+    //   (成功していれば何も出ない = 平常時のノイズはゼロ)
+    if (!shown && n.translateError) {
+      chips.push(`<span class="news-chip news-untranslated" title="${escapeAttr(`翻訳できませんでした: ${n.translateError}（原文のまま表示しています。「訳」で再試行できます）`)}">原文</span>`);
+    }
 
     li.innerHTML = `
       <div class="news-when">${escapeHtml(relativeTimeLabel(n.publishedAt, now))}</div>
       <div class="news-body">
         <div class="news-chips">${chips.join('')}</div>
-        <a class="news-title" href="${escapeAttr(n.url)}" target="_blank" rel="noopener">${titleHtml}</a>
+        <a class="news-title" href="${escapeAttr(n.url)}" target="_blank" rel="noopener"${titleAttr}>${titleHtml}</a>
         <div class="news-foot"><span class="news-source">${escapeHtml(n.source)}</span>${translateBtn}</div>
       </div>
     `;
@@ -98,7 +110,11 @@ async function translateItem(li: HTMLElement, original: string, btn: HTMLButtonE
     }
     translationCache.set(original, escapeHtml(data.translated));
     const titleEl = li.querySelector<HTMLAnchorElement>('.news-title');
-    if (titleEl) titleEl.textContent = data.translated;
+    if (titleEl) {
+      titleEl.textContent = data.translated;
+      titleEl.title = `原文: ${original}`;   // 手動翻訳でも原文を失わない
+    }
+    li.querySelector('.news-untranslated')?.remove();   // 訳せたので「原文」印を外す
     btn.remove();
   } catch (err) {
     btn.textContent = '訳';

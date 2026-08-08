@@ -541,6 +541,11 @@ body {
   background: transparent; color: var(--muted);
   border: 1px dashed var(--border); font-weight: 500; cursor: help;
 }
+/* ★訳せなかった印。平常時は出ない(訳せていれば無印)ので、目立たせる必要がない。 */
+.news-untranslated {
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); font-weight: 500; cursor: help; opacity: 0.75;
+}
 
 .news-feed li a.news-title { color: var(--text); text-decoration: none; display: block; font-size: 12.5px; }
 .news-feed li a.news-title:hover { text-decoration: underline; color: #58a6ff; }
