@@ -115,6 +115,15 @@ export interface ProposalRow {
    *  (プロンプトには非公開の決済仕様が入るため、指紋だけを持つ)。
    *  ★型上は optional(省略= NULL)。 */
   promptFp?: string | null;
+  /** ★根拠文で AI が **申告した LC幅** と、AI が実際に出力した |entry − stopLoss| の突き合わせ
+   *  (LcDeclarationCheck[] の JSON)。monitor の signal_plans.lc_audit_json と **同じ意味・同じ形**。
+   *  ★本線だけに在って生成器に無いと、同じ故障の頻度を腕どうしで比べられない(母集団が揃わない)。
+   *  ★型上は optional(省略= NULL)。NULL = この列を返さない版の monitor と話した or 突き合わせ0件。 */
+  lcAuditJson?: string | null;
+  /** ★根拠文の「そのレッグは出さない(省略/見送り)」という表明 と、実際に発注されるレッグの突き合わせ
+   *  (OmissionClaimCheck[] の JSON)。monitor の signal_plans.omission_audit_json と同じ意味・同じ形。
+   *  ★型上は optional(省略= NULL)。NULL = この列を返さない版の monitor と話した or 表明0件。 */
+  omissionAuditJson?: string | null;
   createdAt: number;
 }
 
@@ -173,6 +182,11 @@ export function initGeneratorSchema(db: DatabaseSync): void {
       --   prompt_fp=送ったプロンプトの一方向指紋。★本文は決して入れない。
       context_at    INTEGER,
       prompt_fp     TEXT,
+      -- ★根拠文の突き合わせ2種(下の ALTER と同じ2列)。monitor の signal_plans と同じ意味・同じ形にして、
+      --   両台帳を同じ道具で読めるようにする。lc_audit_json=申告 LC幅 vs 実出力 /
+      --   omission_audit_json=「出さない」表明 vs 実際に発注されるレッグ。どちらも記録専用。
+      lc_audit_json TEXT,
+      omission_audit_json TEXT,
       created_at    INTEGER NOT NULL,
       UNIQUE (epoch, cycle_id, arm)
     );
@@ -239,6 +253,10 @@ export function initGeneratorSchema(db: DatabaseSync): void {
   //   monitor 側の signal_plans と **同じ2列・同じ意味** にして、両台帳を同じ道具で読めるようにする。
   if (!cols.includes('context_at')) db.exec('ALTER TABLE proposals ADD COLUMN context_at INTEGER');
   if (!cols.includes('prompt_fp')) db.exec('ALTER TABLE proposals ADD COLUMN prompt_fp TEXT');
+  // ★v0.9.66: 根拠文の突き合わせ2種。本線(signal_plans)にだけ在ると A/B の母集団が揃わない。
+  //   既存行は NULL のまま =「この列を持たない版で記録された」。
+  if (!cols.includes('lc_audit_json')) db.exec('ALTER TABLE proposals ADD COLUMN lc_audit_json TEXT');
+  if (!cols.includes('omission_audit_json')) db.exec('ALTER TABLE proposals ADD COLUMN omission_audit_json TEXT');
 }
 
 /** 台帳 DB を開く(書き込み用)。
@@ -277,8 +295,8 @@ const INSERT_SQL = `
     direction, plan_json, ref_price, regime, confidence,
     none_reason, none_legs_json, leg_drops_json, veto_fired, range_anomaly_json,
     shot_id, shot_age_ms, shot_origin, context_omitted,
-    context_at, prompt_fp, created_at
-  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?)
+    context_at, prompt_fp, lc_audit_json, omission_audit_json, created_at
+  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)
 `;
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
@@ -297,7 +315,8 @@ export function insertProposal(db: DatabaseSync, r: ProposalRow): boolean {
     r.direction, r.planJson, num(r.refPrice), r.regime, num(r.confidence),
     r.noneReason, r.noneLegsJson, r.legDropsJson ?? null, r.vetoFired, r.rangeAnomalyJson,
     r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null,
-    num(r.contextAt), r.promptFp ?? null, r.createdAt,
+    num(r.contextAt), r.promptFp ?? null,
+    r.lcAuditJson ?? null, r.omissionAuditJson ?? null, r.createdAt,
   );
   return countProposals(db) > before;
 }

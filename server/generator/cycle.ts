@@ -203,6 +203,11 @@ export function toProposalRow(
     //   = この2つを返さない版の monitor と話した(= 突合できない標本)。
     contextAt: typeof b?.contextAt === 'number' ? b.contextAt : null,
     promptFp: str(b?.promptFp),
+    // ★根拠文の突き合わせ2種を **本線の台帳(signal_plans)と同じ形のまま** 写す(推測も再計算もしない)。
+    //   lcAudit=申告 LC幅 vs 実出力 / omissionAudit=「出さない」表明 vs 実際に発注されるレッグ。
+    //   応答に無ければ NULL = この列を返さない版の monitor と話した or 観測0件。
+    lcAuditJson: Array.isArray(b?.lcAudit) ? JSON.stringify(b.lcAudit) : null,
+    omissionAuditJson: Array.isArray(b?.omissionAudit) ? JSON.stringify(b.omissionAudit) : null,
     createdAt: outcome.respondedAt,
   };
 }

@@ -124,6 +124,12 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
   //   ★指紋は一方向ハッシュ(`sp1:<16桁hex>`)で、プロンプト本文も決済仕様の数値も一切含まない。
   if (r.contextAt !== undefined) out.contextAt = r.contextAt;
   if (r.promptFp !== undefined) out.promptFp = r.promptFp;
+  // ★RECORD-ONLY(v0.9.66): 本線の台帳(signal_plans)に載せているのと **同じ2つの突き合わせ** を
+  //   生成器の台帳にも載せる。母集団が揃っていないと A/B の比較ができない(同じ故障は生成器側にも出る)。
+  //   lcAudit=申告 LC幅 vs 実出力 / omissionAudit=「出さない」表明 vs 実際に発注されるレッグ。
+  //   どちらも数値は AI が出したレッグ価格と幅だけで、非公開の決済仕様は入らない。
+  if (r.lcAudit !== undefined) out.lcAudit = r.lcAudit;
+  if (r.omissionAudit !== undefined) out.omissionAudit = r.omissionAudit;
   return out;
 }
 

@@ -187,7 +187,7 @@ export function buildPositionView(s: SignalTradeState | null, now: number = Date
 }
 
 /** 純関数: 理由文(AI 生成文 + コード側の脚 drop 注記)を表示行に分解する。
- *  注記は `${rationale}\n※上部(売り指値)は…のため除外` の形で `\n` 連結されるが、1要素に textContent で
+ *  注記は `${rationale}\n※上部(売り指値)は不採用: …` の形で `\n` 連結されるが、1要素に textContent で
  *  入れると CSS(white-space:normal)で改行が潰れ、本文に埋もれて「なぜ片側だけなのか」が読めなくなる。
  *  行に分けて別要素で描くための分解(空行・前後の空白は落とす)。 */
 export function splitRationaleLines(text: string): string[] {
@@ -209,7 +209,7 @@ function paintPanel(el: HTMLElement, view: PanelView, extraCls = ''): void {
   mainEl.textContent = view.main;
   nodes.push(mainEl);
   el.replaceChildren(...nodes);
-  // ★理由文は行ごとに別要素で描く。コード側が足す脚 drop 注記(`※上部(売り指値)は…のため除外`)は
+  // ★理由文は行ごとに別要素で描く。コード側が足す脚 drop 注記(`※上部(売り指値)は不採用: …`)は
   //   `\n` 区切りなので、1要素に入れると改行が潰れて本文と繋がり読めなくなる(片面になった理由が伝わらない)。
   const lines = splitRationaleLines(view.rationale);
   if (lines.length) {

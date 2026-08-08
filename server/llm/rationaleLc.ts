@@ -98,8 +98,10 @@ const WIDTH_RE = new RegExp(
 const EQUATION_RE =
   /(\d{4,6})(?!\d)\s*([+＋\-−ー])\s*(?:LC幅\s*[（(]\s*)?(\d{1,3})(?!\d)\s*[)）]?\s*[=＝]\s*(\d{4,6})(?!\d)/g;
 
-/** 見出しの出現位置(文の順)。 */
-function headingMarks(text: string): Array<{ at: number; leg: LcLegKind }> {
+/** 見出しの出現位置(文の順)。
+ *  ★export している理由: 「どの語がどのレッグを指すか」の語彙をここ1箇所に置くため
+ *  (根拠文の別の突き合わせ=rationaleOmission.ts も同じ見出しで割り当てる)。 */
+export function headingMarks(text: string): Array<{ at: number; leg: LcLegKind }> {
   const marks: Array<{ at: number; leg: LcLegKind }> = [];
   HEADING_RE.lastIndex = 0;
   let m: RegExpExecArray | null;

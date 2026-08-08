@@ -157,18 +157,18 @@ describe('buildSignalView(シグナル枠)', () => {
 });
 
 // ─── 理由文の行分解(splitRationaleLines): コード側の脚 drop 注記(\n 区切り)を読める形で描くため ───
-//   注記は `${rationale}\n※上部(売り指値)は…のため除外` の形で足される。1要素に textContent で入れると
+//   注記は `${rationale}\n※上部(売り指値)は不採用: …` の形で足される。1要素に textContent で入れると
 //   CSS(white-space:normal)で改行が潰れて本文に埋もれるので、行に分けて別要素で描く。
 describe('splitRationaleLines(理由文の行分解)', () => {
   it('\\n 区切りを行に分ける(前後の空白は落とす)', () => {
-    expect(splitRationaleLines('レンジと判断\n※上部(売り指値)はトレンド逆行のため除外'))
-      .toEqual(['レンジと判断', '※上部(売り指値)はトレンド逆行のため除外']);
+    expect(splitRationaleLines('レンジと判断\n※上部(売り指値)は不採用: トレンドに逆行'))
+      .toEqual(['レンジと判断', '※上部(売り指値)は不採用: トレンドに逆行']);
   });
 
   it('注記が複数行でも全部残る(片側だけになった理由が読める)', () => {
-    const t = '上下に反応帯\n※上部(売り指値)は現在値との上下関係が不正のため除外\n※下部(買い指値)はLC上限超のため除外';
+    const t = '上下に反応帯\n※上部(売り指値)は不採用: エントリーが現在値の逆側\n※下部(買い指値)は不採用: 損切り幅が設定の上限より広い';
     expect(splitRationaleLines(t)).toHaveLength(3);
-    expect(splitRationaleLines(t)[2]).toBe('※下部(買い指値)はLC上限超のため除外');
+    expect(splitRationaleLines(t)[2]).toBe('※下部(買い指値)は不採用: 損切り幅が設定の上限より広い');
   });
 
   it('空行・空文字は落とす(改行のみの文字列は空配列)', () => {

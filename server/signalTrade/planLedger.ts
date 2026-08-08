@@ -106,5 +106,9 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   //   故障は落ちたレッグ側にしか残らないので、採用レッグという対照が同じ台帳に無いと率が読めない。
   //   1件も突き合わせられなければ列ごと NULL(空配列 '[]' は書かない=leg_drops_json と同じ規約)。
   if (result.lcAudit?.length) row.lcAuditJson = JSON.stringify(result.lcAudit);
+  // ★RECORD-ONLY: 根拠文で「そのレッグは出さない」と述べたレッグ と **実際に発注されるレッグ** の突き合わせ。
+  //   「省略した」と書きながら有効な価格対を出す(=コードが落とさないのでそのまま発注される)回を数えるため。
+  //   判定には一切使わない。1件も表明が読めなければ列ごと NULL(空配列 '[]' は書かない=他の列と同じ規約)。
+  if (result.omissionAudit?.length) row.omissionAuditJson = JSON.stringify(result.omissionAudit);
   return row;
 }

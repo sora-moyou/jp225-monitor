@@ -220,7 +220,7 @@ describe('buildScalpPlan パイプライン: レンジ脚の脱落注記は1回�
   /** ※で始まる注記行だけを取り出す。 */
   const noteLines = (s: string) => s.split('\n').filter(l => l.startsWith('※'));
 
-  it('★parse 段で上部が落ちる(幾何不正)→注記は1行だけ・「AIが提示しなかった」は付かない', async () => {
+  it('★parse 段で上部が落ちる(幾何不正)→注記は1行だけ・「AIが提案せず」は付かない', async () => {
     const raw = JSON.stringify({
       direction: 'range', rationale: RATIONALE, refPrice: 1,
       range: { upper: { ...okUpper, entry: 38200 }, lower: okLower },   // upper.entry<REF=幾何不正
@@ -229,12 +229,12 @@ describe('buildScalpPlan パイプライン: レンジ脚の脱落注記は1回�
     expect(r.plan.direction).toBe('range');
     expect(r.plan.range?.upper).toBeUndefined();
     expect(noteLines(r.plan.rationale)).toHaveLength(1);
-    expect(countOf(r.plan.rationale, '現在値との上下関係が不正')).toBe(1);
+    expect(countOf(r.plan.rationale, 'エントリーが現在値の逆側')).toBe(1);
     // 再 parse で「AI が上部を出さなかった」と誤って追記されてはならない。
-    expect(r.plan.rationale).not.toContain('AIが提示しなかった');
+    expect(r.plan.rationale).not.toContain('AIが提案せず');
   });
 
-  it('parse 段で AI が上部を出さない→「AIが提示しなかった」注記は1行だけ', async () => {
+  it('parse 段で AI が上部を出さない→「AIが提案せず」注記は1行だけ', async () => {
     const raw = JSON.stringify({
       direction: 'range', rationale: RATIONALE, refPrice: 1,
       range: { lower: okLower },
@@ -242,7 +242,7 @@ describe('buildScalpPlan パイプライン: レンジ脚の脱落注記は1回�
     const r = await planFrom(raw);
     expect(r.plan.direction).toBe('range');
     expect(noteLines(r.plan.rationale)).toHaveLength(1);
-    expect(countOf(r.plan.rationale, 'AIが提示しなかったため無し')).toBe(1);
+    expect(countOf(r.plan.rationale, '※上部のレッグなし: AIが提案せず')).toBe(1);
   });
 
   it('enforce 段で下部が落ちる(バイアス)→注記は1行だけ', async () => {
@@ -255,7 +255,7 @@ describe('buildScalpPlan パイプライン: レンジ脚の脱落注記は1回�
     expect(r.plan.direction).toBe('range');
     expect(r.plan.range?.lower).toBeUndefined();
     expect(noteLines(r.plan.rationale)).toHaveLength(1);
-    expect(countOf(r.plan.rationale, 'バイアス(売り優先)')).toBe(1);
+    expect(countOf(r.plan.rationale, '※下部(買い指値)は不採用: バイアス設定と逆')).toBe(1);
   });
 
   it('★混在: parse 段で上部・enforce 段で下部が落ちて none→残る注記(parse 段の1行)は1回だけ', async () => {
@@ -267,7 +267,7 @@ describe('buildScalpPlan パイプライン: レンジ脚の脱落注記は1回�
     const r = await planFrom(raw);
     expect(r.plan.direction).toBe('none');
     expect(noteLines(r.plan.rationale)).toHaveLength(1);
-    expect(countOf(r.plan.rationale, '現在値との上下関係が不正')).toBe(1);
+    expect(countOf(r.plan.rationale, 'エントリーが現在値の逆側')).toBe(1);
   });
 
   it('脚が落ちない正常 range→注記なし(rationale は AI の原文のまま)', async () => {
@@ -356,7 +356,7 @@ describe('★初期LC下限の実強制(手動でも AI委任でも効く)', () 
     expect(r.plan.direction).toBe('range');
     expect(r.plan.range?.upper).toBeUndefined();
     expect(r.plan.range?.lower?.side).toBe('buy');
-    expect(countOf(r.plan.rationale, '※上部(売り指値)はLC下限未満のため除外')).toBe(1);
+    expect(countOf(r.plan.rationale, '※上部(売り指値)は不採用: 損切り幅が設定の下限より狭い')).toBe(1);
   });
 
   it('回帰: 下限以上・上限以下の正常プランは素通し(この修正で通る玉が減らない)', async () => {

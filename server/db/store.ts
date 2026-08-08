@@ -132,6 +132,13 @@ export function initSchema(db: DatabaseSync): void {
   //   (b)leg_drops_json の形と意味を変えないため(既存の集計/テストが読む形は不変)。
   //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行はそのまま)。
   if (!spCols.includes('lc_audit_json')) db.exec('ALTER TABLE signal_plans ADD COLUMN lc_audit_json TEXT');
+  // ★RECORD-ONLY(v0.9.66): 根拠文の「そのレッグは出さない」という **表明** と、実際に発注されるレッグの
+  //   突き合わせ。OmissionClaimCheck[](server/llm/rationaleOmission.ts)をそのまま JSON 化する。
+  //   lc_audit_json に相乗りしない理由: あちらは「AI が出したレッグ1本ごとの申告幅 vs 実出力」で、
+  //   行が在る条件(entry と stopLoss が両方揃っている)も意味も違う。相乗りすると既存の集計が読む形が変わる。
+  //   ★判定には使わない(落としも直しもしない)。まず頻度を測るためだけの列。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行 or 表明ゼロ)。
+  if (!spCols.includes('omission_audit_json')) db.exec('ALTER TABLE signal_plans ADD COLUMN omission_audit_json TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -746,6 +753,9 @@ export interface SignalPlanRow {
   prompt_fp: string | null;
   /** 根拠文の申告 LC幅 と 実出力の突き合わせ(LcDeclarationCheck[] の JSON)。旧行/観測ゼロは NULL。 */
   lc_audit_json: string | null;
+  /** 根拠文の「出さない」表明 と 実際に発注されるレッグの突き合わせ(OmissionClaimCheck[] の JSON)。
+   *  旧行/表明ゼロは NULL。 */
+  omission_audit_json: string | null;
 }
 
 export interface SignalPlanInsert {
@@ -778,6 +788,9 @@ export interface SignalPlanInsert {
   promptFp?: string | null;
   /** ★RECORD-ONLY: 申告 LC幅と実出力の突き合わせ(LcDeclarationCheck[] の JSON)。1件も無ければ未指定=NULL。 */
   lcAuditJson?: string | null;
+  /** ★RECORD-ONLY: 「出さない」表明と実際に発注されるレッグの突き合わせ(OmissionClaimCheck[] の JSON)。
+   *  1件も表明が読めなければ未指定=NULL。 */
+  omissionAuditJson?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -793,8 +806,8 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       limit_entry, stop_entry, stop_loss_for_limit, stop_loss_for_stop,
       leg_drops_json, settings_json, rationale, error,
       arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason,
-      context_at, prompt_fp, lc_audit_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      context_at, prompt_fp, lc_audit_json, omission_audit_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -805,6 +818,7 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     finiteOrNull(p.armWaitMs), finiteOrNull(p.armWaitDistance), finiteOrNull(p.armWaitSigma),
     p.armWaitReason ?? null,
     finiteOrNull(p.contextAt), p.promptFp ?? null, p.lcAuditJson ?? null,
+    p.omissionAuditJson ?? null,
   );
 }
 

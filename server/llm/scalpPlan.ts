@@ -20,6 +20,8 @@ import { isWebSearchEnabled, webSearch } from './webSearch.js';
 import { promptFingerprint } from './promptFingerprint.js';
 // ★RECORD-ONLY: 根拠文の「申告した LC幅」と実際に出力した損切りの突き合わせ(純関数・判定には使わない)。
 import { auditLcDeclarations, type LcDeclarationCheck, type LcLegName } from './rationaleLc.js';
+// ★RECORD-ONLY: 根拠文の「そのレッグは出さない」表明と、実際に発注されるレッグの突き合わせ(判定には使わない)。
+import { auditOmissionClaims, type OmissionClaimCheck } from './rationaleOmission.js';
 import { getPrices } from '../cache.js';
 import {
   NIKKEI_SYMBOL, buildMonitorContext, formatPricesForChat, formatNewsForChat,
@@ -140,8 +142,16 @@ export interface LegDrop {
 //   ★ここは **測るだけ**。採否・価格・noneReason・legDrops は1バイトも変えない(食い違いで落としも直しもしない)。
 //   ★対象は **AI の生出力**(parse 段で見えるレッグ全部=後段で落ちるレッグも含む)。落ちたレッグにしか
 //     故障が残らないので、採用レッグだけを見ると存在しないことになってしまう。
+// omissionAudit(RECORD-ONLY・v0.9.66): ★根拠文で「そのレッグは出さない(省略/見送り)」と **述べた** レッグと、
+//   **実際に発注されるレッグ**(最終プランに残ったレッグ)の突き合わせ。
+//   AI が「ブレイク新規は下限に届かないので省略した」と書きながら、下限を満たす有効な価格対を出すことがある。
+//   その場合コードは何も落とさない(落ちるのは lcFloor/stopSide に掛かったときだけ)ので、そのレッグは
+//   そのまま発注される = **AI の意図と実際の注文が食い違ったまま素通り** する。
+//   ★lcAudit と違い、対象は **最終プラン**(生出力ではない)。知りたいのは「出さないと言ったのに出た」であって、
+//     コードが落としてくれた回は意図と注文が一致しているため。
+//   ★ここも **測るだけ**。採否・価格・noneReason・legDrops は1バイトも変えない。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcDeclarationCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcDeclarationCheck[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
   | { ok: false; error: string; contextAt?: number; promptFp?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
@@ -204,6 +214,22 @@ function lcAuditFor(
     return rows.length ? rows : undefined;
   } catch (e) {
     console.warn('[scalp-plan] LC申告の突き合わせに失敗(記録のみ・計画は続行):', e instanceof Error ? e.message : String(e));
+    return undefined;
+  }
+}
+
+/** ★RECORD-ONLY: 「そのレッグは出さない」という表明と、実際に発注されるレッグの突き合わせを
+ *  **例外を外へ出さずに** 作る。lcAuditFor と同じ作法(記録の失敗で計画を止めない・握りつぶした事実は残す)。
+ *  表明が1件も読めなければ undefined(空配列は載せない=「観測できた」と「0件」を混ぜない)。 */
+function omissionAuditFor(
+  rationale: string,
+  present: { limit: boolean; stop: boolean },
+): readonly OmissionClaimCheck[] | undefined {
+  try {
+    const rows = auditOmissionClaims(rationale, present);
+    return rows.length ? rows : undefined;
+  } catch (e) {
+    console.warn('[scalp-plan] 「出さない」表明の突き合わせに失敗(記録のみ・計画は続行):', e instanceof Error ? e.message : String(e));
     return undefined;
   }
 }
@@ -912,13 +938,23 @@ const LEG_DROP_REASON_TEXT: Record<NoneReason, string> = {
   rangeDisabled: 'レンジ設定が無効',
 };
 
+/** ★列挙に無い値が来たときの表示(防御)。型で塞がれていても、画面に `undefined` を出す経路は残さない。
+ *  「理由が読めなかった」ことは黙って空文字にせず、必ず1語で見えるようにする(無音の失敗を作らない)。 */
+const LEG_DROP_REASON_UNKNOWN = '理由不明';
+
+/** ★脱落理由の表示文(SSOT の唯一の入口)。方向レッグもレンジ脚もここだけを通る
+ *  = 同じ reason は必ず同じ日本語になる(台帳の reason から画面の言葉へ辿れる)。 */
+export function legDropReasonText(reason: NoneReason): string {
+  return LEG_DROP_REASON_TEXT[reason] ?? LEG_DROP_REASON_UNKNOWN;
+}
+
 /** 「AI がそもそも出さなかった」理由。ここだけ『なし』と書き、それ以外は『出したが不採用』と書き分ける
  *  (ユーザーにとって意味が違う: 前者は AI の判断・後者はコードの検証で落ちた)。 */
 const LEG_NOT_PROPOSED: readonly NoneReason[] = ['missing', 'ai'];
 
 /** レッグ1本ぶんの脱落注記(短文・純関数)。 */
 function legDropPhrase(name: '指値' | '逆指値', reason: NoneReason): string {
-  const text = LEG_DROP_REASON_TEXT[reason];
+  const text = legDropReasonText(reason);
   return LEG_NOT_PROPOSED.includes(reason)
     ? `（${name}なし: ${text}）`
     : `（${name}は不採用: ${text}）`;
@@ -1411,35 +1447,33 @@ export function lcLegBelowFloor(w: number, opts: { floorYen?: number }): boolean
 
 /** レンジ脚がコード側で落とされた理由(rationale 明記用)。
  *  trend/lc/bias は enforcePlanConstraints(制約適用)由来、geometry/missing は parseScalpPlan(AI応答の検証)由来、
- *  stopSide は両方で起きうる(parse で落ちた脚は enforce では既に無いので注記は重複しない)。 */
-type RangeDropReason = 'trend' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'geometry' | 'missing';
+ *  stopSide は両方で起きうる(parse で落ちた脚は enforce では既に無いので注記は重複しない)。
+ *  ★語彙は NoneReason の部分集合(別の列挙を作らない)。 */
+type RangeDropReason = Extract<NoneReason, 'trend' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'geometry' | 'missing'>;
 
 /** 脱落したレンジ脚の位置(上部/下部)・side・理由から、rationale へ追記する注記文を組み立てる。
- *  例: `※下部(買い指値)はバイアス(売り優先)のため除外` / `※上部(売り指値)はLC上限超のため除外`。
- *  テキスト整形のみ(取引ロジックには一切関与しない)。 */
+ *  例: `※下部(買い指値)は不採用: バイアス設定と逆` / `※上部(売り指値)は不採用: 損切り幅が設定の上限より広い`。
+ *  テキスト整形のみ(取引ロジックには一切関与しない)。
+ *
+ *  ★v0.9.66(語彙の統一): 理由の日本語は **方向レッグと同じ文字列**(legDropReasonText)を使う。
+ *    以前はここだけ別系統の短縮語(`SL向き不正` / `LC下限未満` / `トレンド逆行` …)を持っていたため、
+ *    同じ reason が画面で2つの言葉に見え、台帳の reason から画面へ辿れなかった。
+ *    レンジ固有の文脈(どちらの脚か・side)は **前置き** で表し、理由の部分は1文字も変えない。
+ *  ★引数 reason は NoneReason 全体を受ける(型の外の値=未来の理由が来ても
+ *    `undefined` を画面に出さない。legDropReasonText が必ず1語を返す)。
+ *  ★bias の向き(買い優先/売り優先)は文言に出さない: 方向レッグ側が出していないため
+ *    (出すと同じ reason が再び2つの言葉になる)。向きは設定画面と台帳(settings_json)に在る。 */
 export function rangeDropNote(
   pos: '上部' | '下部',
   side: 'buy' | 'sell' | undefined,
-  reason: RangeDropReason,
-  bias?: 'long' | 'short' | 'none',
+  reason: NoneReason,
 ): string {
+  const text = legDropReasonText(reason);
   // AI がそのレッグを出していない(欠落/壊れた形)場合は side が無いので、位置だけの専用文にする。
-  if (reason === 'missing') return `※${pos}のレッグはAIが提示しなかったため無し`;
+  //   方向レッグの `（逆指値なし: AIが提案せず）` と同じ書き分け(『なし』= AI の判断 / 『不採用』= コードの検証)。
+  if (LEG_NOT_PROPOSED.includes(reason)) return `※${pos}のレッグなし: ${text}`;
   const sideLabel = side === 'sell' ? '売り指値' : side === 'buy' ? '買い指値' : '指値';
-  let reasonLabel: string;
-  switch (reason) {
-    case 'trend': reasonLabel = 'トレンド逆行'; break;
-    case 'stopSide': reasonLabel = 'SL向き不正'; break;
-    case 'geometry': reasonLabel = '現在値との上下関係が不正'; break;
-    case 'lc': reasonLabel = 'LC上限超'; break;
-    case 'lcFloor': reasonLabel = 'LC下限未満'; break;
-    case 'bias':
-      reasonLabel = bias === 'long' ? 'バイアス(買い優先)'
-        : bias === 'short' ? 'バイアス(売り優先)'
-        : 'バイアス';
-      break;
-  }
-  return `※${pos}(${sideLabel})は${reasonLabel}のため除外`;
+  return `※${pos}(${sideLabel})は不採用: ${text}`;
 }
 
 /** enforcePlanConstraints と同一の enforce を行い、さらに **トレンド veto が発火したか(vetoFired)** を surface する
@@ -1529,8 +1563,8 @@ export function enforcePlanConstraintsReport(
     }
     // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
     const notes: string[] = [];
-    if (upperReason) notes.push(rangeDropNote('上部', upperSide0, upperReason, bias));
-    if (lowerReason) notes.push(rangeDropNote('下部', lowerSide0, lowerReason, bias));
+    if (upperReason) notes.push(rangeDropNote('上部', upperSide0, upperReason));
+    if (lowerReason) notes.push(rangeDropNote('下部', lowerSide0, lowerReason));
     const rationale = notes.length
       ? `${plan.rationale}\n${notes.join('\n')}`
       : plan.rationale;
@@ -1897,6 +1931,16 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // ★RECORD-ONLY: 申告 LC幅の突き合わせは **parse 段(AI の生出力)** の結果をそのまま運ぶ。
     //   enforce 後の plan で作り直すと、故障が集中している「落ちたレッグ」が消えて観測できなくなる。
     if (parsed.lcAudit?.length) out.lcAudit = parsed.lcAudit;
+    // ★RECORD-ONLY(v0.9.66): 「そのレッグは出さない」と述べたレッグ vs **実際に発注されるレッグ**。
+    //   ここだけは最終 plan を見る(知りたいのは「出さないと言ったのに出た」= 素通りした回)。
+    //   根拠文は最終 plan のもの(機械生成の脱落注記が末尾に付く)。注記は表明の語(省略/見送 等)を
+    //   1つも含まず、しかも **全ての表明より後ろ** に足されるので、割り当ては生の根拠文と同じになる
+    //   (この不変条件は scalpPlanOmissionAudit.test.ts が毎回確かめる)。
+    const omissionAudit = omissionAuditFor(finalPlan.rationale, {
+      limit: finalPlan.limitEntry != null,
+      stop: finalPlan.stopEntry != null,
+    });
+    if (omissionAudit) out.omissionAudit = omissionAudit;
     // ★v0.9.44(記録専用): 見送り(none)の経路と落としたレッグの生数値を surface する。
     //   下流(rangeDisabled)→ enforce → parse の順に「最後に none 化したステージ」の理由を採る。
     if (finalPlan.direction === 'none') {
