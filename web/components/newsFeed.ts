@@ -1,25 +1,72 @@
 import type { NewsItem } from '../types.js';
 import { apiUrl } from '../lib/apiBase.js';
+import { rankNewsByImpact, relativeTimeLabel, NEWS_CATEGORY_LABELS } from '../../core/newsImpact.js';
+import { confidenceBadgeLabel, confidenceTooltip } from '../../core/newsConfidence.js';
 
 // 同じセッション内で訳済みのタイトルを保持 (再表示時に再翻訳しない)
 const translationCache = new Map<string, string>();
 
+/** 折りたたみ時の表示件数。「すべて見る →」で全件へ切り替える。 */
+export const NEWS_COLLAPSED_COUNT = 30;
+const NEWS_MAX_RENDER = 200;
+
+let showAll = false;
+
+/** 「すべて見る →」ボタンを配線する。再描画は onToggle 経由で呼び出し側に任せる(状態は1箇所)。 */
+export function wireNewsShowAll(btn: HTMLElement | null, onToggle: () => void): void {
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    showAll = !showAll;
+    btn.textContent = showAll ? '上位のみ ←' : 'すべて見る →';
+    onToggle();
+  });
+}
+
 export function renderNews(listEl: HTMLElement, items: NewsItem[]): void {
   listEl.innerHTML = '';
-  for (const n of items.slice(0, 50)) {
+  // ★並びは「インパクト × 鮮度」。ここで採点し直すのは、鮮度の減衰が時間とともに動くため
+  //   (サーバの採点は取得時点のもの。画面は開いたままでも順位が古びないようにする)。
+  //   確度(未確認バッジ)はプール全体を見ないと決まらないのでサーバの判定をそのまま使う。
+  const now = Date.now();
+  const ranked = rankNewsByImpact(items, now);
+  const visible = ranked.slice(0, showAll ? NEWS_MAX_RENDER : NEWS_COLLAPSED_COUNT);
+
+  for (const n of visible) {
     const li = document.createElement('li');
     li.dataset.lang = n.lang;
     li.dataset.title = n.title;
-    const t = new Date(n.publishedAt);
-    const time = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    // カード左の縦アクセント線をカテゴリ色で出す(チップの背景色クラスとは別系統の acc-*)。
+    if (n.impact?.category) li.classList.add(`acc-${n.impact.category}`);
+    // 採点の内訳を DOM に残す(なぜ上位に来たかを画面から辿れるようにする)。
+    if (n.impact) {
+      li.dataset.impact = String(n.impact.score);
+      li.title = n.impact.reasons.map(r => `${r.label}: ${r.points > 0 ? '+' : ''}${r.points}`).join('\n');
+    }
+
     const cached = translationCache.get(n.title);
     const titleHtml = cached ?? escapeHtml(n.title);
     const translateBtn = n.lang === 'en' && !cached
       ? '<button class="news-translate-btn" type="button" title="日本語に翻訳">訳</button>'
       : '';
+
+    const chips: string[] = [];
+    const cat = n.impact?.category ?? null;
+    if (cat) chips.push(`<span class="news-chip cat-${cat}">${escapeHtml(NEWS_CATEGORY_LABELS[cat])}</span>`);
+    if (n.impact?.overseas) chips.push('<span class="news-chip cat-overseas">海外</span>');
+    // ★未確認バッジ。警告ではなく **属性** として、控えめな灰色で出す(ユーザー指示)。
+    //   赤で大きく出すと「見るな」の意味になるが、意図は逆で「速いから見たい」。
+    const badge = confidenceBadgeLabel(n.confidence);
+    if (badge) {
+      chips.push(`<span class="news-chip news-unconfirmed" title="${escapeAttr(confidenceTooltip(n.confidence))}">${escapeHtml(badge)}</span>`);
+    }
+
     li.innerHTML = `
-      <div class="meta">[${n.lang.toUpperCase()}] ${escapeHtml(n.source)} ${time} ${translateBtn}</div>
-      <a class="news-title" href="${escapeAttr(n.url)}" target="_blank" rel="noopener">${titleHtml}</a>
+      <div class="news-when">${escapeHtml(relativeTimeLabel(n.publishedAt, now))}</div>
+      <div class="news-body">
+        <div class="news-chips">${chips.join('')}</div>
+        <a class="news-title" href="${escapeAttr(n.url)}" target="_blank" rel="noopener">${titleHtml}</a>
+        <div class="news-foot"><span class="news-source">${escapeHtml(n.source)}</span>${translateBtn}</div>
+      </div>
     `;
     listEl.appendChild(li);
 

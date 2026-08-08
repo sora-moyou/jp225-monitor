@@ -1,6 +1,7 @@
 import type { NewsItem, Price } from '../types.js';
 import { INSTRUMENTS } from '../config.js';
 import { tokyoCashOpen } from '../../core/session.js';
+import { bigrams } from '../../core/textBigrams.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
 import { rowKind, summarize } from '../alertHistory.js';
 import { crashDrawdown } from '../crash.js';
@@ -26,13 +27,8 @@ export function formatPricesForChat(prices: Price[], now: number): string {
   }).join('\n');
 }
 
-/** 文字バイグラム集合(空白・記号除去)。日本語は語分割が無いので2文字シングルで類似を測る。 */
-function bigrams(s: string): string[] {
-  const c = s.toLowerCase().replace(/[\s、。,.!?？！「」（）()・:：;；'"’”]/g, '');
-  const out: string[] = [];
-  for (let i = 0; i + 2 <= c.length; i++) out.push(c.slice(i, i + 2));
-  return out;
-}
+// 文字バイグラムは core/textBigrams.ts が唯一の実装(ニュースの裏取り判定と共用)。
+// ここに関数のコピーを戻さないこと(2 箇所に置くと片方だけ直して黙ってズレる)。挙動は移設前と同一。
 
 export function formatNewsForChat(news: NewsItem[], now: number, queryText = ''): string {
   if (news.length === 0) return '(ニュースなし)';

@@ -484,13 +484,78 @@ body {
   padding: 10px 12px;
   overflow-y: auto;
 }
-.news-feed h2 { font-size: 12px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+/* ── 見出し行(「世界ニュース」+「すべて見る →」)。パネル上端に貼り付けて、
+      スクロールしても見出しが消えないようにする。 */
+.news-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  position: sticky; top: -10px;                 /* padding 分を打ち消してぴったり貼る */
+  background: var(--panel); z-index: 1;
+  margin: -10px -12px 6px; padding: 10px 12px 6px;
+}
+.news-feed h2 { font-size: 13px; margin: 0; color: var(--text); font-weight: 600; letter-spacing: 0.02em; }
+.news-showall {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: #58a6ff; font-size: 11px; font-family: inherit; white-space: nowrap;
+}
+.news-showall:hover { text-decoration: underline; }
+
 .news-feed ul { list-style: none; padding: 0; margin: 0; }
-.news-feed li { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; line-height: 1.35; }
+/* 1件 = 左に相対時刻 / 右に本体。カード左の縦アクセント線は border-left で出す
+   (参考画像の見た目。既存の暗色パネルから浮かないよう色は --border 基調にする)。 */
+.news-feed li {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 7px 0 7px 8px;
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--border);   /* カード左の縦アクセント線(参考画像) */
+  font-size: 12.5px; line-height: 1.4;
+}
+/* カテゴリごとの色。チップ(.cat-*)とは別系統にして、背景色と線色を独立に持たせる。 */
+.news-feed li.acc-breaking    { border-left-color: #b6222c; }
+.news-feed li.acc-economy     { border-left-color: rgba(56, 139, 253, 0.55); }
+.news-feed li.acc-commodity   { border-left-color: rgba(56, 139, 253, 0.55); }
+.news-feed li.acc-geopolitics { border-left-color: rgba(219, 109, 40, 0.55); }
+.news-feed li.acc-stock       { border-left-color: rgba(63, 185, 80, 0.5); }
+.news-feed li:hover { background: rgba(88, 166, 255, 0.04); }
 .news-feed li:last-child { border-bottom: none; }
-.news-feed li .meta { color: var(--muted); font-size: 10.5px; margin-bottom: 2px; }
-.news-feed li a { color: var(--text); text-decoration: none; }
-.news-feed li a:hover { text-decoration: underline; color: #58a6ff; }
+
+.news-when { flex: 0 0 auto; width: 52px; color: var(--muted); font-size: 10.5px; padding-top: 2px; }
+.news-body { flex: 1 1 auto; min-width: 0; }
+.news-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 3px; }
+.news-chips:empty { display: none; }
+
+.news-chip {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 10px; line-height: 1.5; font-weight: 600; white-space: nowrap;
+}
+/* カテゴリの色分け。参考画像の割り当て(BREAKING=赤 / 経済・コモディティ=青 / 海外=紫)に寄せつつ、
+   彩度は既存 UI(--up/--down)と同程度に抑えて、パネルだけが派手にならないようにする。 */
+.cat-breaking    { background: #b6222c; color: #fff; }
+.cat-economy     { background: rgba(56, 139, 253, 0.18); color: #79b8ff; }
+.cat-commodity   { background: rgba(56, 139, 253, 0.18); color: #79b8ff; }
+.cat-geopolitics { background: rgba(219, 109, 40, 0.18); color: #e0a06a; }
+.cat-stock       { background: rgba(63, 185, 80, 0.16); color: #7ee787; }
+.cat-overseas    { background: rgba(163, 113, 247, 0.18); color: #c9a9ff; }
+/* ★未確認バッジ。警告ではなく「属性」。控えめな灰色にして、赤(=BREAKING)と競合させない。
+   目的は「速いが裏が取れていない情報」を落とさずに出すことなので、目立たせすぎない。 */
+.news-unconfirmed {
+  background: transparent; color: var(--muted);
+  border: 1px dashed var(--border); font-weight: 500; cursor: help;
+}
+
+.news-feed li a.news-title { color: var(--text); text-decoration: none; display: block; font-size: 12.5px; }
+.news-feed li a.news-title:hover { text-decoration: underline; color: #58a6ff; }
+.news-foot { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+.news-source {
+  display: inline-block; padding: 1px 5px; border-radius: 3px;
+  background: rgba(139, 148, 158, 0.14); color: var(--muted);
+  font-size: 10px; line-height: 1.5; white-space: nowrap;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+/* 狭いとき: 相対時刻を本体の上に載せて折り返す(2カラムだと見出しが縦に潰れるため)。 */
+@media (max-width: 420px) {
+  .news-feed li { flex-direction: column; gap: 2px; }
+  .news-when { width: auto; padding-top: 0; }
+}
 
 .chat-board {
   background: var(--panel);

@@ -3,6 +3,10 @@
 // これらの型は backend/frontend(web)双方が参照する「送受信スキーマ」なので core に置く。
 
 import type { DetectionKind } from './detectionKinds.js';
+// NewsItem に載せるインパクト推定の型。実体(重み・純関数)は core/newsImpact.ts。
+// 型のみの import なのでコンパイル後に消え、実行時の循環は生じない。
+import type { NewsImpact } from './newsImpact.js';
+import type { NewsConfidence } from './newsConfidence.js';
 
 export type { DetectionKind };
 
@@ -60,6 +64,14 @@ export interface NewsItem {
   lang: 'ja' | 'en';
   url: string;
   publishedAt: number;
+  // ★インパクト推定(ADD-ONLY・任意)。算出は core/newsImpact.ts の純関数、付与は取得ループ。
+  //   欠落=旧世代のペイロード(表示側は時刻順にフォールバックする)。AI 文脈の組み立ては
+  //   この欄を読まない(server/llm/explain.ts の scoreNews は従来どおり)=表示だけの追加。
+  impact?: NewsImpact;
+  // ★確度(ADD-ONLY・任意)。インパクトとは **独立した軸**。算出は core/newsConfidence.ts。
+  //   スコアには混ぜない(混ぜると未確認=減点になり、相場が最も動く第一報が沈む)。
+  //   表示のバッジと、後からの検証(DB の confidence 列)にだけ使う。
+  confidence?: NewsConfidence;
 }
 
 export interface InstrumentMeta {

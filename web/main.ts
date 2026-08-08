@@ -3,7 +3,8 @@ import { isTechnicalKind } from '../core/detectionKinds.js';
 import { connectStream } from './lib/stream.js';
 import { fetchExplanation } from './lib/api.js';
 import { renderPriceGrid, flashCard } from './components/priceGrid.js';
-import { renderNews } from './components/newsFeed.js';
+import { renderNews, wireNewsShowAll } from './components/newsFeed.js';
+import type { NewsItem } from './types.js';
 import { addBanner, setExplanation, restoreSavedBanners } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
@@ -352,6 +353,9 @@ if (logsOpenBtn) {
 
 const priceGridEl = document.getElementById('price-grid')!;
 const newsListEl = document.getElementById('news-list')!;
+// ★「すべて見る →」の折りたたみ切替。直近のニュースを保持しておき、再取得を待たずに描き直す。
+let lastNews: NewsItem[] = [];
+wireNewsShowAll(document.getElementById('news-showall'), () => renderNews(newsListEl, lastNews));
 const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
 if (levelsBodyEl) initLevelsPanel(levelsBodyEl);
@@ -570,7 +574,7 @@ connectStream({
     const banner = addBanner(bannerEl, alert);
     scheduleExplanation(alert, banner);
   },
-  onNews: (news) => renderNews(newsListEl, news),
+  onNews: (news) => { lastNews = news; renderNews(newsListEl, news); },
   // ★シグナル枠(現在シグナル・保有中も保持)と保有枠(建値+含み)を別枠で描く。
   onSignalTrade: (s) => {
     if (signalPanelEl) renderSignalPanel(signalPanelEl, s);

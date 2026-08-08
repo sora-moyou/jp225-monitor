@@ -3,6 +3,7 @@ import { inPollWindow } from '../../core/session.js';
 import { broadcast } from '../sse/broker.js';
 import { setNews, getNews } from '../cache.js';
 import { resolveNewsPollMs } from '../configStore.js';
+import { persistNews } from '../newsPersist.js';
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -19,7 +20,10 @@ async function tick(): Promise<void> {
       return;
     }
     setNews(news);
+    // ★DB へ記録(best-effort・例外は投げない)。記録の失敗が表示の停止に化けないよう、
+    //   broadcast より前でも後でもよいが、表示を最優先にしたいので配信の後に行う。
     broadcast({ type: 'news', payload: news });
+    persistNews(news);
   } catch (err) {
     console.error('[newsLoop] error:', err instanceof Error ? err.message : err);
   }

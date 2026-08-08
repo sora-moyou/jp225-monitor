@@ -22,6 +22,20 @@ export const RSS_FEEDS = {
     { name: 'CNBC Markets',   url: 'https://www.cnbc.com/id/15839135/device/rss/rss.html' },
     { name: 'CNBC Economy',   url: 'https://www.cnbc.com/id/20910258/device/rss/rss.html' },
     { name: 'Fed',            url: 'https://www.federalreserve.gov/feeds/press_all.xml' },
+    // ─── 米国ソースの追加(実地で robots.txt とフィード実体を確認済み) ─────────────
+    // ★White House: robots.txt は `User-agent: *` に対し `Disallow:` (空) = 全面許可。
+    //   /news/feed/ が HTTP 200 / 30件 / title・link・pubDate 揃い。トランプ発言(ICYMI: Statement
+    //   from President …)や大統領令がここに一次情報として出る=ユーザー要望の中核。
+    //   ★ただし本文込みで 1 回 ~580KB ある。60 秒間隔で素直に取ると毎時 35MB を相手に強いるので、
+    //     このフィードだけ条件付き GET(If-None-Match / If-Modified-Since)で取る(heavy: true)。
+    { name: 'White House',    url: 'https://www.whitehouse.gov/news/feed/', heavy: true },
+    // ★Fed speeches: federalreserve.gov に robots.txt は存在しない(404)=禁止事項なし。
+    //   既に使っている press_all.xml と **同じホスト**。実物を突き合わせて、press_all には
+    //   スピーチ項目が 0 件であることを確認済み = 純粋な追加(重複しない)。パウエル講演はここ。
+    { name: 'Fed Speeches',   url: 'https://www.federalreserve.gov/feeds/speeches.xml' },
+    // ★CNBC Top News: robots.txt の `User-agent: *` は /preview/ /search 等のみ Disallow で、
+    //   /id/*/device/rss/rss.html は対象外。HTTP 200 / 30件。米国トップニュースの本流。
+    { name: 'CNBC Top News',  url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
     { name: 'BBC World',      url: 'http://feeds.bbci.co.uk/news/world/rss.xml' },
     { name: 'Al Jazeera',     url: 'https://www.aljazeera.com/xml/rss/all.xml' },
     { name: 'The Hill',       url: 'https://thehill.com/news/feed/' },

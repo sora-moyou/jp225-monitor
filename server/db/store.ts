@@ -36,6 +36,31 @@ export function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (symbol, t)
     );
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
+    -- ★ニュースの永続化。これまでニュースはメモリ上にしか無く、「その時刻に何を見ていたか」が
+    --   一切残らなかった。残らないと (a) インパクト推定の妥当性を後から検証できず
+    --   (b) 計画サイクルのオフライン再生でニュース欄を再現できない(既知の穴)。
+    --   id は取得元が付ける安定キー("<source>:<guid|link>" の形)なので、そのまま PRIMARY KEY にして
+    --   取得のたびに upsert すれば重複しない。
+    --   impact_json = 採点の内訳(NewsImpact をそのまま JSON 化)。★「なぜ上位に来たか」を
+    --   後から説明できるようにするための列で、これが無いと重みの調整が当てずっぽうになる。
+    CREATE TABLE IF NOT EXISTS news (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      source TEXT NOT NULL,
+      lang TEXT NOT NULL,
+      url TEXT NOT NULL,
+      published_at INTEGER NOT NULL,
+      first_seen_at INTEGER NOT NULL,   -- こちらが最初に観測した時刻(published_at は配信元申告)
+      impact_score REAL,                -- 並べ替えキー(採点時点の値)
+      category TEXT,                    -- NewsCategory | NULL(分類できないものは NULL のまま)
+      impact_json TEXT,                 -- NewsImpact 全体(内訳 reasons を含む)
+      -- ★確度はインパクトと **別軸** で記録する(スコアには混ぜない)。
+      --   これを残すと「未確認のまま出した第一報が実際どれだけ当たっていたか」を
+      --   インパクト推定の検証と同じ枠組みで測れる。
+      confidence TEXT,                  -- 'confirmed' | 'unconfirmed'
+      confidence_basis TEXT             -- 'primary' | 'wire' | 'corroborated' | 'single'
+    );
+    CREATE INDEX IF NOT EXISTS idx_news_published ON news (published_at);
     CREATE TABLE IF NOT EXISTS daily_closes (
       symbol TEXT NOT NULL, session_date TEXT NOT NULL, close REAL NOT NULL, t INTEGER NOT NULL,
       PRIMARY KEY (symbol, session_date)
@@ -202,6 +227,14 @@ export function initSchema(db: DatabaseSync): void {
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
   if (!cols.includes('volume')) db.exec('ALTER TABLE bars_1m ADD COLUMN volume INTEGER');
+  // ★ニュースの確度(未確認バッジ)列。news 表を持つ既存 DB へ後付けする(冪等)。
+  //   確度は「その時点のプール全体」で決まるので取得のたびに上書きされる=第一報が
+  //   30分後に裏取り済みへ変わることを、保存済みの行にも反映させる。
+  const nCols = (db.prepare('PRAGMA table_info(news)').all() as Array<{ name: string }>).map(c => c.name);
+  if (nCols.length > 0) {
+    if (!nCols.includes('confidence')) db.exec('ALTER TABLE news ADD COLUMN confidence TEXT');
+    if (!nCols.includes('confidence_basis')) db.exec('ALTER TABLE news ADD COLUMN confidence_basis TEXT');
+  }
   // v0.6.0: アラートに基準(reference)を記録。既存DBへ後付けマイグレーション。
   const aCols = (db.prepare('PRAGMA table_info(alerts)').all() as Array<{ name: string }>).map(c => c.name);
   if (!aCols.includes('reference_kind')) db.exec('ALTER TABLE alerts ADD COLUMN reference_kind TEXT');
@@ -309,6 +342,104 @@ export function getDailyCloses(db: DatabaseSync, symbol: string, limit: number):
 /** cutoff(epoch ms) より古い ticks を削除 (bars_1m は残す)。 */
 export function pruneTicks(db: DatabaseSync, cutoff: number): void {
   db.prepare('DELETE FROM ticks WHERE t < ?').run(cutoff);
+}
+
+// ─── ニュースの永続化(news・v0.9.67) ─────────────────────────────────────
+//
+// ★保持期間を 30 日にした理由:
+//   - 目的は「インパクト推定が妥当だったかを後から検証する」こと。検証には
+//     「この見出しが上位に来た日、実際に先物が動いたか」を突き合わせる必要があり、
+//     相場のレジームが一巡する程度の期間(数週間)が要る。1週間だと FOMC/雇用統計が
+//     1〜2 回しか含まれず、要人発言の重みを評価できない。
+//   - 上限側: 1件あたり ~400B(内訳 JSON 込み)。実測ベースで 1日 300〜800 件の新規 id なので
+//     30日 ≒ 2万件 ≒ 8MB。価格 tick(桁違いに重い)と同居する jp225.db にとって無視できる大きさ。
+//   - 無制限にしないのは、この DB が同期フォルダ経由で他 PC へコピーされる運用があるため。
+export const NEWS_RETENTION_DAYS = 30;
+export const NEWS_RETENTION_MS = NEWS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+export interface NewsRow {
+  id: string;
+  title: string;
+  source: string;
+  lang: string;
+  url: string;
+  published_at: number;
+  first_seen_at: number;
+  impact_score: number | null;
+  category: string | null;
+  impact_json: string | null;
+  confidence: string | null;
+  confidence_basis: string | null;
+}
+
+/** 永続化するニュース 1 件(store は core の型に依存しないよう構造的に受ける)。 */
+export interface NewsInsert {
+  id: string;
+  title: string;
+  source: string;
+  lang: string;
+  url: string;
+  publishedAt: number;
+  impactScore?: number | null;
+  category?: string | null;
+  impactJson?: string | null;
+  confidence?: string | null;
+  confidenceBasis?: string | null;
+}
+
+/**
+ * ニュースを upsert する。同じ id を何度取得しても 1 行のまま。
+ * ★first_seen_at は最初の 1 回だけ書く(以後の取得では保持)。配信元が pubDate を後から
+ *   書き換えることがあり、「こちらがいつ気づいたか」は別に持っておかないと鮮度の検証ができない。
+ * ★title / impact_* は毎回更新する(見出し差し替えと、採点の最新値を反映するため)。
+ */
+export function upsertNews(db: DatabaseSync, n: NewsInsert, seenAt: number): void {
+  db.prepare(`
+    INSERT INTO news (id, title, source, lang, url, published_at, first_seen_at,
+                      impact_score, category, impact_json, confidence, confidence_basis)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      impact_score = excluded.impact_score,
+      category = excluded.category,
+      impact_json = excluded.impact_json,
+      -- ★確度は毎回上書きする。第一報(single=未確認)が後から複数ソースに出れば
+      --   corroborated へ変わる=「時間経過で確度が変わる」ことを保存済みの行にも反映する。
+      confidence = excluded.confidence,
+      confidence_basis = excluded.confidence_basis
+  `).run(
+    n.id, n.title, n.source, n.lang, n.url, n.publishedAt, seenAt,
+    n.impactScore ?? null, n.category ?? null, n.impactJson ?? null,
+    n.confidence ?? null, n.confidenceBasis ?? null,
+  );
+}
+
+/** まとめて upsert(1 トランザクション)。取得ループはこちらを使う。 */
+export function upsertNewsBatch(db: DatabaseSync, items: readonly NewsInsert[], seenAt: number): number {
+  if (items.length === 0) return 0;
+  db.exec('BEGIN');
+  try {
+    for (const n of items) upsertNews(db, n, seenAt);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return items.length;
+}
+
+/** since(epoch ms) 以降に配信されたニュースを新しい順に返す。 */
+export function getRecentNews(db: DatabaseSync, since: number, limit = 500): NewsRow[] {
+  return db.prepare('SELECT * FROM news WHERE published_at >= ? ORDER BY published_at DESC LIMIT ?')
+    .all(since, limit) as unknown as NewsRow[];
+}
+
+/** cutoff より古いニュースを削除して削除件数を返す。 */
+export function pruneNews(db: DatabaseSync, cutoff: number): number {
+  const before = (db.prepare('SELECT COUNT(*) AS c FROM news').get() as { c: number }).c;
+  db.prepare('DELETE FROM news WHERE published_at < ?').run(cutoff);
+  const after = (db.prepare('SELECT COUNT(*) AS c FROM news').get() as { c: number }).c;
+  return before - after;
 }
 
 /** meta(key/value) テーブルの読み書き。基礎データの取り込み版管理などに使う。 */
