@@ -416,10 +416,16 @@ export function upsertNews(db: DatabaseSync, n: NewsInsert, seenAt: number): voi
       impact_score = excluded.impact_score,
       category = excluded.category,
       impact_json = excluded.impact_json,
-      -- ★確度は毎回上書きする。第一報(single=未確認)が後から複数ソースに出れば
-      --   corroborated へ変わる=「時間経過で確度が変わる」ことを保存済みの行にも反映する。
-      confidence = excluded.confidence,
-      confidence_basis = excluded.confidence_basis
+      -- ★確度は **前進だけ** させる(confirmed からは降格させない)。
+      --   第一報(single=未確認)が後から複数ソースに出れば corroborated へ変わる、という前進は
+      --   従来どおり反映する。しかし判定は「その時点の直近200件」しか見ないので、裏取り相手が
+      --   窓から押し出されると single に戻る。毎回上書きしていると、**確認済みとして残した記録が
+      --   後から消える**(この機能の主目的=後から的中率を検証する、と真っ向から矛盾する)。
+      --   裏が取れた事実は相手の記事が流れても無かったことにはならないので、単調にする。
+      confidence = CASE WHEN news.confidence = 'confirmed'
+                        THEN news.confidence ELSE excluded.confidence END,
+      confidence_basis = CASE WHEN news.confidence = 'confirmed'
+                        THEN news.confidence_basis ELSE excluded.confidence_basis END
   `).run(
     n.id, n.title, n.source, n.lang, n.url, n.publishedAt, seenAt,
     n.impactScore ?? null, n.category ?? null, n.impactJson ?? null,
@@ -454,6 +460,26 @@ export function setNewsTranslation(
 ): void {
   db.prepare('UPDATE news SET title_ja = ?, translate_error = ?, translated_at = ? WHERE id = ?')
     .run(titleJa, error, at, id);
+}
+
+export interface NewsConfidenceRow { id: string; confidence: string | null; confidence_basis: string | null }
+
+/**
+ * 指定 id 群の **保存済みの確度** を引く。
+ * ★画面(SSE)にも降格を出さないために要る。DB 側だけ単調にしても、毎回の再判定で作った
+ *   配信payload が single に戻っていれば、画面と DB が食い違う(しかも再起動で見え方が変わる)。
+ */
+export function getNewsConfidences(db: DatabaseSync, ids: readonly string[]): NewsConfidenceRow[] {
+  if (ids.length === 0) return [];
+  const out: NewsConfidenceRow[] = [];
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    const holes = chunk.map(() => '?').join(',');
+    out.push(...db.prepare(
+      `SELECT id, confidence, confidence_basis FROM news WHERE id IN (${holes})`,
+    ).all(...chunk) as unknown as NewsConfidenceRow[]);
+  }
+  return out;
 }
 
 export interface NewsTranslationRow { id: string; title_ja: string | null; translate_error: string | null }

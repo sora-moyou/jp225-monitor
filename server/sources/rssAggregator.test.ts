@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { isFinanceRelevant } from './rssAggregator.js';
+ import { RSS_FEEDS } from '../config.js';
+ import { PRIMARY_SOURCES, sourceTier } from '../../core/newsConfidence.js';
 
 describe('isFinanceRelevant (v0.3.9 title+body hybrid)', () => {
   it('passes HIGH_IMPACT keyword in title', () => {
@@ -32,5 +34,27 @@ describe('isFinanceRelevant (v0.3.9 title+body hybrid)', () => {
 
   it('rejects unrelated topic with no finance keywords', () => {
     expect(isFinanceRelevant('人気ラーメン店、新メニュー発表', '')).toBe(false);
+  });
+});
+
+// ★PRIMARY_SOURCES(一次情報)は **ソース名の完全一致** で照合する(第三者ブログが
+//   "Fed Watch Blog" のような名前で一次情報を名乗れないようにするため)。
+//   完全一致は「config の name を変えたら黙って primary でなくなる」という脆さと引き換えなので、
+//   ここで実際のフィード名と突き合わせて守る(無言の失格を作らない)。
+describe('★一次情報の名前が config と一致していること', () => {
+  it('Fed / Fed Speeches / White House は primary と判定される', () => {
+    const names = [...RSS_FEEDS.ja, ...RSS_FEEDS.en].map(f => f.name);
+    for (const name of ['Fed', 'Fed Speeches', 'White House']) {
+      expect(names, `${name} が config から消えている`).toContain(name);
+      expect(sourceTier(name), name).toBe('primary');
+    }
+  });
+
+  it('米経済指標(econIndicators の source)も primary', () => {
+    expect(sourceTier('米経済指標')).toBe('primary');
+  });
+
+  it('PRIMARY_SOURCES の各エントリは、その名前そのもので primary になる', () => {
+    for (const p of PRIMARY_SOURCES) expect(sourceTier(p), p).toBe('primary');
   });
 });

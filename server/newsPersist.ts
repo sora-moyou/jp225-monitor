@@ -11,8 +11,11 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import type { NewsItem } from '../core/types.js';
+import type { NewsConfidence, NewsConfidenceBasis } from '../core/newsConfidence.js';
+import { mergeConfidence, isConfirmedBasis } from '../core/newsConfidence.js';
 import {
-  openDb, resolveDbPath, upsertNewsBatch, pruneNews, NEWS_RETENTION_MS, type NewsInsert,
+  openDb, resolveDbPath, upsertNewsBatch, pruneNews, getNewsConfidences,
+  NEWS_RETENTION_MS, type NewsInsert,
 } from './db/store.js';
 
 let db: DatabaseSync | null = null;
@@ -42,6 +45,43 @@ export function toNewsInsert(n: NewsItem): NewsInsert {
     confidence: n.confidence ? n.confidence.level : null,
     confidenceBasis: n.confidence ? n.confidence.basis : null,
   };
+}
+
+/**
+ * 保存済みの確度を items に載せ直して返す(非破壊)。**降格だけを打ち消す**。
+ *
+ * ★なぜ要るか: 確度の判定はその時点の直近200件しか見ないので、裏取り相手が窓から出ると
+ *   corroborated → single に戻る。DB 側は非降格 upsert で守ったが、それだけだと
+ *   **画面に配信される payload は降格したまま**で、DB と画面が食い違う(再起動で見え方も変わる)。
+ *   保存済み(=過去に確認済みだった事実)を先に載せて単調にしてから配信・保存する。
+ * ★DB が読めなければ items をそのまま返す(記録の失敗が表示を止めない)。
+ */
+export function attachStoredConfidence(items: readonly NewsItem[]): NewsItem[] {
+  if (items.length === 0) return [...items];
+  try {
+    if (!db) db = openDb(resolveDbPath());
+    const rows = getNewsConfidences(db, items.map(n => n.id));
+    const known = new Map<string, NewsConfidence>();
+    for (const r of rows) {
+      if (r.confidence !== 'confirmed') continue;      // 守るのは「確認済み」だけ
+      if (!isConfirmedBasis(r.confidence_basis)) continue;   // 壊れた行(level と basis の不整合)は無視
+      known.set(r.id, {
+        level: 'confirmed',
+        basis: r.confidence_basis as NewsConfidenceBasis,
+        // corroboratedBy は DB に持っていない。相手の名前は今回のプールで見つかった分だけになる
+        // (mergeConfidence が和を取る)。判定そのものは失われない。
+        corroboratedBy: [],
+      });
+    }
+    if (known.size === 0) return [...items];
+    return items.map(n => (
+      n.confidence ? { ...n, confidence: mergeConfidence(known.get(n.id), n.confidence) } : n
+    ));
+  } catch (err) {
+    console.warn('[newsPersist] confidence read failed:', err instanceof Error ? err.message : err);
+    db = null;
+    return [...items];
+  }
 }
 
 /**

@@ -50,13 +50,39 @@ describe('news テーブル — 永続化', () => {
     expect(getRecentNews(db, 0)[0]!.first_seen_at).toBe(NOW);
   });
 
-  it('★確度は毎回上書きされる(第一報 → 裏取り済みへ変わる)', () => {
+  // ★テスト名を「毎回上書き」から変えた: 上書きは **前進方向だけ** が正しい仕様。
+  //   後述の降格テストとセットで、確度が単調であることを両側から固定する。
+  it('★確度は前進する(第一報 → 裏取り済みへ変わる)', () => {
     upsertNews(db, row('a', { confidence: 'unconfirmed', confidenceBasis: 'single' }), NOW);
     expect(getRecentNews(db, 0)[0]!.confidence).toBe('unconfirmed');
     upsertNews(db, row('a', { confidence: 'confirmed', confidenceBasis: 'corroborated' }), NOW + 1);
     const after = getRecentNews(db, 0)[0]!;
     expect(after.confidence).toBe('confirmed');
     expect(after.confidence_basis).toBe('corroborated');
+  });
+
+  // ★実バグ: 判定はその時点の直近200件しか見ないので、裏取り相手が窓から押し出されると
+  //   corroborated → single に戻る。毎回上書きしていると **DB に残した「確認済み」の記録まで消える**。
+  //   後から的中率を検証するというこの機能の主目的と真っ向から矛盾する。
+  it('★確度は降格しない(裏取り相手が窓から落ちても確認済みの記録が消えない)', () => {
+    upsertNews(db, row('a', { confidence: 'confirmed', confidenceBasis: 'corroborated' }), NOW);
+    // 次の取得: 相手が 200 件の窓から出たので、その時点の判定は single に戻っている
+    upsertNews(db, row('a', { confidence: 'unconfirmed', confidenceBasis: 'single' }), NOW + 1);
+    const after = getRecentNews(db, 0)[0]!;
+    expect(after.confidence).toBe('confirmed');
+    expect(after.confidence_basis).toBe('corroborated');
+  });
+
+  it('★降格しないのは確度だけ(タイトル・採点は従来どおり最新に更新される)', () => {
+    upsertNews(db, row('a', { confidence: 'confirmed', confidenceBasis: 'wire' }), NOW);
+    upsertNews(db, row('a', {
+      title: '差し替えられた見出し', impactScore: 3.5,
+      confidence: 'unconfirmed', confidenceBasis: 'single',
+    }), NOW + 1);
+    const after = getRecentNews(db, 0)[0]!;
+    expect(after.title).toBe('差し替えられた見出し');
+    expect(after.impact_score).toBe(3.5);
+    expect(after.confidence).toBe('confirmed');
   });
 
   it('新しい順に返る', () => {

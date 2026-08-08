@@ -3,8 +3,34 @@ import { apiUrl } from '../lib/apiBase.js';
 import { rankNewsByImpact, relativeTimeLabel, NEWS_CATEGORY_LABELS } from '../../core/newsImpact.js';
 import { confidenceBadgeLabel, confidenceTooltip } from '../../core/newsConfidence.js';
 
-// 同じセッション内で訳済みのタイトルを保持 (再表示時に再翻訳しない)
+// 同じセッション内で訳済みのタイトルを保持 (再表示時に再翻訳しない)。
+// ★ここには **エスケープしていない生の訳文** を入れる。描画側が escapeHtml を掛けるので、
+//   エスケープ済みを入れると二重に掛かって画面に "AT&amp;T株" と出る(実バグ)。
+//   「保持するのは値、エスケープは出す直前に1回だけ」を境界にする。
 const translationCache = new Map<string, string>();
+
+/** 手動翻訳の結果を覚える(生の訳文のまま)。 */
+export function rememberTranslation(original: string, translated: string): void {
+  translationCache.set(original, translated);
+}
+
+/** 覚えている訳文(生)。無ければ undefined。 */
+export function cachedTranslation(original: string): string | undefined {
+  return translationCache.get(original);
+}
+
+/** テスト用: セッションキャッシュを空にする。 */
+export function clearTranslationCacheForTest(): void {
+  translationCache.clear();
+}
+
+/**
+ * 実際に表示する見出し(生の文字列)を決める純関数。null = 訳が無いので原文を出す。
+ * 優先順: サーバが取得時に訳したもの → この画面で手動翻訳したもの → 無し。
+ */
+export function shownTitle(n: Pick<NewsItem, 'title' | 'titleJa'>): string | null {
+  return n.titleJa ?? translationCache.get(n.title) ?? null;
+}
 
 /** 折りたたみ時の表示件数。「すべて見る →」で全件へ切り替える。 */
 export const NEWS_COLLAPSED_COUNT = 30;
@@ -45,9 +71,8 @@ export function renderNews(listEl: HTMLElement, items: NewsItem[]): void {
 
     // ★表示は訳文。原文(n.title)は捨てない = ツールチップで必ず確認できるようにする。
     //   優先順: サーバが取得時に訳したもの → この画面で手動翻訳したもの → 原文。
-    const cached = translationCache.get(n.title);
-    const shown = n.titleJa ?? cached ?? null;
-    const titleHtml = shown ? escapeHtml(shown) : escapeHtml(n.title);
+    const shown = shownTitle(n);
+    const titleHtml = escapeHtml(shown ?? n.title);
     // 訳を出しているときだけ、原文をツールチップに入れる(訳の誤りを原文で確かめられるように)。
     const titleAttr = shown ? ` title="${escapeAttr(`原文: ${n.title}`)}"` : '';
     // ★「訳」ボタンは **まだ訳が無いときだけ** 残す = 手動リトライの手段。
@@ -108,7 +133,8 @@ async function translateItem(li: HTMLElement, original: string, btn: HTMLButtonE
       btn.title = data.error ?? '翻訳失敗';
       return;
     }
-    translationCache.set(original, escapeHtml(data.translated));
+    // ★生のまま覚える(エスケープは描画の直前に 1 回だけ)。
+    rememberTranslation(original, data.translated);
     const titleEl = li.querySelector<HTMLAnchorElement>('.news-title');
     if (titleEl) {
       titleEl.textContent = data.translated;
@@ -123,7 +149,7 @@ async function translateItem(li: HTMLElement, original: string, btn: HTMLButtonE
   }
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }[c] as string));

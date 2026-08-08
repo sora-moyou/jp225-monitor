@@ -13,6 +13,7 @@
 // ★依存は core/types.ts のみ。server も web も import できる(非循環・core 境界の最下層)。
 
 import type { NewsItem } from './types.js';
+import { matchText, needleHit, hitKeyword, type MatchText } from './keywordMatch.js';
 
 // ── カテゴリ(画面のチップ) ───────────────────────────────────────────────
 // 判定できないものには **ラベルを付けない**(null)。無理に分類すると、チップが意味を失って
@@ -157,31 +158,37 @@ export const BREAKING_KEYWORDS: readonly string[] = [
 ];
 
 /** 米国色。★日本語ソースの米国ニュースも拾えるよう、英単語だけに頼らない。 */
+// ★'US' は **大文字限定**。小文字の 'us' は英語の代名詞で、"Join us for a live Q&A" /
+//   "what the slowdown means for us" が米国ニュース扱いになっていた(実測)。
+//   '米' は JA_EXCLUSIONS で 南米/欧米/新米 等を除く。'ダウ'/'連邦' も同様に除外文脈を持つ。
 export const US_KEYWORDS: readonly string[] = [
   '米国', '米株', '米', 'ニューヨーク', 'ny', 'ナスダック', 'nasdaq', 'ダウ', 'dow',
   's&p', 'sp500', 'ワシントン', 'washington', 'wall street', 'ウォール街',
-  'u.s.', 'us', 'american', '連邦', '米政権', '米議会',
+  'u.s.', 'US', 'american', '連邦', '米政権', '米議会',
 ];
 
 /** コモディティ判定語。 */
 export const COMMODITY_KEYWORDS: readonly string[] = [
   '原油', 'wti', 'crude', 'oil', 'ブレント', 'brent', '金価格', 'ゴールド', 'gold', '金相場',
   '銀価格', 'silver', '銅', 'copper', '天然ガス', 'natural gas', 'lng', 'opec', '穀物', '小麦',
-  'コモディティ', 'commodity', '商品市況', '1オンス', 'オンス当た',
+  // 'commodities' は 'commodity' の語尾変化では作れない(stem が違う)ので別語として持つ。
+  'コモディティ', 'commodity', 'commodities', '商品市況', '1オンス', 'オンス当た',
 ];
 
 /** 地政学判定語(カテゴリ用。EVENT_WEIGHTS とは目的が違うので別に持つ)。 */
 export const GEOPOLITICS_KEYWORDS: readonly string[] = [
   '制裁', 'sanction', '空爆', '攻撃', '侵攻', 'ミサイル', 'missile', '有事', '停戦', 'ceasefire',
-  '戦争', 'war', 'ウクライナ', 'ukraine', 'ロシア', 'russia', 'イラン', 'iran', 'イスラエル', 'israel',
-  'ガザ', 'gaza', '北朝鮮', 'north korea', '台湾有事', 'テロ', 'terror',
+  // 'ukrainian' は 'ukraine' の語尾変化では作れない(ukrain**e** → ukrain**ian**)ので別語で持つ。
+  '戦争', 'war', 'ウクライナ', 'ukraine', 'ukrainian', 'ロシア', 'russia', 'イラン', 'iran',
+  'イスラエル', 'israel', 'ガザ', 'gaza', '北朝鮮', 'north korea', '台湾有事', 'テロ', 'terror',
 ];
 
 /** 経済判定語(カテゴリ用)。 */
 export const ECONOMY_KEYWORDS: readonly string[] = [
   '金利', '利上げ', '利下げ', '金融政策', 'fomc', 'frb', 'fed', '日銀', 'boj', 'ecb',
   'cpi', '消費者物価', '雇用統計', '失業率', 'gdp', 'ism', 'pmi', 'インフレ', 'inflation',
-  '為替', '円安', '円高', 'ドル円', '関税', 'tariff', '景気', '経済', 'economy', '国債', '債券',
+  // 'economic' は 'economy' の語尾変化では作れない(econom**y** → econom**ic**)ので別語で持つ。
+  '為替', '円安', '円高', 'ドル円', '関税', 'tariff', '景気', '経済', 'economy', 'economic', '国債', '債券',
   'yield', '物価', '財政', '予算', '株価', '日経平均', '相場',
 ];
 
@@ -203,40 +210,17 @@ export function recencyDecay(ageMin: number): number {
   return IMPACT_DECAY_FLOOR + (1 - IMPACT_DECAY_FLOOR) * half;
 }
 
-// ★英数字だけのキーワードは「単語境界」で当てる(部分一致にしない)。
-//   実データで踏んだ誤検知: 'ism'(ISM景況指数)が "social**ism**" に当たって政治記事が
-//   経済指標として加点されていた。同種の地雷は 'dow'→"**dow**n" / 'disco'→"**disco**unt" /
-//   'war'→"to**war**d" / 'ny'→"compa**ny**" / 'oil'→"b**oil**" と多く、素の includes では必ず壊れる。
-//   日本語は語分割が無いので従来どおり部分一致(「関税」は「対中関税措置」に当たってほしい)。
-//
-// ★ただし境界を厳密にしすぎると英語の語形変化を落とす。実際 'tariff' を完全一致にしたら
-//   "Trump's 50% **tariffs**" が当たらなくなった(実データで確認)。そこで:
-//     - 4文字以上の語 … 後ろに [a-z]{0,2} の語尾を許す(tariff**s** / russia**n** / israel**i**)。
-//       "disco"+"unt" は語尾 3 文字なので通らない=誤検知は防げる。
-//     - 3文字以下の語 … 語尾を一切許さない(dow/ism/war/ny/us は短すぎて語尾を許すと必ず誤爆する)。
-//   先頭側は常に厳密(socialism の ism / toward の war / company の ny をここで落とす)。
-//   アポストロフィは [a-z0-9] ではないので "Powell's" 等は語尾規則なしでそのまま当たる。
-const RE_CACHE = new Map<string, RegExp>();
-function needleHit(hay: string, needle: string): boolean {
-  if (/[^\x00-\x7F]/.test(needle)) return hay.includes(needle);   // 非ASCII混じり=日本語→部分一致
-  let re = RE_CACHE.get(needle);
-  if (!re) {
-    const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const tail = needle.length >= 4 ? '[a-z]{0,2}' : '';
-    re = new RegExp(`(?<![a-z0-9])${esc}${tail}(?![a-z0-9])`);
-    RE_CACHE.set(needle, re);
-  }
-  return re.test(hay);   // hay は呼び出し側で小文字化済み
-}
-
-function hit(hay: string, needles: readonly string[]): string | null {
-  for (const n of needles) if (needleHit(hay, n)) return n;
-  return null;
-}
+// ★キーワードの当て方は core/keywordMatch.ts に一本化した(newsConfidence.ts と共用)。
+//   要点だけ再掲: 英数字キーワードは **既定が完全一致**(語境界)で、語形変化は
+//   EN_INFLECTIONS に明示列挙した語尾だけを許す。
+//   旧実装の「4文字以上なら語尾2文字を許す」という一律規則は、長さしか見ていないので
+//   trump→trumped/trumpet・recruit→recruiter・gold→golden・sony→Sonya を巻き込み、
+//   同時に terror→terrorism・iran→Iranian(語尾3文字以上)を取りこぼしていた。
+const hit = hitKeyword;
 
 /** グループ内は最大 1 件だけ採用する(語彙の重複で二重加点しない)。 */
 function bestOf(
-  hay: string,
+  hay: MatchText,
   table: readonly (readonly [number, readonly string[]])[],
 ): { points: number; word: string } | null {
   let best: { points: number; word: string } | null = null;
@@ -253,8 +237,13 @@ function isOverseasSource(item: NewsItem): boolean {
   // 日本語ソースでも米国ニュース枠は海外扱い(nikkei225jp の NY 面など)。
   // ★ここも単語境界で当てる。素の includes だと "mo**ney**world" が 'ny' に当たって
   //   国内ソースが海外扱いになる(実データで確認)。
-  const s = item.source.toLowerCase();
-  return needleHit(s, 'ny') || needleHit(s, 'us') || s.includes('米') || s.includes('海外');
+  // ★ソース名は散文ではなく短い識別子なので 'us' は小文字のまま当てる(本文側の 'US' とは違い、
+  //   ソース名に英語の代名詞 "us" が現れることはない)。
+  // ★'米' はここでは素の部分一致にする。判定したいのは「海外か」であって「米国の話か」ではないので、
+  //   南米/欧米 を除く JA_EXCLUSIONS は当てない(「南米ニュース」というソースは海外で正しい)。
+  const s = matchText(item.source);
+  return needleHit(s, 'ny') || needleHit(s, 'us')
+    || s.lower.includes('米') || s.lower.includes('海外');
 }
 
 /**
@@ -264,7 +253,7 @@ function isOverseasSource(item: NewsItem): boolean {
 export function scoreNewsImpact(item: NewsItem, now: number): NewsImpact {
   // 判定面は「タイトル + ソース名」。本文は取得できないソースがあり、あるものだけ有利になると
   // ソース間で不公平な序列になるため、全ソースで必ず揃う面だけを使う。
-  const hay = `${item.title} ${item.source}`.toLowerCase();
+  const hay = matchText(item.title, item.source);
   const reasons: ImpactReason[] = [];
   let content = 0;
 
@@ -318,7 +307,7 @@ export function scoreNewsImpact(item: NewsItem, now: number): NewsImpact {
  * 経済判定に先に吸われてしまうため(より具体的な方を勝たせる)。
  */
 export function classifyNews(item: NewsItem): NewsCategory | null {
-  const hay = `${item.title} ${item.source}`.toLowerCase();
+  const hay = matchText(item.title, item.source);
   if (hit(hay, BREAKING_KEYWORDS)) return 'breaking';
   if (hit(hay, COMMODITY_KEYWORDS)) return 'commodity';
   if (hit(hay, GEOPOLITICS_KEYWORDS)) return 'geopolitics';

@@ -4,7 +4,7 @@ import { inPollWindow } from '../../core/session.js';
 import { broadcast } from '../sse/broker.js';
 import { setNews, getNews } from '../cache.js';
 import { resolveNewsPollMs } from '../configStore.js';
-import { persistNews } from '../newsPersist.js';
+import { persistNews, attachStoredConfidence } from '../newsPersist.js';
 import { attachStoredTranslations, translatePass, applyTranslations } from '../newsTranslate.js';
 
 /** 訳せた分を cache と画面へ反映する(失敗しても何も壊さない)。 */
@@ -37,7 +37,9 @@ async function tick(): Promise<void> {
       return;
     }
     // ★保存済みの訳文を先に載せる。既知の記事はここで訳付きになり、LLM を一度も呼ばない。
-    const withStored = attachStoredTranslations(news);
+    // ★確度も保存済みを載せ直す。判定は直近200件しか見ないので、裏取り相手が窓から出ると
+    //   「確認済み → 未確認」と逆行してしまう。過去に確認済みだった事実は取り消さない。
+    const withStored = attachStoredConfidence(attachStoredTranslations(news));
     setNews(withStored);
     // ★DB へ記録(best-effort・例外は投げない)。記録の失敗が表示の停止に化けないよう、
     //   broadcast より前でも後でもよいが、表示を最優先にしたいので配信の後に行う。
