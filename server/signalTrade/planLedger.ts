@@ -101,5 +101,10 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   // ★生成器の台帳(proposals.leg_drops_json)と同じ書き方: LegDrop[] をそのまま JSON 配列にする。
   //   1本も落ちなければ列ごと NULL(= 空配列 '[]' は書かない。proposals と同じ規約)。
   if (result.legDrops?.length) row.legDropsJson = JSON.stringify(result.legDrops);
+  // ★RECORD-ONLY: 根拠文で AI が申告した LC幅 と 実際に出力した |entry − stopLoss| の突き合わせ。
+  //   対象は **AI の生出力の全レッグ**(落ちたレッグも採用レッグも)。leg_drops_json とは別列に置く:
+  //   故障は落ちたレッグ側にしか残らないので、採用レッグという対照が同じ台帳に無いと率が読めない。
+  //   1件も突き合わせられなければ列ごと NULL(空配列 '[]' は書かない=leg_drops_json と同じ規約)。
+  if (result.lcAudit?.length) row.lcAuditJson = JSON.stringify(result.lcAudit);
   return row;
 }

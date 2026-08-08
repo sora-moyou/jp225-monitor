@@ -18,6 +18,8 @@ import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 // ★RECORD-ONLY: 送るプロンプトの一方向指紋だけを作る純関数(本文はこのファイルの外へ出さない)。
 import { promptFingerprint } from './promptFingerprint.js';
+// ★RECORD-ONLY: 根拠文の「申告した LC幅」と実際に出力した損切りの突き合わせ(純関数・判定には使わない)。
+import { auditLcDeclarations, type LcDeclarationCheck, type LcLegName } from './rationaleLc.js';
 import { getPrices } from '../cache.js';
 import {
   NIKKEI_SYMBOL, buildMonitorContext, formatPricesForChat, formatNewsForChat,
@@ -132,8 +134,14 @@ export interface LegDrop {
 //   promptFp  … system+user プロンプトの一方向指紋(server/llm/promptFingerprint.ts。**本文は持たない**)。
 //   どちらも採否・価格・SSE・決済には一切影響しない。ok:false(計画が得られなかった回)にも載りうる
 //   = 「文脈は組んだが LLM で落ちた」と「文脈を組む前に見送った」を後から区別できる。
+// lcAudit(RECORD-ONLY): ★根拠文で AI が **申告した LC幅** と、AI が実際に出力した |entry − stopLoss| の突き合わせ。
+//   実測(2026-08-07)で「根拠文には正しい幅(例55円)を書きながら損切りには建値の隣(±5円)を入れる」故障が
+//   落ちたレッグに集中して残っていた(採用レッグでは殆ど起きない)。JSON だけ・根拠文だけを見ても検出できない。
+//   ★ここは **測るだけ**。採否・価格・noneReason・legDrops は1バイトも変えない(食い違いで落としも直しもしない)。
+//   ★対象は **AI の生出力**(parse 段で見えるレッグ全部=後段で落ちるレッグも含む)。落ちたレッグにしか
+//     故障が残らないので、採用レッグだけを見ると存在しないことになってしまう。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcDeclarationCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
   | { ok: false; error: string; contextAt?: number; promptFp?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
@@ -182,6 +190,22 @@ function pushLegDrop(
   if (entry != null && Number.isFinite(entry)) d.entry = entry;
   if (stopLoss != null && Number.isFinite(stopLoss)) d.stopLoss = stopLoss;
   out.push(d);
+}
+
+/** ★RECORD-ONLY: 根拠文の申告 LC幅と実出力の突き合わせを **例外を外へ出さずに** 作る。
+ *  記録の失敗で計画(取引の判断)を止めない。握りつぶすが、握りつぶした事実は必ず1行ログに残す。
+ *  1件も突き合わせられなければ undefined(空配列は載せない=「観測できた」と「0件」を混ぜない)。 */
+function lcAuditFor(
+  rationale: string,
+  legs: ReadonlyArray<{ leg: LcLegName; entry?: number | null; stopLoss?: number | null }>,
+): readonly LcDeclarationCheck[] | undefined {
+  try {
+    const rows = auditLcDeclarations(rationale, legs);
+    return rows.length ? rows : undefined;
+  } catch (e) {
+    console.warn('[scalp-plan] LC申告の突き合わせに失敗(記録のみ・計画は続行):', e instanceof Error ? e.message : String(e));
+    return undefined;
+  }
 }
 
 // 初期 LC(損切り)幅の既定レンジ。呼び出し側が /api/scalp-plan で lcFloorYen/lcCeilingYen を
@@ -989,6 +1013,13 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     const rangeLegDrops: LegDrop[] = [];
     pushLegDrop(rangeLegDrops, 'upper', upperReason, upper0?.entry, upper0?.stopLoss);
     pushLegDrop(rangeLegDrops, 'lower', lowerReason, lower0?.entry, lower0?.stopLoss);
+    // ★RECORD-ONLY: AI の生出力(落とす前の2脚)に対して申告 LC幅と実出力を突き合わせる。
+    //   レンジ脚は根拠文の見出し(指値/ブレイク新規)で区別できないので、多くは undeclared(=読めなかった)になる。
+    //   それでよい: 「一致」と「未申告」を混ぜないことが要件で、読めないものを読めたことにはしない。
+    const rangeLcAudit = lcAuditFor(rationale, [
+      { leg: 'upper', entry: upper0?.entry, stopLoss: upper0?.stopLoss },
+      { leg: 'lower', entry: lower0?.entry, stopLoss: lower0?.stopLoss },
+    ]);
     if (!upper && !lower) {
       // 両脚とも落ちた見送り(none)は rationale を据え置く(enforce の両脚落ちと同じ既存挙動)。
       return {
@@ -996,6 +1027,7 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
         noneReason: pickNoneReason(upperReason, lowerReason),
         noneLegs: noneLegsFromRange(upper0, lower0),
         legDrops: rangeLegDrops,
+        ...(rangeLcAudit ? { lcAudit: rangeLcAudit } : {}),
       };
     }
     // 片脚だけ残って range を出す場合、落ちた脚の理由を rationale に明記(表示専用テキスト)。
@@ -1009,6 +1041,7 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     const rangeOut: Extract<ScalpPlanResult, { ok: true }> =
       { ok: true, plan: withMeta({ direction: 'range', rationale: rangeRationale, refPrice, range }) };
     if (rangeLegDrops.length) rangeOut.legDrops = rangeLegDrops;
+    if (rangeLcAudit) rangeOut.lcAudit = rangeLcAudit;
     return rangeOut;
   }
   const num = (v: unknown): number | null =>
@@ -1057,12 +1090,20 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   const legDrops: LegDrop[] = [];
   pushLegDrop(legDrops, 'limit', limitReason, limitEntry, stopLossForLimit);
   pushLegDrop(legDrops, 'stop', stopReason, stopEntry, stopLossForStop);
+  // ★RECORD-ONLY: 申告 LC幅 と 実出力 |entry − stopLoss| の突き合わせ。
+  //   ★AI の **生の値**(この検証で落ちるレッグも、後段 enforce で lcFloor 落ちするレッグも含む)に対して行う。
+  //   採否・価格・legDrops には一切影響しない(この配列を読む側は台帳だけ)。
+  const lcAudit = lcAuditFor(rationale, [
+    { leg: 'limit', entry: limitEntry, stopLoss: stopLossForLimit },
+    { leg: 'stop', entry: stopEntry, stopLoss: stopLossForStop },
+  ]);
   if (!limitLegOk && !stopLegOk) {
     return {
       ok: true, plan: withMeta({ direction: 'none', rationale, refPrice }),
       noneReason: pickNoneReason(limitReason, stopReason),
       noneLegs: noneLegsFromDirectional(o.direction, { limitEntry, stopLossForLimit, stopEntry, stopLossForStop }, false, false),
       legDrops,
+      ...(lcAudit ? { lcAudit } : {}),
     };
   }
   // refPrice は LLM の自己申告ではなく monitor の現在値を正とする。
@@ -1097,6 +1138,7 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   (geometry/stopSide)」が区別できなかった。plan・rationale・採否は一切変えない。
   const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: withMeta(plan) };
   if (legDrops.length) out.legDrops = legDrops;
+  if (lcAudit) out.lcAudit = lcAudit;
   return out;
 }
 
@@ -1852,6 +1894,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   (enforce は自分が受け取った時点で在ったレッグしか記録しない)。判定・採否には一切影響しない。
     const legDrops: LegDrop[] = [...(parsed.legDrops ?? []), ...(enforced.legDrops ?? [])];
     if (legDrops.length) out.legDrops = legDrops;
+    // ★RECORD-ONLY: 申告 LC幅の突き合わせは **parse 段(AI の生出力)** の結果をそのまま運ぶ。
+    //   enforce 後の plan で作り直すと、故障が集中している「落ちたレッグ」が消えて観測できなくなる。
+    if (parsed.lcAudit?.length) out.lcAudit = parsed.lcAudit;
     // ★v0.9.44(記録専用): 見送り(none)の経路と落としたレッグの生数値を surface する。
     //   下流(rangeDisabled)→ enforce → parse の順に「最後に none 化したステージ」の理由を採る。
     if (finalPlan.direction === 'none') {
