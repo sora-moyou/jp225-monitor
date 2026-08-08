@@ -28,3 +28,7 @@ server/signalTrade/exit/private.test.ts
 # 公開リポ(jp225-monitor)へは載せない。実データ(凍結した足/節目/根拠文)も同様。
 # ★PRIVATE-BACKUP の区間外に置くこと(バックアップ照合の対象ではない)。
 scripts/plan-replay/
+
+# ── 開発の内部手順(スキル)。公開リポには載せない ─────────────────────────────
+# ★PRIVATE-BACKUP の区間外に置くこと(バックアップ照合の対象ではない)。
+.claude/skills/
