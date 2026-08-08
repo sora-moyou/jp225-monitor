@@ -238,7 +238,11 @@ async function runScalpPlanWithChartInner(
   // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
   //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
   //   ★caller を渡す: 生成器では紙成績の履歴ブロックを外す(母集団の独立性)。default は不変。
-  const richResult = buildRichScalpContextResult(symbol, price ?? 0, Date.now(), overrides.profile, caller);
+  // ★RECORD-ONLY: 「どの時刻の断面から文脈を組み立てたか」を控える。
+  //   値そのものは従来と同じ Date.now() を1回読むだけ(渡す値も回数も変わらない=挙動不変)。
+  //   台帳の t(=計画が解決した時刻)は撮影/LLM の待ち時間ぶん後ろにずれるので、**別物として**残す。
+  const contextAt = Date.now();
+  const richResult = buildRichScalpContextResult(symbol, price ?? 0, contextAt, overrides.profile, caller);
   const rich = richResult.text;
   if (caller !== DEFAULT_CALLER) {
     // 外したことは server.log にも残す(台帳が読めない状況でも「いつから外したか」が追える)。
@@ -248,8 +252,10 @@ async function runScalpPlanWithChartInner(
   // veto 無効(0)は trend を渡さない=現行挙動(veto なし)。>0 のときだけ {dir,strong} を渡してコード veto を効かせる。
   const trend = vetoYen > 0 ? { dir: regime.dir, strong: regime.strong } : undefined;
 
+  // ★RECORD-ONLY: buildScalpPlan が組み上げたプロンプトの指紋(本文は受け取らない)。
+  let promptFp: string | null = null;
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
-  return attachGeneratorRecord(await buildScalpPlan({
+  return attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
@@ -267,7 +273,32 @@ async function runScalpPlanWithChartInner(
     // ★バンドウォーク: 成立中のときだけプロンプトの「距離50円 / 節目起点」を緩める(LC は緩めない)。
     //   AI 文脈(ブロックG)に書いたものと **同じ判定結果** を渡す(画面/文脈/プロンプトで食い違わせない)。
     bandwalk: richResult.bandwalk,
-  }), caller, chartShot);
+    // ★RECORD-ONLY: 送るプロンプトの指紋を1回だけ受け取る(本文は渡ってこない)。
+    onPromptFingerprint: (fp) => { promptFp = fp; },
+  }), contextAt, () => promptFp), caller, chartShot);
+}
+
+/** ★RECORD-ONLY: 計画の出所(文脈を組み立てた時刻・プロンプトの指紋)を結果に additive で載せる。
+ *
+ *  ■ なぜ **全経路**(A/B=default も)で載せるか
+ *    凍結した入力からの再生を突き合わせたいのは、まさに実弾につながる A/B の計画サイクルだから。
+ *    生成器だけの記録(chartShot / contextOmitted)と違い、この2点は A/B でこそ要る。
+ *  ■ 何を壊さないか
+ *    足すのは記録用の2フィールドだけ。plan・noneReason・legDrops・価格・error は一切触らない。
+ *    HTTP 応答は route 側が列挙で組み立てるので、この2つが勝手に外へ出ることも無い。
+ *  ■ 値が無いときはフィールドを作らない
+ *    「値が無い」と「そのフィールドを持たない版で記録された」を混同させないため。
+ *    ★文脈を組む前に見送った回(chart-not-generated)は **この関数を通らずに** 早期 return するので、
+ *      contextAt を持たない=「まだ何も組み立てていない」ことが記録の形から読める。
+ *    ★promptFp は refPrice の鮮度落ち等で **プロンプトを組む前に** 失敗した回では null のまま。
+ *  promptFp は buildScalpPlan の実行中に確定するので、確定後に読む getter で受け取る。 */
+function attachPlanProvenance(
+  result: ScalpPlanResult, contextAt: number, promptFp: () => string | null,
+): ScalpPlanResult {
+  const fp = promptFp();
+  const out: ScalpPlanResult = { ...result, contextAt };
+  if (fp !== null) out.promptFp = fp;
+  return out;
 }
 
 /** ★生成器の記録専用フィールドを結果に additive で載せる。

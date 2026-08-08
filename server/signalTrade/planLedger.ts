@@ -66,6 +66,12 @@ export interface SignalPlanRecordInput {
 export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanInsert {
   const { t, system, result } = input;
   const row: SignalPlanInsert = { t, system };
+  // ★凍結再生の突合(RECORD-ONLY): 「いつの断面から文脈を組んだか」と「送ったプロンプトの指紋」。
+  //   error 分岐より **前** に載せる: 文脈は組んだが LLM で落ちた回(ok=false)こそ、
+  //   「入力は在ったのに計画が出なかった」標本として時刻と指紋が要る(載せ忘れの経路を作らない)。
+  //   ★指紋は一方向ハッシュ(`sp1:<16桁hex>`)で、プロンプト本文は台帳に1バイトも入らない。
+  if (typeof result.contextAt === 'number') row.contextAt = result.contextAt;
+  if (typeof result.promptFp === 'string') row.promptFp = result.promptFp;
   if (input.signalId != null) row.signalId = input.signalId;
   if (input.settings) row.settingsJson = JSON.stringify(input.settings);
   // ★待ち時間の決定内訳(ARM した回のみ)。error 分岐より前に載せる: 「ARM したのに ok=false」は

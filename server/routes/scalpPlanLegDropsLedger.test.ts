@@ -112,7 +112,12 @@ describe('/api/scalp-plan — 片レッグ脱落の理由が応答に載る', ()
   it('応答に決済ラダーの実数値やキーは混ざらない(載るのは AI が出したレッグ価格と理由だけ)', async () => {
     const res = mockRes();
     await scalpPlanHandler(reqOf({ caller: 'generator' }), res);
-    const s = JSON.stringify(res._json);
+    // ★記録専用の出所2列は数値の走査から外し、**形だけ** を固定する(理由は scalpPlanDiagnostics.test.ts と同じ:
+    //   contextAt は時計の読み・promptFp は一方向ハッシュで、hex 中の数字列の一致は偶然でしかない)。
+    const { contextAt, promptFp, ...rest } = res._json as Record<string, unknown>;
+    expect(typeof contextAt).toBe('number');
+    expect(promptFp === undefined || /^sp1:[0-9a-f]{16}$/.test(String(promptFp))).toBe(true);
+    const s = JSON.stringify(rest);
     expect(s).not.toMatch(/key|sk-|api[-_]?key/i);
     const nums = (s.match(/\d+/g) ?? []).map(Number);
     expect(nums.every(n => [38250, 38200, 38150, 38350, 38400].includes(n))).toBe(true);

@@ -16,6 +16,8 @@ import type { ChartShotIdentity } from '../chart/chartShot.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
+// ★RECORD-ONLY: 送るプロンプトの一方向指紋だけを作る純関数(本文はこのファイルの外へ出さない)。
+import { promptFingerprint } from './promptFingerprint.js';
 import { getPrices } from '../cache.js';
 import {
   NIKKEI_SYMBOL, buildMonitorContext, formatPricesForChat, formatNewsForChat,
@@ -123,9 +125,16 @@ export interface LegDrop {
 //   GENERATOR_OMITTED_CONTEXT)。この情報が無い記録は「外していない版で取った標本」を意味する。
 // legDrops(v0.9.57): ★**片レッグだけ** 落ちた回も含む、レッグ1本ごとの脱落理由(記録のみ)。
 //   noneLegs(両レッグ落ち=none のときだけ)とは別のフィールドで、意味も形も互いに変えない。
+// contextAt / promptFp(RECORD-ONLY): ★「いつの断面から文脈を組み立てたか」と「組み立てたプロンプトの指紋」。
+//   scalpPlanRunner が **全経路(A/B 含む)** で載せる。台帳(signal_plans)に落として、凍結した入力からの
+//   再生が「その時刻に実際に渡ったもの」と同じかを突き合わせられるようにするための2点(記録専用)。
+//   contextAt … buildRichScalpContextResult に渡した now(epoch ms)。台帳の t(記録時刻)とは別物。
+//   promptFp  … system+user プロンプトの一方向指紋(server/llm/promptFingerprint.ts。**本文は持たない**)。
+//   どちらも採否・価格・SSE・決済には一切影響しない。ok:false(計画が得られなかった回)にも載りうる
+//   = 「文脈は組んだが LLM で落ちた」と「文脈を組む前に見送った」を後から区別できる。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[] }
-  | { ok: false; error: string };
+  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
+  | { ok: false; error: string; contextAt?: number; promptFp?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
 // トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
@@ -1189,6 +1198,11 @@ export interface ScalpPlanInput {
    *  成立中のときだけプロンプト末尾に緩和注記(buildBandwalkNote)を足す。
    *  未指定/null(非成立)では systemPrompt は従来と **byte 一致**(緩和は一切起きない)。 */
   bandwalk?: Bandwalk | null;
+  /** ★RECORD-ONLY: 組み上がったプロンプトの **指紋** を1回だけ受け取るコールバック(未指定なら何もしない)。
+   *  ・渡すのは `sp1:<16桁hex>` の指紋だけ。**本文は関数の外へ出さない**(非公開の決済仕様が本文に入るため)。
+   *  ・プロンプトの中身・採否・価格・parse・enforce には一切影響しない(呼ぶだけ)。
+   *  ・LLM 呼び出しの **前** に1回呼ぶ(どのプロバイダが答えたかに依存しない=同じ入力なら同じ指紋)。 */
+  onPromptFingerprint?: (fingerprint: string) => void;
 }
 
 /** トレンド veto に渡す最小形。openai を signalTrade/regime に依存させないため、Regime 全体ではなく
@@ -1764,6 +1778,15 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     ? input.chartImageDataUrl : null;
   const visionNote = buildVisionNote(!!img);
   const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil)}`;
+
+  // ★RECORD-ONLY: 送るプロンプトの指紋だけを呼び出し元へ渡す(本文はこの関数の外へ出さない)。
+  //   ここは **プロバイダのフォールバックより前** = 「組み立てた入力」の指紋であって「誰が答えたか」に依らない。
+  //   記録の失敗で計画を止めない(握りつぶすが、握りつぶした事実は必ず1行残す)。
+  try {
+    input.onPromptFingerprint?.(promptFingerprint(systemPrompt, userPrompt));
+  } catch (e) {
+    console.warn('[scalp-plan] プロンプト指紋の記録に失敗(計画は続行):', e instanceof Error ? e.message : String(e));
+  }
 
   try {
     // ★v0.9.46 修正: parse は runScalpPlanResult の中で1回だけ走らせ、その結果をここで受け取る。

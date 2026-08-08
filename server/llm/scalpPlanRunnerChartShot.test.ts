@@ -61,15 +61,22 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
     expect(r.chartShot).toEqual({ shotId: 'aa-1', ageMs: 30_000, origin: 'cache' });
   });
 
-  it('★caller 省略(実弾 A の経路)の結果は **1フィールドも増えない**', async () => {
+  // ★記録専用の出所2列(contextAt/promptFp)は **全経路** で載る(凍結再生の突合用)。
+  //   ここで守り続けているのは「生成器だけの記録(chartShot / contextOmitted)が A の結果に混ざらない」こと。
+  //   plan は参照ごと素通し=engine が読む中身は1ミリも変わらない。
+  const generatorOnlyKeys = (r: object): string[] =>
+    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp');
+
+  it('★caller 省略(実弾 A の経路)の結果に **生成器だけの記録は1つも付かない**', async () => {
     const r = await runScalpPlanWithChart({});
-    expect(r).toBe(PLAN_RESULT);                      // 同一参照=コピーすらしていない
-    expect(Object.keys(r)).toEqual(['ok', 'plan']);
+    expect(generatorOnlyKeys(r)).toEqual([]);
+    expect((r as { plan: unknown }).plan).toBe(PLAN_RESULT.plan);   // plan は同一参照=コピーすらしていない
   });
 
-  it("caller:'default' を明示しても増えない", async () => {
+  it("caller:'default' を明示しても付かない", async () => {
     const r = await runScalpPlanWithChart({ caller: 'default' });
-    expect(Object.keys(r)).toEqual(['ok', 'plan']);
+    expect(generatorOnlyKeys(r)).toEqual([]);
+    expect((r as { plan: unknown }).plan).toBe(PLAN_RESULT.plan);
   });
 
   it('撮影側が identity を返さない場合は付けない(画像の同一性は不明として記録側に NULL を渡す)', async () => {

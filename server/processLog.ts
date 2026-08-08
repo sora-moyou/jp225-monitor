@@ -42,6 +42,7 @@ import { dirname, join } from 'node:path';
 import { resolveTickExportDir } from './db/tickArchive.js';
 import { hostLabel } from './db/ledgerExport.js';
 import { jstStamp } from './db/tickArchiveHeartbeat.js';
+import { resolveAppDataDir } from './appDataDir.js';
 
 /** これを超えたら1世代だけ退避する(同期フォルダを太らせない)。 */
 export const PROCESS_LOG_MAX_BYTES = 4 * 1024 * 1024;
@@ -52,8 +53,7 @@ export function resolveProcessLogPath(name: string): string {
     const dir = resolveTickExportDir();
     if (dir) return join(dir, `${name}_${hostLabel()}.log`);
   } catch { /* 解決できなければ既定の置き場所に落とす */ }
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  return join(base, 'jp225-monitor', `${name}.log`);
+  return join(resolveAppDataDir(), `${name}.log`);
 }
 
 /** 1行書く。**絶対に throw しない**(ログのためにプロセスを落とさない)。 */

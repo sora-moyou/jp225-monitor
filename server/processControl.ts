@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolveAppDataDir } from './appDataDir.js';
 
 function kill(args: string[]): void {
   try { execFileSync('taskkill', args, { stdio: 'ignore' }); } catch { /* 未起動など無視 */ }
@@ -8,7 +9,7 @@ function kill(args: string[]): void {
 
 /** collector を停止(collector.pid を taskkill し pid ファイル削除)。 */
 export function stopCollector(): void {
-  const pidPath = join(process.env.APPDATA ?? '', 'jp225-monitor', 'collector.pid');
+  const pidPath = join(resolveAppDataDir(process.env.APPDATA ?? ''), 'collector.pid');
   if (existsSync(pidPath)) {
     const pid = readFileSync(pidPath, 'utf-8').trim();
     if (pid) kill(['/PID', pid, '/T', '/F']);

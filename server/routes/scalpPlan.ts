@@ -118,6 +118,12 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
   // ★プロンプトから外した文脈ブロック(生成器のみ)。1年後の分析者が「この標本は A の紙成績を
   //   見ていない」ことを台帳から読めるように、応答へそのまま載せて生成器に記録させる。
   if (r.contextOmitted !== undefined) out.contextOmitted = r.contextOmitted;
+  // ★凍結再生の突合(記録専用): 文脈を組み立てた時刻(monitor の時計)と、送ったプロンプトの指紋。
+  //   生成器の台帳が持つ requested_at/responded_at は **生成器プロセスの時計** で、撮影と LLM の待ちを
+  //   含んだ両端でしかない。「どの断面から文脈を組んだか」は monitor 側にしか無い値なので応答で渡す。
+  //   ★指紋は一方向ハッシュ(`sp1:<16桁hex>`)で、プロンプト本文も決済仕様の数値も一切含まない。
+  if (r.contextAt !== undefined) out.contextAt = r.contextAt;
+  if (r.promptFp !== undefined) out.promptFp = r.promptFp;
   return out;
 }
 

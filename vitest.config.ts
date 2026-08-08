@@ -54,6 +54,12 @@ export default defineConfig({
       'web/**/*.test.ts',
       'collector/**/*.test.ts',
     ],
+    // ★テストが実ユーザーの %APPDATA%/ホームを **一度も見ない** ようにする(各テストファイルの直前に実行)。
+    //   詳細は vitest.setup.ts の冒頭。
+    setupFiles: ['./vitest.setup.ts'],
+    // ★実ユーザーの DB にテストが書いていないかを実行の前後で検証する(再発検知)。
+    //   防止は server/appDataDir.ts の隔離、検知はこちら。詳細は vitest.globalSetup.ts の冒頭。
+    globalSetup: ['./vitest.globalSetup.ts'],
     // Use forks (child_process) pool so that process.env mutations
     // (e.g. HOME/USERPROFILE overrides in configStore tests) are visible
     // to os.homedir() on Windows — worker_threads do not propagate them.

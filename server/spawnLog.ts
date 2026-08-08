@@ -33,11 +33,11 @@
 
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { resolveAppDataDir } from './appDataDir.js';
 
 /** Rust が追記する spawn ログのパス(%APPDATA%/jp225-monitor/sidecar-spawn.log)。 */
 export function resolveSpawnLogPath(): string {
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  return join(base, 'jp225-monitor', 'sidecar-spawn.log');
+  return join(resolveAppDataDir(), 'sidecar-spawn.log');
 }
 
 /** 末尾 N 行を読む。**例外を投げない**(無ければ空配列)。

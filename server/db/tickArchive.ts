@@ -25,6 +25,7 @@ import { mkdirSync, existsSync, rmSync, renameSync, readFileSync, statSync } fro
 import { classifySession } from '../../core/session.js';
 import type { Price } from '../types.js';
 import type { Tick } from './store.js';
+import { resolveAppDataDir } from '../appDataDir.js';
 
 /** 長期保管する銘柄。ここに無い銘柄は archive DB に一切書かない。 */
 export const ARCHIVED_SYMBOLS: readonly string[] = ['NIY=F'];
@@ -35,8 +36,7 @@ export const ARCHIVED_SYMBOLS: readonly string[] = ['NIY=F'];
 export function resolveTickArchiveDbPath(): string {
   const env = process.env.JP225_TICK_ARCHIVE_DB;
   if (env && env.trim()) return env.trim();
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  const dir = join(base, 'jp225-monitor');
+  const dir = resolveAppDataDir();
   mkdirSync(dir, { recursive: true });
   return join(dir, 'ticks_archive.db');
 }

@@ -2,11 +2,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { classifySession } from '../../core/session.js';
+import { resolveAppDataDir } from '../appDataDir.js';
 
-/** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。 */
+/** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。
+ *  ★テスト実行中は resolveAppDataDir が実パスを隔離先へ差し替える(server/appDataDir.ts 参照)。
+ *    本番では従来と同一の文字列を返す。 */
 export function resolveDbPath(): string {
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  const dir = join(base, 'jp225-monitor');
+  const dir = resolveAppDataDir();
   mkdirSync(dir, { recursive: true });
   return join(dir, 'jp225.db');
 }
@@ -96,7 +98,10 @@ export function initSchema(db: DatabaseSync): void {
       leg_drops_json TEXT,          -- レッグ1本ごとの脱落理由(LegDrop[] の JSON)。1本も落ちなければ NULL。
       settings_json TEXT,           -- そのサイクルの実効設定(signal_trades.meta の settings と同じ組み立て)
       rationale TEXT,               -- AI の判断理由(上限 PLAN_RATIONALE_MAX_CHARS 文字で切る)
-      error TEXT                    -- 計画が得られなかった回の理由(chart-not-generated 等)。取れた回は NULL。
+      error TEXT,                   -- 計画が得られなかった回の理由(chart-not-generated 等)。取れた回は NULL。
+      -- ★凍結再生の突合(RECORD-ONLY): 下の ALTER と同じ2列。新規DBはここで、既存DBは ALTER で入る。
+      context_at INTEGER,           -- 文脈を組み立てた時刻(epoch ms)。t(記録時刻)とは別物。
+      prompt_fp TEXT                -- 送った system+user プロンプトの一方向指紋。★本文は決して入れない。
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -110,6 +115,16 @@ export function initSchema(db: DatabaseSync): void {
   if (!spCols.includes('arm_wait_distance')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_distance REAL');
   if (!spCols.includes('arm_wait_sigma')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_sigma REAL');
   if (!spCols.includes('arm_wait_reason')) db.exec('ALTER TABLE signal_plans ADD COLUMN arm_wait_reason TEXT');
+  // ★凍結再生の突合(RECORD-ONLY)。この2列が無いと、凍結した入力から組み直した文脈が
+  //   「その時刻に実際に AI へ渡ったもの」と同じかを **原理的に** 確かめられない
+  //   (実測: サーバログの行を時刻の真値の代用にして秒オーダーの誤差が残り、1件は1分足が隣にずれた。
+  //    さらに計画サイクルの一部は ref_price が collector の tick 列に一度も現れず、時刻すら決められない)。
+  //   context_at … buildRichScalpContextResult に渡した now(epoch ms)。t(記録時刻)とは別物。
+  //   prompt_fp  … system+user プロンプトの一方向指紋(`sp1:<16桁hex>`)。★本文は決して入れない
+  //                (非公開の決済仕様が本文に入り、記録は同期フォルダ経由で機外へ出るため)。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('context_at')) db.exec('ALTER TABLE signal_plans ADD COLUMN context_at INTEGER');
+  if (!spCols.includes('prompt_fp')) db.exec('ALTER TABLE signal_plans ADD COLUMN prompt_fp TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -718,6 +733,10 @@ export interface SignalPlanRow {
   rationale: string | null; error: string | null;
   arm_wait_ms: number | null; arm_wait_distance: number | null;
   arm_wait_sigma: number | null; arm_wait_reason: string | null;
+  /** 文脈を組み立てた時刻(epoch ms)。t(記録時刻)とは別物。旧行/文脈を組む前に見送った回は NULL。 */
+  context_at: number | null;
+  /** 送った system+user プロンプトの一方向指紋(`sp1:<16桁hex>`)。★本文は入らない。 */
+  prompt_fp: string | null;
 }
 
 export interface SignalPlanInsert {
@@ -743,6 +762,11 @@ export interface SignalPlanInsert {
   armWaitDistance?: number | null;
   armWaitSigma?: number | null;
   armWaitReason?: string | null;
+  // ★凍結再生の突合(RECORD-ONLY)。無ければ NULL(値が無いことを捏造しない)。
+  /** 文脈を組み立てた時刻(epoch ms)= buildRichScalpContextResult に渡した now。 */
+  contextAt?: number | null;
+  /** 送った system+user プロンプトの一方向指紋。★本文は絶対に入れない。 */
+  promptFp?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -757,8 +781,9 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       t, system, signal_id, direction, none_reason, veto_fired, ref_price, regime, confidence,
       limit_entry, stop_entry, stop_loss_for_limit, stop_loss_for_stop,
       leg_drops_json, settings_json, rationale, error,
-      arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason,
+      context_at, prompt_fp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -768,6 +793,7 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     p.legDropsJson ?? null, p.settingsJson ?? null, p.rationale ?? null, p.error ?? null,
     finiteOrNull(p.armWaitMs), finiteOrNull(p.armWaitDistance), finiteOrNull(p.armWaitSigma),
     p.armWaitReason ?? null,
+    finiteOrNull(p.contextAt), p.promptFp ?? null,
   );
 }
 

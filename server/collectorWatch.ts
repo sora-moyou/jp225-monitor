@@ -65,6 +65,7 @@ import { readHeartbeatAt, HEARTBEAT_IDLE_MS, HEARTBEAT_POLL_MS } from './collect
 import { pidLockPath, readPidFile, isAlive } from './pidLock.js';
 import { readSpawnLogTail, resolveSpawnLogPath, appendSpawnLog } from './spawnLog.js';
 import { resolveVariant } from './variant.js';
+import { resolveAppDataDir } from './appDataDir.js';
 
 /** 共有DB(jp225.db)meta のキー。JSON 本体と、人が読む1行の2本(既存の状態記録と同じ作法)。
  *  ★どちらも **monitor だけ** が書く(collector は触らない)。 */
@@ -371,8 +372,7 @@ export function collectorLogHint(): string {
     const dir = resolveTickExportDir();
     if (dir) return join(dir, `collector_${hostLabel()}.log`);
   } catch { /* ignore */ }
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  return join(base, 'jp225-monitor', 'collector.log');
+  return join(resolveAppDataDir(), 'collector.log');
 }
 
 /** 判定を共有DBの meta に書く(**monitor が書く**)。 */

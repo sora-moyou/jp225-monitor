@@ -155,7 +155,14 @@ describe('/api/scalp-plan — 見送り理由(決定台帳)の返却', () => {
   it('応答に決済ラダーの実数値やキーは混ざらない(載るのは AI が出したレッグ価格と理由だけ)', async () => {
     const res = mockRes();
     await scalpPlanHandler(reqOf({ caller: 'generator', exitVariant: 'current' }), res);
-    const s = JSON.stringify(res._json);
+    // ★記録専用の出所2列は数値の走査から外し、**形だけ** を固定する。
+    //   contextAt=monitor の時計の読み(決済仕様からは導かれない)/ promptFp=一方向ハッシュ(hex)。
+    //   hex の中の数字列がたまたま実数値と一致しても意味は無く、混ぜるとこの検査は
+    //   「混ざったか」ではなく偶然を測ることになる。混入の検査は残りの本体に対して従来どおり効く。
+    const { contextAt, promptFp, ...rest } = res._json as Record<string, unknown>;
+    expect(typeof contextAt).toBe('number');
+    expect(promptFp === undefined || /^sp1:[0-9a-f]{16}$/.test(String(promptFp))).toBe(true);
+    const s = JSON.stringify(rest);
     expect(s).not.toMatch(/key|sk-|api[-_]?key/i);
     // 応答に現れる数値は buildScalpPlan が返したもの(=モックが与えた値)だけ。
     const nums = (s.match(/\d+/g) ?? []).map(Number);

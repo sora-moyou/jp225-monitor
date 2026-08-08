@@ -96,10 +96,12 @@ describe('生成器のプロンプト: A の紙成績を外す(両腕とも)', (
     expect(technicalOf(0)).toContain('紙成績');
   });
 
-  it("★A/B(caller:'default' 明示 / profile B)も従来どおり読む・結果のフィールドも増えない", async () => {
+  it("★A/B(caller:'default' 明示 / profile B)も従来どおり読む・生成器だけの記録は付かない", async () => {
     const r = await runScalpPlanWithChart({ caller: 'default', profile: 'B' });
     expect(getSignalTradesMock).toHaveBeenCalledWith(expect.anything(), 30, 'B');
-    expect(r).toBe(PLAN_RESULT);                      // 同一参照=コピーすらしていない
-    expect(Object.keys(r)).toEqual(['ok', 'plan']);
+    expect((r as { plan: unknown }).plan).toBe(PLAN_RESULT.plan);   // plan は同一参照=コピーすらしていない
+    // ★contextAt/promptFp(記録専用の出所)は全経路で載る。それ以外は1つも増えない
+    //   = contextOmitted(生成器だけの記録)が A/B に混ざらない、という元の不変条件はそのまま。
+    expect(Object.keys(r).filter(k => k !== 'contextAt' && k !== 'promptFp')).toEqual(['ok', 'plan']);
   });
 });

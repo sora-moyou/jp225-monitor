@@ -198,6 +198,11 @@ export function toProposalRow(
     // ★monitor が「プロンプトから外した文脈ブロック」をそのまま台帳へ写す(推測しない)。
     //   応答に無ければ NULL = 外していない版の monitor と話した = 紙成績を見せた標本。
     contextOmittedJson: Array.isArray(b?.contextOmitted) ? JSON.stringify(b.contextOmitted) : null,
+    // ★monitor が「いつの断面から文脈を組んだか」と「送ったプロンプトの指紋」をそのまま写す(推測しない)。
+    //   requested_at/responded_at は生成器の時計の両端でしかない。応答に無ければ NULL
+    //   = この2つを返さない版の monitor と話した(= 突合できない標本)。
+    contextAt: typeof b?.contextAt === 'number' ? b.contextAt : null,
+    promptFp: str(b?.promptFp),
     createdAt: outcome.respondedAt,
   };
 }

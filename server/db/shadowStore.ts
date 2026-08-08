@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { ShadowRow } from '../signalTrade/shadow/sim.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
+import { resolveAppDataDir } from '../appDataDir.js';
 import type { ShadowExitLadder } from '../signalTrade/exit/index.js';
 
 /** 影の記録 DB のパス(%APPDATA%/jp225-monitor/shadow_exits.db)。
@@ -26,8 +27,7 @@ import type { ShadowExitLadder } from '../signalTrade/exit/index.js';
 export function resolveShadowDbPath(): string {
   const env = process.env.JP225_SHADOW_DB;
   if (env && env.trim()) return env.trim();
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  const dir = join(base, 'jp225-monitor');
+  const dir = resolveAppDataDir();
   mkdirSync(dir, { recursive: true });
   return join(dir, 'shadow_exits.db');
 }

@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 import { isAnalysisEnabled } from '../analysisGate.js';
+import { resolveAppDataDir } from '../appDataDir.js';
 import { DEFAULT_EXIT_VARIANT, type ExitVariant } from '../signalTrade/exit/index.js';
 
 /** ★腕(arm)= 既存の語彙 ExitVariant に、**同じ入力へ2回問う対照** を足しただけのもの。
@@ -104,6 +105,16 @@ export interface ProposalRow {
    *  ★型上は optional(省略= NULL)。既存の呼び出し/テストが作る行をそのまま受け付けるため。
    *    実際の生成器(cycle.ts)は **常に** 明示的に値(または null)を入れる。 */
   contextOmittedJson?: string | null;
+  /** ★monitor が文脈を組み立てた時刻(epoch ms・**monitor の時計**)。
+   *  requested_at/responded_at は生成器プロセスの時計で、撮影と LLM の待ちを含んだ両端でしかない
+   *  (実測でその差は秒オーダー)。凍結した断面から提案を再生して突き合わせるには、
+   *  「どの時刻の断面を読んだか」そのものが要る。応答に無ければ NULL(= この列を返さない版と話した)。
+   *  ★型上は optional(省略= NULL)。既存の呼び出し/テストが作る行をそのまま受け付けるため。 */
+  contextAt?: number | null;
+  /** ★送った system+user プロンプトの一方向指紋(`sp1:<16桁hex>`)。**本文は入らない**
+   *  (プロンプトには非公開の決済仕様が入るため、指紋だけを持つ)。
+   *  ★型上は optional(省略= NULL)。 */
+  promptFp?: string | null;
   createdAt: number;
 }
 
@@ -112,8 +123,7 @@ export interface ProposalRow {
 export function resolveGeneratorDbPath(): string {
   const env = process.env.JP225_GENERATOR_DB;
   if (env && env.trim()) return env.trim();
-  const base = process.env.APPDATA ?? process.env.HOME ?? process.cwd();
-  const dir = join(base, 'jp225-monitor');
+  const dir = resolveAppDataDir();
   mkdirSync(dir, { recursive: true });
   return join(dir, 'generator_proposals.db');
 }
@@ -159,6 +169,10 @@ export function initGeneratorSchema(db: DatabaseSync): void {
       -- ★プロンプトから外した文脈ブロック(JSON 配列)。NULL = この列を持たない版で記録された
       --   = **紙成績(A の履歴)を見せていた** 標本(値が無いことと「外していない」を混同しない)。
       context_omitted TEXT,
+      -- ★凍結再生の突合(下の ALTER と同じ2列)。context_at=monitor が文脈を組み立てた時刻(monitor の時計)。
+      --   prompt_fp=送ったプロンプトの一方向指紋。★本文は決して入れない。
+      context_at    INTEGER,
+      prompt_fp     TEXT,
       created_at    INTEGER NOT NULL,
       UNIQUE (epoch, cycle_id, arm)
     );
@@ -221,6 +235,10 @@ export function initGeneratorSchema(db: DatabaseSync): void {
   if (!cols.includes('context_omitted')) db.exec('ALTER TABLE proposals ADD COLUMN context_omitted TEXT');
   // ★v0.9.57: 片レッグ脱落の理由。既存行は NULL のまま =「この列を持たない版で記録された」。
   if (!cols.includes('leg_drops_json')) db.exec('ALTER TABLE proposals ADD COLUMN leg_drops_json TEXT');
+  // ★凍結再生の突合。既存行は NULL のまま =「この列を持たない版で記録された」。
+  //   monitor 側の signal_plans と **同じ2列・同じ意味** にして、両台帳を同じ道具で読めるようにする。
+  if (!cols.includes('context_at')) db.exec('ALTER TABLE proposals ADD COLUMN context_at INTEGER');
+  if (!cols.includes('prompt_fp')) db.exec('ALTER TABLE proposals ADD COLUMN prompt_fp TEXT');
 }
 
 /** 台帳 DB を開く(書き込み用)。
@@ -258,8 +276,9 @@ const INSERT_SQL = `
     retried, retry_count, pre_retry_reason,
     direction, plan_json, ref_price, regime, confidence,
     none_reason, none_legs_json, leg_drops_json, veto_fired, range_anomaly_json,
-    shot_id, shot_age_ms, shot_origin, context_omitted, created_at
-  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?)
+    shot_id, shot_age_ms, shot_origin, context_omitted,
+    context_at, prompt_fp, created_at
+  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?)
 `;
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
@@ -277,7 +296,8 @@ export function insertProposal(db: DatabaseSync, r: ProposalRow): boolean {
     r.retried, r.retryCount, r.preRetryReason,
     r.direction, r.planJson, num(r.refPrice), r.regime, num(r.confidence),
     r.noneReason, r.noneLegsJson, r.legDropsJson ?? null, r.vetoFired, r.rangeAnomalyJson,
-    r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null, r.createdAt,
+    r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null,
+    num(r.contextAt), r.promptFp ?? null, r.createdAt,
   );
   return countProposals(db) > before;
 }

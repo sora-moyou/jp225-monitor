@@ -77,6 +77,14 @@ import { feedRealtimePrice, _reset as resetBars } from '../feedBars.js';
 
 const GOOD_PLAN = { ok: true, plan: { direction: 'buy' } };
 
+/** ★記録専用の出所2列(contextAt=文脈を組み立てた時刻 / promptFp=プロンプトの指紋)を落とした結果。
+ *  この2つは **全経路** で additive に載る(凍結再生の突合用)。それ以外のフィールドは
+ *  1つも増えないことを、以下の toEqual(GOOD_PLAN) が従来どおり固定し続ける。 */
+function withoutProvenance(r: unknown): Record<string, unknown> {
+  const { contextAt: _c, promptFp: _p, ...rest } = r as Record<string, unknown>;
+  return rest;
+}
+
 describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () => {
   beforeEach(() => {
     buildScalpPlanMock.mockReset().mockResolvedValue(GOOD_PLAN);
@@ -105,7 +113,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);
     const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
     expect(arg.chartImageDataUrl).toBe(`data:image/png;base64,${png.toString('base64')}`);
-    expect(result).toEqual(GOOD_PLAN);
+    expect(withoutProvenance(result)).toEqual(GOOD_PLAN);
   });
 
   // ★撮影キャッシュの呼び出し元分離: runner は自分の caller を撮影側へ渡す。
@@ -147,7 +155,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);   // ★テキストのみでも呼ぶ
     const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
     expect(arg.chartImageDataUrl == null).toBe(true);
-    expect(result).toEqual(GOOD_PLAN);
+    expect(withoutProvenance(result)).toEqual(GOOD_PLAN);
   });
 
   it('★fallback OFF: capture 2回失敗 → 見送り(chart-not-generated・AI呼ばない)', async () => {
@@ -171,7 +179,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);
     const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
     expect(arg.chartImageDataUrl).toBeNull();
-    expect(result).toEqual(GOOD_PLAN);
+    expect(withoutProvenance(result)).toEqual(GOOD_PLAN);
   });
 
   it('SCALP_CHART_VISION=0 → no capture, no vision lookup, AI called with null image', async () => {
@@ -185,7 +193,7 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);
     const arg = buildScalpPlanMock.mock.calls[0][0] as { chartImageDataUrl: string | null };
     expect(arg.chartImageDataUrl).toBeNull();
-    expect(result).toEqual(GOOD_PLAN);
+    expect(withoutProvenance(result)).toEqual(GOOD_PLAN);
   });
 
   it('no LC override → passes lcFloorYen/lcCeilingYen undefined (config 既定に委ねる)', async () => {
