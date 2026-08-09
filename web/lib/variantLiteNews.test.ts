@@ -22,7 +22,8 @@ describe('lite でもニュースパネルは full と同じ', () => {
     expect(panel.length).toBe(1);
     expect(panel.find('#news-list').length).toBe(1);
     expect(panel.find('#news-showall').length).toBe(1);
-    expect(panel.find('h2').text()).toBe('世界ニュース');
+    // 見出しは 'News'(英語)。v0.9.67 で一時 '世界ニュース' にしたがユーザー指示で戻した。
+    expect(panel.find('h2').text()).toBe('News');
   });
 
   it('★lite の隠し対象セレクタがニュースパネル内に1つも無い', () => {
