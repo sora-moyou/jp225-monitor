@@ -268,7 +268,7 @@ export function sharedGeneratorProviders(
 }
 
 /** ★従属規則の発火点。**default プールのプロバイダが quota(429/枯渇)を踏んだ瞬間**に providers.ts から呼ばれる。
- *  transient(5xx)・config(401/403/404)・oversize(413)では発火しない(枠の枯渇ではないため)。
+ *  transient(5xx)・config(401/403/404)・oversize(413)・badrequest(400)では発火しない(枠の枯渇ではないため)。
  *
  *  @param keySource ★そのプロバイダで **生成器が実際に使っているキーの出どころ**。
  *    'own'/'env'(専用キー)なら上流クォータは分かれているので **止めない**(見送りを必ず1行残す)。

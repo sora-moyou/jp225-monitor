@@ -45,10 +45,32 @@ const CONSECUTIVE_WINDOW_MS = 10 * 60_000;
 // 503 等はすぐ復帰するので、そのプロバイダを少しだけ休ませて次に回す(8時間も止めない)。
 const TRANSIENT_PAUSE_MS = 30_000;
 
+/**
+ * ★「HTTP は成功したが、返ってきた中身がそのままでは使えない」ことを **タスク側が明示** するための例外。
+ *
+ * なぜ classifyLLMError に足さないのか(2026-08-11 の判断):
+ *   classifyLLMError は **プロバイダが投げた文字列を推測で読む表**で、腐りやすいから狭く保ちたい。
+ *   一方こちらは「空だった」「途中で切れた」という **アプリ自身が下した判定**で、推測の余地がない。
+ *   アプリが生成した文字列(`truncated: …`)をプロバイダのエラー文と同じ表に混ぜると、
+ *   (a) 将来メッセージを直訳しただけで分類が変わる (b) 数値(`(3000)`)が別の規則に当たる
+ *   (実際 `TRANSLATE_MAX_TOKENS` が 500 なら `\b50[0-4]\b` で transient と誤分類された)
+ *   という、この修正が塞いだのと同じ「文字列一致の穴」を新しく作ることになる。だから **型で渡す**。
+ *
+ * 扱いは oversize / badrequest と同じ「**ポーズせず次のプロバイダへ**」。
+ * プロバイダは健全(200 を返している)なので止める理由がなく、別のモデルなら中身が返る見込みがある。
+ */
+export class UnusableResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnusableResponseError';
+  }
+}
+
 /** LLM エラーを分類。'quota'=429/枯渇(長 ladder), 'oversize'=413/コンテキスト超過(ポーズせず次へ),
  *  'transient'=5xx/timeout/network(短ポーズ), 'config'=401/403/404・モデル不明/権限/キー無効(★長ポーズして次へ),
- *  null=その他(即 throw)。quota/oversize/transient/config はいずれも「次プロバイダへフォールバック」する。 */
-export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient' | 'config' | null {
+ *  'badrequest'=400・この要求が受け付けられない(★ポーズせず次へ),
+ *  null=その他(即 throw)。quota/oversize/transient/config/badrequest はいずれも「次プロバイダへフォールバック」する。 */
+export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient' | 'config' | 'badrequest' | null {
   if (/429|rate[_ ]limit|exhausted|quota/i.test(msg)) return 'quota';
   // 413=単一リクエストがそのモデルの上限(TPM/コンテキスト長)を超過。ペーシングでは直らない=
   // 「そのモデルでは絶対に通らない」ので、より大きいモデル(openai/gemini)へフォールバックする。
@@ -59,6 +81,39 @@ export function classifyLLMError(msg: string): 'quota' | 'oversize' | 'transient
   //   設定不備で使えない=長くポーズして**次へフォールバック**する(1プロバイダの誤設定で全滅させない=Kimi 404で
   //   連鎖が壊れ news 説明が全滅した事故対策)。誤設定はログ+⚙️「キーを検証」で可視化されるので隠蔽にならない。
   if (/\b40[134]\b|not found the model|permission denied|incorrect api key|invalid[_ ].*api|no such model|unauthorized|model.*not.*(?:found|exist)/i.test(msg)) return 'config';
+  // ★badrequest(400・2026-08-11 追加): 「この要求はそのモデルに受け付けられない」。
+  //   実害: Kimi のモデルを kimi-k3 にした途端 `400 invalid temperature: only 1 is allowed for this model`
+  //   が出たが、400 は未分類(null)=**即 throw** だったため次プロバイダへ回らず、ニュース翻訳が
+  //   2026-08-10 13:27 JST から 430 件連続で失敗した。404 で起きた事故(上のコメント)が 400 で再発した形。
+  //
+  // ★なぜ config(=30分ポーズ)ではなく **ポーズ無し**なのか(2026-08-11 の判断):
+  //   400 の中身は「そのモデルでは永久に通らないもの」(temperature 非対応)と
+  //   「この1回の要求が悪かっただけのもの」の両方が混ざる。後者は稼働機に実在する:
+  //     `400 tool call validation failed: parameters for tool explain_move did not match schema:
+  //      [/sinceMinutes: expected number, but got string]` (×6件・scalp-plan 経路)
+  //   これはモデルが一度おかしな引数を吐いただけで **プロバイダは健全**。ここで 30分ポーズすると
+  //   健全な gemini が止まり、traffic が groq(413連発)→ openai(有料)へ流れる=
+  //   **可用性のための修正が課金を増やす**。だから 413(oversize)と同じ「ポーズせず次へ」に揃える。
+  // ★文言でサブ分類しない: 「永久に通らない400」と「一度きりの400」を語で見分ける表は必ず腐るうえ、
+  //   見分けを間違えると健全なプロバイダを止める副作用が残る。**全部ポーズなし**で揃える。
+  //   代償(=毎回1回の無駄打ち)は 413 と同じ形で、既に受け入れている挙動。
+  //
+  // ★数値だけで拾わない(誤爆の実害が既知): `\b400\b` は `41,400` のような **アプリ由来の価格**にも当たる。
+  //   同じ穴で `\b50[0-4]\b` が `41,500` を transient と誤分類する経路が稼働機で観測されている
+  //   (providersLog.test.ts の「parse 失敗」ケース)。OpenAI 互換 SDK の APIError.message は
+  //   「<status> <本文>」の形なので、**文字列の先頭でだけ** 状態番号を見る。
+  //   ★この判定を quota/oversize/transient より **後**に置くのは順序が効くから:
+  //     400 で返ってくるコンテキスト超過(`400 ... maximum context length ...`)は oversize のまま、
+  //     400 で返ってくるレート超過は quota のままにして、上のフォールバック方針を変えない。
+  //   ★接頭辞は「エラー名だけ」許す(2026-08-11 追記): `err.message` ではなく `String(err)` を渡す経路では
+  //     `Error: 400 …` / `APIError: 400 …` になり、先頭限定だと **無言で** 分類から漏れる。
+  //     一方 `[\s:(]400\b` のように空白を許すと、V8 の `… in JSON at position 400` を拾ってしまう
+  //     (これは実在の形で、下の表に固定してある)。JS がエラーを文字列化するときの形は
+  //     `<Name>Error: <message>` なので、**その接頭辞だけ**を許して他は許さない。
+  if (/^(?:\s*[\w$.]*(?:Error|Exception)\s*:\s*)*\s*400\b/.test(msg)) return 'badrequest';
+  // 状態番号が落ちた形(ラッパが本文だけを渡す等)でも拾えるよう、
+  // 「要求内容が不正」を名指しする定型句だけを **狭く** 見る(価格やニュース文には現れない語)。
+  if (/invalid[_ ]request[_ ]error|unsupported[_ ](?:parameter|value)|only 1 is allowed for this model/i.test(msg)) return 'badrequest';
   return null;
 }
 
@@ -240,6 +295,7 @@ export function firstAvailableVisionProvider(pool: PoolKey = DEFAULT_CALLER): { 
 // エラーに応じてプロバイダを一時停止し「次へフォールバックすべきか」を返す。
 //   quota(429)      → 連続回数に応じた長い ladder(枠回復まで待つ)+ フォールバック
 //   oversize(413)   → ポーズ無し + フォールバック(この要求だけが上限超過。小さい要求は通り続ける)
+//   badrequest(400) → ポーズ無し + フォールバック(この要求だけが受け付けられない。プロバイダは健全)
 //   transient(5xx等)→ 短い固定ポーズ(すぐ復帰想定)+ フォールバック
 //   config(401/403/404)→ 長ポーズ(30分)+ フォールバック(誤設定のプロバイダを避けて他で継続)
 //
@@ -247,6 +303,12 @@ export function firstAvailableVisionProvider(pool: PoolKey = DEFAULT_CALLER): { 
 //   生成器が 429 を踏んでも default プールの circuitOpenUntil は 0 のままで、実弾(A)は止まらない。
 function tripCircuit(p: ProviderState, err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
+  // ★応答が使えない(空 / 長さ切れ)= タスク側が型で申告したもの。文字列の分類より **先** に見る:
+  //   後ろに置くと、メッセージ中の数値が classifyLLMError の規則に当たって別の分類(=ポーズ)に化ける。
+  if (err instanceof UnusableResponseError) {
+    console.warn(`${logPrefix(p)}unusable response (${formatErrForLog(msg)}) — ポーズせず次へフォールバック(応答が使えない)`);
+    return true;
+  }
   const kind = classifyLLMError(msg);
   if (!kind) return false;
   const now = Date.now();
@@ -254,6 +316,15 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     // この要求だけがモデル上限(TPM/コンテキスト)を超過。プロバイダ自体は健全なので
     // ポーズしない(小さい chat/explain は同プロバイダで通り続ける)。より大きいモデルへ流すだけ。
     console.warn(`${logPrefix(p)}oversize (${formatErrForLog(msg)}) — ポーズせず次(大きいモデル)へフォールバック`);
+    return true;
+  }
+  if (kind === 'badrequest') {
+    // ★この1回の要求だけが受け付けられなかった(パラメータ非対応・ツール引数の不正など)。
+    //   プロバイダ自体は健全なので **ポーズしない**。oversize と同じ扱い:
+    //   circuitOpenUntil も consecutiveFails も lastFailAt も1ミリも触らない
+    //   (触ると 429 の ladder に混ざり、400 が続いたときに枠切れと誤認して長時間止まる)。
+    //   代償は「拒否される要求のたびに1回の無駄打ち」。トークンは消費されず即座に返る。
+    console.warn(`${logPrefix(p)}bad request (${formatErrForLog(msg)}) — ポーズせず次へフォールバック(この要求だけが受け付けられない)`);
     return true;
   }
   if (kind === 'quota') {
@@ -268,7 +339,7 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
     console.warn(`${logPrefix(p)}429 #${p.consecutiveFails + 1} — paused for ${human}`);
     // ★従属規則(作業4-2)の発火点: **default プールが quota を踏んだ瞬間**だけ生成器を止める。
-    //   transient(5xx)/config(401/403/404)/oversize(413) では発火しない(枠の枯渇ではない)。
+    //   transient(5xx)/config(401/403/404)/oversize(413)/badrequest(400) では発火しない(枠の枯渇ではない)。
     //   ★停止の長さは **A が実際に入れたポーズ(pause)と同じ**。危険なのは「A がポーズしている間に
     //     生成器が同じ上流を食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば
     //     停止も自動で深くなる(=保護の目的は弱まらない)。旧実装のようにセッションの残り全部は捨てない。

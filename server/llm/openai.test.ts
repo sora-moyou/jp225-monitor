@@ -36,9 +36,72 @@ describe('classifyLLMError (5xx/timeout もフォールバック対象に)', () 
     expect(classifyLLMError('404 Not found the model kimi-k2-0905-preview or Permission denied')).toBe('config');
     expect(classifyLLMError('403 permission denied')).toBe('config');
   });
-  it('400 等その他は null(即 throw)', () => {
-    expect(classifyLLMError('400 Bad Request: malformed json')).toBeNull();
-    expect(classifyLLMError('something totally unexpected')).toBeNull();
+  // ─── ★400(2026-08-11)。旧テストは「400 → null(即 throw)」を固定していたが、
+  //     それが稼働機で 430 件のニュース翻訳を全滅させた欠陥そのものだったので **意図的に反転**する。
+  //     実害: `400 invalid temperature: only 1 is allowed for this model`(kimi-k3)が
+  //     未分類=即 throw となり、次プロバイダへ回らなかった(2026-08-10 13:27 JST〜)。
+  //
+  //     ★config(30分ポーズ)ではなく **badrequest(ポーズ無し)** にする理由:
+  //       400 には「一度きりの要求ミス」(実ログ: tool call validation failed ×6)が混ざる。
+  //       それで健全な gemini を 30分止めると traffic が groq(413)→ openai(有料)へ流れ、
+  //       可用性のための修正が課金を増やす。413 と同じ「ポーズせず次へ」に揃える。
+  //     ★文言でサブ分類しない: 「永久に通らない400」と「一度きりの400」を語で見分ける表は作らない。
+  describe('★400 → badrequest(ポーズせずフォールバック・2026-08-11: Kimi temperature 400 事故対策)', () => {
+    // badrequest に分類 **されなければならない** 文言(実ログから採ったもの + 同型)
+    const MUST_BADREQUEST = [
+      // ★稼働機の実文(serverlog_kabu.txt に 227 行)。
+      '400 invalid temperature: only 1 is allowed for this model',
+      // ★稼働機の実文(chrono_kabu.log・/api/scalp-plan 経由)。
+      '400 tool call validation failed: parameters for tool explain_move did not match schema: errors: [`/sinceMinutes`: expected number, but got string]',
+      '400 Bad Request: malformed json',
+      '400 status code (no body)',
+      // ★接頭辞付き(`String(err)` を渡す経路。先頭限定だと **無言で** 分類から漏れていた)
+      'Error: 400 tool call validation failed: parameters did not match schema',
+      'Error: 400 status code (no body)',
+      'APIError: 400 unknown field: reasoning_effort',
+      'BadRequestError: 400 invalid temperature',
+      'Error: Error: 400 二重に文字列化された形',
+      // 状態番号が落ちた形でも「要求内容が不正」と名指ししているもの。
+      'invalid_request_error: unknown parameter',
+      'unsupported_parameter: temperature is not supported with this model',
+      'only 1 is allowed for this model',
+    ];
+    for (const msg of MUST_BADREQUEST) {
+      it(`badrequest: ${msg.slice(0, 56)}`, () => expect(classifyLLMError(msg)).toBe('badrequest'));
+    }
+
+    // ★逆方向: badrequest に分類 **されてはいけない** 文言(400 を拾うことで横取りしていないか)。
+    //   期待値は「現行の分類」を1つずつ固定する = 副作用がゼロであることの表。
+    //   ★とくに 401/403/404 が badrequest に落ちていないこと(=長ポーズの規律を弱めていない)。
+    const MUST_NOT_BADREQUEST: Array<[string, ReturnType<typeof classifyLLMError>]> = [
+      // ── 400 で返ってくるが本質は別物 → 順序で quota/oversize が勝つこと ──
+      ['400 This model\'s maximum context length is 8192 tokens, however you requested 9000', 'oversize'],
+      ['400 rate_limit_exceeded: please slow down', 'quota'],
+      // ── 実ログの他ステータス(1つも分類が変わらないこと) ──
+      ['413 Request too large for model `llama-3.3-70b-versatile` in organization org_x service tier on_demand', 'oversize'],
+      ['429 rate_limit_exceeded: Limit 6000, Used 6000, Requested 512', 'quota'],
+      ['401 Incorrect API key provided: sk-proj-****…Y9EA.', 'config'],
+      ['404 Not found the model kimi-latest or Permission denied', 'config'],
+      ['403 permission denied', 'config'],
+      ['503 status code (no body)', 'transient'],
+      ['500 Internal Server Error', 'transient'],
+      // ── ★アプリ由来の数値が 400 に化けないこと(既知の穴: `\b50[0-4]\b` は `41,500` を拾う) ──
+      //   日経の価格帯 40,400 / 41,400 は実在する。ここが config になると健全なプロバイダを
+      //   30分ポーズさせる(誤爆で取りこぼしが増える形)。
+      ['parse failed after retry: JSON parse failed: Unexpected token あ in JSON at position 400', null],
+      ['scalp-plan: 節目 41,400 円を上抜けたら追随, という出力が壊れていた', null],
+      ['legs 40,400 / 40,600 の解釈に失敗', null],
+      ['something totally unexpected', null],
+      // ★接頭辞を許すときに一緒に入ってきやすい形。**エラー名以外の接頭辞は許さない**ので null のまま。
+      //   (`[\s:(]400\b` のように空白を許すと、下の2つを badrequest と誤分類する)
+      ['Unexpected token あ in JSON at position 400', null],
+      ['scalp-plan: 400 という数字がレッグに出た', null],
+      ['予測レンジ 400 pt', null],
+      ['65400 は語境界を持たない', null],
+    ];
+    for (const [msg, want] of MUST_NOT_BADREQUEST) {
+      it(`${want ?? 'null'}: ${msg.slice(0, 56)}`, () => expect(classifyLLMError(msg)).toBe(want));
+    }
   });
 });
 

@@ -64,7 +64,10 @@ export function initSchema(db: DatabaseSync): void {
       --   後から原文で検証できるようにするため。
       title_ja TEXT,                    -- 日本語訳(表示専用)。NULL=未訳 or 失敗。
       translate_error TEXT,             -- 訳せなかった理由(短い)。NULL=失敗していない。
-      translated_at INTEGER             -- 訳した時刻(再訳しないための印でもある)
+      translated_at INTEGER,            -- 訳した(=最後に試した)時刻。再訳の間隔を測る基準。
+      -- ★連続失敗回数。失敗のたびに +1、成功で 0。これが無いと「失敗したら永久に未訳」か
+      --   「毎回無限に叩き直す」の二択になる(2026-08-10 の 400 事故では前者で 430件が固まった)。
+      translate_attempts INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_news_published ON news (published_at);
     CREATE TABLE IF NOT EXISTS daily_closes (
@@ -263,6 +266,9 @@ export function initSchema(db: DatabaseSync): void {
     if (!nCols.includes('title_ja')) db.exec('ALTER TABLE news ADD COLUMN title_ja TEXT');
     if (!nCols.includes('translate_error')) db.exec('ALTER TABLE news ADD COLUMN translate_error TEXT');
     if (!nCols.includes('translated_at')) db.exec('ALTER TABLE news ADD COLUMN translated_at INTEGER');
+    // ★再訳の回数制限用(後付け・冪等)。既存行は NULL のまま = 「1回失敗済み」として扱う
+    //   (呼び出し側 newsTranslate.ts で NULL→1 に読み替える)。
+    if (!nCols.includes('translate_attempts')) db.exec('ALTER TABLE news ADD COLUMN translate_attempts INTEGER');
   }
   // v0.6.0: アラートに基準(reference)を記録。既存DBへ後付けマイグレーション。
   const aCols = (db.prepare('PRAGMA table_info(alerts)').all() as Array<{ name: string }>).map(c => c.name);
@@ -402,6 +408,7 @@ export interface NewsRow {
   title_ja: string | null;
   translate_error: string | null;
   translated_at: number | null;
+  translate_attempts: number | null;
 }
 
 /** 永続化するニュース 1 件(store は core の型に依存しないよう構造的に受ける)。 */
@@ -473,12 +480,29 @@ export function getRecentNews(db: DatabaseSync, since: number, limit = 500): New
 }
 
 /** ★訳文の記録。title(原文)には一切触れない。
- *  成功時は titleJa を入れて translate_error を消し、失敗時は理由だけ残す(次回の再訳判定に使う)。 */
+ *  成功時は titleJa を入れて translate_error を消し、失敗時は理由だけ残す(次回の再訳判定に使う)。
+ *
+ *  ★translate_attempts の意味は「**その記事に固有の理由で**訳せなかった回数」。
+ *    countAttempt=true(記事固有の失敗)  … +1。上限に達したら二度と訳さない。
+ *    countAttempt=false(プロバイダ側の失敗) … **増やさない**。ただし NULL は 0 に正規化する
+ *      (NULL のままだと呼び出し側が「1回失敗済み」と読み、無関係な障害でバックオフが掛かる)。
+ *    成功 … 0 にリセット。
+ *  この区別が無いと、LLM の連鎖が落ちている間に窓の中の記事が全部上限まで焼き切れ、
+ *  救済機能そのものが恒久的に失われる(2026-08-11 に実 SQLite で再現)。 */
 export function setNewsTranslation(
   db: DatabaseSync, id: string, titleJa: string | null, error: string | null, at: number,
+  countAttempt = false,
 ): void {
-  db.prepare('UPDATE news SET title_ja = ?, translate_error = ?, translated_at = ? WHERE id = ?')
-    .run(titleJa, error, at, id);
+  // 0=成功(リセット) / 1=記事固有の失敗(+1) / 2=プロバイダ側の失敗(据え置き・NULLは0へ)
+  const mode = error === null ? 0 : (countAttempt ? 1 : 2);
+  db.prepare(
+    `UPDATE news SET title_ja = ?, translate_error = ?, translated_at = ?,
+       translate_attempts = CASE ?
+         WHEN 0 THEN 0
+         WHEN 1 THEN COALESCE(translate_attempts, 0) + 1
+         ELSE COALESCE(translate_attempts, 0) END
+     WHERE id = ?`,
+  ).run(titleJa, error, at, mode, id);
 }
 
 export interface NewsConfidenceRow { id: string; confidence: string | null; confidence_basis: string | null }
@@ -501,7 +525,15 @@ export function getNewsConfidences(db: DatabaseSync, ids: readonly string[]): Ne
   return out;
 }
 
-export interface NewsTranslationRow { id: string; title_ja: string | null; translate_error: string | null }
+export interface NewsTranslationRow {
+  id: string;
+  title_ja: string | null;
+  translate_error: string | null;
+  /** 最後に訳を試した時刻。★失敗の再試行間隔を測る基準(NULL=時刻不明=再試行しない)。 */
+  translated_at: number | null;
+  /** 連続失敗回数(NULL=この列が無かった頃の失敗行。呼び出し側で 1 とみなす)。 */
+  translate_attempts: number | null;
+}
 
 /** 指定 id 群の既訳を引く。★これが「同じ記事を2回訳さない」ための唯一の判定材料。 */
 export function getNewsTranslations(db: DatabaseSync, ids: readonly string[]): NewsTranslationRow[] {
@@ -512,7 +544,7 @@ export function getNewsTranslations(db: DatabaseSync, ids: readonly string[]): N
     const chunk = ids.slice(i, i + 500);
     const holes = chunk.map(() => '?').join(',');
     out.push(...db.prepare(
-      `SELECT id, title_ja, translate_error FROM news WHERE id IN (${holes})`,
+      `SELECT id, title_ja, translate_error, translated_at, translate_attempts FROM news WHERE id IN (${holes})`,
     ).all(...chunk) as unknown as NewsTranslationRow[]);
   }
   return out;
