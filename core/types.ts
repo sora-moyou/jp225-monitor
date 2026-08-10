@@ -43,10 +43,12 @@ export interface SignalSettingsSnapshot {
   chartVision?: { mode: 'off' | 'ab'; requested: boolean; sent: boolean };
 }
 
-export type Symbol =
-  | 'NIY=F' | 'NQ=F' | 'YM=F' | 'JPY=X'
-  | '6861.T' | '9983.T' | '6146.T' | '6273.T'
-  | '8035.T' | '9984.T' | '285A.T';   // 値がさ株7(高株価・日経寄与上位)
+// 監視銘柄の型。取得経路(server/sources/ajaxCmePrice.ts / ajaxFxPrice.ts)を持つものだけを並べる。
+// 値がさ株7(6861.T/9983.T/6146.T/6273.T/8035.T/9984.T/285A.T)は取得経路が無いまま宣言だけ残って
+// 無言で欠測していたため削除した(経緯は core/instruments.ts の冒頭コメント)。
+// ★DB(bars_1m/ticks/alerts)には過去の値がさ株の行が残っているが、DB の symbol は一貫して string 型で
+//   読むので(server/db/store.ts)、この union を狭めても過去データの読み出しは壊れない。
+export type Symbol = 'NIY=F' | 'NQ=F' | 'YM=F' | 'JPY=X';
 
 export interface Price {
   symbol: Symbol;
@@ -93,7 +95,10 @@ export interface InstrumentMeta {
   magnitudeThreshold: number;
   slopeThreshold: number;
   unit: 'percent' | 'bp';
-  category?: 'main' | 'heavyweight';   // 値がさ株は 'heavyweight'
+  // 銘柄の分類。'heavyweight'(値がさ株)は取得経路ごと削除したので候補から外した。
+  // ★union をここで狭めることに意味がある: `category === 'heavyweight'` と書いていた**死んだ分岐**が
+  //   すべて tsc の型エラーになり、黙って残らない(無言で常に false になる分岐を作らない)。
+  category?: 'main';
 }
 
 // AlertEvent shape kept in sync with server/alertDetector.ts (re-declared here to avoid client→alertDetector import)

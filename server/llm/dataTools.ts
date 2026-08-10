@@ -1,6 +1,5 @@
 import type { NewsItem, Price } from '../types.js';
 import { INSTRUMENTS } from '../config.js';
-import { tokyoCashOpen } from '../../core/session.js';
 import { bigrams } from '../../core/textBigrams.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
 import { rowKind, summarize } from '../alertHistory.js';
@@ -12,18 +11,22 @@ import { explain, fmt, type ExplainInput } from './explain.js';
 
 const LABEL_MAP = new Map(INSTRUMENTS.map(i => [i.symbol as string, i]));
 
+// ★かつてここには「東証個別株(.T)は 9:00-15:30 のみ取引 → 場外は ※東証クローズ中・前場引け比 と注記する」
+//   分岐があった。値がさ株7を INSTRUMENTS ごと削除した(取得経路が無く無言で欠測していた・
+//   core/instruments.ts 参照)ので、category==='heavyweight' の銘柄はもう存在せず、この分岐は
+//   **常に false** になった=撤去した。残る 4 銘柄(先物3+ドル円)は ~24h ライブなので立会時間の注記は要らない。
+//   ★AI に渡る文字列は撤去の前後で **1バイトも変わらない**(分岐が常に false だったため)。
+//   引数 now は **意図的に残す**: 呼び出し側(server/llm/chat.ts / scalpPlan.ts の プロンプト組み立て)を
+//   1行も触らないことで「AI への入力が変わっていない」ことを diff で示せるようにする。
 export function formatPricesForChat(prices: Price[], now: number): string {
+  void now;
   if (prices.length === 0) return '(価格未取得)';
-  const cashOpen = tokyoCashOpen(now);
   return prices.map(p => {
     const meta = LABEL_MAP.get(p.symbol);
     const label = meta?.labelJa ?? p.symbol;
     const sign = p.changePercent >= 0 ? '+' : '';
-    // 東証個別株(.T)は 9:00-15:30 のみ取引。場外は前回終値で動かないので「今動いた」材料に誤用させない。
-    const tokyoClosed = meta?.category === 'heavyweight' && !cashOpen;
-    const staleMark = tokyoClosed ? ' ※東証クローズ中・前回終値(値動きなし)' : (p.stale ? ' (stale)' : '');
-    const chgLabel = tokyoClosed ? '前場引け比' : '';
-    return `- ${label} ${p.symbol}: ${fmt(p.price)} (${sign}${p.changePercent.toFixed(2)}%${chgLabel ? ' ' + chgLabel : ''})${staleMark}`;
+    const staleMark = p.stale ? ' (stale)' : '';
+    return `- ${label} ${p.symbol}: ${fmt(p.price)} (${sign}${p.changePercent.toFixed(2)}%)${staleMark}`;
   }).join('\n');
 }
 

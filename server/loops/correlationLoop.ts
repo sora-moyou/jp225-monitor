@@ -15,8 +15,11 @@ const MIN_SAMPLES = 100;     // v0.3.14: 100 ペア未満は信頼性低とし�
 
 // v0.7.20: 相関バスケットは INSTRUMENTS の main 4 銘柄からアンカー(NIY=F)を除いた 3 銘柄
 // = { NQ=F, YM=F, JPY=X }(^HSI/CL=F/^TNX は銘柄削減で自然に脱落)。
+// ★かつて併記していた `i.category !== 'heavyweight'` は撤去。値がさ株7を INSTRUMENTS ごと削除した
+//   (取得経路が無く無言で欠測していた・core/instruments.ts 参照)ので、除外する対象がもう存在しない。
+//   バスケットの中身は撤去前後で同じ 3 銘柄 = 相関の計算結果は変わらない。
 const CANDIDATES = INSTRUMENTS
-  .filter(i => i.category !== 'heavyweight' && i.symbol !== ANCHOR)
+  .filter(i => i.symbol !== ANCHOR)
   .map(i => i.symbol as string);
 
 let lastRanked: CorrelationResult[] = [];

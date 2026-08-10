@@ -1,5 +1,4 @@
 import { INSTRUMENTS } from './config.js';
-import { tokyoCashOpen } from '../core/session.js';
 import { barsFor } from './loops/alertLoop.js';
 import { returns, stdDev, returns5m, DEFAULT_PARAMS } from './alertDetector.js';
 import type { Bar } from './correlation.js';
@@ -55,12 +54,12 @@ export function getSignificantMovers(
   getBars: (symbol: string) => Bar[] = barsFor,   // v0.3.32: 既定をリアルタイム足優先に
 ): Mover[] {
   const movers: Mover[] = [];
-  const cashOpen = tokyoCashOpen(Date.now());
+  // ★かつてここに「東証個別株(.T)は 9:00-15:30 のみ取引なので場外は除外」という tokyoCashOpen ガードがあった。
+  //   値がさ株7を INSTRUMENTS ごと削除した(取得経路が無く無言で欠測していた・core/instruments.ts 参照)ため、
+  //   残る 4 銘柄は全て ~24h ライブの先物/為替で、立会時間による除外対象が1つも無くなった=ガードを撤去。
   for (const inst of INSTRUMENTS) {
     const sym = inst.symbol;
     if (sym === excludeSymbol) continue;
-    // 東証個別株(.T)は 9:00-15:30 のみ取引。場外(夜間等)は前回終値で動かないので「同時刻に動いた他資産」に含めない。
-    if (inst.category === 'heavyweight' && !cashOpen) continue;
     const bars = getBars(sym);
     const b = burstZ(bars);
     const t = trendZ(bars);

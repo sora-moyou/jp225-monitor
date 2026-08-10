@@ -175,14 +175,11 @@ export const INSTRUMENT_KEYWORDS: Record<string, string[]> = {
   'NQ=F': ['ナスダック', '米株', 'テック', 'ai', 'アップル', 'マイクロソフト', 'エヌビディア', 'メタ', 'グーグル', 'nasdaq', 'nq', 'tech', 'apple', 'aapl', 'msft', 'nvda', 'meta', 'google', 'googl'],
   'YM=F': ['ダウ', 'nyダウ', '米株', '米国', 'dow', 'dji', 'us 30', 'industrial', 'blue chip'],
   'JPY=X': ['ドル円', '為替', '日銀', 'boj', 'frb', '介入', '円安', '円高', '為替介入', 'usdjpy', 'usd/jpy', 'yen', 'dollar', 'intervention', 'kanda', '神田'],
-  // 値がさ株（個別株、関連業界キーワードも）
-  '6861.T': ['キーエンス', 'keyence', 'fa', '工場自動化', 'factory automation', 'センサー', '計測', 'sensor'],
-  '9983.T': ['ファーストリテイリング', 'ユニクロ', 'fast retailing', 'uniqlo', 'gu', '小売', 'apparel'],
-  '6146.T': ['ディスコ', 'disco', 'ダイシング', 'dicing', '半導体製造装置', 'grinder', 'semiconductor equipment'],
-  '6273.T': ['smc', '空圧', '空気圧', 'pneumatic', 'fa', '工場自動化', 'factory automation'],
-  '8035.T': ['東京エレクトロン', 'tokyo electron', '半導体製造装置', 'semiconductor equipment', 'asml', 'tsmc'],
-  '9984.T': ['ソフトバンクグループ', 'ソフトバンク', 'softbank', 'sbg', 'arm', '孫正義', 'vision fund', 'ai投資'],
-  '285A.T': ['キオクシア', 'キオクシアhd', 'kioxia', 'nand', 'フラッシュメモリ', 'flash memory', '半導体メモリ', 'メモリ'],
+  // ★値がさ株7(6861.T/9983.T/6146.T/6273.T/8035.T/9984.T/285A.T)の辞書はここにあったが、
+  //   INSTRUMENTS ごと削除したので **引ける入口が無くなった**(この表は explain.ts が
+  //   INSTRUMENT_KEYWORDS[アラートの symbol] で引くだけで、その symbol は INSTRUMENTS 由来)。
+  //   経緯は core/instruments.ts の冒頭コメント。宣言だけ残すと「使われているつもり」になるので消す。
+  //   キーが INSTRUMENTS と一致していることは server/sources/instrumentPriceRoutes.test.ts が保証する。
 };
 
 export const LLM_SYSTEM_PROMPT = `あなたは日経先物トレーダー向けの市場分析アシスタントです。直近4時間のニュース（関連性スコア順）から、相場急変の最有力材料を簡潔に示してください。

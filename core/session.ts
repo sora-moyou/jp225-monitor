@@ -152,7 +152,13 @@ const CASH_OPEN = 9 * 60;          // 9:00
 const CASH_CLOSE = 15 * 60 + 30;   // 15:30(大引け・2024拡大後)
 /** 東証現物の立会時間帯か。平日 9:00-15:30 JST(昼休み含む・休場日・週末は false)。
  *  休場判定は **現物専用の CASH_HOLIDAYS**。先物用 DERIV_NON_TRADING を使うと祝日取引のせいで
- *  国民の祝日が「立会中」になり、前営業日の終値を「今動いている株価」として AI に渡してしまう。 */
+ *  国民の祝日が「立会中」になり、前営業日の終値を「今動いている株価」として AI に渡してしまう。
+ *
+ *  ★現在この関数を呼ぶ本番コードは無い(唯一の利用者だった値がさ株7の立会ガードを、銘柄ごと削除した。
+ *    経緯は core/instruments.ts の冒頭コメント)。それでも残しているのは、これが「取得しているつもり」を
+ *    生む種類の宣言ではなく、**カレンダーの知識**(現物と先物で休場日が違う=CASH_HOLIDAYS の分離)だから。
+ *    collector/session.test.ts に祝日込みの検証が付いており、消すと再構築の高い知識が失われる。
+ *    東証現物の銘柄を再び扱うことになったら、まずここを使うこと。 */
 export function tokyoCashOpen(epochMs: number): boolean {
   const { dow, mod, date } = jstParts(epochMs);
   if (!isWeekday(dow) || CASH_HOLIDAYS.has(date)) return false;
