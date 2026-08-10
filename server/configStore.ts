@@ -47,6 +47,10 @@ export interface UserConfig {
   basedataAutoPublish?: boolean;  // ★平日8:00以降の初回に自動公開(monitor2専用)。未設定/false は無効。
   pricePollMs?: number;
   newsPollMs?: number;
+  // ★取引時間外もニュースを取得するか。未設定/非boolean=false(既定)= v0.7.5 のドーマント化どおり
+  //   時間外は取りに行かない。true のときだけ newsLoop が 24時間動く(間隔は時間外だけ長くする。
+  //   NEWS_OFF_HOURS_POLL_MS = 15分 / server/loops/newsLoop.ts)。他のループのゲートには影響しない。
+  newsOffHoursEnabled?: boolean;
   port?: number;
   cooldownMin?: number;   // アラート共有クールダウン(分)
   shockMove1Yen?: number;
@@ -573,3 +577,4 @@ export {
   resolveDoubleFormingEnabled, resolveBreakScore, resolveSlopeConfluenceBonus,
 } from './config/alertResolvers.js';
 export { resolveLevelsConfig, resolveNwaveEnabled, resolveNwaveMinSwingYen, resolveBandwalkEnabled } from './config/levelsResolvers.js';
+export { resolveNewsOffHoursEnabled } from './config/newsResolvers.js';

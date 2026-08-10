@@ -499,6 +499,14 @@ body {
 }
 .news-showall:hover { text-decoration: underline; }
 
+/* ★「時間外も取得」トグル(ニュースパネル内・lite/full 共通)。見出しの直下に控えめに置く。 */
+.news-offhours {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 6px; font-size: 11px; color: var(--muted); cursor: pointer;
+}
+.news-offhours input { margin: 0; cursor: pointer; }
+.news-offhours-status { font-size: 10px; opacity: 0.8; }
+
 .news-feed ul { list-style: none; padding: 0; margin: 0; }
 /* 1件 = 左に相対時刻 / 右に本体。カード左の縦アクセント線は border-left で出す
    (参考画像の見た目。既存の暗色パネルから浮かないよう色は --border 基調にする)。 */

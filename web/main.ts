@@ -4,6 +4,7 @@ import { connectStream } from './lib/stream.js';
 import { fetchExplanation } from './lib/api.js';
 import { renderPriceGrid, flashCard } from './components/priceGrid.js';
 import { renderNews, wireNewsShowAll } from './components/newsFeed.js';
+import { initNewsOffHoursToggle } from './components/newsOffHours.js';
 import type { NewsItem } from './types.js';
 import { addBanner, setExplanation, restoreSavedBanners } from './components/alertBanner.js';
 import { enableSound, alertBeep } from './components/soundPlayer.js';
@@ -356,6 +357,23 @@ const newsListEl = document.getElementById('news-list')!;
 // ★「すべて見る →」の折りたたみ切替。直近のニュースを保持しておき、再取得を待たずに描き直す。
 let lastNews: NewsItem[] = [];
 wireNewsShowAll(document.getElementById('news-showall'), () => renderNews(newsListEl, lastNews));
+// ★「時間外も取得」トグル(lite/full 共通・ニュースパネル内)。変更した瞬間に1項目だけ保存する。
+void initNewsOffHoursToggle(
+  document.getElementById('news-offhours-toggle') as HTMLInputElement | null,
+  document.getElementById('news-offhours-status'),
+  {
+    fetchSettings: async () => await (await fetch(apiUrl('/api/settings'))).json() as Record<string, unknown>,
+    saveEnabled: async (enabled) => {
+      const res = await fetch(apiUrl('/api/settings/keys'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newsOffHoursEnabled: enabled }),
+      });
+      const d = await res.json() as { ok?: boolean };
+      return res.ok && d.ok !== false;
+    },
+  },
+);
 const bannerEl = document.getElementById('alert-banner')!;
 const levelsBodyEl = document.getElementById('levels-body');
 if (levelsBodyEl) initLevelsPanel(levelsBodyEl);

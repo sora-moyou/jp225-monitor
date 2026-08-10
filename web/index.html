@@ -479,6 +479,9 @@
           News polling (ms, 10000–600000)
           <input type="number" id="params-news-poll" min="10000" max="600000" step="1000" value="60000" />
         </label>
+        <!-- ★「取引時間外もニュースを取得」はこの欄には置かない。
+             params-col2 は lite で丸ごと隠れる枠で、この設定は lite でも操作できる必要がある
+             (ユーザー指示)。実体はニュースパネル(#news-offhours)にある。 -->
         <label>
           Sidecar port (1024–65535)
           <input type="number" id="params-port" min="1024" max="65535" step="1" value="3000" />
@@ -726,6 +729,15 @@
           <h2>News</h2>
           <button id="news-showall" class="news-showall" type="button">すべて見る →</button>
         </div>
+        <!-- ★取引時間外もニュースを取得(既定OFF)。詳細設定(🎛️)ではなくここに置く理由:
+             🎛️ の右カラム(#params-col2)は lite で丸ごと隠れる枠で、この設定は lite でも
+             操作できる必要がある(ユーザー指示)。ニュースパネルは lite/full 同一(variantLiteNews.test.ts)。
+             ★lite の隠し対象になる id / data-lite / .setting-row 等をこの枠内に足さないこと。 -->
+        <label id="news-offhours" class="news-offhours" title="ONにすると取引時間外(週末・早朝・引け後)もニュースを取りに行きます。時間外の取得間隔は15分です。">
+          <input type="checkbox" id="news-offhours-toggle" />
+          <span>時間外も取得</span>
+          <span id="news-offhours-status" class="news-offhours-status"></span>
+        </label>
         <ul id="news-list"></ul>
       </aside>
     </div>

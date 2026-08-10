@@ -8,6 +8,7 @@ import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
   resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled, resolveBandwalkEnabled,
+  resolveNewsOffHoursEnabled,
   resolveGeneratorKeySources, resolveGeneratorDailyBudget, resolveGeneratorEnabled,
   GENERATOR_PROVIDERS, GENERATOR_DAILY_BUDGET_DEFAULT, GENERATOR_DAILY_BUDGET_MAX,
   type UserConfig, type ScalpBias, type KnobSource, type SignalBConfig, type LiteConfig,
@@ -50,6 +51,7 @@ const EXPLICIT_PARAM_KEYS = [
   'scalpBias', 'scalpRangeEnabled', 'dotenEnabled', 'rangeReevalEnabled',
   'indicatorsEnabled', 'aiTechnicalEnabled', 'scalpChartFallbackText',
   'doubleFormingEnabled', 'nwaveEnabled', 'bandwalkEnabled',
+  'newsOffHoursEnabled',   // ★取引時間外もニュースを取得(既定OFF)。newsLoop だけに効く。
   'scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpTrendVetoSource',
   'scalpCooldownSource', 'scalpBiasSource', 'scalpRangeSource',
   'scalpLcHardMaxEnabled',
@@ -183,6 +185,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     doubleFormingEnabled: resolveDoubleFormingEnabled(),   // ★検知チューニング: double 形成通知(既定OFF=breakout のみ)。breakScore/slopeConfluenceBonus は数値展開に含まれる。
     nwaveEnabled: resolveNwaveEnabled(),   // ★N波動の節目/アラート(既定ON)。nwaveMinSwingYen は数値展開に含まれる。
     bandwalkEnabled: resolveBandwalkEnabled(),   // ★バンドウォークのアラート/AI文脈(既定ON)。閾値は server/bandwalk.ts の DEFAULT_BANDWALK。
+    newsOffHoursEnabled: resolveNewsOffHoursEnabled(),   // ★取引時間外もニュースを取得(既定OFF)。時間外の間隔は15分固定(newsLoop.ts)。
     // ★v0.7.56: 委任 source(手動/AI)。既定は全て 'manual'。
     scalpLcFloorSource: resolveScalpLcFloorDirective().mode,
     scalpLcCeilingSource: resolveScalpLcCeilingDirective().mode,
@@ -271,6 +274,7 @@ interface SettingsBody {
   doubleFormingEnabled?: boolean | null;   // ★検知チューニング: double 形成通知(true=ON / false/null=OFF=既定=breakout のみ)
   nwaveEnabled?: boolean | null;           // ★N波動の節目/アラート(true/null=ON=既定 / false=OFF)
   bandwalkEnabled?: boolean | null;        // ★バンドウォークのアラート/AI文脈(true/null=ON=既定 / false=OFF)
+  newsOffHoursEnabled?: boolean | null;    // ★取引時間外もニュースを取得(true=ON / false/null=OFF=既定=現行挙動)
   generatorEnabled?: boolean | null;       // ★提案生成器サイドカー(true=有効 / false/null=無効=既定)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
@@ -399,6 +403,11 @@ const LITE_TOP_LEVEL_WRITABLE_KEYS = [
   // 「APIキー(無料/有料)」fieldset は lite でも表示する = キー本体と各行のモデル欄は lite でも書ける。
   'geminiKey', 'groqKey', 'openaiKey', 'kimiKey', 'webSearchKey',
   'geminiModel', 'groqModel', 'kimiModel', 'openaiModel',
+  // ★「取引時間外もニュースを取得」は lite の画面(ニュースパネルのトグル)にも出している=lite から書ける。
+  //   ここに載っていないと lite の保存が黙って捨てられ、「チェックしたのに効かない」になる。
+  //   lite 名前空間(config.lite)ではなく最上位に置くのは、この値が AIエントリーの knob と違って
+  //   **系統ごとに分ける意味が無い**ため(隣の newsPollMs も最上位・共有)。
+  'newsOffHoursEnabled',
   'lite',   // ★lite 独立設定ブロックそのもの(buildLiteConfig の結果)
 ] as const satisfies readonly (keyof UserConfig)[];
 const LITE_TOP_LEVEL_WRITABLE: ReadonlySet<string> = new Set(LITE_TOP_LEVEL_WRITABLE_KEYS);
@@ -522,6 +531,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const nwaveEnabledValue = applyBoolField(existing.nwaveEnabled, bodyRec.nwaveEnabled);
   // ★バンドウォーク(boolean・既定 true)。null=既定(true)に戻す(undefined 保存)/ false=OFF。
   const bandwalkEnabledValue = applyBoolField(existing.bandwalkEnabled, bodyRec.bandwalkEnabled);
+  // ★取引時間外もニュースを取得(boolean・既定 false)。false=明示保存 / null=未設定に戻す。どちらも OFF=現行挙動。
+  const newsOffHoursValue = applyBoolField(existing.newsOffHoursEnabled, bodyRec.newsOffHoursEnabled);
   // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
   // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
@@ -588,6 +599,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
     doubleFormingEnabled: doubleFormingValue,   // ★検知チューニング: double 形成通知(既定OFFは未設定で保存)
     nwaveEnabled: nwaveEnabledValue,   // ★N波動の節目/アラート(既定ONに戻すときは null→未設定で保存)
     bandwalkEnabled: bandwalkEnabledValue,   // ★バンドウォーク(既定ONに戻すときは null→未設定で保存)
+    // ★取引時間外もニュースを取得。restart 不要=newsLoop が毎 tick 読み直す(保存した次の tick から効く)。
+    newsOffHoursEnabled: newsOffHoursValue,
     // ★v0.7.56: 委任 source(manual は未設定で保存=既定)。lite の据え置きは下の関門が担う。
     scalpLcFloorSource: applySourceField(existing.scalpLcFloorSource, bodyRec.scalpLcFloorSource),
     scalpLcCeilingSource: applySourceField(existing.scalpLcCeilingSource, bodyRec.scalpLcCeilingSource),

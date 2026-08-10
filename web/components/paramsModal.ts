@@ -41,6 +41,8 @@ const PARAMS: ParamSpec[] = [
 const DOUBLE_FORMING_ID = 'params-double-forming';
 // ★N波動の節目/アラート 有効(boolean・既定ON)。数値と別扱いのチェックボックス。
 const NWAVE_ENABLED_ID = 'params-nwave-enabled';
+// ★「取引時間外もニュースを取得」はここには無い。lite でも操作できる必要があり、この 🎛️ の
+//   右カラム(#params-col2)は lite で丸ごと隠れるため、ニュースパネル側(web/components/newsOffHours.ts)に置いた。
 
 export interface ParamsElements {
   openBtn: HTMLButtonElement;
