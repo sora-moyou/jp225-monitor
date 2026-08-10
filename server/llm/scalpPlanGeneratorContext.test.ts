@@ -28,6 +28,9 @@ vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => 0,
   resolveScalpChartFallbackText: () => true,
+  // ★v0.9.70: チャート画像は既定 off(送らない・撮影もしない)。このテストは画像の有無を対象にしない。
+  resolveScalpChartVisionMode: () => 'off' as const,
+
   resolveIndicatorsEnabled: () => true,
   // ★バンドウォーク判定の依存(v0.9.61)。目線 'none' = 判定しない = 従来と同じ文脈になる。
   resolveBandwalkEnabled: () => true,
@@ -102,6 +105,6 @@ describe('生成器のプロンプト: A の紙成績を外す(両腕とも)', (
     expect((r as { plan: unknown }).plan).toBe(PLAN_RESULT.plan);   // plan は同一参照=コピーすらしていない
     // ★contextAt/promptFp(記録専用の出所)は全経路で載る。それ以外は1つも増えない
     //   = contextOmitted(生成器だけの記録)が A/B に混ざらない、という元の不変条件はそのまま。
-    expect(Object.keys(r).filter(k => k !== 'contextAt' && k !== 'promptFp')).toEqual(['ok', 'plan']);
+    expect(Object.keys(r).filter(k => k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision')).toEqual(['ok', 'plan']);
   });
 });

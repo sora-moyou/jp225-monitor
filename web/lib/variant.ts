@@ -44,7 +44,12 @@ export type ToggleableEls = readonly (ToggleableEl | null | undefined)[] | null;
 //     inRowHide には入れない。B側の .knob-mode は .ab-col-b ごと隠れるので個別指定は不要。
 export const LITE_SCALP = {
   fieldset:   '#ai-entry-fieldset',
-  keepRow:    '.setting-row[data-lite="1"]',         // lite で残す 4行
+  keepRow:    '.setting-row[data-lite="1"]',         // lite で残す行(A/B knob 4行 + 全体設定1行)
+  // ★v0.9.70: 「lite に残す行」= A/B knob 行だけ、ではなくなった。チャート画像の送信モードは
+  //   A/B の knob ではない **全体設定** だが、シグナルエンジンは lite でも動き、この設定だけが
+  //   直接お金(有料プロバイダの課金)に効くので lite にも出す。
+  //   B列(.ab-col-b)や委任モード select を持つのは **ab-row** だけなので、構造の検証はこちらで行う。
+  keepAbRow:  '.setting-row.ab-row[data-lite="1"]',  // lite で残す A/B knob 行(B列・委任モードを持つ)
   dropRow:    '.setting-row:not([data-lite="1"])',   // lite で隠す残りの行
   inRowHide:  '.ab-col-b, .ab-tag',                  // 残す行のうち隠す部品(B系統 / A タグ)
   modeSelect: '.knob-mode',                          // A側 委任モード select(残す 4行のうち 3行が持つ)

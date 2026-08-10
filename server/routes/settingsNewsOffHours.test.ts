@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resetConfigCache, resolveNewsOffHoursEnabled } from '../configStore.js';
+import { resetConfigCache, resolveNewsOffHoursEnabled, resolveScalpChartVisionMode } from '../configStore.js';
 import { getSettingsHandler, postSettingsHandler } from './settings.js';
 
 // ★「取引時間外もニュースを取得」設定の往復を守る。
@@ -126,5 +126,64 @@ describe('newsOffHoursEnabled(取引時間外もニュースを取得)の保存�
     expect(raw.newsPollMs).toBe(30_000);
     expect(raw.scalpTrendVetoYen).toBe(120);
     expect(raw.newsOffHoursEnabled).toBe(true);
+  });
+});
+
+// ─── ★v0.9.70: 「AIにチャート画像を送る」(scalpChartVisionMode)の保存と解決 ──────────────
+//
+//  ★同じ罠(lite の最上位ガード)を踏まないことを、**実ファイルの往復** で固定する。
+//   この設定は lite の画面にも出しており、しかも直接お金(有料プロバイダの課金)に効くので、
+//   「変えて保存したのに無音で元へ戻る」が最悪の失敗になる。
+//  ★既定は必ず off(送らない)。未設定/不正値でも off に倒れること=課金は fail-safe でなければならない。
+describe('scalpChartVisionMode(AIにチャート画像を送る)の保存と解決', () => {
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'jp225-chartvision-'));
+    process.env.HOME = dir; process.env.USERPROFILE = dir;
+    asFull();
+  });
+  afterEach(() => {
+    if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME; else delete process.env.HOME;
+    if (ORIG_USERPROFILE !== undefined) process.env.USERPROFILE = ORIG_USERPROFILE; else delete process.env.USERPROFILE;
+    if (ORIG_VARIANT !== undefined) process.env.MONITOR_VARIANT = ORIG_VARIANT; else delete process.env.MONITOR_VARIANT;
+    resetConfigCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('★既定は off(設定ファイルが無くても送らない)', () => {
+    expect(resolveScalpChartVisionMode()).toBe('off');
+    expect(get().scalpChartVisionMode).toBe('off');
+  });
+
+  it("'ab' を保存 → 実ファイルに載り、再読込でも残る", () => {
+    expect(post({ scalpChartVisionMode: 'ab' }).code).toBe(200);
+    expect(readRaw().scalpChartVisionMode).toBe('ab');
+    restart();
+    expect(resolveScalpChartVisionMode()).toBe('ab');
+  });
+
+  it("'off' に戻すと未設定で保存される(既定へ戻る)", () => {
+    post({ scalpChartVisionMode: 'ab' });
+    expect(post({ scalpChartVisionMode: 'off' }).code).toBe(200);
+    expect(readRaw().scalpChartVisionMode).toBeUndefined();
+    restart();
+    expect(resolveScalpChartVisionMode()).toBe('off');
+  });
+
+  it('★知らない値は off に倒れる(課金が発生する側へ倒れる既定を作らない)', () => {
+    post({ scalpChartVisionMode: 'full' });
+    restart();
+    expect(resolveScalpChartVisionMode()).toBe('off');
+    post({ scalpChartVisionMode: 'AB' });   // 大文字は受理する(寛容)
+    restart();
+    expect(resolveScalpChartVisionMode()).toBe('ab');
+  });
+
+  it('★lite: 保存が最上位ガードに捨てられない(画面に出している以上、書けなければ無音の失敗)', () => {
+    asLite();
+    expect(post({ scalpChartVisionMode: 'ab' }).code).toBe(200);
+    expect(readRaw().scalpChartVisionMode).toBe('ab');
+    restart();
+    expect(resolveScalpChartVisionMode()).toBe('ab');
+    expect(get().scalpChartVisionMode).toBe('ab');
   });
 });

@@ -31,6 +31,7 @@ export interface SettingsResponse {
   indicatorsEnabled?: boolean;   // ★テクニカル指標(RSI/SMA/BB)の表示 + AI文脈供給(既定ON)。
   aiTechnicalEnabled?: boolean;   // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う・既定ON)。決済は既定ロジック。
   scalpChartFallbackText?: boolean;   // ★チャート撮影失敗でもテキストで継続(既定ON)。
+  scalpChartVisionMode?: 'off' | 'ab';  // ★AIにチャート画像を送るか(既定 off=送らない・撮影もしない / ab=半分だけ)。
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
   scalpLcFloorYen: number;
   scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
@@ -108,6 +109,7 @@ export interface SavePayload {
   indicatorsEnabled?: boolean | null;    // ★テクニカル指標(表示+AI文脈)
   aiTechnicalEnabled?: boolean | null;   // ★AIテクニカル許可(エントリーのタイミング判断)
   scalpChartFallbackText?: boolean | null;   // ★チャート撮影失敗でもテキストで継続
+  scalpChartVisionMode?: string | null;      // ★AIにチャート画像を送るか('off'|'ab')
   scalpTrendVetoYen?: number | null;
   // ★v0.7.56: 委任 source + 初期LC下限 + LC安全上限
   scalpLcFloorYen?: number | null;
@@ -174,6 +176,7 @@ export interface SettingsElements {
   checkIndicatorsEnabled: HTMLInputElement; // ★テクニカル指標(RSI/SMA/BB)の表示+AI文脈供給
   checkAiTechnicalEnabled: HTMLInputElement; // ★AIテクニカル許可(エントリーのタイミング判断)
   checkScalpChartFallback: HTMLInputElement; // ★チャート撮影失敗でもテキストで継続(既定ON)
+  selectScalpChartVisionMode: HTMLSelectElement; // ★AIにチャート画像を送るか(off=既定 / ab=半分だけ)
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor: HTMLInputElement;
   selectLcCeilingMode: HTMLSelectElement;

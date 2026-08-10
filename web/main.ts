@@ -170,6 +170,7 @@ const settingsCtl = initSettingsModal({
   checkIndicatorsEnabled: document.getElementById('indicators-enabled') as HTMLInputElement,
   checkAiTechnicalEnabled: document.getElementById('ai-technical-enabled') as HTMLInputElement,
   checkScalpChartFallback: document.getElementById('scalp-chart-fallback') as HTMLInputElement,
+  selectScalpChartVisionMode: document.getElementById('scalp-chart-vision-mode') as HTMLSelectElement,
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限
   inputScalpLcFloor:   document.getElementById('scalp-lc-floor') as HTMLInputElement,
   selectLcCeilingMode: document.getElementById('scalp-lc-ceiling-mode') as HTMLSelectElement,

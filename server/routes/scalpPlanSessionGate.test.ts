@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setChartVisionRngForTest } from '../llm/scalpPlanRunner.js';
 import type { NextFunction, Request, Response } from 'express';
 
 // ─── POST /api/scalp-plan: 場外の生成器要求を **撮影より前に** 弾く ──────────────
@@ -35,6 +36,9 @@ vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => 100,
   resolveScalpChartFallbackText: () => true,
+  // ★v0.9.70: このテストは「撮影と AI に到達するか」を見るので、必ず画像あり(ab)にする。
+  resolveScalpChartVisionMode: () => 'ab' as const,
+
   resolveIndicatorsEnabled: () => true,
   resolveGeneratorDailyBudget: () => 1000,
 }));
@@ -91,17 +95,20 @@ describe('isGeneratorRequestOutOfSession(純関数)', () => {
   });
 });
 
+let restoreRng: () => void = () => {};
+
 describe('generatorSessionGate(ミドルウェア)', () => {
   beforeEach(() => {
     buildScalpPlanMock.mockReset().mockResolvedValue({ ok: true, plan: { direction: 'buy' } });
     captureMock.mockReset().mockResolvedValue({ buffer: Buffer.from('png'), reason: null });
     visionMock.mockReset().mockReturnValue({ name: 'gemini' });   // ★撮影が起きうる条件を作る
+    restoreRng = setChartVisionRngForTest(() => 0);   // ★v0.9.70: ab のコイン投げを「画像あり」に固定
     resetGeneratorGateForTest();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.useFakeTimers({ toFake: ['Date'] });
   });
-  afterEach(() => { vi.useRealTimers(); });
+  afterEach(() => { restoreRng(); vi.useRealTimers(); });
 
   /** ミドルウェア → (通れば)ハンドラ、という本番の並びを再現する。 */
   async function post(body: Record<string, unknown>, now: number): Promise<MockRes> {

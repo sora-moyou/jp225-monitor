@@ -36,7 +36,9 @@ import {
 // ライブデータに基づく構造化プランを返す。既存の chat と同じプロバイダ選択・キー解決・tool ループを再利用する。
 
 /** レンジ両面ストラドルの1レッグ(実験・紙で別枠計測)。現在値の上/下に1つずつ置く。
- *  side=buy/sell × type=limit(レンジ内逆張り指値)/stop(抜け追随逆指値)。entry=新規価格・stopLoss=初期LC。 */
+ *  side=buy/sell × type=limit(レンジ内逆張り指値)/stop(抜け追随逆指値)。entry=新規価格・stopLoss=初期LC。
+ *  ★v0.9.70: stopLoss(価格)は **内部表現のまま不変**。LLM から受け取るのは lcWidth(正の幅)だけで、
+ *   符号は parse がここで付ける(=逆位置が構造的に表現できない)。 */
 export interface RangeLeg {
   side: 'buy' | 'sell';
   type: 'limit' | 'stop';
@@ -113,6 +115,10 @@ export interface LegDrop {
   entry?: number;
   /** AI が出していた損切り価格。無ければ undefined。 */
   stopLoss?: number;
+  /** ★v0.9.70: AI が **幅の欄に書いた生の値**(新契約)。使えない幅(負・0・非有限に相当)で落としたときだけ載る。
+   *  ★これが無いと「根拠文には −55 と書いてあるのに台帳には何も残らない」= 件数すら数えられなかった。
+   *  既存の読み手は知らないキーを無視するだけ(leg_drops_json の形は互換)。 */
+  lcWidth?: number;
 }
 
 // vetoFired(v0.7.54): buildScalpPlan が enforcePlanConstraints のトレンド veto が発火したかを surface する
@@ -150,9 +156,34 @@ export interface LegDrop {
 //   ★lcAudit と違い、対象は **最終プラン**(生出力ではない)。知りたいのは「出さないと言ったのに出た」であって、
 //     コードが落としてくれた回は意図と注文が一致しているため。
 //   ★ここも **測るだけ**。採否・価格・noneReason・legDrops は1バイトも変えない。
+// ★v0.9.70(RECORD-ONLY・lcAudit の行に相乗り): 損切りの **幅をどこから得たか**(widthSource)と、
+//   旧形式(価格)から復元したときに **符号を訂正したか**(signCorrected)。列は増やさない(lc_audit_json の中身の拡張)。
+//   これが無いと「モデルが先祖返りして旧フィールドを出し、コードが黙って救済し続けている」状態が
+//   台帳から読めない(=無言の失敗になる)。数え方は `lc_audit_json LIKE '%legacy-price%'`。
+// imageSent(RECORD-ONLY・v0.9.70): ★その計画で **実際にチャート画像を送ったか**。
+//   「送るつもりだったか」ではない: ビジョン非対応プロバイダへフォールバックした回は false になる。
+//   A/B(画像の効き目)の群を台帳に残すための唯一の真実で、判定・価格・決済には一切影響しない。
+// chartVision(RECORD-ONLY・v0.9.70): そのサイクルの **チャート画像の群**(設定モード / 撮ろうとしたか / 実際に送ったか)。
+//   runner が載せる(buildScalpPlan 直呼びでは付かない)。台帳では settings_json にマージされる=列は増えない。
+export interface ChartVisionRecord {
+  /** その時の設定。'off'=送らない(既定) / 'ab'=半分だけ送る。 */
+  mode: 'off' | 'ab';
+  /** その回に画像を撮って送ろうとしたか(A/B のコイン投げの結果)。 */
+  requested: boolean;
+  /** ★実際に送ったか。**A/B の群として使ってよいのはこちらだけ**。 */
+  sent: boolean;
+}
+
+// provider(RECORD-ONLY・v0.9.70): ★**その計画の答えを返した** LLM プロバイダとチャットモデル。
+//   これが無いと、チャート画像の A/B は「画像 × モデル」の交絡を含んだまま後から層別できない
+//   (画像を送る回は必ずビジョン対応=gemini/openai へ行き、送らない回は groq/kimi でも通るため)。
+//   ★答えが得られなかった回(プロバイダ不在・全滅・再要求してもパースできず)は **載せない**=台帳は NULL。
+//   「送ろうとした先」は記録しない(曖昧さを残さない)。
+export interface AnsweringProvider { name: string; model: string }
+
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcDeclarationCheck[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
-  | { ok: false; error: string; contextAt?: number; promptFp?: string };
+  | { ok: true; plan: AiPlan; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
+  | { ok: false; error: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; contextAt?: number; promptFp?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
 // トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
@@ -194,23 +225,131 @@ function noneLegsFromDirectional(
 function pushLegDrop(
   out: LegDrop[], name: LegDrop['name'], reason: NoneReason | null,
   entry?: number | null, stopLoss?: number | null,
+  /** ★v0.9.70: 使えない幅で落としたときに、AI が幅の欄に書いた生の値を残す(数えられるように)。 */
+  lcWidth?: number | null,
 ): void {
   if (reason === null) return;
   const d: LegDrop = { name, reason };
   if (entry != null && Number.isFinite(entry)) d.entry = entry;
   if (stopLoss != null && Number.isFinite(stopLoss)) d.stopLoss = stopLoss;
+  if (lcWidth != null && Number.isFinite(lcWidth)) d.lcWidth = lcWidth;
   out.push(d);
+}
+
+// ─── ★v0.9.70: 損切りは「幅」だけを LLM から受け取る(符号はコードが決める) ────────────────
+//
+// ★実データ(2026-08-04〜10 の台帳スナップショット・signal_plans.leg_drops_json)で確定した事実:
+//   「損切りがエントリーの逆側(stopSide)」で落ちたレッグ **171件が171件ともブレイク新規(stop)レッグ** で、
+//   指値レッグは0件。同じ計画の中で指値レッグは正しい向きだった。AI は算術を間違えておらず、幅も正しい。
+//   **符号だけが逆**。原因は「外側」という語が同じプロンプト内で逆向きの2つの意味を持つこと
+//   (ブレイク新規の「節目の外側」=抜ける方向 / 損切りの「外側」=建玉を守る向き)。
+//   散文で規則を強めるのは6版効かなかった(名指しした側だけ直り、名指ししない側へ移った)。
+//
+// ★対策の型: 規則の遵守を求めるのをやめ、**逆位置を表現不能にする**。
+//   LLM が出すのは正の数の幅だけ(lcWidthForLimit / lcWidthForStop / range の lcWidth)。
+//   損切り価格は stopLossFromWidth が direction/side から一意に導く=逆側の価格を書く場所が存在しない。
+//   ★parse から後ろ(AiPlan・signal_plans の列・SSE・紙エンジン・トレード側)は今までどおり **価格** を扱う。
+//
+// ★効き目の実測(同じスナップショット・各回の settings_json の実効下限/上限で評価):
+//   逆位置171レッグを新実装に通すと **採用49 / 下限(lcFloor)で落ちる112 / 上限で落ちる2 / 幾何・幅0で落ちる8**。
+//   逆位置レッグの幅は **50%(86件)が5円**(中央値5〜10円)= 建値の隣で、そもそも損切りとして妥当ではない。
+//   救われるのは主に幅45〜55の回で、**見送り(none)が取引に変わる計画は3件だけ**。
+//   ⇒ この変更の値打ちは「取引機会が増えること」ではなく、**不正な向きの注文が構造的に作れなくなること**。
+//      機会の増分を過大に見積もらないこと(初版の報告で「171件中163件が採用される」と書いたのは誤り)。
+
+/** 損切りの幅の出所(記録専用の語彙)。
+ *  'lcWidth'      = 新契約のフィールドをそのまま使った。
+ *  'legacy-price' = 新契約が無く、旧フィールド(損切り **価格**)から |エントリー − 価格| で幅を復元した。 */
+export type LcWidthSource = 'lcWidth' | 'legacy-price';
+
+/** 幅の解決結果(純関数の戻り値)。widthYen===null のレッグは落とす(既存の片レッグ落としと同じ経路)。 */
+export interface LcWidthResolution {
+  /** 正の幅[円]。得られなければ null。 */
+  widthYen: number | null;
+  /** どこから得たか。widthYen===null のときは未設定。 */
+  source?: LcWidthSource;
+  /** legacy-price のとき、AI が出した価格が **エントリーの逆側(または同値)** だったか
+   *  = コードが符号を付け直して救済した回。★黙って直さないための記録(台帳で数えられる)。 */
+  signCorrected?: boolean;
+  /** ★v0.9.70: AI が **その欄に実際に書いた値**。widthYen===null(落とす)ときに台帳へ残すために持つ。
+   *  これが無いと「AI は −55 と書いたのに、台帳には何も残らない」= 件数すら数えられない。 */
+  rawWidth?: number;
+  /** 同上。旧形式で来た場合に AI が書いた損切り **価格**(落とすときの記録用)。 */
+  rawStopLoss?: number;
+}
+
+/** ★RECORD-ONLY: lcAudit の1行(rationale 突き合わせ)に、幅の出所と符号訂正の有無を相乗りさせた形。
+ *  台帳の列は増やさない(lc_audit_json の中身だけが1〜2キー増える)。 */
+export interface LcAuditRow extends LcDeclarationCheck {
+  /** 幅をどこから得たか(新契約 / 旧形式フォールバック)。 */
+  widthSource?: LcWidthSource;
+  /** 旧形式フォールバックで **符号を訂正した** 回だけ true(正しい向きの旧形式では未設定)。 */
+  signCorrected?: boolean;
+}
+
+/** LLM 出力から損切りの **幅(正の数)** を決める純関数(SSOT)。
+ *  - 新契約(width)が **在れば** それだけを見る。非有限/0以下は無効=そのレッグは落とす(黙って旧形式に逃げない)。
+ *  - 新契約が **無い** ときだけ旧形式(価格)へフォールバックし、|エントリー − 価格| を幅として採る。
+ *    ★大きさだけを使い、向きはコードが付ける=モデルが先祖返りしても逆位置は発生しない。
+ *  ★v0.9.70(桁落ちの穴を塞ぐ): 幅が正でも `entry ∓ 幅 === entry` になる組み合わせは実在する
+ *    (幅 1e-12 / エントリー 1e20 など。double の丸めで損切り価格がエントリーと同じ数になる)。
+ *    そのまま通すと **stopSide が発火する** = 「構造上ありえない」はずの記録が台帳に出て、
+ *    読んだ人が存在しない符号バグを追う。よって導出した価格がエントリーと一致する幅は **無効** とし、
+ *    他の使えない幅と同じ経路で落とす(=stopSide は本当に発火しなくなる)。 */
+export function resolveLcWidth(args: {
+  side: 'buy' | 'sell';
+  entry: number | null;
+  /** 新契約フィールド(lcWidthForLimit / lcWidthForStop / lcWidth)の生値。 */
+  width: unknown;
+  /** 旧契約フィールド(stopLossForLimit / stopLossForStop / stopLoss)の生値=損切り **価格**。 */
+  legacyStopLoss: unknown;
+}): LcWidthResolution {
+  const { side, entry, width, legacyStopLoss } = args;
+  /** 幅として使えるか(エントリーが分かるときは、導出した損切り価格が建値と別の数になることまで見る)。 */
+  const usable = (w: number): boolean =>
+    Number.isFinite(w) && w > 0 &&
+    (entry === null || !Number.isFinite(entry) || stopLossFromWidth(side, entry, w) !== entry);
+  if (typeof width === 'number') {
+    if (usable(width)) return { widthYen: width, source: 'lcWidth' };
+    const out: LcWidthResolution = { widthYen: null };
+    if (Number.isFinite(width)) out.rawWidth = width;
+    return out;
+  }
+  if (typeof legacyStopLoss !== 'number' || !Number.isFinite(legacyStopLoss)) return { widthYen: null };
+  if (entry === null || !Number.isFinite(entry)) return { widthYen: null, rawStopLoss: legacyStopLoss };
+  const w = Math.abs(entry - legacyStopLoss);
+  if (!usable(w)) return { widthYen: null, rawStopLoss: legacyStopLoss };
+  return { widthYen: w, source: 'legacy-price', signCorrected: !stopSideOk(side, entry, legacyStopLoss) };
+}
+
+/** 幅(正の数)から損切り **価格** を導く唯一の場所。符号はここでしか決まらない(純関数)。
+ *  買い: エントリー − 幅(下) / 売り: エントリー + 幅(上)。 */
+export function stopLossFromWidth(side: 'buy' | 'sell', entry: number, widthYen: number): number {
+  return side === 'buy' ? entry - widthYen : entry + widthYen;
+}
+
+/** LLM 出力に「そのレッグの損切り指定が **在ったか**」(新旧どちらの形でも)。
+ *  ★数値であることだけを見る(旧実装の `num()` と同じ受理範囲=対の不整合の判定を変えない)。
+ *  値が妥当かどうかは resolveLcWidth の責務(不正なら対の不整合ではなく「そのレッグを落とす」)。 */
+function hasLcField(width: unknown, legacyStopLoss: unknown): boolean {
+  return typeof width === 'number' || typeof legacyStopLoss === 'number';
 }
 
 /** ★RECORD-ONLY: 根拠文の申告 LC幅と実出力の突き合わせを **例外を外へ出さずに** 作る。
  *  記録の失敗で計画(取引の判断)を止めない。握りつぶすが、握りつぶした事実は必ず1行ログに残す。
- *  1件も突き合わせられなければ undefined(空配列は載せない=「観測できた」と「0件」を混ぜない)。 */
+ *  1件も突き合わせられなければ undefined(空配列は載せない=「観測できた」と「0件」を混ぜない)。
+ *  ★v0.9.70: 各レッグの「幅の出所」と「符号を訂正したか」を同じ行に載せる(列は増やさない)。 */
 function lcAuditFor(
   rationale: string,
-  legs: ReadonlyArray<{ leg: LcLegName; entry?: number | null; stopLoss?: number | null }>,
-): readonly LcDeclarationCheck[] | undefined {
+  legs: ReadonlyArray<{ leg: LcLegName; entry?: number | null; stopLoss?: number | null; widthSource?: LcWidthSource; signCorrected?: boolean }>,
+): readonly LcAuditRow[] | undefined {
   try {
-    const rows = auditLcDeclarations(rationale, legs);
+    const rows: LcAuditRow[] = auditLcDeclarations(rationale, legs);
+    for (const row of rows) {
+      const src = legs.find(l => l.leg === row.leg);
+      if (src?.widthSource) row.widthSource = src.widthSource;
+      if (src?.signCorrected) row.signCorrected = true;
+    }
     return rows.length ? rows : undefined;
   } catch (e) {
     console.warn('[scalp-plan] LC申告の突き合わせに失敗(記録のみ・計画は続行):', e instanceof Error ? e.message : String(e));
@@ -286,10 +425,15 @@ export function resolveLcPresentation(opts: {
  *    導いていたこと。旧文は「①根拠にする節目を選ぶ」としか言っておらず、それが **エントリーの節目とは別** だとは
  *    どこにも書いていなかった。同じ節目を両方の基準にすると LC幅は緩衝ぶん(5〜10円)にしかならない=下限と
  *    数学的に両立しない。よって「損切りの節目は別(もう一段外側)」「どれだけ外側かは下限が決める」を①③に置く。 */
+// ★v0.9.70(この版の本題): ②の「さらに外側」に **方向が無かった**。①は「もう一段外側(買いは下・売りは上)」と
+//   方向を書いているのに、②は方向を持たない「外側」だけで、同じプロンプトの【節目への置き方】は
+//   「ブレイク新規は節目のすぐ外側[抜ける方向]」= 買いなら上 と定義していた。実データの逆位置171件が
+//   171件ともブレイク新規レッグだったのは、この一語の二義がそこでだけ衝突するため。
+//   → ②に方向(買いは下・売りは上)を書き、③のゴールを「価格を置く」から「幅を出す」に変える。
 export const LC_DERIVATION_ORDER =
   '★【導出の順序(必ずこの順)】①損切りの根拠にする節目/スイングを選ぶ。★これは **エントリーの根拠にした節目とは別** の、'
-  + '通常はもう一段外側(買いは下・売りは上)の節目である → ②その節目のさらに外側へ緩衝ぶんだけ離して損切り価格を置く → '
-  + '③LC幅(|エントリー − 損切り|)を引き算して数え、下限に届かなければ ①へ戻り もう一段外側の節目を選び直す(上限超なら一段内側)。'
+  + '通常はもう一段外側(買いは下・売りは上)の節目である → ②その節目を さらに同じ向き(買いは下・売りは上)へ 緩衝ぶんだけ越えた点を、損切りが置かれる位置とする → '
+  + '③エントリーからその位置までの距離を引き算して数え、その値を LC幅(正の数)として出力する。下限に届かなければ ①へ戻り もう一段外側(買いは下・売りは上)の節目を選び直す(上限超なら一段内側)。'
   // ★v0.9.63(削除): 「エントリーと損切りが同じ節目だと幅は数円」「レッグごと・場面ごとに幅が違ってよい(毎回ほぼ同じ幅なら
   //   数値から逆算している)」の2文は、【実出力に在った誤り】の ✗③ / ✗④⑤ が **実際に起きた形として** 同じことを言う。
   //   規則を散文で足すのが3版続けて効かなかったので、抽象文を例に置き換える(規則は1つも失われていない)。
@@ -309,7 +453,9 @@ export const LC_BUFFER_NOTE =
   //   いま全プロンプト中で「損切り価格に足し引きする量」を数値で名指ししている唯一の箇所になっていた
   //   (実測 2026-08-07: 損切り43件が 建値±5・うち31件は rationale の申告幅が正しい=最後の代入だけが 5 に汚染)。
   //   否定の形("…ではない")でも数値を差し出す以上は供給源なので、量を持たない表現へ置き換える(規則は不変)。
-  '★損切り価格は、根拠に選んだ節目から わずかに離すだけ(買いは下へ・売りは上へ)。この緩衝は LC幅を作る量ではない。';
+  // ★v0.9.70: 「損切り価格は」→「損切りの位置は」。損切りの価格は出力しない(コードが導く)ので、
+  //   ここで語れるのは **どこに置かれるか** だけになった。緩衝の意味(幅を作る量ではない)は不変。
+  '★損切りの位置は、根拠に選んだ節目から わずかに離すだけ(買いは下へ・売りは上へ)。この緩衝は LC幅を作る量ではない。';
 
 /** ★v0.9.60: 損切りの向きを **エントリーの向きと同格**(不等式・単独ブロック)にする SSOT。
  *  ★根拠(実測 2026-08-04・11時間/138計画): AI が出したレッグの 67件 が「損切りがエントリーの逆側」で落ちており、
@@ -324,16 +470,17 @@ export const LC_BUFFER_NOTE =
  *    「計算するもの」ではなく、幅を出した後の符号選択の段では働かない。よって不等式を **符号込みの式** に
  *    置き換え(足すのではなく置換=増分ゼロ)、AI が実際に間違えている一点(「ブレイク新規が下でも損切りは上」)を
  *    名指しで書く。旧「外側」の抽象的な語の解説行は、この具体的な1行が同じことをより強く言うので落とす。 */
+/** ★v0.9.70: 符号の式を **撤去** し、「損切りの価格は出力しない=幅だけを出す」という契約の説明に置き換える。
+ *  ★根拠: 式(v0.9.62)も不等式(v0.9.60)も散文(それ以前)も効かなかった。実データでは 逆位置171件が171件とも
+ *   ブレイク新規レッグに集中し、指値レッグは0件=同じ一文の中で片方だけ符号を誤る。つまり規則の理解の問題ではない。
+ *  ★よって規則を強めるのをやめ、**逆位置を表現不能にする**。符号は parse(stopLossFromWidth)が direction から
+ *   一意に決めるので、AI が逆側の価格を書く場所そのものが存在しない。
+ *  ★ここに符号の式を残さない理由: 残すと「幅だけ出す」契約と矛盾し、AI が JSON に符号付きの値を入れる誘因になる。 */
 export const SL_SIDE_RULE =
-  '★【最優先: 損切りの向き(無条件・例外なし)】損切り価格は符号を選ばず次の式で出すこと(LC幅は【導出の順序】で節目から決まる結果)。\n'
-  + '  買い: stopLossForLimit = limitEntry − LC幅 ／ stopLossForStop = stopEntry − LC幅\n'
-  + '  売り: stopLossForLimit = limitEntry + LC幅 ／ stopLossForStop = stopEntry + LC幅\n'
-  + '  ★売りは2つとも「+」。ブレイク新規(stopEntry)は現在値より下だが、その損切りも「+」で stopEntry より上(抜ける方向=下 に置くのは誤り)。\n'
-  // ★末尾に「損切りは節目から導く」と書き足さない: 同じ文言の【導出の順序】が同じ本文の中に必ず入るため。
-  // ★v0.9.63(削除): 「★エントリーからの固定距離(建値の隣/両レッグ同じ幅/±5円/エントリーと同じ節目)で決めてはならない」は
-  //   禁止事項を4つ並べた抽象文で、その4つはそれぞれ ✗①/✗⑤/✗①/✗③ に **実際に起きた形** として入った。
-  //   同じ禁止は scalpJsonInstruction の lcNote(フィールド直下・2箇所)にも残っている=規則は失われない。
-  + '  range も同じ(buy レッグは「−」・sell レッグは「+」の式)。';
+  '★【最優先: 損切りは「幅」だけを出す(価格は出力しない)】損切りの価格フィールドは存在しない。出すのは lcWidthForLimit / lcWidthForStop(range は各レッグ lcWidth)= **正の数の幅[円]** だけ。\n'
+  + '  向き(エントリーの上か下か)はシステムが direction から決めて損切り価格を計算する=買いは必ずエントリーの下・売りは必ずエントリーの上に置かれる。あなたが向きを選ぶ余地は無く、選ぶ必要も無い。\n'
+  + '  ★符号付き(マイナス)の値・0・エントリーからの引き算の答え(=価格)を幅の欄に書かないこと。幅は必ず正の数で、そのレッグが取りうる損失の大きさそのもの。\n'
+  + '  range も同じ(各レッグ lcWidth は正の数。向きはそのレッグの side からシステムが決める)。';
 
 /** ★v0.9.61: 初期LC幅の **下限** を、価格の向き/損切りの向きと同じ格(最優先・不等式・単独ブロック)へ格上げする SSOT。
  *  ★根拠(実測 2026-08-05): 自己検算に「③損切りの幅」を入れた **後でも** lcFloor 落ちが 61件(指値19/逆指値42)。
@@ -342,19 +489,38 @@ export const SL_SIDE_RULE =
  *    書かせる。★JSON スキーマにフィールドは足さない(parse/記録の形を変えないため。書かせ先は rationale)。
  *  ★責任の所在: 「コードが落とす」だけを書くと免責(=守らなくてよい)に読める。落ちた結果が **あなたの計画が
  *    実行されないこと** だと言い切る。 */
+/** ★v0.9.70(この版で直した無言の失敗): 根拠文に書かせる「幅の申告」の書式(SSOT)。
+ *
+ *  ★事故: この版の初版(未出荷)は例文を「(エントリー価格)と(損切りの位置)の距離=(幅)」にした。この形は
+ *    rationaleLc.ts の WIDTH_RE が **1件も読めない**。つまり **モデルがプロンプトの例に忠実に従うほど
+ *    lcAudit が undeclared に落ち**、v0.9.61〜v0.9.64 で積み上げた「申告 vs 実出力」の計測が丸ごと死ぬ。
+ *    プロンプトとパーサを別々に書くと必ずこうなるので、**書式をここ1箇所に持たせて両方から使う**。
+ *  ★書式は既にパースできる「LC幅は N円」に揃える(新しい書き方を発明しない)。
+ *  ★プロンプト側には実数値を入れない(アンカー対策)。テストは同じ関数に実数値を入れて生成した文字列を
+ *    パーサに食わせる=例文の形を変えた瞬間にテストが落ちる。 */
+export function lcWidthDeclarationExample(
+  legLabel: string, entry: string, stopPos: string, width: string,
+): string {
+  return `${legLabel} ${entry}と${stopPos}の引き算 → LC幅は${width}円`;
+}
+
 export function lcFloorRule(floorYen: number): string {
   return '★【最優先: 損切りの幅(無条件・例外なし)】各レッグは独立に次の不等式を満たすこと。\n'
-    + `  |limitEntry − stopLossForLimit| ≥ ${floorYen}円 ／ |stopEntry − stopLossForStop| ≥ ${floorYen}円 ／ range も各レッグ |entry − stopLoss| ≥ ${floorYen}円\n`
+    // ★v0.9.70: 絶対値 |エントリー − 損切り| を撤去し、幅そのものの不等式にする。絶対値は符号を隠す形で、
+    //   実データではこの形の検算が「逆位置なのに通る」ことを許していた(監査も match と記録していた)。
+    + `  lcWidthForLimit ≥ ${floorYen}円 ／ lcWidthForStop ≥ ${floorYen}円 ／ range も各レッグ lcWidth ≥ ${floorYen}円\n`
     // ★v0.9.63(圧縮): 例示を1レッグぶんに縮める(同じ書式の完全な例は scalpJsonInstruction の rationale 注記が持つ)。
     // ★v0.9.64: 幅の申告(v0.9.61)は効いた(申告値は正しくなった)が、実測 2026-08-07 では
     //   「幅は正しく申告し、損切り価格だけ 建値±数円」= 代入の段が見えないまま汚染される形が31件残った。
     //   よって申告させる単位を「幅」から **代入の式そのもの** に変える(足すのではなく置換)。
     //   式の答えと JSON の値の一致を要求すると、汚染が rationale の中で自己矛盾として露見する。
-    + '  ★出力前に必ず自分で引き算して各レッグの LC幅を数え、rationale には 代入の式をそのまま書くこと(出したレッグぶん・例「指値レッグ (エントリー価格)−(LC幅)=(損切り価格)」に実数値を入れる。売りは「−」でなく「+」)。★式の答えが、そのレッグの stopLossFor… に出す数値と 1円でも違ってはならない。置き方だけを述べて式を書かないのは不可。\n'
+    // ★v0.9.70: 申告させる単位を「代入の式(符号込み)」から「引き算(幅を数える)」へ戻す。符号は もう存在しない。
+    //   ★例文は lcWidthDeclarationExample(SSOT)から作る=プロンプトの例と rationaleLc のパーサが必ず噛み合う。
+    + `  ★出力前に必ず自分で引き算して各レッグの LC幅を数え、rationale には その引き算をそのまま書くこと(出したレッグぶん・例「${lcWidthDeclarationExample('指値レッグ', '(エントリー価格)', '(損切りの位置)', '(幅)')}」に実数値を入れる)。★その答えが、そのレッグの lcWidthFor… に出す数値と 1円でも違ってはならない。置き方だけを述べて数えないのは不可。\n`
     // ★v0.9.63(圧縮): 「下限割れのレッグは取引されない=あなたの計画がその分だけ実行されない」は
     //   【実出力に在った誤り】の見出し行が「落ちたレッグは取引されず、両レッグ落ちれば見送り」として
     //   全例に一括で与える(免責に読ませないための『責任は免除されない』だけを残す)。
-    + `  ★${floorYen}円未満になったら、まず 損切りの根拠にする節目を もう一段外側へ選び直す。選び直しても届かないレッグだけを 対の損切りごと省く`
+    + `  ★${floorYen}円未満になったら、まず 損切りの根拠にする節目を もう一段外側へ選び直す。選び直しても届かないレッグだけを 対の幅ごと省く`
     + '(下限を守る責任は免除されない)。';
 }
 
@@ -372,27 +538,31 @@ export function lcFloorReason(floorYen: number): string {
  *  ★v0.9.62: ②を **数値の大小の確認** に具体化する(旧文は不等式の再掲で、符号を選び違えた本人には
  *    同じ選択がもう一度通ってしまう)。実測の誤りは全て「売りのブレイク新規の損切りだけがエントリーより小さい」形
  *    だったので、その形を名指しで検算対象にする。※項目数は4のまま=増分は最小。 */
+/** ★v0.9.70: 旧②「損切りの向き(符号)」を **削除** し4点→3点にする。符号は出力に存在しないので、
+ *  検算しようがない(検算項目として残すと、存在しないフィールドを見に行かせることになる)。
+ *  ★これで検算されなくなったもの: **無い**。旧②が守らせようとしていた「買いは下・売りは上」は、
+ *   parse の stopLossFromWidth が direction から必ずそう置くようになった(AI の遵守に依存しない)。 */
 export function selfCheckNote(floorYen: number, ceilingYen: number): string {
-  return '★【出力前の自己検算(必須)】出力前に limitEntry と stopEntry を refPrice と比較し、レッグごとに次の4点を確かめること。\n'
+  return '★【出力前の自己検算(必須)】出力前に limitEntry と stopEntry を refPrice と比較し、レッグごとに次の3点を確かめること。\n'
     + '  ①エントリーの向き: 上の不等式を満たすか。\n'
-    // ★v0.9.63(削除): 末尾の「(売りのブレイク新規だけ小さい=典型の符号ミス)」は【実出力に在った誤り】✗② が
-    //   実際の形(と、それを落とす検証 stopSide)として同じことを言う。
-    + '  ②損切りの向き(符号): 2つの損切りの数値を各エントリーと見比べ、売りなら2つとも大きい/買いなら2つとも小さいか。\n'
-    // ★v0.9.63(削除): 末尾の「(同じ節目なら④は必ず足りない)」は ✗③ が実際に起きた形として同じことを言う。
-    + '  ③節目の別: 損切りの根拠にした節目が、エントリーの根拠にした節目と **別**(もう一段外側)か。\n'
-    // ★v0.9.64: 「その数値を書いたか」→「その式を書き、式の答えと出力値が一致するか」。実測 2026-08-07 の
-    //   食い違い31件は、幅を書かせるだけでは代入の段が検算対象外だったために起きた(幅は正しかった)。
-    + `  ④損切りの幅と代入: |エントリー − 損切り| を実際に引き算し、${floorYen}円以上 ${ceilingYen}円以下 か。その代入の式(エントリー±LC幅=損切り)を rationale に書き、式の答えと 実際に出力する損切りの数値が一致しているか。\n`
-    + '  1つでも満たさないレッグは(省く前に、まず上の『節目を選び直す』を試すこと。それでも置けないときだけ)対の損切りごと省略すること。両レッグとも満たさなければ direction:"none" にする。';
+    // ★v0.9.63(削除): 末尾の「(同じ節目なら幅は必ず足りない)」は ✗② が実際に起きた形として同じことを言う。
+    + '  ②節目の別: 損切りの根拠にした節目が、エントリーの根拠にした節目と **別**(もう一段外側)か。\n'
+    + `  ③損切りの幅: エントリーと損切りの位置の距離を実際に引き算し、その値が ${floorYen}円以上 ${ceilingYen}円以下 の正の数か。その引き算を rationale に書き、答えと 実際に出力する lcWidthFor… の数値が一致しているか。\n`
+    + '  1つでも満たさないレッグは(省く前に、まず上の『節目を選び直す』を試すこと。それでも置けないときだけ)対の幅ごと省略すること。両レッグとも満たさなければ direction:"none" にする。';
 }
 
 /** ★v0.9.63(ユーザー指示「だめな例いくつか作成し、AIに見せて」): 規則を散文で足す修正が3版続けて
  *  「別の失敗へ移る」だけに終わったので、**実際に台帳(signal_plans)に残った失敗の形** をそのまま見せる。
  *
- *  ★収録した5つはすべて実記録から取った実在の形(架空の失敗は書かない):
- *    ①損切りが建値の隣(2026-08-04・中央値5円・88件)/②売りのブレイク新規で損切りを建値の下(2026-08-06・19件・
- *    買いでは0件)/③エントリーと損切りを同じ節目から導く(根拠文が実在)/④幅が下限に固着(v0.9.62 期間の
- *    系統A指値の96%が下限〜下限+5・相異なる値は3種類)/⑤両レッグ同じ幅。
+ *  ★収録した例はすべて実記録から取った実在の形(架空の失敗は書かない):
+ *    ①損切りが建値の隣(2026-08-04・中央値5円・88件)/②エントリーと損切りを同じ節目から導く(根拠文が実在)/
+ *    ③幅が下限に固着(v0.9.62 期間の系統A指値の96%が下限〜下限+5・相異なる値は3種類)/④両レッグ同じ幅/
+ *    ⑤申告と実物の食い違い(2026-08-07・31件)/⑥「省略する」と述べてフィールドを出す。
+ *
+ *  ★v0.9.70(削除): 旧②「売りのブレイク新規で損切りを建値の下」(=逆位置・実データ171件)は
+ *    **表現不能になった** ので例から外した(損切りの価格を書く場所が消え、向きは direction からコードが決める)。
+ *    起こりえない形を例示し続けると、存在しないフィールド(stopLossForStop)を想起させる副作用しか残らない。
+ *    残した6例は どれも新しい契約でも起こりうる(幅が小さすぎる/節目が同じ/固着/両レッグ同幅/申告と食い違い/省略矛盾)。
  *
  *  ★アンカー対策(この設計の中心・最重要):
  *   このプロジェクトでは「目立つ数値がそのまま選ばれる」現象が2回続けて起きている(上限65 を印字→LC が60に固着 /
@@ -403,31 +573,35 @@ export function selfCheckNote(floorYen: number, ceilingYen: number): string {
  *        ★**下限・上限の設定値は1度も現れない**=印字回数を1回も増やさない(固着の再生産をしない)。
  *    (d) 「下限ちょうどは禁止」とは書かない(それは『下限+一定』という新しい固着を作る)。
  *        書くのは「下限ちょうどになる場面自体は正しい。誤りは **毎回** そうなること」。
- *   ★良い例を1つだけ併記する理由: だめな例だけだと「ではどうするか」が残らず、④の過剰修正(幅を機械的に広げる)を
+ *   ★良い例を1つだけ併記する理由: だめな例だけだと「ではどうするか」が残らず、③の過剰修正(幅を機械的に広げる)を
  *    招く。ただし良い例に具体的な幅を書けば それ自体が新しいアンカーになるので、良い例の要点は数値ではなく
  *    **「2つのレッグの幅が揃わないこと」** に置く(幅の多様性を、数値の列挙ではなく構造で示す)。
  *
  *  ★[ ]の検証ラベル(ユーザー追加指示): 例が仮の話でなく **実際に落とされる形** だと示す。語彙は実装が使う
  *   NoneReason / LegDrop.reason(lcFloor / stopSide / geometry / lc / missing / trend / bias)と、
  *   画面注記(LEG_DROP_REASON_TEXT)の日本語をそのまま使う=プロンプト・台帳・画面で1つの語になる。
- *   ★④⑤は **どの検証も落とさない**(下限を満たす限りコードは通す)。そこを正直に書くことが、④に効く唯一の圧力。
+ *   ★③④は **どの検証も落とさない**(下限を満たす限りコードは通す)。そこを正直に書くことが、③に効く唯一の圧力。
  *   ※関数名(entrySideOk 等)は書かない: AI に意味があるのは「何を確認され、落ちたらどうなるか」であって内部名ではない。 */
 export const PLAN_BAD_EXAMPLES =
   '★【過去の実出力に在った誤り(同じ形を出さないこと)】記号 P=現在値 / R1,R2=Pより上の節目(R2が遠い) / S1,S2=Pより下の節目(S2が遠い)。'
   + '各例の[ ]は その形を落とす検証で、台帳と画面の注記にも同じ語が残る。落ちたレッグは取引されず、両レッグ落ちれば その回は見送り(none)。\n'
   // ★v0.9.64: ①②③に書いていた実数の「5」(±5 / 0〜5円上)を記号と定性語に置き換える。この本文は
   //   実出力の引用だが、引用であっても数値は数値として供給される(設計注 (a)(b) と同じ理由)。
-  + '  ✗①建値の隣: 買い stopEntry=R1のすぐ上 に stopLossForStop=R1(幅は数円)。ブレイク新規を節目のすぐ外側に置くための緩衝を、損切りの幅そのものと読んだ形。→損切りの節目は S1/S2 を選び、幅は引き算の結果。[lcFloor=損切り幅が設定の下限より狭い]\n'
-  + '  ✗②売りのブレイク新規の符号ミス: 売り stopEntry=S1のすぐ下 の損切りを stopEntry より下に置いた(根拠文の幅は正しかった)。幅が合っていても下側の損切りは建玉を守らず即約定する。→売りは2つとも「+」。[stopSide=損切りがエントリーの逆側]\n'
-  + '  ✗③エントリーと損切りが同じ節目: 「指値はサポートのすぐ上、ブレイク新規はレジスタンスのすぐ上」とだけ述べ、損切りも同じ節目を基準にした形。同じ節目の内と外の差は緩衝ぶん(数円)だけで幾何的に下限を満たせない。→買いの指値が S1 の内側なら損切りの基準は S2。[lcFloor]\n'
-  + '  ✗④幅が毎回ほぼ同じ・下限ちょうど: 節目の配置は日ごとに違うのに出した幅がほぼ1種類だった形=下限の数値から損切り価格を逆算している。下限は満たすべき条件で、置くべき値ではない(たまたま下限ちょうどの場面はある。誤りは毎回そうなること)。→先に節目を選び、幅は結果として受け取る。\n'
-  + '  ✗⑤両レッグが同じ幅: 2つのレッグは基準の節目も向きも違うので、幅が同じ数値になるのは先に幅を決めた時だけ。→レッグごとに独立に引き算する。\n'
-  // ★v0.9.64: 2026-08-07 の実出力で新しく現れた2つの形。⑥は「幅の計算も申告も正しいのに損切り価格だけ建値の隣」
-  //   (31件)、⑦は「省略すると述べながら価格フィールドを出した」(実在の根拠文)。どちらも規則の理解ではなく
+  // ★v0.9.70(削除): 旧✗②「売りのブレイク新規の符号ミス([stopSide])」は **表現不能になった** ので落とす
+  //   (損切りの価格を書く場所が無くなり、向きは direction からシステムが決める)。起こりえない誤りを
+  //   例として見せ続けると、存在しないフィールドを想起させる=新しい誤りの供給源になる。
+  //   残りの6例は **どれも新しい契約でもそのまま起こりうる**(幅が小さすぎる/節目が同じ/幅が固着/両レッグ同幅/
+  //   申告と出力の食い違い/省略と述べて出す)ので、価格の語だけを幅の語に直して残す。
+  + '  ✗①建値の隣: 買い stopEntry=R1のすぐ上 に対して lcWidthForStop に 数円 を入れた形(損切りの位置=R1)。ブレイク新規を節目のすぐ外側に置くための緩衝を、損切りの幅そのものと読んだ形。→損切りの節目は S1/S2 を選び、幅は引き算の結果。[lcFloor=損切り幅が設定の下限より狭い]\n'
+  + '  ✗②エントリーと損切りが同じ節目: 「指値はサポートのすぐ上、ブレイク新規はレジスタンスのすぐ上」とだけ述べ、損切りも同じ節目を基準にした形。同じ節目の内と外の差は緩衝ぶん(数円)だけで幾何的に下限を満たせない。→買いの指値が S1 の内側なら損切りの基準は S2。[lcFloor]\n'
+  + '  ✗③幅が毎回ほぼ同じ・下限ちょうど: 節目の配置は日ごとに違うのに出した幅がほぼ1種類だった形=下限の数値をそのまま幅の欄に書いている。下限は満たすべき条件で、置くべき値ではない(たまたま下限ちょうどの場面はある。誤りは毎回そうなること)。→先に節目を選び、幅は結果として受け取る。\n'
+  + '  ✗④両レッグが同じ幅: 2つのレッグは基準の節目も向きも違うので、幅が同じ数値になるのは先に幅を決めた時だけ。→レッグごとに独立に引き算する。\n'
+  // ★v0.9.64: 2026-08-07 の実出力で現れた2つの形。⑤は「幅の計算も申告も正しいのに出力だけ建値の隣」
+  //   (31件)、⑥は「省略すると述べながらフィールドを出した」(実在の根拠文)。どちらも規則の理解ではなく
   //   **最後の書き出しの段** で壊れているので、その段を名指しで例にする。※数値・価格は書かない(アンカー対策)。
-  + '  ✗⑥申告と実物の食い違い(最後の代入だけが壊れる): rationale には正しい LC幅を書きながら、stopLossForStop には 建値の隣(エントリー±数円)を入れた形。計算も申告も合っていて、代入する瞬間だけ ブレイク新規を節目からずらす緩衝に引きずられている。→式(エントリー±LC幅=損切り)を書き、その答えをそのまま出力する。[lcFloor]\n'
-  + '  ✗⑦「省略する」と述べて価格を出す: rationale に「ブレイク新規は下限に届かないので省略した」と書きながら stopEntry と stopLossForStop の数値を出した形。判断は正しいのに JSON に反映されていない。→省略とは その対の価格フィールドを書かないこと。[lcFloor]\n'
-  + '  ※④⑤はどの検証にも掛からない=落ちないので誰も直さない。防げるのはあなただけ。\n'
+  + '  ✗⑤申告と実物の食い違い(最後の書き出しだけが壊れる): rationale には正しい LC幅を書きながら、lcWidthForStop には 数円 を入れた形。計算も申告も合っていて、書き出す瞬間だけ ブレイク新規を節目からずらす緩衝に引きずられている。→数えた答えをそのまま幅の欄に出す。[lcFloor]\n'
+  + '  ✗⑥「省略する」と述べてフィールドを出す: rationale に「ブレイク新規は下限に届かないので省略した」と書きながら stopEntry と lcWidthForStop の数値を出した形。判断は正しいのに JSON に反映されていない。→省略とは その対のフィールドを書かないこと。[lcFloor]\n'
+  + '  ※③④はどの検証にも掛からない=落ちないので誰も直さない。防げるのはあなただけ。\n'
   + '  ○良い形(要点は数値ではなく「2つの幅が揃わないこと」): 買いで S1 が薄く S2 が厚い日 → 指値=S1の内側/損切り=S2の外側 で幅は広め。同じ日のブレイク新規=R1の外側/損切り=直近スイング安値の外側 で幅は狭め。2つの幅は違う数値になる(同じなら、どちらかは節目から導いていない)。';
 
 /** LC 幅の許容レンジの提示文(SSOT)。手動=従来の「A〜B円に収め」/ 委任=「下限A円〜{capLabel}B円 の範囲で…決める」。 */
@@ -455,7 +629,7 @@ export function buildScalpQuestion(
   //   定義上ありえない配置(lower.entry<現在値 と両立しない)を出し、parse で落ちて見送りになっていた。
   const rangeNote = rangeEnabled
     ? '\n⑤明確な方向性が無く、上下に反応帯があるレンジと判断したら direction:"range" で、' +
-      '現在値の上と下に1レッグずつ置いてよい(両面ストラドル)。各レッグは side/type/entry/stopLoss。\n' +
+      '現在値の上と下に1レッグずつ置いてよい(両面ストラドル)。各レッグは side/type/entry/lcWidth(損切りは幅だけ=向きは side からシステムが決める)。\n' +
       '  ★【レンジは2択(組で選ぶ・必須)】次の2つの「組」のどちらか一方を丸ごと選ぶこと。組を混ぜない(4通りから好きな2つを拾わない)。\n' +
       '   ・fade(両側指値/type:"limit")の組 = 上(upper)は 売り指値[side:"sell"/type:"limit"] / 下(lower)は 買い指値[side:"buy"/type:"limit"]\n' +
       '   ・breakout(両側ブレイク新規/type:"stop")の組 = 上(upper)は 買いのブレイク新規[side:"buy"/type:"stop"] / 下(lower)は 売りのブレイク新規[side:"sell"/type:"stop"]\n' +
@@ -495,7 +669,7 @@ export function buildScalpQuestion(
     // ★語の分離。「逆指値」がブレイク新規と損切りの両方を指すため混線していた。
     '\n★【用語の区別(混同禁止)】「逆指値」という語は2つの別物を指すので、必ず英語フィールド名で呼び分けること。\n' +
     '  stopEntry = ブレイク新規(まだ建てていない・節目を抜けたら入るエントリー注文)。損切りではない。\n' +
-    '  stopLossForLimit / stopLossForStop = 損切り(すでに約定した建玉を守る注文)。エントリーではない。\n' +
+    '  lcWidthForLimit / lcWidthForStop = 損切りの **幅**(すでに約定した建玉を守る注文の大きさ)。エントリーでも価格でもない。\n' +
     // ★v0.9.60(削除): 「rationale でも別の語で書くこと」の1行は system prompt に同文があり、
     //   質問文の末尾にも rationale の書き方の指示が別に入っているので重複。
 
@@ -534,7 +708,7 @@ export function buildScalpQuestion(
     //   +5円 が何に加わるのかを明示する。
     // ★v0.9.60(削除): ここに在った「損切りは必ずエントリーの外側に置く…内側/反対側には置かないこと」の散文は、
     //   上の SL_SIDE_RULE(不等式・最優先ブロック)に格上げして置き換えた(同じ内容を弱い形で二度書かない)。
-    `\n③それぞれのストップ(損切り)を定めてください(向きは上の【最優先: 損切りの向き】に従う)。${LC_BUFFER_NOTE}\n` +
+    `\n③それぞれのストップ(損切り)の **幅** を定めてください(価格は出さない=向きは上の【最優先: 損切りは「幅」だけを出す】のとおりシステムが付ける)。${LC_BUFFER_NOTE}\n` +
     // ★v0.9.56 ③: 節目 → ストップ位置 → 幅 の順であることを明示(幅を先に決めて節目に当てはめるのは誤り)。
     `  ${LC_DERIVATION_ORDER}\n` +
     '④この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。\n' +
@@ -563,7 +737,7 @@ export function buildScalpQuestion(
     //   (省略と述べたなら価格を出さない)を、省略の定義とともに書く。
     '\n★rationale[説明文]は実際に出力したレッグだけ説明すること(食い違いは両方向とも禁止): ' +
     '①出していないレッグを「置いた/設定した」と書かない。' +
-    '②逆に「省略する/見送る/出さない」と述べたレッグは、その対の価格フィールド(指値レッグ=limitEntry と stopLossForLimit / ブレイク新規レッグ=stopEntry と stopLossForStop)を JSON に **書かない**こと。★省略とは価格を出さないことであって、価格を出したうえで「省略した」と述べるのは矛盾(そのレッグは書いたとおりに発注される)。\n' +
+    '②逆に「省略する/見送る/出さない」と述べたレッグは、その対のフィールド(指値レッグ=limitEntry と lcWidthForLimit / ブレイク新規レッグ=stopEntry と lcWidthForStop)を JSON に **書かない**こと。★省略とはフィールドを出さないことであって、数値を出したうえで「省略した」と述べるのは矛盾(そのレッグは書いたとおりに発注される)。\n' +
     trendGuidance(trendVetoYen)
   );
 }
@@ -641,7 +815,7 @@ function buildScalpSystemPromptBody(
     ? `★どちらの組を選ぶか[重要]: 上下の反応帯の幅が、そのレンジで置く損切り幅の2倍より広ければ fade(両側指値)の組、損切り幅の2倍以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。上下幅が損切り幅の2倍以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。`
     : `★どちらの組を選ぶか[重要]: 上下の反応帯の幅が${ceilingYen * 2}円より広ければ fade(両側指値)の組、${ceilingYen * 2}円以下の狭い横這いなら breakout(両側ブレイク新規)の組にすること。損切り幅は最大${ceilingYen}円なので、上下幅が${ceilingYen * 2}円以下では逆張りの利幅が損切り幅を上回らず成立しない(狭い横這いは抜けに追随するのが正しい)。`;
   const rangeLine = rangeEnabled
-    ? `\n- ★レンジ両面(direction:"range"): 明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随のブレイク新規)・entry・stopLoss を出す。
+    ? `\n- ★レンジ両面(direction:"range"): 明確な方向性が無く上下に反応帯があるレンジと判断したら direction:"range" を返してよい(両面ストラドル・実験扱い)。range の時は range.upper / range.lower にそれぞれ side(buy/sell)・type(limit=レンジ内逆張り指値 / stop=抜け追随のブレイク新規)・entry・lcWidth(損切りの幅=正の数。向きは side からシステムが決める)を出す。
   ★【レンジは2択(組で選ぶ・必須)】次の2つの「組」のどちらか一方を丸ごと選ぶこと。組を混ぜない(4通りから好きな2つを拾わない)。
    ・fade(両側指値/type:"limit")の組 = 上(upper)は 売り指値[side:"sell"/type:"limit"] / 下(lower)は 買い指値[side:"buy"/type:"limit"]
    ・breakout(両側ブレイク新規/type:"stop")の組 = 上(upper)は 買いのブレイク新規[side:"buy"/type:"stop"] / 下(lower)は 売りのブレイク新規[side:"sell"/type:"stop"]
@@ -658,7 +832,7 @@ function buildScalpSystemPromptBody(
 
 制約:
 - ★まず自分で現在のレジーム(regime: trend_up=上昇トレンド / trend_down=下降トレンド / range=レンジ / unclear=不明)と、その判断・計画への確信度(confidence: 0〜100)を下し、JSON の regime と confidence に入れてから direction 以下の計画を出すこと(自分の相場観を明示してから計画する)。渡された構造化データ(数値の足/節目/ボラ/スイング/アラート結果/自分の成績)を最優先の根拠にする。
-- direction は buy / sell / none${rangeEnabled ? ' / range' : ''} のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、価格(limitEntry/stopEntry/stopLossForLimit/stopLossForStop)は不要。${rangeLine}
+- direction は buy / sell / none${rangeEnabled ? ' / range' : ''} のいずれか。良いエントリー場面が無ければ無理にプランを作らず direction:"none"(見送り)を返してよい。その場合 rationale に見送り理由を書き、計画の4フィールド(limitEntry/stopEntry/lcWidthForLimit/lcWidthForStop)は不要。${rangeLine}
 - buy/sell の時: 指値(limitEntry)は押し目買い/戻り売り側の新規、ブレイク新規(stopEntry)は節目を抜けた側の新規。原則として両方の価格を出すが、下記のとおり片方だけ(指値のみ/ブレイク新規のみ)でもよい。
 - ★【最優先: 価格の向き(無条件・例外なし)】現在値(refPrice)に対して、次の不等式を必ず満たすこと。
   売り: stopEntry < refPrice < limitEntry
@@ -670,7 +844,7 @@ function buildScalpSystemPromptBody(
 - ${lcFloorRule(floorYen)}
 - ★【用語の区別(混同禁止)】「逆指値」という語は2つの別物を指すので、必ず英語フィールド名で呼び分けること。
   stopEntry = ブレイク新規(まだ建てていない・節目を抜けたら入るエントリー注文)。損切りではない。
-  stopLossForLimit / stopLossForStop = 損切り(すでに約定した建玉を守る注文)。エントリーではない。
+  lcWidthForLimit / lcWidthForStop = 損切りの **幅**(すでに約定した建玉を守る注文の大きさ)。エントリーでも価格でもない。
   rationale(説明文)でも両方をまとめて「逆指値」とだけ書かないこと。
 - ★【ブレイク新規(stopEntry)の置き場所】
   売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く。レジスタンス(現在値より上)の上に置くのは買いのブレイク新規であり、売りプランでは絶対に出さない。
@@ -683,14 +857,14 @@ function buildScalpSystemPromptBody(
   range の各レッグ(limit=逆張り指値 / stop=抜け追随のブレイク新規)も同じ置き方にする。
 - ★【逆張り(指値)の節目選び】反発を狙う指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足の節目)にのみ置く。最も近い(隣接の)節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先のより強い節目まで引きつけて置くこと。近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク新規(stopEntry)を優先する。★この「一段先まで引きつける」考え方は損切りの節目選びにも同じく適用する(下の【導出の順序】)。
 - ★【指値・ブレイク新規の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置き(上の不等式のとおり)、指値とブレイク新規の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること(200円を超えて離れた片レッグは出さない=約定不能・古い価格になりやすいため)。
-- それぞれの約定時の損切り(stopLossForLimit / stopLossForStop)を出す。${LC_BUFFER_NOTE}指値レッグは limitEntry+stopLossForLimit、ブレイク新規レッグは stopEntry+stopLossForStop を対で出す(片方だけは不可)。
+- それぞれの約定時の損切りの **幅**(lcWidthForLimit / lcWidthForStop・正の数)を出す(損切りの価格は出力しない=システムが向きを付けて計算する)。${LC_BUFFER_NOTE}指値レッグは limitEntry+lcWidthForLimit、ブレイク新規レッグは stopEntry+lcWidthForStop を対で出す(片方だけは不可)。
 - ${LC_DERIVATION_ORDER}
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${lcRangePhrase(floorYen, ceilingYen, lcCeil)}、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。${ceilingYen}円を超える損切りは出さない。
 - ★この LC 幅(下限・上限)は 指値レッグ・ブレイク新規レッグ それぞれ独立に 満たすこと。収まらないレッグは まず損切りの節目を選び直す(下限未満=一段外側 / 上限超=一段内側)。
 - ${selfCheckNote(floorYen, ceilingYen)}
 - ★【検証済みの知見(9年バックテストで確認・従うこと)】寄り付きギャップ(前セッション終値と当セッション始値の乖離)を主要根拠とする戦略は優位性ゼロと確認済み。「ギャップ埋め狙いの逆張り」「ギャップ反転の追随」「ギャップ継続の追随」いずれも期待値マイナス。よって『ギャップが埋まる/反転する/継続する』を主な根拠にしたエントリーは提案しないこと(該当する局面は他に明確な根拠が無ければ direction:"none" で見送る)。ギャップの大小に方向エッジは無い(大きいギャップほど有利ということはない)。※これはギャップを根拠にした売買を禁じるもので、ギャップと無関係の節目/トレンド/アラート根拠のエントリーは通常どおり可。
 - すべての価格は円単位の実数(NIY=F の実値レンジ)で、refPrice(現在値)と整合させる。
-- rationale は日本語で判断根拠を簡潔に述べる。★rationale は実際に出力したレッグだけ説明すること(食い違いは両方向とも禁止): ①出していないレッグを「置いた」と書かない。②「省略する/見送る」と述べたレッグは その対の価格フィールド(limitEntry+stopLossForLimit / stopEntry+stopLossForStop)を JSON に書かないこと=★省略とは価格を出さないことであり、価格を出して「省略した」と述べるのは矛盾(そのレッグは書いたとおりに発注される)。${trendVetoYen > 0 ? `
+- rationale は日本語で判断根拠を簡潔に述べる。★rationale は実際に出力したレッグだけ説明すること(食い違いは両方向とも禁止): ①出していないレッグを「置いた」と書かない。②「省略する/見送る」と述べたレッグは その対のフィールド(limitEntry+lcWidthForLimit / stopEntry+lcWidthForStop)を JSON に書かないこと=★省略とはフィールドを出さないことであり、数値を出して「省略した」と述べるのは矛盾(そのレッグは書いたとおりに発注される)。${trendVetoYen > 0 ? `
 - ★【レジーム/勢い】${trendGuidance(trendVetoYen)}` : ''}${techLine}`;
 }
 
@@ -747,7 +921,9 @@ export function buildBandwalkNote(bw?: Bandwalk | null): string {
     + '  ②エントリーを節目(サポート/レジスタンス)から導く要求も課さない(近くに節目が無くてもよい。'
     + `バンドウォークの向き(${bw.direction === 'up' ? '買い' : '売り'})に沿って、押し目/戻りの浅い指値(limitEntry) や `
     + '直近高安をすぐ抜けるブレイク新規(stopEntry) を、現在値の近くに置いてよい)。\n'
-    + '  ★緩むのはこの2点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】と【最優先: 損切りの向き】の不等式、'
+    // ★v0.9.70: 【最優先: 損切りの向き】は「損切りは幅だけを出す」契約に置き換わったので、参照先の名前を直す
+    //   (存在しないブロック名を参照させない=緩和の対象が曖昧にならないようにする)。
+    + '  ★緩むのはこの2点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約、'
     + '距離の上限(片レッグ200円以内/両レッグ幅400円以内)は **一切変わらない**(そのまま厳守すること)。\n'
     + '  ★バンドウォークは「価格の急変が起きるまで続く」と見なしてよいが、逆方向に強く反転したと判断したら'
     + ' 無理にこの向きへ入らず direction:"none" で見送ること。';
@@ -846,44 +1022,79 @@ export function scalpJsonInstruction(
   const lcWidth = lcCeil.delegated
     ? `LC幅は${floorYen}〜${ceilingYen}円の範囲で節目から導いてあなたが決める`
     : `LC幅${floorYen}〜${ceilingYen}円`;
-  const lcNote = `買いはエントリーより下/売りはエントリーより上・${lcWidth}・${floorYen}円未満は不可・レッグ独立で${ceilingYen}円超は出さない・エントリーからの固定距離(建値の隣のティック等)で決めない`;
+  // ★v0.9.70: 先頭の向きの説明(買いは下/売りは上)を撤去する。向きはコードが付けるので、AI が向きを
+  //   気にする余地は無い(残すと「では価格を出すのか」という誤読を生む)。代わりに「正の数の幅」を先頭に置く。
+  const lcNote = `正の数の幅[円]・${lcWidth}・${floorYen}円未満は不可・レッグ独立で${ceilingYen}円超は出さない・エントリーからの固定距離(建値の隣のティック等)で決めない`;
   const dirEnum = rangeEnabled ? `"buy" | "sell" | "none" | "range"` : `"buy" | "sell" | "none"`;
   // レンジ両面ストラドルの JSON 形(direction:"range" の時のみ)。数値は円単位の実数。
   const rangeShape = rangeEnabled
     ? `  "range": {                  // direction:"range"(レンジ両面ストラドル)の時のみ。現在値の上下に1レッグずつ\n` +
-      `    "upper": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "stopLoss": number },  // entry は現在値超\n` +
-      `    "lower": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "stopLoss": number }   // entry は現在値未満\n` +
+      // ★lcWidth の条件は上の lcWidthFor… と同一。ここに再掲しない(下限・上限の数値の印字回数を増やさない=固着対策)。
+      `    "upper": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "lcWidth": number },  // entry は現在値超・lcWidth は損切りの幅(条件は上の lcWidthFor… と同じ)\n` +
+      `    "lower": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "lcWidth": number }   // entry は現在値未満・lcWidth は損切りの幅(条件は上の lcWidthFor… と同じ)\n` +
       `  },\n`
     : '';
   return `最終的な回答は、次のスキーマに厳密に一致する JSON オブジェクトのみを出力してください(前後の説明文・コードフェンス・マークダウンは一切付けない)。\n` +
     `{\n` +
     `  "regime": "trend_up" | "trend_down" | "range" | "unclear",  // まず自分で現在の相場レジームを判定して入れる\n` +
     `  "confidence": number,        // このレジーム判断と計画への確信度(0〜100の整数)\n` +
-    `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の価格4つは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の価格4つは不要)' : ''}\n` +
-    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(ブレイク新規のみ)の時は省略(stopLossForLimit と対で省く)\n` +
-    `  "stopEntry": number,         // ブレイク新規(ブレイク側の新規エントリー。損切りではない)。none/range またはブレイク新規レッグ不採用(指値のみ)の時は省略(stopLossForStop と対で省く)\n` +
-    `  "stopLossForLimit": number,  // 指値約定時の損切り(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
-    `  "stopLossForStop": number,   // ブレイク新規約定時の損切り(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
+    `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の4フィールドは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の4フィールドは不要)' : ''}\n` +
+    `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(ブレイク新規のみ)の時は省略(lcWidthForLimit と対で省く)\n` +
+    `  "stopEntry": number,         // ブレイク新規(ブレイク側の新規エントリー。損切りではない)。none/range またはブレイク新規レッグ不採用(指値のみ)の時は省略(lcWidthForStop と対で省く)\n` +
+    // ★v0.9.70: 損切りは **幅** だけ。価格のフィールドは無い(向きはシステムが direction から付ける)。
+    `  "lcWidthForLimit": number,   // 指値約定時の損切りの幅(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
+    `  "lcWidthForStop": number,    // ブレイク新規約定時の損切りの幅(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
     rangeShape +
     // ★v0.9.64: 幅の申告 → 代入の式の申告(置換)。フィールド直下の注記は最も強く効くので、
     //   ここでも「式の答え=出力する数値」を要求する。併せて「省略」の定義(キーを書かない)を1句だけ添える。
-    `  "rationale": string,         // 判断理由(日本語)。none の時は見送り理由。★出したレッグごとに、損切りを出した代入の式(例「指値レッグ (エントリー価格)−(LC幅)=(損切り価格)」・売りは「+」)を必ず含め、式の答えを上の stopLossFor… と一致させる。★「省略」と述べたレッグは そのキー自体を出力しない\n` +
+    `  "rationale": string,         // 判断理由(日本語)。none の時は見送り理由。★出したレッグごとに、幅を出した引き算(例「${lcWidthDeclarationExample('指値レッグ', '(エントリー価格)', '(損切りの位置)', '(幅)')}」)を必ず含め、その答えを上の lcWidthFor… と一致させる。★「省略」と述べたレッグは そのキー自体を出力しない\n` +
     `  "refPrice": number           // 計画時に見た現在値(${refPrice})\n` +
     `}\n` +
     `refPrice は ${refPrice} を使うこと。数値はすべて円単位の実数(引用符なし)。`;
 }
 
-/** レンジ両面ストラドルの1レッグを検証する純関数。side/type の enum・entry/stopLoss の有限性を確認。
- *  不正(型違い・非有限・欠落)なら null。幾何(現在値の上下)の判定は呼び出し側の責務。 */
-export function parseRangeLeg(v: unknown): RangeLeg | null {
-  if (typeof v !== 'object' || v === null) return null;
+/** レンジ脚のパース結果。★失敗も「なぜ落ちたか」を持つ:
+ *  - 'missing'  = AI がその脚を出していない/形が壊れている(side/type/entry が読めない)。
+ *  - 'geometry' = 脚は出したが **幅の値が使えない**(負・0・非有限・建値と同じ点になる)。
+ *  ★この区別が無いと、AI が出した脚が台帳と画面で「AIが提案せず」と **虚偽に** 記録される。 */
+export type RangeLegParse =
+  | { ok: true; leg: RangeLeg; source: LcWidthSource; signCorrected?: boolean }
+  /** side は読めた分だけ載せる(注記を「上部(売り指値)」のように具体的に書くため)。 */
+  | { ok: false; reason: Extract<NoneReason, 'missing' | 'geometry'>; side?: 'buy' | 'sell'; entry?: number; lcWidth?: number; stopLoss?: number };
+
+/** レンジ両面ストラドルの1レッグを検証する純関数(幅の出所つき)。side/type の enum・entry の有限性、
+ *  および損切りの **幅**(lcWidth・正の数。無ければ旧形式 stopLoss=価格から復元)を確認する。
+ *  幾何(現在値の上下)の判定は呼び出し側の責務。
+ *  ★stopLoss(価格)は side から一意に導く=脚の side と逆向きの損切りは表現できない。 */
+export function parseRangeLegDetail(v: unknown): RangeLegParse {
+  if (typeof v !== 'object' || v === null) return { ok: false, reason: 'missing' };
   const o = v as Record<string, unknown>;
-  if (o.side !== 'buy' && o.side !== 'sell') return null;
-  if (o.type !== 'limit' && o.type !== 'stop') return null;
+  if (o.side !== 'buy' && o.side !== 'sell') return { ok: false, reason: 'missing' };
+  if (o.type !== 'limit' && o.type !== 'stop') return { ok: false, reason: 'missing' };
   const entry = typeof o.entry === 'number' && Number.isFinite(o.entry) ? o.entry : null;
-  const stopLoss = typeof o.stopLoss === 'number' && Number.isFinite(o.stopLoss) ? o.stopLoss : null;
-  if (entry === null || stopLoss === null) return null;
-  return { side: o.side, type: o.type, entry, stopLoss };
+  if (entry === null) return { ok: false, reason: 'missing' };
+  // 幅の指定が **1つも無い** なら「提案していない」(missing)。在るのに使えないなら「値が不正」(geometry)。
+  if (!hasLcField(o.lcWidth, o.stopLoss)) return { ok: false, reason: 'missing', side: o.side, entry };
+  const lc = resolveLcWidth({ side: o.side, entry, width: o.lcWidth, legacyStopLoss: o.stopLoss });
+  if (lc.widthYen === null || lc.source === undefined) {
+    const bad: RangeLegParse = { ok: false, reason: 'geometry', side: o.side, entry };
+    if (lc.rawWidth !== undefined) bad.lcWidth = lc.rawWidth;
+    if (lc.rawStopLoss !== undefined) bad.stopLoss = lc.rawStopLoss;
+    return bad;
+  }
+  const out: RangeLegParse = {
+    ok: true,
+    leg: { side: o.side, type: o.type, entry, stopLoss: stopLossFromWidth(o.side, entry, lc.widthYen) },
+    source: lc.source,
+  };
+  if (lc.signCorrected) out.signCorrected = true;
+  return out;
+}
+
+/** 後方互換の薄いラッパ(脚だけが要る呼び出し用)。 */
+export function parseRangeLeg(v: unknown): RangeLeg | null {
+  const r = parseRangeLegDetail(v);
+  return r.ok ? r.leg : null;
 }
 
 const SCALP_REGIMES = new Set(['trend_up', 'trend_down', 'range', 'unclear']);
@@ -929,7 +1140,10 @@ const LEG_DROP_REASON_TEXT: Record<NoneReason, string> = {
   missing:       'AIが提案せず',
   ai:            'AIが提案せず',
   stopSide:      '損切りがエントリーの逆側',
-  geometry:      'エントリーが現在値の逆側',
+  // ★v0.9.70: geometry は「AI が出した値が幾何的に不正」の器。従来はエントリー位置だけだったが、
+  //   損切りが幅になったことで「幅の値そのものが不正(負・0・非有限・建値と同じ点になる)」もここへ入る。
+  //   ★'missing'(AIが提案せず)には **絶対に入れない**: AI は提案しているので、台帳と画面が嘘をつく。
+  geometry:      'エントリーが現在値の逆側、または損切り幅の値が不正',
   lcFloor:       '損切り幅が設定の下限より狭い',
   lc:            '損切り幅が設定の上限より広い',
   trend:         'トレンドに逆行',
@@ -1025,19 +1239,26 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   両レッグとも無効なら「見送り(none)」として ok:true を返す(エラーにはしない)。
   if (o.direction === 'range') {
     const rangeObj = typeof o.range === 'object' && o.range !== null ? o.range as Record<string, unknown> : {};
-    let upper = parseRangeLeg(rangeObj.upper);
-    let lower = parseRangeLeg(rangeObj.lower);
+    // ★v0.9.70: 脚の損切りは幅(lcWidth)から side で導く。旧形式(stopLoss=価格)はフォールバックで
+    //   大きさだけを使い、向きはコードが付ける(=side と逆向きの損切りは構造的に作れない)。
+    const upperParse = parseRangeLegDetail(rangeObj.upper);
+    const lowerParse = parseRangeLegDetail(rangeObj.lower);
+    let upper = upperParse.ok ? upperParse.leg : null;
+    let lower = lowerParse.ok ? lowerParse.leg : null;
     // ★v0.9.44(記録専用): 落とす前の生数値を控える。none 化したときログ1行に出す(採否には使わない)。
     const upper0 = upper;
     const lower0 = lower;
     // ★脱落理由の記録(表示専用・v0.9.37): AI の rationale は「上下両面に置いた」と語るのに画面は片側だけ、
     //   という「理由の無い片面」を無くす。落とす前の side を控え、enforcePlanConstraints と同じ流儀
     //   (rangeDropNote + \n 連結)で rationale に追記する。採否ロジック(何を落とすか)は一切変えない。
-    const upperSide0 = upper?.side;
-    const lowerSide0 = lower?.side;
-    // AI がそもそもレッグを出さなかった(欠落・壊れた形で parseRangeLeg が null)場合も無言にしない。
-    let upperReason: RangeDropReason | null = upper ? null : 'missing';
-    let lowerReason: RangeDropReason | null = lower ? null : 'missing';
+    //   ★v0.9.70: 脚が成立しなかった回も、読めた side は注記に使う(「上部(売り指値)は不採用」)。
+    const upperSide0 = upper?.side ?? (upperParse.ok ? undefined : upperParse.side);
+    const lowerSide0 = lower?.side ?? (lowerParse.ok ? undefined : lowerParse.side);
+    // AI がそもそも脚を出さなかった(missing)のか、出したが **幅の値が使えない**(geometry)のかを書き分ける。
+    // ★v0.9.70: 以前はどちらも 'missing'(=画面に「AIが提案せず」)にしていたため、AI が
+    //   lcWidth:-55 を出した回まで「提案せず」と **虚偽に** 記録されていた(値も残らず件数も数えられなかった)。
+    let upperReason: RangeDropReason | null = upperParse.ok ? null : upperParse.reason;
+    let lowerReason: RangeDropReason | null = lowerParse.ok ? null : lowerParse.reason;
     // 現在値の上下の幾何を満たさないレッグは落とす(upper は現在値超・lower は現在値未満)。
     if (upper && !(upper.entry > refPrice)) { upper = null; upperReason = 'geometry'; }
     if (lower && !(lower.entry < refPrice)) { lower = null; lowerReason = 'geometry'; }
@@ -1046,15 +1267,22 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     if (upper && !stopSideOk(upper.side, upper.entry, upper.stopLoss)) { upper = null; upperReason = 'stopSide'; }
     if (lower && !stopSideOk(lower.side, lower.entry, lower.stopLoss)) { lower = null; lowerReason = 'stopSide'; }
     // ★v0.9.57(記録専用): 脚1本ごとの脱落を、**片脚だけ落ちた回でも** 構造化して残す(採否は不変)。
+    //   ★v0.9.70: 脚が成立しなかった場合は parse 結果が持つ生の値(entry / 書かれた幅 / 書かれた価格)を残す。
     const rangeLegDrops: LegDrop[] = [];
-    pushLegDrop(rangeLegDrops, 'upper', upperReason, upper0?.entry, upper0?.stopLoss);
-    pushLegDrop(rangeLegDrops, 'lower', lowerReason, lower0?.entry, lower0?.stopLoss);
+    pushLegDrop(rangeLegDrops, 'upper', upperReason,
+      upper0?.entry ?? (upperParse.ok ? undefined : upperParse.entry),
+      upper0?.stopLoss ?? (upperParse.ok ? undefined : upperParse.stopLoss),
+      upperParse.ok ? undefined : upperParse.lcWidth);
+    pushLegDrop(rangeLegDrops, 'lower', lowerReason,
+      lower0?.entry ?? (lowerParse.ok ? undefined : lowerParse.entry),
+      lower0?.stopLoss ?? (lowerParse.ok ? undefined : lowerParse.stopLoss),
+      lowerParse.ok ? undefined : lowerParse.lcWidth);
     // ★RECORD-ONLY: AI の生出力(落とす前の2脚)に対して申告 LC幅と実出力を突き合わせる。
     //   レンジ脚は根拠文の見出し(指値/ブレイク新規)で区別できないので、多くは undeclared(=読めなかった)になる。
     //   それでよい: 「一致」と「未申告」を混ぜないことが要件で、読めないものを読めたことにはしない。
     const rangeLcAudit = lcAuditFor(rationale, [
-      { leg: 'upper', entry: upper0?.entry, stopLoss: upper0?.stopLoss },
-      { leg: 'lower', entry: lower0?.entry, stopLoss: lower0?.stopLoss },
+      { leg: 'upper', entry: upper0?.entry, stopLoss: upper0?.stopLoss, widthSource: upperParse.ok ? upperParse.source : undefined, signCorrected: upperParse.ok ? upperParse.signCorrected : undefined },
+      { leg: 'lower', entry: lower0?.entry, stopLoss: lower0?.stopLoss, widthSource: lowerParse.ok ? lowerParse.source : undefined, signCorrected: lowerParse.ok ? lowerParse.signCorrected : undefined },
     ]);
     if (!upper && !lower) {
       // 両脚とも落ちた見送り(none)は rationale を据え置く(enforce の両脚落ちと同じ既存挙動)。
@@ -1084,19 +1312,25 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     (typeof v === 'number' && Number.isFinite(v)) ? v : null;
   const limitEntry = num(o.limitEntry);
   const stopEntry = num(o.stopEntry);
-  const stopLossForLimit = num(o.stopLossForLimit);
-  const stopLossForStop = num(o.stopLossForStop);
-  // ★レッグ単位の検証: 指値レッグ=limitEntry+stopLossForLimit の対、逆指値レッグ=stopEntry+stopLossForStop の対。
+  // ★v0.9.70: LLM から受け取るのは損切りの **幅(正の数)** だけ。損切り価格はここでコードが符号を付ける。
+  //   旧フィールド(価格)しか無い応答はフォールバックで **大きさだけ** を使う=先祖返りしても逆位置にならない。
+  const dir = o.direction;
+  const limitLc = resolveLcWidth({ side: dir, entry: limitEntry, width: o.lcWidthForLimit, legacyStopLoss: o.stopLossForLimit });
+  const stopLc = resolveLcWidth({ side: dir, entry: stopEntry, width: o.lcWidthForStop, legacyStopLoss: o.stopLossForStop });
+  const stopLossForLimit = limitEntry !== null && limitLc.widthYen !== null ? stopLossFromWidth(dir, limitEntry, limitLc.widthYen) : null;
+  const stopLossForStop = stopEntry !== null && stopLc.widthYen !== null ? stopLossFromWidth(dir, stopEntry, stopLc.widthYen) : null;
+  // ★レッグ単位の検証: 指値レッグ=limitEntry+lcWidthForLimit の対、逆指値レッグ=stopEntry+lcWidthForStop の対。
   //   各レッグは「両方あり」か「両方なし」のみ有効(片方だけは不整合=invalid)。少なくとも1レッグあれば ok。
   //   LC≤95 等の数値強制はここではしない(trade2 側の責務)。ここは幾何的なレッグ対の整合のみ。
   const hasLimitLeg = limitEntry !== null && stopLossForLimit !== null;
   const hasStopLeg = stopEntry !== null && stopLossForStop !== null;
-  // 片側だけ埋まっているレッグ(対の不整合)は不正。
-  if ((limitEntry !== null) !== (stopLossForLimit !== null)) {
-    return { ok: false, error: 'invalid limit leg (limitEntry/stopLossForLimit must be paired)' };
+  // 片側だけ埋まっているレッグ(対の不整合)は不正。★「在るか」は新旧どちらのフィールドでも数値なら在る。
+  //   在るのに使えない(非有限/0以下の幅)場合は対の不整合ではなく、そのレッグを落とす(下の limitReason)。
+  if ((limitEntry !== null) !== hasLcField(o.lcWidthForLimit, o.stopLossForLimit)) {
+    return { ok: false, error: 'invalid limit leg (limitEntry/lcWidthForLimit must be paired)' };
   }
-  if ((stopEntry !== null) !== (stopLossForStop !== null)) {
-    return { ok: false, error: 'invalid stop leg (stopEntry/stopLossForStop must be paired)' };
+  if ((stopEntry !== null) !== hasLcField(o.lcWidthForStop, o.stopLossForStop)) {
+    return { ok: false, error: 'invalid stop leg (stopEntry/lcWidthForStop must be paired)' };
   }
   // 両レッグとも欠落(direction≠none なのに価格皆無)は不正。
   if (!hasLimitLeg && !hasStopLeg) {
@@ -1115,23 +1349,33 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   // ★v0.9.57: 判定を **両レッグ落ちの分岐の外** へ出した(値は従来と同一・null=そのレッグは落ちていない)。
   //   片レッグだけ落ちた回にも同じ理由が要るため。両レッグ落ちの分岐では従来どおり必ず非 null になる
   //   (=noneReason の値は一切変わらない)。
+  // ★v0.9.70: stopSide('損切りがエントリーの逆側')は **発火しない**(向きは stopLossFromWidth が direction から
+  //   一意に決め、導出価格が建値と同じ数になる幅は resolveLcWidth が無効にする)。それでも検証と理由を残すのは、
+  //   発火したらそれが **コードのバグ** の証拠になるから(消すと将来の回帰が無言で通る)。テストで固定してある。
+  // ★'missing' は **AI が出さなかった** レッグ専用。幅の欄に書いたが値が使えない(負・0・非有限・
+  //   建値と同じ点になる)場合は 'geometry'(=出した値が不正)にする。ここを 'missing' にすると
+  //   画面が「（指値なし: AIが提案せず）」と **虚偽** を語り、生の値も残らず件数すら数えられなかった。
+  const limitProposed = limitEntry !== null || hasLcField(o.lcWidthForLimit, o.stopLossForLimit);
+  const stopProposed = stopEntry !== null || hasLcField(o.lcWidthForStop, o.stopLossForStop);
   const limitReason: NoneReason | null =
     limitLegOk ? null
-    : !hasLimitLeg ? 'missing'
+    : !hasLimitLeg ? (limitProposed ? 'geometry' : 'missing')
     : !stopSideOk(o.direction, limitEntry!, stopLossForLimit!) ? 'stopSide' : 'geometry';
   const stopReason: NoneReason | null =
     stopLegOk ? null
-    : !hasStopLeg ? 'missing'
+    : !hasStopLeg ? (stopProposed ? 'geometry' : 'missing')
     : !stopSideOk(o.direction, stopEntry!, stopLossForStop!) ? 'stopSide' : 'geometry';
   const legDrops: LegDrop[] = [];
-  pushLegDrop(legDrops, 'limit', limitReason, limitEntry, stopLossForLimit);
-  pushLegDrop(legDrops, 'stop', stopReason, stopEntry, stopLossForStop);
+  //   ★落とした生の値も残す: 導出できた損切り価格が無いときは、AI が幅の欄に書いた値(rawWidth)/
+  //     旧形式で書いた価格(rawStopLoss)を載せる=後から「何を書いて落ちたか」を数えられる。
+  pushLegDrop(legDrops, 'limit', limitReason, limitEntry, stopLossForLimit ?? limitLc.rawStopLoss, limitLc.rawWidth);
+  pushLegDrop(legDrops, 'stop', stopReason, stopEntry, stopLossForStop ?? stopLc.rawStopLoss, stopLc.rawWidth);
   // ★RECORD-ONLY: 申告 LC幅 と 実出力 |entry − stopLoss| の突き合わせ。
   //   ★AI の **生の値**(この検証で落ちるレッグも、後段 enforce で lcFloor 落ちするレッグも含む)に対して行う。
   //   採否・価格・legDrops には一切影響しない(この配列を読む側は台帳だけ)。
   const lcAudit = lcAuditFor(rationale, [
-    { leg: 'limit', entry: limitEntry, stopLoss: stopLossForLimit },
-    { leg: 'stop', entry: stopEntry, stopLoss: stopLossForStop },
+    { leg: 'limit', entry: limitEntry, stopLoss: stopLossForLimit, widthSource: limitLc.source, signCorrected: limitLc.signCorrected },
+    { leg: 'stop', entry: stopEntry, stopLoss: stopLossForStop, widthSource: stopLc.source, signCorrected: stopLc.signCorrected },
   ]);
   if (!limitLegOk && !stopLegOk) {
     return {
@@ -1351,7 +1595,8 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     lcLine,
     // ★v0.9.61: 「コードが自動で落とす」だけの書き方をやめる(免責に読める)。責任は AI 側にあると先に言い、
     //   意味と理由(lcFloorReason)は **モードに依らず常に** ここで出す(旧実装は委任時しか出していなかった)。
-    `- ★初期LC下限(${i.floor.value}円)は あなたが必ず満たす条件: |エントリー − 損切り| ≥ ${i.floor.value}円 をレッグごとに独立に満たすこと。`
+    // ★v0.9.70: 絶対値表記 |エントリー − 損切り| を撤去(損切りの価格は出力に存在しない)。幅そのものの不等式にする。
+    `- ★初期LC下限(${i.floor.value}円)は あなたが必ず満たす条件: 損切りの幅(lcWidthFor…) ≥ ${i.floor.value}円 をレッグごとに独立に満たすこと。`
       + `${lcFloorReason(i.floor.value)}`
       + `節目までの距離が近すぎて満たせないなら、損切りの根拠にする節目を もう一段外側へ選び直す。それでも満たせないレッグは出さないこと(幅だけ機械的に広げた損切りは置き直さない)。`,
     // ★v0.9.56 ②③: +5円 が何に加わるのか / 導出の順序(節目 → ストップ位置 → 幅)。A(委任)・B(手動)で完全に同一。
@@ -1382,7 +1627,7 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     //   spec には数値の上限(400/200)と条件語(片方だけ・間)だけを残す。
     '- ★指値・ブレイク新規の距離(必須): 両方を出すときは現在値が2つの価格の間に入るように置き、指値とブレイク新規の価格差は400円以内。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める',
     // ★v0.9.64: 逆向き(省略と述べたら価格を出さない)を1文だけ足す。規則の全文は system prompt / question が持つ。
-    '- ★rationale(説明文)は実際に出力したレッグだけ説明すること(両方向): 出していないレッグを「置いた」と書かない。「省略する」と述べたレッグは その対の価格フィールドを JSON に書かない=省略とは価格を出さないこと',
+    '- ★rationale(説明文)は実際に出力したレッグだけ説明すること(両方向): 出していないレッグを「置いた」と書かない。「省略する」と述べたレッグは その対のフィールドを JSON に書かない=省略とはフィールドを出さないこと',
     // ★v0.9.61(圧縮): 合議の3条件の書き下しは system prompt / question の【レジーム/勢い】に同内容がある。
     //   spec には閾値の数値(±X / ±2X)と禁止事項・委任タグだけを残す。
     `- トレンド判定: 10分・30分・MA20傾き の合議(10分で±${i.trendVeto.value}円以上 / 30分で±${i.trendVeto.value * 2}円以上)でトレンド`
@@ -1849,20 +2094,23 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     };
   }
 
-  // チャート画像がある時は判断材料にするよう明示的に指示する(ビジョン対応プロバイダ時のみ添付される)。
+  // ★v0.9.70(A/B の成立条件): 「画像を送るか」は **プロンプトを組み立てる前** に決める。
+  //   旧実装は buildVisionNote(!!img) を **プロバイダ選択より前** に1回だけ評価していたため、
+  //   テキスト専用プロバイダ(groq/kimi)へフォールバックして画像が外れた回でも
+  //   「添付のチャート画像も判断材料にすること」と言い続けていた=**存在しない画像を参照させていた**。
+  //   よって user プロンプトは「その試行で画像を実際に送るか」の関数にする。
+  //   ★2群の違いは【画像の有無】と【この1行の有無】だけ。画像なし側に説明を足さない(足すと交絡する)。
   const img = input.chartImageDataUrl && input.chartImageDataUrl.startsWith('data:image/')
     ? input.chartImageDataUrl : null;
-  const visionNote = buildVisionNote(!!img);
-  const userPrompt = `${scalpQuestion}\n\n${visionNote}${scalpJsonInstruction(refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil)}`;
-
-  // ★RECORD-ONLY: 送るプロンプトの指紋だけを呼び出し元へ渡す(本文はこの関数の外へ出さない)。
-  //   ここは **プロバイダのフォールバックより前** = 「組み立てた入力」の指紋であって「誰が答えたか」に依らない。
-  //   記録の失敗で計画を止めない(握りつぶすが、握りつぶした事実は必ず1行残す)。
-  try {
-    input.onPromptFingerprint?.(promptFingerprint(systemPrompt, userPrompt));
-  } catch (e) {
-    console.warn('[scalp-plan] プロンプト指紋の記録に失敗(計画は続行):', e instanceof Error ? e.message : String(e));
-  }
+  const jsonInstruction = scalpJsonInstruction(refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil);
+  const userPromptFor = (withImage: boolean): string =>
+    `${scalpQuestion}\n\n${buildVisionNote(withImage)}${jsonInstruction}`;
+  // ★RECORD-ONLY: 実際に画像を送ったか。**送るつもりだったか ではない**(A/B の群の記録に使う)。
+  //   1度も LLM を呼べなかった回(プロバイダ不在)は false のまま=「送っていない」が正しい。
+  let imageSent = false;
+  // ★RECORD-ONLY: **答えを返した** プロバイダ。runScalpPlanResult が解決した直後にだけ入れる
+  //   (送る前に入れると「送ろうとした先」になり、全滅した回に嘘が残る)。
+  let answeredBy: AnsweringProvider | null = null;
 
   try {
     // ★v0.9.46 修正: parse は runScalpPlanResult の中で1回だけ走らせ、その結果をここで受け取る。
@@ -1876,7 +2124,19 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       } as any);
       // ビジョン非対応プロバイダに切り替わった場合は画像を外す(image_url をテキスト専用モデルへ送らない)。
       const imgForThis = img && isVisionCapableProvider(p.config.name, p.config.chatModel) ? img : null;
+      // ★この試行で実際に送る内容に合わせて user プロンプトを組む(注記と画像を必ず一致させる)。
+      const userPrompt = userPromptFor(!!imgForThis);
+      imageSent = !!imgForThis;
+      // ★RECORD-ONLY: 指紋は **この試行で実際に送る内容** から取る(判断は下の設計注記を参照)。
+      //   記録の失敗で計画を止めない(握りつぶすが、握りつぶした事実は必ず1行残す)。
+      try {
+        input.onPromptFingerprint?.(promptFingerprint(systemPrompt, userPrompt));
+      } catch (e) {
+        console.warn('[scalp-plan] プロンプト指紋の記録に失敗(計画は続行):', e instanceof Error ? e.message : String(e));
+      }
       planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis);
+      // ★ここまで来た＝このプロバイダが使える答えを返した。例外で抜けた試行では記録されない。
+      answeredBy = { name: p.config.name, model: p.config.chatModel };
       // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。戻り値そのものは使わない。
       return JSON.stringify(planResult.plan);
       // ★第3引数(caller)= プロバイダ・プールの選択。未指定は 'default'(既存経路は byte 不変)。
@@ -1884,7 +2144,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // task が一度も走らなかった場合(callWithFallback がプロバイダ不在の定型文を返す経路)だけ raw を読む。
     // 通常は planResult が入っているので再パースは起きない。
     const parsed: ScalpPlanResult = planResult ?? parseScalpPlan(raw, refPrice);
-    if (!parsed.ok) return parsed;
+    if (!parsed.ok) return { ...parsed, imageSent, ...(answeredBy ? { provider: answeredBy } : {}) };
     // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0=ai は現行挙動=veto なし)。
     const trend = trendVetoYen > 0 ? input.trend : undefined;
     // ★v0.7.56: LC上限は ceilingMode(manual→設定上限 / ai→実効上限=安全網 or LC_YEN_MAX)で分岐し、
@@ -1916,7 +2176,8 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       });
       if (enforceNote) finalPlan.rationale = `${finalPlan.rationale} ${enforceNote}`;
     }
-    const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: finalPlan, vetoFired: enforced.vetoFired };
+    const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: finalPlan, imageSent, vetoFired: enforced.vetoFired };
+    if (answeredBy) out.provider = answeredBy;
     // ★v0.9.44(記録専用): レンジの規約違反は **parsed.plan(AI の生出力)** に対して判定する。
     //   enforce 後の plan で判定すると、トレンド veto / バイアスで片脚が落ちた回が upper/lower 不揃いになり
     //   null=観測不能になる。「プロンプトが効いていない」ことを知りたい母集団はまさにそこなので生出力を見る。
@@ -1951,6 +2212,6 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     }
     return out;
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, error: e instanceof Error ? e.message : String(e), imageSent, ...(answeredBy ? { provider: answeredBy } : {}) };
   }
 }

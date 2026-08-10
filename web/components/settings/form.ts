@@ -97,6 +97,8 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.checkIndicatorsEnabled.checked = current ? current.indicatorsEnabled !== false : true;   // ★テクニカル指標(表示+AI文脈)=既定ON
   el.checkAiTechnicalEnabled.checked = current ? current.aiTechnicalEnabled !== false : true;   // ★AIテクニカル許可=既定ON
   el.checkScalpChartFallback.checked = current ? current.scalpChartFallbackText !== false : true;   // ★チャート撮影失敗テキスト縮退=既定ON
+  // ★AIにチャート画像を送るか。未設定/不正は 'off'(既定=送らない)。課金が効く側へ倒れる既定は作らない。
+  el.selectScalpChartVisionMode.value = current?.scalpChartVisionMode === 'ab' ? 'ab' : 'off';
   // ★v0.7.56: 委任モード select + 初期LC下限 + LC安全上限を反映し、AI委任の項目は数値/enum入力を無効化(灰色)。
   el.inputScalpLcFloor.value = current ? String(current.scalpLcFloorYen) : '';
   el.selectLcCeilingMode.value = current?.scalpLcCeilingSource ?? 'manual';
@@ -257,6 +259,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.indicatorsEnabled = el.checkIndicatorsEnabled.checked;
   body.aiTechnicalEnabled = el.checkAiTechnicalEnabled.checked;
   body.scalpChartFallbackText = el.checkScalpChartFallback.checked;
+  body.scalpChartVisionMode = el.selectScalpChartVisionMode.value === 'ab' ? 'ab' : 'off';
   // ★v0.7.56: 委任 source(手動/AI)。select は常に値あり('manual'|'ai')。
   // ★初期LC下限は委任対象外=UI にモード select が無い。保存のたびに 'manual' へ正規化する
   //   (過去に 'ai' を保存した config が残っていると、書き出し[entry_meta の knob スナップショット]に

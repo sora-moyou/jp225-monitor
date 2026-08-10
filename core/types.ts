@@ -37,6 +37,10 @@ export interface SignalSettingsSnapshot {
   dotenEnabled?: true;
   // ★レンジ再評価(未約定→ブレイク)の許可状態(ADD-ONLY): レンジ使用時のみ載せる(レンジOFF=既定では欠落=既存 meta JSON 不変)。
   rangeReevalEnabled?: boolean;
+  // ★v0.9.70(ADD-ONLY・RECORD-ONLY): そのサイクルの **チャート画像の群**。
+  //   ★これは設定の写しではなく **実測** で、signal_plans の行にだけ載る(planLedger が結果からマージする)。
+  //   sent が A/B の群(mode/requested は文脈)。列は増やさない=settings_json の中身が1キー増えるだけ。
+  chartVision?: { mode: 'off' | 'ab'; requested: boolean; sent: boolean };
 }
 
 export type Symbol =

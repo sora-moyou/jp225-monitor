@@ -17,9 +17,11 @@ type El = Parameters<typeof $>[0];
 const labelOf = (row: El) => $(row).children('label').first().text().trim();
 
 describe('lite の AIエントリー(index.html の構造)', () => {
-  it('lite に残す行はユーザー指示の4項目だけ(バイアス/初期LC下限/最大初期LC/LC安全上限)', () => {
+  it('lite に残す行は A/B の4項目 + チャート画像の送信モード', () => {
+    // ★v0.9.70: 5行目(AIにチャート画像を送る)は A/B の knob ではない **全体設定** だが、
+    //   シグナルエンジンは lite でも動き、この設定だけが直接お金に効くので lite にも出す。
     expect(keepRows.toArray().map(labelOf)).toEqual([
-      '初期LC下限(円)', '最大初期LC(円)', 'バイアス', 'LC安全上限(円)',
+      '初期LC下限(円)', '最大初期LC(円)', 'バイアス', 'LC安全上限(円)', 'AIにチャート画像を送る',
     ]);
   });
 
@@ -34,8 +36,9 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     }
   });
 
-  it('残す行には B列(.ab-col-b)があり、lite ではそれを隠す対象として拾える', () => {
-    for (const row of keepRows.toArray()) {
+  it('残す A/B knob 行には B列(.ab-col-b)があり、lite ではそれを隠す対象として拾える', () => {
+    // ★全体設定の行(チャート画像)は A/B の knob ではないので B列を持たない=ここでは対象外。
+    for (const row of fieldset.find(LITE_SCALP.keepAbRow).toArray()) {
       expect($(row).find(LITE_SCALP.inRowHide).length).toBeGreaterThan(0);
       expect($(row).find('.ab-col-b').length).toBe(1);
     }
@@ -89,18 +92,18 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     expect(fieldset.text()).not.toContain('コードでの強制はしません');
   });
 
-  it('lite 専用の説明(.lite-hint)は fieldset 冒頭 + 4項目それぞれに 1つずつあり、既定は hidden(=full に出ない)', () => {
+  it('lite 専用の説明(.lite-hint)は fieldset 冒頭 + 残す各行に 1つずつあり、既定は hidden(=full に出ない)', () => {
     const lite = fieldset.find(LITE_SCALP.liteHint);
-    expect(lite.length).toBe(5);   // 冒頭 1 + 各行 4
+    expect(lite.length).toBe(6);   // 冒頭 1 + 各行 5(A/B の4項目 + チャート画像)
     lite.each((_, el) => expect($(el).attr('hidden')).toBeDefined());
     for (const row of keepRows.toArray()) {
       expect($(row).find(LITE_SCALP.liteHint).length).toBe(1);
     }
   });
 
-  it('full 向けの説明(.exit-hint:not(.lite-hint))は従来どおり 2つで、hidden ではない(full の表示は不変)', () => {
+  it('full 向けの説明(.exit-hint:not(.lite-hint))は 3つで、hidden ではない(full の表示は不変)', () => {
     const full = fieldset.find(LITE_SCALP.fullHint);
-    expect(full.length).toBe(2);
+    expect(full.length).toBe(3);
     full.each((_, el) => expect($(el).attr('hidden')).toBeUndefined());
   });
 

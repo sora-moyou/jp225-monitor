@@ -36,6 +36,9 @@ vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => 100,
   resolveScalpChartFallbackText: () => true,
+  // ★v0.9.70: チャート画像は既定 off(送らない・撮影もしない)。このテストは画像の有無を対象にしない。
+  resolveScalpChartVisionMode: () => 'off' as const,
+
   resolveIndicatorsEnabled: () => true,
   resolveGeneratorDailyBudget: () => 1000,
 }));

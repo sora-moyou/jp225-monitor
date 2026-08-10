@@ -26,11 +26,31 @@ import type { Price } from '../types.js';
 const createMock = vi.fn();
 
 // LLM プロバイダ: callWithFallback は task を1回だけ呼び、その戻りを返す実装に置き換える(外部 LLM は呼ばない)。
+// ★v0.9.70: プロバイダ名を差し替えられるようにする(ビジョン対応 / テキスト専用のフォールバックを再現するため)。
+//   既定は 'test'(=ビジョン非対応)で、従来のテストは1ミリも変わらない。
+const providerName = { current: 'test' };
+// ★skipTask=true で「プロバイダが1つも使えず task が一度も走らない」経路を再現する
+//   (callWithFallback が定型文だけを返す本番の分岐)。
+const providerSkip = { current: false };
+// ★フォールバックの再現: chain に複数プロバイダを入れると、本番の callWithFallback と同じく
+//   前から順に試し、例外なら次へ送る。chain 未指定(空)なら従来どおり providerName 1つだけ。
+const providerChain: { list: Array<{ name: string; chatModel: string }> } = { list: [] };
 vi.mock('./providers.js', () => ({
   isLLMEnabled: () => true,
-  isVisionCapableProvider: () => false,
-  callWithFallback: async (task: (p: unknown) => Promise<string>) =>
-    task({ client: { chat: { completions: { create: createMock } } }, config: { name: 'test', chatModel: 'test-model' } }),
+  isVisionCapableProvider: (name: string) => name === 'openai' || name === 'gemini',
+  callWithFallback: async (task: (p: unknown) => Promise<string>) => {
+    if (providerSkip.current) return '(LLM プロバイダが利用できません)';
+    const chain = providerChain.list.length
+      ? providerChain.list
+      : [{ name: providerName.current, chatModel: 'test-model' }];
+    let last: unknown = null;
+    for (const config of chain) {
+      try {
+        return await task({ client: { chat: { completions: { create: createMock } } }, config });
+      } catch (e) { last = e; }
+    }
+    throw last;
+  },
 }));
 vi.mock('./webSearch.js', () => ({ isWebSearchEnabled: () => false, webSearch: async () => '' }));
 vi.mock('./dataTools.js', async (orig) => ({
@@ -107,8 +127,10 @@ describe('lcAudit: 申告 LC幅と実出力の突き合わせが最終結果ま�
       rationale: '戻り売り。損切りはレジスタンスの外側に置いた。',
       limitEntry: 38300, stopLossForLimit: 38355,
     }));
+    // ★v0.9.70: 旧形式(価格)で来た応答なので widthSource='legacy-price' が同じ行に載る(フォールバックを数えるため)。
+    //   向きは正しかったので signCorrected は付かない。
     expect(r.lcAudit).toEqual([
-      { leg: 'limit', entry: 38300, stopLoss: 38355, actualYen: 55, declaredYen: null, status: 'undeclared' },
+      { leg: 'limit', entry: 38300, stopLoss: 38355, actualYen: 55, declaredYen: null, status: 'undeclared', widthSource: 'legacy-price' },
     ]);
   });
 
@@ -150,8 +172,8 @@ describe('lcAudit: 台帳(signal_plans.lc_audit_json)まで届く', () => {
     // ★新しい列: 落ちたレッグの食い違いが数値で残る。
     const audit = JSON.parse(row.lc_audit_json!);
     expect(audit).toEqual([
-      { leg: 'limit', entry: 38300, stopLoss: 38355, actualYen: 55, declaredYen: 55, status: 'match', source: 'width' },
-      { leg: 'stop', entry: 38200, stopLoss: 38205, actualYen: 5, declaredYen: 55, status: 'mismatch', source: 'width' },
+      { leg: 'limit', entry: 38300, stopLoss: 38355, actualYen: 55, declaredYen: 55, status: 'match', source: 'width', widthSource: 'legacy-price' },
+      { leg: 'stop', entry: 38200, stopLoss: 38205, actualYen: 5, declaredYen: 55, status: 'mismatch', source: 'width', widthSource: 'legacy-price' },
     ]);
   });
 
@@ -187,5 +209,187 @@ describe('lcAudit: 台帳(signal_plans.lc_audit_json)まで届く', () => {
     expect(rows[0]!.lc_audit_json).toBeNull();      // 旧行は NULL のまま
     legacy.close();
     rmSync(legacyDir, { recursive: true, force: true });
+  });
+});
+
+// ─── ★v0.9.70: 画像の有無と「添付のチャート画像も…」の1行が必ず一致すること ────────────────
+//
+//  ★直した事故: 旧実装は buildVisionNote(!!img) を **プロバイダ選択より前** に1回だけ評価していた。
+//   そのため テキスト専用プロバイダ(groq/kimi)へフォールバックして画像が外れた回でも
+//   「添付のチャート画像も判断材料にすること」と言い続けており、**存在しない画像を参照させていた**。
+//  ★A/B の成立条件: 2群の違いは【画像の有無】と【この1行の有無】だけ。画像なし側に説明を足さない。
+describe('★チャート画像: 送る回だけ注記が入る(2群の違いは画像とこの1行だけ)', () => {
+  const NOTE = '添付のチャート画像';
+  const RAW = JSON.stringify({
+    direction: 'sell', rationale: '戻り売り。指値レッグ 38310と38365の引き算 → LC幅は55円。',
+    limitEntry: 38310, lcWidthForLimit: 55, refPrice: REF,
+  });
+  const IMG = 'data:image/png;base64,QUJD';
+
+  /** 実際に create へ渡った messages を取り出す(system / user)。 */
+  function sentPrompts(): { system: string; user: string } {
+    const msgs = createMock.mock.calls[0]![0].messages as Array<{ role: string; content: unknown }>;
+    const text = (c: unknown): string => typeof c === 'string' ? c
+      : Array.isArray(c) ? c.filter((x: any) => x?.type === 'text').map((x: any) => x.text).join('') : '';
+    return {
+      system: text(msgs.find(m => m.role === 'system')?.content),
+      user: text(msgs.find(m => m.role === 'user')?.content),
+    };
+  }
+  /** 実際に画像が送られたか(image_url が content に在るか)。 */
+  function sentImage(): boolean {
+    const msgs = createMock.mock.calls[0]![0].messages as Array<{ role: string; content: unknown }>;
+    const u = msgs.find(m => m.role === 'user')?.content;
+    return Array.isArray(u) && u.some((x: any) => x?.type === 'image_url');
+  }
+
+  it('画像を渡さない回: 画像は1バイトも送らず、注記も入らない', async () => {
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW } }] });
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F' });
+    expect(r.ok).toBe(true);
+    expect(sentImage()).toBe(false);
+    expect(sentPrompts().user).not.toContain(NOTE);
+    expect(sentPrompts().system).not.toContain(NOTE);
+    expect((r as { imageSent?: boolean }).imageSent).toBe(false);
+  });
+
+  it('画像を渡す回: 画像が送られ、注記が1回だけ入る', async () => {
+    providerName.current = 'openai';   // ビジョン対応プロバイダ
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW } }] });
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', chartImageDataUrl: IMG });
+    expect(r.ok).toBe(true);
+    expect(sentImage()).toBe(true);
+    expect(sentPrompts().user.split(NOTE).length - 1).toBe(1);
+    expect((r as { imageSent?: boolean }).imageSent).toBe(true);
+  });
+
+  it('★2群の user プロンプトの差は「注記の1行」だけ(他の文言を足していない)', async () => {
+    providerName.current = 'openai';
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW } }] });
+    await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F' });
+    const off = sentPrompts().user;
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW } }] });
+    await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', chartImageDataUrl: IMG });
+    const on = sentPrompts().user;
+    // 画像あり側から注記(と直後の空行)を取り除くと、画像なし側と **byte 一致** する。
+    expect(on.replace(`${NOTE}(当日の日経225先物のローソク足・主要水準・直近アラート)も判断材料にすること。\n\n`, '')).toBe(off);
+  });
+
+  it('★テキスト専用プロバイダへ落ちた回: 画像も注記も送られず、imageSent=false と記録される', async () => {
+    providerName.current = 'groq';   // ビジョン非対応(実運用の 413 フォールバック先)
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW } }] });
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', chartImageDataUrl: IMG });
+    providerName.current = 'test';
+    expect(r.ok).toBe(true);
+    expect(sentImage()).toBe(false);
+    // ★ここが旧実装の欠陥: 画像が外れているのに注記だけ残り、存在しない画像を参照させていた。
+    expect(sentPrompts().user).not.toContain(NOTE);
+    expect((r as { imageSent?: boolean }).imageSent).toBe(false);
+  });
+});
+
+// ─── ★v0.9.70: プロンプト指紋は「実際に送った内容」から取る(判断(b)) ──────────────────
+//
+//  ★旧: プロバイダ選択より **前** に1回だけ = 「組み立てた入力」の指紋。
+//   ab の画像あり群でも、gemini が枯れてテキスト専用プロバイダへ落ちれば画像も注記も外れるので、
+//   旧方式では **指紋と実際の送信内容がずれる**。凍結再生(plan-replay)はこの指紋を手掛かりにするため、
+//   ずれた指紋は「同じ入力から再生したのに違う」という追えない差になる。
+//  ★リポ内に prompt_fp を **読む/結合する** コードは1つも無い(書き込みのみ)ので、意味を変えても
+//   既存の集計・分析は壊れない。
+describe('★プロンプト指紋: 実際に送った内容の指紋になる', () => {
+  const RAW2 = JSON.stringify({
+    direction: 'sell', rationale: '戻り売り。指値レッグ 38310と38365の引き算 → LC幅は55円。',
+    limitEntry: 38310, lcWidthForLimit: 55, refPrice: REF,
+  });
+
+  it('画像あり/なしで指紋が変わる(=送信内容を映している)', async () => {
+    providerName.current = 'openai';
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW2 } }] });
+    let fpNoImage = '';
+    await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', onPromptFingerprint: (fp) => { fpNoImage = fp; } });
+    let fpImage = '';
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW2 } }] });
+    await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', chartImageDataUrl: 'data:image/png;base64,QUJD', onPromptFingerprint: (fp) => { fpImage = fp; } });
+    providerName.current = 'test';
+    expect(fpNoImage).toMatch(/^sp1:[0-9a-f]{16}$/);
+    expect(fpImage).not.toBe(fpNoImage);
+  });
+
+  it('★テキスト専用へ落ちた回の指紋は「画像なし」の指紋と一致する(送った内容と一致)', async () => {
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW2 } }] });
+    let fpNoImage = '';
+    await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', onPromptFingerprint: (fp) => { fpNoImage = fp; } });
+    providerName.current = 'groq';   // ビジョン非対応=画像が外れる
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW2 } }] });
+    let fpFell = '';
+    await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', chartImageDataUrl: 'data:image/png;base64,QUJD', onPromptFingerprint: (fp) => { fpFell = fp; } });
+    providerName.current = 'test';
+    expect(fpFell).toBe(fpNoImage);
+  });
+
+  it('★1度も送れなかった回(プロバイダ不在)は指紋を記録しない=「送っていない」が形から読める', async () => {
+    providerSkip.current = true;
+    let called = 0;
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', onPromptFingerprint: () => { called++; } });
+    providerSkip.current = false;
+    expect(called).toBe(0);
+    expect((r as { imageSent?: boolean }).imageSent).toBe(false);
+  });
+});
+
+// ─── ★v0.9.70: 実際に答えたプロバイダ/モデルの記録 ─────────────────────────────
+//
+//  ★これが無いと、チャート画像の A/B は「画像 × モデル」の交絡を含んだまま層別できない。
+//   値の意味は **答えを返したプロバイダ** に固定する(「送ろうとした先」ではない)。
+describe('★答えたプロバイダ/モデルを記録する', () => {
+  const RAW3 = JSON.stringify({
+    direction: 'sell', rationale: '戻り売り。指値レッグ 38310と38365の引き算 → LC幅は55円。',
+    limitEntry: 38310, lcWidthForLimit: 55, refPrice: REF,
+  });
+  afterEach(() => { providerChain.list = []; providerSkip.current = false; providerName.current = 'test'; });
+
+  it('答えたプロバイダとモデルが結果に載る', async () => {
+    providerName.current = 'gemini';
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW3 } }] });
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F' });
+    expect((r as { provider?: unknown }).provider).toEqual({ name: 'gemini', model: 'test-model' });
+  });
+
+  it('★フォールバック: 先頭が落ちて次が答えたら、**答えた方** が記録される', async () => {
+    providerChain.list = [
+      { name: 'gemini', chatModel: 'gemini-flash-latest' },
+      { name: 'groq', chatModel: 'llama-x' },
+    ];
+    createMock.mockReset()
+      .mockRejectedValueOnce(new Error('429 rate limit'))            // gemini が落ちる
+      .mockResolvedValue({ choices: [{ message: { content: RAW3 } }] });   // groq が答える
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F' });
+    expect(r.ok).toBe(true);
+    expect((r as { provider?: unknown }).provider).toEqual({ name: 'groq', model: 'llama-x' });
+  });
+
+  it('★誰も答えなかった回(プロバイダ不在)は記録しない=台帳では NULL', async () => {
+    providerSkip.current = true;
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F' });
+    expect((r as { provider?: unknown }).provider).toBeUndefined();
+  });
+
+  it('★全プロバイダが例外で落ちた回も記録しない(「送ろうとした先」を残さない)', async () => {
+    providerChain.list = [
+      { name: 'gemini', chatModel: 'gemini-flash-latest' },
+      { name: 'groq', chatModel: 'llama-x' },
+    ];
+    createMock.mockReset().mockRejectedValue(new Error('503 unavailable'));
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F' });
+    expect(r.ok).toBe(false);
+    expect((r as { provider?: unknown }).provider).toBeUndefined();
+  });
+
+  it('★画像あり群は必ずビジョン対応が答える=層別に使える(交絡1の観測点)', async () => {
+    providerChain.list = [{ name: 'openai', chatModel: 'gpt-4o-mini' }];
+    createMock.mockReset().mockResolvedValue({ choices: [{ message: { content: RAW3 } }] });
+    const r = await buildScalpPlan({ prices: PRICES, symbol: 'NIY=F', chartImageDataUrl: 'data:image/png;base64,QUJD' });
+    expect((r as { imageSent?: boolean }).imageSent).toBe(true);
+    expect((r as { provider?: unknown }).provider).toEqual({ name: 'openai', model: 'gpt-4o-mini' });
   });
 });

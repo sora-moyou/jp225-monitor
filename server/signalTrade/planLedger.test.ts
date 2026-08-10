@@ -103,3 +103,73 @@ describe('buildSignalPlanInsert', () => {
     expect(trimRationale(undefined)).toBeNull();
   });
 });
+
+// ─── ★v0.9.70: チャート画像の群を settings_json に残す(列は増やさない) ───────────────
+//
+//  ★記録の出所が要点: 設定(config)ではなく **結果(result.chartVision)** から取る。
+//   記録すべきは「実際に送ったか」であって「送る設定だったか」ではない
+//   (ビジョン非対応プロバイダへフォールバックして画像が外れた回は sent=false)。
+describe('★チャート画像の群(settings_json へマージ・列は増やさない)', () => {
+  const RESULT_OK = {
+    ok: true as const,
+    plan: { direction: 'buy' as const, rationale: 'x', refPrice: 38250 },
+  };
+
+  it('群が settings_json にマージされる(既存の設定キーは残る)', () => {
+    const row = buildSignalPlanInsert({
+      t: 1, system: 'A',
+      result: { ...RESULT_OK, chartVision: { mode: 'ab', requested: true, sent: true } },
+      settings: SETTINGS,
+    });
+    const s = JSON.parse(row.settingsJson!);
+    expect(s.chartVision).toEqual({ mode: 'ab', requested: true, sent: true });
+    expect(s.lcFloor).toEqual(SETTINGS.lcFloor);   // 既存キーは壊さない
+  });
+
+  it('★「撮ろうとしたが送れなかった」回も残る(requested:true / sent:false)', () => {
+    const row = buildSignalPlanInsert({
+      t: 2, system: 'A',
+      result: { ok: false, error: 'chart-not-generated', chartVision: { mode: 'ab', requested: true, sent: false } },
+      settings: SETTINGS,
+    });
+    expect(JSON.parse(row.settingsJson!).chartVision).toEqual({ mode: 'ab', requested: true, sent: false });
+    expect(row.error).toBe('chart-not-generated');
+  });
+
+  it('群が無い結果(旧経路/直呼び)では settings_json は従来どおり(キーが増えない)', () => {
+    const row = buildSignalPlanInsert({ t: 3, system: 'A', result: RESULT_OK, settings: SETTINGS });
+    expect(JSON.parse(row.settingsJson!)).toEqual(SETTINGS);
+  });
+});
+
+// ─── ★v0.9.70: 実際に答えた LLM プロバイダ/モデルを残す ────────────────────────────
+//
+//  ★なぜ要るか: チャート画像の A/B は「画像 × モデル」が完全に絡む(画像を送る回は必ず
+//   ビジョン対応=gemini/openai へ行き、送らない回は groq/kimi でも通る)。この2列が無いと
+//   ab で貯めた標本は後から層別できない=「測れないデータを貯める」ことになる。
+describe('★答えたプロバイダ/モデル(planLedger)', () => {
+  const OK = { ok: true as const, plan: { direction: 'buy' as const, rationale: 'x', refPrice: 38250 } };
+
+  it('答えたプロバイダとモデルが行に載る', () => {
+    const row = buildSignalPlanInsert({
+      t: 1, system: 'A', result: { ...OK, provider: { name: 'gemini', model: 'gemini-flash-latest' } },
+    });
+    expect(row.provider).toBe('gemini');
+    expect(row.providerModel).toBe('gemini-flash-latest');
+  });
+
+  it('★答えが得られなかった回は載せない(=列は NULL・「誰も答えなかった」が形から読める)', () => {
+    const row = buildSignalPlanInsert({ t: 2, system: 'A', result: { ok: false, error: 'LLM未設定' } });
+    expect(row.provider).toBeUndefined();
+    expect(row.providerModel).toBeUndefined();
+  });
+
+  it('★答えは返ったが計画が不成立(ok:false)の回も、どのモデルが返したかは残る', () => {
+    const row = buildSignalPlanInsert({
+      t: 3, system: 'A',
+      result: { ok: false, error: 'parse failed after retry', provider: { name: 'groq', model: 'llama-x' } },
+    });
+    expect(row.error).toBe('parse failed after retry');
+    expect(row.provider).toBe('groq');
+  });
+});

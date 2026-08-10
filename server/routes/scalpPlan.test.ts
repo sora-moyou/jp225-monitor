@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { setChartVisionRngForTest } from '../llm/scalpPlanRunner.js';
 import type { Request, Response } from 'express';
 
 // scalpPlanHandler の「逐次オンデマンドゲート(②生成→③確認→④戦略)」を検証する。
@@ -27,10 +28,15 @@ vi.mock('../chatContext.js', () => ({
 }));
 
 const chartFallbackMock = vi.fn<[], boolean>();
+// ★v0.9.70: チャート画像の送信モード。既定 'off'(送らない・撮影もしない)。
+//   画像ゲートを対象にするテストだけ 'ab' + コイン投げ固定にして「必ず画像あり」を作る。
+const chartVisionModeMock = vi.fn<[], 'off' | 'ab'>(() => 'off');
+let restoreRng: () => void = () => {};
 vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => 100,
   resolveScalpChartFallbackText: () => chartFallbackMock(),
+  resolveScalpChartVisionMode: () => chartVisionModeMock(),
 }));
 
 // runScalpPlanWithChart が勢い算出に使う barsFor をモック(空=regime flat=veto なし)。
@@ -64,9 +70,14 @@ describe('scalpPlanHandler — on-demand chart-generation gate', () => {
     firstVisionMock.mockReset();
     captureMock.mockReset();
     chartFallbackMock.mockReset().mockReturnValue(true);   // 既定=テキスト縮退ON
+    // ★v0.9.70: チャート画像は既定 off(撮影もしない)。このテスト群は撮影ゲートを対象にするので
+    //   'ab' + コイン投げ固定で「必ず画像あり」の群を作る。
+    chartVisionModeMock.mockReset().mockReturnValue('ab');
+    restoreRng = setChartVisionRngForTest(() => 0);
     delete process.env.SCALP_CHART_VISION;
   });
   afterEach(() => {
+    restoreRng();
     delete process.env.SCALP_CHART_VISION;
   });
 

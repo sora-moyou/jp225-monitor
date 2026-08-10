@@ -96,6 +96,11 @@ export interface UserConfig {
   indicatorsEnabled?: boolean;       // ★テクニカル指標(RSI/SMA/BB)のパネル表示 + AI文脈供給。未設定/true=ON(既定) / false=OFF。表示/文脈のみ(検知は不変)。
   aiTechnicalEnabled?: boolean;      // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う)。未設定/true=ON(既定) / false=OFF=許可行なし(byte-safe)。決済は既定ロジック。
   scalpChartFallbackText?: boolean;  // ★チャート撮影失敗(ws-error等)時の縮退。未設定/true=ON(2回失敗ならテキストのみでAI継続=全停止防止) / false=ストリクトvision(撮影不可なら見送り)。グローバル(A/B共有)。
+  // ★v0.9.70: チャート画像を AI に送るか。**未設定/不正は 'off'(既定)= 1枚も送らない・撮影もしない**。
+  //   'ab' = サイクルごとにランダムで **半分だけ** 送る(効き目を測るための対照群を作る)。
+  //   ★全量送るモードは用意しない: 実測で 1日1,600回 × 1280x760 の高精細画像 = OpenAI 課金の主因(1日5.5ドル)。
+  //   測りたくなったら 'ab' にすれば、課金は半分のまま比較できる。グローバル(A/B共有=チャートは共有資源)。
+  scalpChartVisionMode?: 'off' | 'ab';
   // ★v0.7.56: 委任可能な各 knob の source。'ai'=AIに委任(該当制約を課さない) / それ以外/未設定='manual'(現状の強制)。
   //   既定は全て 'manual'=現状の挙動を一切変えない。ユーザーが1つずつ AI へ倒す枠組み。
   // ★初期LC下限だけは委任の対象外: source が 'ai' でもコードは下限を強制する(強制が委任に勝つ)。
@@ -564,6 +569,7 @@ export {
   resolveScalpLcCeiling, resolveScalpCooldownSec, resolveScalpTrendVetoYen,
   resolveScalpBias, resolveEffectiveScalpBias, resolveScalpRangeEnabled, resolveScalpLcFloorYen,
   resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText,
+  resolveScalpChartVisionMode, parseChartVisionMode, type ChartVisionMode,
   resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled,
   parseKnobSource,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,

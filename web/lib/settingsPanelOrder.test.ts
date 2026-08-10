@@ -108,9 +108,11 @@ describe('lite で隠れる/出る要素の集合(並べ替えの前後で不変
   it('AIエントリーの lite 制御(隠す行/部品/説明)の件数は従来どおり', () => {
     const fieldset = $(LITE_SCALP.fieldset);
     // 設定モーダルの並べ替えは詳細設定モーダルに触れていない=件数が動いていないことを固定する。
-    expect(fieldset.find(LITE_SCALP.keepRow).length).toBe(4);
+    // ★v0.9.70: A/B の4項目 + チャート画像の送信モード(全体設定)= 5行。
+    expect(fieldset.find(LITE_SCALP.keepRow).length).toBe(5);
+    expect(fieldset.find(LITE_SCALP.keepAbRow).length).toBe(4);
     expect(fieldset.find(LITE_SCALP.dropRow).length).toBeGreaterThan(0);
-    expect(fieldset.find(LITE_SCALP.fullHint).length).toBe(2);
-    expect(fieldset.find(LITE_SCALP.liteHint).length).toBe(5);
+    expect(fieldset.find(LITE_SCALP.fullHint).length).toBe(3);   // ★チャート画像の説明を独立した div にした
+    expect(fieldset.find(LITE_SCALP.liteHint).length).toBe(6);
   });
 });

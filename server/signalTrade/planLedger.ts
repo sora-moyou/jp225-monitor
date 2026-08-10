@@ -72,8 +72,22 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   //   ★指紋は一方向ハッシュ(`sp1:<16桁hex>`)で、プロンプト本文は台帳に1バイトも入らない。
   if (typeof result.contextAt === 'number') row.contextAt = result.contextAt;
   if (typeof result.promptFp === 'string') row.promptFp = result.promptFp;
+  // ★v0.9.70(RECORD-ONLY): **答えを返した** プロバイダ/モデル。error 分岐より前に載せる=
+  //   「答えは返ったが計画としては不成立(ok:false)」の回も、どのモデルが返したかが残る。
+  //   答えが得られなかった回は result.provider が無い=列は NULL(=「誰も答えなかった」が形から読める)。
+  if (result.provider) {
+    row.provider = result.provider.name;
+    row.providerModel = result.provider.model;
+  }
   if (input.signalId != null) row.signalId = input.signalId;
-  if (input.settings) row.settingsJson = JSON.stringify(input.settings);
+  // ★v0.9.70: チャート画像の群を settings_json へ **結果から** マージする(列は増やさない)。
+  //   ★設定(config)からではなく result から取るのが要点: 記録すべきは「実際に送ったか」であって
+  //     「送る設定だったか」ではない(テキスト専用プロバイダへ落ちて画像が外れた回は sent=false)。
+  //   settings が無い呼び出しでも群だけは残す(群の欠落=「その版で記録していない」と読めるように)。
+  const settingsForRow = result.chartVision
+    ? { ...(input.settings ?? {} as SignalSettingsSnapshot), chartVision: result.chartVision }
+    : input.settings;
+  if (settingsForRow) row.settingsJson = JSON.stringify(settingsForRow);
   // ★待ち時間の決定内訳(ARM した回のみ)。error 分岐より前に載せる: 「ARM したのに ok=false」は
   //   起こり得ないが、載せ忘れの経路を作らないため分岐の外で1回だけ書く。
   if (input.armWait) {

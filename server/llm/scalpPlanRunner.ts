@@ -5,7 +5,8 @@ import { buildNikkeiTechnical } from '../chatContext.js';
 import { captureChartPngCached, type ChartShotIdentity } from '../chart/chartShot.js';
 import {
   resolvePort, resolveScalpTrendVetoYen, resolveScalpChartFallbackText, resolveIndicatorsEnabled,
-  resolveBandwalkEnabled, resolveEffectiveScalpBias, resolveShockParams, type SignalProfile,
+  resolveBandwalkEnabled, resolveEffectiveScalpBias, resolveShockParams, resolveScalpChartVisionMode,
+  type SignalProfile, type ChartVisionMode,
 } from '../configStore.js';
 import { buildBandwalkSamples, evaluateBandwalk, DEFAULT_BANDWALK, type Bandwalk } from '../bandwalk.js';
 import { getRealtimeOHLCBars } from '../feedBars.js';
@@ -144,11 +145,42 @@ export interface RunScalpPlanOverrides {
   exitVariant?: ExitVariant;
 }
 
-/** チャートビジョンを無効化する env(既定は有効)。SCALP_CHART_VISION=0/false でオフ。 */
-function chartVisionEnabled(): boolean {
+/** チャートビジョンを無効化する env(既定は「設定に従う」)。SCALP_CHART_VISION=0/false で **強制オフ**。
+ *  ★この env は「オフに倒す」ことしかできない(オンには倒せない)。課金の効く方向へ倒す入口を増やさないため。 */
+function chartVisionEnvKill(): boolean {
   const v = process.env.SCALP_CHART_VISION;
-  if (v === undefined) return true;
-  return !/^(0|false|off|no)$/i.test(v.trim());
+  if (v === undefined) return false;
+  return /^(0|false|off|no)$/i.test(v.trim());
+}
+
+/** ★v0.9.70(A/B): そのサイクルで **画像を撮って送ろうとするか** を決める純関数。
+ *
+ *  ■ なぜ「全量」を作らないか
+ *    実測(稼働機のログ)で、画像つきの呼び出しが1日約1,600回(08-06:1,478 / 08-07:1,614)。
+ *    画像は 1280x760・detail 未指定(=高精細=6タイル)で、無料枠(gemini)がレート制限で休むと
+ *    groq は 413・kimi は 404 で必ず落ちるため **OpenAI が全部かぶる**。gpt-4o-mini は画像の
+ *    トークン換算率が極端に高く、1枚で約36,800トークン。結果、1日5.5ドル(月165ドル)。
+ *    ★そして「画像が効いているか」は一度も測っていない(画像が事実上100%に付いており対照群が無い)。
+ *    → 既定は off(1枚も送らない・撮影もしない)。測りたくなったら ab にすれば **課金は半分のまま** 比較できる。
+ *
+ *  ■ 群の割り当て
+ *    サイクルごとに独立に コイン投げ(rng<0.5)。時刻やカウンタで交互にしないのは、
+ *    A/B 2系統・サイクル間隔・場況の周期と位相が噛み合って群が時間帯に偏るのを避けるため。
+ *  ★rng はテスト注入点(既定 Math.random)。 */
+export function decideChartVision(
+  mode: ChartVisionMode, envKill: boolean, rng: () => number = Math.random,
+): { mode: ChartVisionMode; wantImage: boolean } {
+  if (envKill || mode !== 'ab') return { mode, wantImage: false };
+  return { mode, wantImage: rng() < 0.5 };
+}
+
+/** ★テスト注入点: A/B のコイン投げ。既定は Math.random(本番)。 */
+let chartVisionRng: () => number = Math.random;
+/** テスト専用: コイン投げを差し替える(戻り値で元に戻す)。 */
+export function setChartVisionRngForTest(fn: () => number): () => void {
+  const prev = chartVisionRng;
+  chartVisionRng = fn;
+  return () => { chartVisionRng = prev; };
 }
 
 /** チャート撮影ゲート付きで scalp-plan を生成する。
@@ -183,7 +215,9 @@ async function runScalpPlanWithChartInner(
   let chartImageDataUrl: string | null = null;
   // ★「その提案がどの1枚を見たか」。生成器の①と②が同じ画像を見たことを **仮定でなく記録** にする。
   let chartShot: ChartShotIdentity | null = null;
-  const visionOn = chartVisionEnabled();
+  // ★v0.9.70: そのサイクルの群を **撮影の前に** 決める(off なら撮影自体を行わない=ヘッドレスChromeを起動しない)。
+  const visionDecision = decideChartVision(resolveScalpChartVisionMode(), chartVisionEnvKill(), chartVisionRng);
+  const visionOn = visionDecision.wantImage;
   // ★プールを渡す: 「画像を撮るべきか」は **自分が使うプールの** ポーズ状態で判断する
   //   (default 経路は引数 'default' = 従来と同じ判定)。
   const vision = visionOn ? firstAvailableVisionProvider(caller) : null;
@@ -207,7 +241,8 @@ async function runScalpPlanWithChartInner(
         // chartImageDataUrl は null のまま=画像なしで戦略作成へ(取引を止めない)。
       } else {
         console.log('[scalp-plan] vision: 画像生成できず → 見送り(AI呼ばない) reason=' + (shot.reason ?? 'unknown'));
-        return { ok: false, error: 'chart-not-generated' };
+        // ★この回も群を残す(requested=true / sent=false = 「撮ろうとしたが送れなかった」)。
+        return attachChartVision({ ok: false, error: 'chart-not-generated' }, visionDecision);
       }
     } else {
       // 画像あり → 添付して④戦略作成へ。
@@ -216,7 +251,8 @@ async function runScalpPlanWithChartInner(
         + `provider=${vision.name}`);
     }
   } else if (!visionOn) {
-    console.log('[scalp-plan] vision: disabled (SCALP_CHART_VISION=0) → text-only');
+    // ★off / A/B の「画像なし」群 / env 強制オフ。撮影(ヘッドレスChrome)は **1回も走らない**。
+    console.log(`[scalp-plan] vision: no-image (mode=${visionDecision.mode}${chartVisionEnvKill() ? '/env-off' : ''}) → text-only(撮影もしない)`);
   } else {
     console.log('[scalp-plan] vision: skip (no vision-capable provider available) → text-only');
   }
@@ -255,7 +291,7 @@ async function runScalpPlanWithChartInner(
   // ★RECORD-ONLY: buildScalpPlan が組み上げたプロンプトの指紋(本文は受け取らない)。
   let promptFp: string | null = null;
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
-  return attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
+  return attachChartVision(attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
@@ -275,7 +311,20 @@ async function runScalpPlanWithChartInner(
     bandwalk: richResult.bandwalk,
     // ★RECORD-ONLY: 送るプロンプトの指紋を1回だけ受け取る(本文は渡ってこない)。
     onPromptFingerprint: (fp) => { promptFp = fp; },
-  }), contextAt, () => promptFp), caller, chartShot);
+  }), contextAt, () => promptFp), caller, chartShot), visionDecision);
+}
+
+/** ★RECORD-ONLY(v0.9.70): そのサイクルの **チャート画像の群** を結果に載せる。
+ *  mode      … その時の設定('off' / 'ab')。
+ *  requested … その回に画像を撮って送ろうとしたか(A/B のコイン投げの結果)。
+ *  sent      … ★**実際に送ったか**。ビジョン非対応プロバイダへフォールバックした回・撮影に失敗して
+ *              テキスト縮退した回・LLM を1回も呼べなかった回は false になる。
+ *  ★A/B の群として使ってよいのは sent だけ(requested は「送るつもりだった」に過ぎない)。
+ *    両方載せるのは「撮ろうとしたのに送れなかった」回を後から数えられるようにするため。 */
+function attachChartVision(
+  result: ScalpPlanResult, decision: { mode: ChartVisionMode; wantImage: boolean },
+): ScalpPlanResult {
+  return { ...result, chartVision: { mode: decision.mode, requested: decision.wantImage, sent: result.imageSent === true } };
 }
 
 /** ★RECORD-ONLY: 計画の出所(文脈を組み立てた時刻・プロンプトの指紋)を結果に additive で載せる。

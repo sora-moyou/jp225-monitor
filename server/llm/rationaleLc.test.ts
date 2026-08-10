@@ -14,6 +14,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseLcDeclarations, declaredWidthFor, auditLcDeclarations } from './rationaleLc.js';
+// ★プロンプト側の書式 SSOT。テストは「合成した文字列」ではなく **プロンプトが使う生成関数** を呼ぶ。
+import { lcWidthDeclarationExample, lcFloorRule, scalpJsonInstruction } from './scalpPlan.js';
 
 describe('書式①(幅の申告): 「LC=55円」形', () => {
   it('レッグ見出しごとに申告幅を割り当てる', () => {
@@ -21,6 +23,19 @@ describe('書式①(幅の申告): 「LC=55円」形', () => {
     expect(d.limit).toEqual([55]);
     expect(d.stop).toEqual([95]);
     expect(d.unassigned).toEqual([]);
+  });
+
+  // ★v0.9.70: 損切りの契約が「価格(stopLossFor…)」→「幅(lcWidthFor…)」に変わった。新しい名前で
+  //   書かれた根拠文でも申告幅が同じレッグへ割り当たること(足し忘れると無言で undeclared に落ちる)。
+  it('★新しいフィールド名で幅を申告する形(lcWidthForLimit は 55円)も読む', () => {
+    const d = parseLcDeclarations('lcWidthForLimit は 55円 / lcWidthForStop は 95円');
+    expect(d.limit).toEqual([55]);
+    expect(d.stop).toEqual([95]);
+    expect(d.unassigned).toEqual([]);
+  });
+
+  it('range 脚の lcWidth 申告(lcWidth: 60)も幅として読む', () => {
+    expect(parseLcDeclarations('上部の lcWidth: 60').unassigned).toEqual([60]);
   });
 
   it('「逆指値」の中の「指値」を拾わない(長い語から照合する)', () => {
@@ -135,5 +150,43 @@ describe('突き合わせ(auditLcDeclarations)', () => {
     expect(sole[0]).toMatchObject({ declaredYen: 60, status: 'match', source: 'sole' });
     const ambiguous = auditLcDeclarations('指値レッグ LC=55円、ブレイク新規レッグ LC=95円。', [{ leg: 'lower', entry: 65600, stopLoss: 65545 }]);
     expect(ambiguous[0]).toMatchObject({ declaredYen: null, status: 'undeclared' });
+  });
+});
+
+// ─── ★v0.9.70: プロンプトの例文が、このパーサで **実際に読める** ことの実証 ─────────────
+//
+//  ★これが無かったために起きたこと(この版の初版・未出荷):
+//   プロンプトの例文を「(エントリー価格)と(損切りの位置)の距離=(幅)」にしたが、WIDTH_RE はその形を
+//   1件も読めなかった。つまり **モデルがプロンプトの例に忠実に従うほど lcAudit が undeclared に落ち**、
+//   v0.9.61〜v0.9.64 で積み上げた「申告 vs 実出力」の計測が丸ごと死ぬ、という無言の失敗になっていた。
+//
+//  ★合成した文字列でテストしない。**プロンプトが使うのと同じ関数(lcWidthDeclarationExample)** に
+//   実数値を入れて生成した文字列を食わせる。例文の書式を変えた人は必ずここで落ちる。
+describe('★プロンプトの例文がパーサで読めること(書式の SSOT が噛み合っているか)', () => {
+  it('lcWidthDeclarationExample で作った申告は match になる(指値/ブレイク新規とも)', () => {
+    const limitDecl = lcWidthDeclarationExample('指値レッグ', '66210', '66145', '65');
+    const stopDecl = lcWidthDeclarationExample('ブレイク新規レッグ', '66330', '66390', '60');
+    const rows = auditLcDeclarations(`${limitDecl}。${stopDecl}。`, [
+      { leg: 'limit', entry: 66210, stopLoss: 66145 },
+      { leg: 'stop', entry: 66330, stopLoss: 66390 },
+    ]);
+    expect(rows.map(r => [r.leg, r.declaredYen, r.status])).toEqual([
+      ['limit', 65, 'match'],
+      ['stop', 60, 'match'],
+    ]);
+  });
+
+  it('★否定対照: 旧版の例文の書式(…の距離=N円)は1件も読めない(undeclared)', () => {
+    // これがこの版で直した事故そのもの。プロンプトの例文をこの形に戻したら、下の期待値が現実になる。
+    const rows = auditLcDeclarations('指値レッグ 66210と66145の距離=65円', [
+      { leg: 'limit', entry: 66210, stopLoss: 66145 },
+    ]);
+    expect(rows.map(r => [r.declaredYen, r.status])).toEqual([[null, 'undeclared']]);
+  });
+
+  it('例文は実際にプロンプト(lcFloorRule / scalpJsonInstruction)へ入っている', () => {
+    const placeholder = lcWidthDeclarationExample('指値レッグ', '(エントリー価格)', '(損切りの位置)', '(幅)');
+    expect(lcFloorRule(55)).toContain(placeholder);
+    expect(scalpJsonInstruction(38250, 55, 65, false)).toContain(placeholder);
   });
 });

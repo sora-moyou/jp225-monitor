@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─── runScalpPlanWithChart: 撮影の同一性を **生成器の結果にだけ** additive で載せる ──────
 //
@@ -24,6 +24,8 @@ vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => 0,
   resolveScalpChartFallbackText: () => true,
+  // ★このテストは「どの1枚を見たか」を対象にするので、必ず画像あり(ab + コイン投げ固定)にする。
+  resolveScalpChartVisionMode: () => 'ab' as const,
   resolveIndicatorsEnabled: () => true,
   resolveGeneratorDailyBudget: () => 1000,
 }));
@@ -40,7 +42,7 @@ vi.mock('../chart/chartShot.js', () => ({
   captureChartPngCached: (...a: unknown[]) => captureMock(...a),
 }));
 
-import { runScalpPlanWithChart } from './scalpPlanRunner.js';
+import { runScalpPlanWithChart, setChartVisionRngForTest } from './scalpPlanRunner.js';
 
 const SHOT = {
   buffer: Buffer.from('png'), chromePath: 'c', chromeVersion: 'v', reason: null,
@@ -48,13 +50,18 @@ const SHOT = {
 };
 const PLAN_RESULT = { ok: true, plan: { direction: 'none', rationale: 'x', refPrice: 38250 } };
 
+let restoreRng: () => void = () => {};
+
 describe('提案に「どの1枚を見たか」を載せる', () => {
   beforeEach(() => {
+    // ★v0.9.70: mode='ab' はコイン投げなので、テストでは必ず画像あり側に固定する(でないと 50% で落ちる)。
+    restoreRng = setChartVisionRngForTest(() => 0);
     captureMock.mockReset().mockResolvedValue(SHOT);
     buildScalpPlanMock.mockReset().mockResolvedValue(PLAN_RESULT);
     vi.spyOn(console, 'log').mockImplementation(() => { /* noop */ });
     vi.spyOn(console, 'warn').mockImplementation(() => { /* noop */ });
   });
+  afterEach(() => { restoreRng(); });
 
   it("caller:'generator' の結果に chartShot が付く", async () => {
     const r = await runScalpPlanWithChart({ caller: 'generator' }) as Record<string, unknown>;
@@ -65,7 +72,7 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
   //   ここで守り続けているのは「生成器だけの記録(chartShot / contextOmitted)が A の結果に混ざらない」こと。
   //   plan は参照ごと素通し=engine が読む中身は1ミリも変わらない。
   const generatorOnlyKeys = (r: object): string[] =>
-    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp');
+    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision');
 
   it('★caller 省略(実弾 A の経路)の結果に **生成器だけの記録は1つも付かない**', async () => {
     const r = await runScalpPlanWithChart({});
@@ -97,3 +104,4 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
     expect(captureMock).toHaveBeenCalledWith(3000, undefined, undefined, 'generator');
   });
 });
+

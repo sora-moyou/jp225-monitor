@@ -3,11 +3,11 @@ import {
   loadConfig, saveConfig, configFilePath, validateParam,
   resolvePricePollMs, resolveNewsPollMs, resolvePort, resolveCooldownMin,
   resolveAllNumericParams, resolveScalpBias, resolveScalpRangeEnabled, resolveScalpDotenEnabled,
-  resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText,
+  resolveScalpRangeReevalEnabled, resolveScalpChartFallbackText, resolveScalpChartVisionMode,
   resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled, PARAM_BOUNDS,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
-  resolveScalpLcHardMax, parseKnobSource, resolveDoubleFormingEnabled, resolveNwaveEnabled, resolveBandwalkEnabled,
+  resolveScalpLcHardMax, parseKnobSource, parseChartVisionMode, resolveDoubleFormingEnabled, resolveNwaveEnabled, resolveBandwalkEnabled,
   resolveNewsOffHoursEnabled,
   resolveGeneratorKeySources, resolveGeneratorDailyBudget, resolveGeneratorEnabled,
   GENERATOR_PROVIDERS, GENERATOR_DAILY_BUDGET_DEFAULT, GENERATOR_DAILY_BUDGET_MAX,
@@ -49,7 +49,7 @@ const EXPLICIT_PARAM_KEYS = [
   // ★LLM プロバイダのモデル名(可視・空欄=既定に戻す)。Web検索モデルと同じ扱い。
   'geminiModel', 'groqModel', 'kimiModel', 'openaiModel',
   'scalpBias', 'scalpRangeEnabled', 'dotenEnabled', 'rangeReevalEnabled',
-  'indicatorsEnabled', 'aiTechnicalEnabled', 'scalpChartFallbackText',
+  'indicatorsEnabled', 'aiTechnicalEnabled', 'scalpChartFallbackText', 'scalpChartVisionMode',
   'doubleFormingEnabled', 'nwaveEnabled', 'bandwalkEnabled',
   'newsOffHoursEnabled',   // ★取引時間外もニュースを取得(既定OFF)。newsLoop だけに効く。
   'scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpTrendVetoSource',
@@ -181,6 +181,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     indicatorsEnabled: resolveIndicatorsEnabled(),   // ★テクニカル指標(RSI/SMA/BB)パネル + AI文脈供給(既定ON・表示/文脈のみ)。
     aiTechnicalEnabled: resolveScalpAiTechnicalEnabled(),   // ★AIテクニカル許可(RSI/BB をエントリーのタイミング判断に使う・既定ON)。決済は既定ロジック。
     scalpChartFallbackText: resolveScalpChartFallbackText(),   // ★チャート撮影失敗時のテキスト縮退(既定ON=全停止防止)。
+    scalpChartVisionMode: resolveScalpChartVisionMode(),       // ★チャート画像を AI に送るか(既定 off=送らない・撮影もしない / ab=半分だけ)。
     ...generator,
     doubleFormingEnabled: resolveDoubleFormingEnabled(),   // ★検知チューニング: double 形成通知(既定OFF=breakout のみ)。breakScore/slopeConfluenceBonus は数値展開に含まれる。
     nwaveEnabled: resolveNwaveEnabled(),   // ★N波動の節目/アラート(既定ON)。nwaveMinSwingYen は数値展開に含まれる。
@@ -271,6 +272,7 @@ interface SettingsBody {
   indicatorsEnabled?: boolean | null;  // ★テクニカル指標(RSI/SMA/BB)の表示+AI文脈供給(true/null=ON=既定 / false=OFF)
   aiTechnicalEnabled?: boolean | null; // ★AIテクニカル許可(エントリーのタイミング判断)(true/null=ON=既定 / false=OFF)
   scalpChartFallbackText?: boolean | null; // ★チャート撮影失敗時のテキスト縮退(true/null=ON=既定 / false=ストリクトvision)
+  scalpChartVisionMode?: string | null;    // ★チャート画像の送信モード('ab'=半分だけ送る / それ以外・null=off=送らない=既定)
   doubleFormingEnabled?: boolean | null;   // ★検知チューニング: double 形成通知(true=ON / false/null=OFF=既定=breakout のみ)
   nwaveEnabled?: boolean | null;           // ★N波動の節目/アラート(true/null=ON=既定 / false=OFF)
   bandwalkEnabled?: boolean | null;        // ★バンドウォークのアラート/AI文脈(true/null=ON=既定 / false=OFF)
@@ -408,6 +410,10 @@ const LITE_TOP_LEVEL_WRITABLE_KEYS = [
   //   lite 名前空間(config.lite)ではなく最上位に置くのは、この値が AIエントリーの knob と違って
   //   **系統ごとに分ける意味が無い**ため(隣の newsPollMs も最上位・共有)。
   'newsOffHoursEnabled',
+  // ★v0.9.70「AIにチャート画像を送る」は lite の AIエントリーにも出している=lite から書ける必要がある。
+  //   ここに載せ忘れると、lite でプルダウンを変えて保存しても **無音で元の値へ戻る**(この関門の設計どおり)。
+  //   最上位に置くのは、この値が A/B の knob と違って **系統ごとに分ける意味が無い**(チャートは共有資源)ため。
+  'scalpChartVisionMode',
   'lite',   // ★lite 独立設定ブロックそのもの(buildLiteConfig の結果)
 ] as const satisfies readonly (keyof UserConfig)[];
 const LITE_TOP_LEVEL_WRITABLE: ReadonlySet<string> = new Set(LITE_TOP_LEVEL_WRITABLE_KEYS);
@@ -525,6 +531,11 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const aiTechnicalEnabledValue = applyBoolField(existing.aiTechnicalEnabled, bodyRec.aiTechnicalEnabled);
   // ★チャート撮影失敗時のテキスト縮退(boolean・既定 true)。null=既定(true)に戻す。
   const chartFallbackValue = applyBoolField(existing.scalpChartFallbackText, bodyRec.scalpChartFallbackText);
+  // ★チャート画像の送信モード。未指定=変更なし / 'ab'=半分だけ送る / それ以外(null/'off'/不正)=既定 off=未設定で保存。
+  //   ★不正値を 'ab' に倒さない: 課金が発生する側へ倒れる既定は作らない(安全側=送らない)。
+  const chartVisionModeValue = bodyRec.scalpChartVisionMode === undefined
+    ? existing.scalpChartVisionMode
+    : (parseChartVisionMode(bodyRec.scalpChartVisionMode) === 'ab' ? 'ab' as const : undefined);
   // ★検知チューニング: double 形成通知(boolean・既定 false)。null/false=OFF(未設定で保存)。
   const doubleFormingValue = applyBoolField(existing.doubleFormingEnabled, bodyRec.doubleFormingEnabled);
   // ★N波動の節目/アラート(boolean・既定 true)。null=既定(true)に戻す(undefined 保存)/ false=OFF。
@@ -596,6 +607,7 @@ export function postSettingsHandler(req: Request, res: Response): void {
     indicatorsEnabled: indicatorsEnabledValue,   // ★テクニカル指標(表示+AI文脈)(既定ONに戻すときは null→未設定で保存)
     aiTechnicalEnabled: aiTechnicalEnabledValue, // ★AIテクニカル許可(既定ONに戻すときは null→未設定で保存)
     scalpChartFallbackText: chartFallbackValue,   // ★チャート撮影失敗時のテキスト縮退(既定ONに戻すときは null→未設定で保存)
+    scalpChartVisionMode: chartVisionModeValue,   // ★チャート画像の送信モード(off=未設定で保存=既定)
     doubleFormingEnabled: doubleFormingValue,   // ★検知チューニング: double 形成通知(既定OFFは未設定で保存)
     nwaveEnabled: nwaveEnabledValue,   // ★N波動の節目/アラート(既定ONに戻すときは null→未設定で保存)
     bandwalkEnabled: bandwalkEnabledValue,   // ★バンドウォーク(既定ONに戻すときは null→未設定で保存)

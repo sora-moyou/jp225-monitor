@@ -30,10 +30,15 @@ vi.mock('../chatContext.js', () => ({
 
 const trendVetoYenMock = vi.fn<[], number>(() => 100);
 const chartFallbackMock = vi.fn<[], boolean>();
+// ★v0.9.70: チャート画像の送信モード。既定 'off'(送らない・撮影もしない)。
+//   画像ゲートを対象にするテストだけ 'ab' + コイン投げ固定にして「必ず画像あり」を作る。
+const chartVisionModeMock = vi.fn<[], 'off' | 'ab'>(() => 'off');
+let restoreRng: () => void = () => {};
 vi.mock('../configStore.js', () => ({
   resolvePort: () => 3000,
   resolveScalpTrendVetoYen: () => trendVetoYenMock(),
   resolveScalpChartFallbackText: () => chartFallbackMock(),
+  resolveScalpChartVisionMode: () => chartVisionModeMock(),
   resolveIndicatorsEnabled: () => true,
   // ★バンドウォーク判定の依存(v0.9.61)。目線 'none' = 判定しない = 従来と同じ文脈になる。
   resolveBandwalkEnabled: () => true,
@@ -72,16 +77,17 @@ vi.mock('./scalpContext.js', () => ({
   buildScalpTradeHistory: () => '',
 }));
 
-import { runScalpPlanWithChart } from './scalpPlanRunner.js';
+import { runScalpPlanWithChart, setChartVisionRngForTest, decideChartVision } from './scalpPlanRunner.js';
 import { feedRealtimePrice, _reset as resetBars } from '../feedBars.js';
 
 const GOOD_PLAN = { ok: true, plan: { direction: 'buy' } };
 
-/** ★記録専用の出所2列(contextAt=文脈を組み立てた時刻 / promptFp=プロンプトの指紋)を落とした結果。
- *  この2つは **全経路** で additive に載る(凍結再生の突合用)。それ以外のフィールドは
+/** ★記録専用の出所(contextAt=文脈を組み立てた時刻 / promptFp=プロンプトの指紋 /
+ *  chartVision=そのサイクルのチャート画像の群)を落とした結果。
+ *  これらは **全経路** で additive に載る(凍結再生の突合 / A/B の群の記録)。それ以外のフィールドは
  *  1つも増えないことを、以下の toEqual(GOOD_PLAN) が従来どおり固定し続ける。 */
 function withoutProvenance(r: unknown): Record<string, unknown> {
-  const { contextAt: _c, promptFp: _p, ...rest } = r as Record<string, unknown>;
+  const { contextAt: _c, promptFp: _p, chartVision: _v, ...rest } = r as Record<string, unknown>;
   return rest;
 }
 
@@ -96,9 +102,14 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     openDbMock.mockReset().mockImplementation(() => ({ close: () => {} }));
     marketDataMock.mockReset().mockReturnValue('');
     resetBars();
+    // ★v0.9.70: チャート画像は既定 off。画像ゲートを対象にするテストは 'ab' + コイン投げ固定で
+    //   「必ず画像あり」の群を作る(既定の off では撮影自体が走らないため)。
+    chartVisionModeMock.mockReset().mockReturnValue('ab');
+    restoreRng = setChartVisionRngForTest(() => 0);   // 0 < 0.5 = 常に画像あり群
     delete process.env.SCALP_CHART_VISION;
   });
   afterEach(() => {
+    restoreRng();
     delete process.env.SCALP_CHART_VISION;
   });
 
@@ -167,7 +178,9 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
 
     expect(captureMock).toHaveBeenCalledTimes(2);
     expect(buildScalpPlanMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ ok: false, error: 'chart-not-generated' });
+    expect(withoutProvenance(result)).toEqual({ ok: false, error: 'chart-not-generated' });
+    // ★この回も群は残る(撮ろうとしたが送れなかった=requested:true / sent:false)。
+    expect((result as { chartVision?: unknown }).chartVision).toEqual({ mode: 'ab', requested: true, sent: false });
   });
 
   it('no vision-capable provider → no capture, AI called with null image (no gate)', async () => {
@@ -329,5 +342,97 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
     await runScalpPlanWithChart({ profile: 'B' });
 
     expect(rangeEnabledMock).toHaveBeenCalledWith('B');
+  });
+});
+
+// ─── ★v0.9.70: チャート画像の A/B(既定 off = 送らない・撮影もしない) ──────────────────
+//
+//  ★背景(稼働機のログの実測): 画像つきの呼び出しが1日約1,600回。1280x760・detail 未指定(=高精細)で、
+//   無料枠(gemini)がレート制限で休むと groq は 413・kimi は 404 で必ず落ち、**OpenAI が全部かぶる**。
+//   gpt-4o-mini は画像のトークン換算率が極端に高く、1枚で約36,800トークン → 1日5.5ドル(月165ドル)。
+//   そして「画像が効いているか」は一度も測っていない(画像が事実上100%に付き、対照群が存在しない)。
+describe('★チャート画像の A/B(既定 off)', () => {
+  // ★この describe は上の describe の兄弟なので、上の beforeEach は走らない。
+  //   モックは **ここで自分で初期化する**(共有モックの呼び出し回数が前の describe から持ち越されると、
+  //   「撮影を呼んでいない」の検証が前のテストの呼び出しで落ちる=実際にそれで一度落とした)。
+  beforeEach(() => {
+    buildScalpPlanMock.mockReset().mockResolvedValue(GOOD_PLAN);
+    firstVisionMock.mockReset().mockReturnValue({ name: 'gemini' });
+    captureMock.mockReset().mockResolvedValue({ buffer: Buffer.from('png'), reason: null, chromePath: 'c', chromeVersion: 'v1' });
+    trendVetoYenMock.mockReset().mockReturnValue(100);
+    rangeEnabledMock.mockReset().mockReturnValue(false);
+    chartFallbackMock.mockReset().mockReturnValue(true);
+    chartVisionModeMock.mockReset().mockReturnValue('off');
+    openDbMock.mockReset().mockImplementation(() => ({ close: () => {} }));
+    marketDataMock.mockReset().mockReturnValue('');
+    resetBars();
+    delete process.env.SCALP_CHART_VISION;
+  });
+
+  it('★off(既定): 撮影を1回も呼ばず、画像なしで AI を呼ぶ', async () => {
+    chartVisionModeMock.mockReturnValue('off');
+    await runScalpPlanWithChart();
+    expect(captureMock).not.toHaveBeenCalled();                       // ★ヘッドレスChrome を起動しない
+    expect(firstVisionMock).not.toHaveBeenCalled();                   // ★プロバイダの照会すらしない
+    expect(buildScalpPlanMock.mock.calls[0]![0]).toMatchObject({ chartImageDataUrl: null });
+  });
+
+  it('★off: 群の記録は mode=off / requested=false / sent=false', async () => {
+    chartVisionModeMock.mockReturnValue('off');
+    const r = await runScalpPlanWithChart() as Record<string, unknown>;
+    expect(r.chartVision).toEqual({ mode: 'off', requested: false, sent: false });
+  });
+
+  it('★ab: コイン投げが表なら撮って添付し、裏なら撮らない', async () => {
+    chartVisionModeMock.mockReturnValue('ab');
+    const restore = setChartVisionRngForTest(() => 0.99);   // 裏=画像なし
+    await runScalpPlanWithChart();
+    restore();
+    expect(captureMock).not.toHaveBeenCalled();
+    expect(buildScalpPlanMock.mock.calls[0]![0]).toMatchObject({ chartImageDataUrl: null });
+
+    buildScalpPlanMock.mockClear();
+    const restore2 = setChartVisionRngForTest(() => 0.0);   // 表=画像あり
+    await runScalpPlanWithChart();
+    restore2();
+    expect(captureMock).toHaveBeenCalled();
+    expect(String(buildScalpPlanMock.mock.calls[0]![0].chartImageDataUrl)).toContain('data:image/png;base64,');
+  });
+
+  it('★ab は概ね半分(十分な回数で偏りを見る)', () => {
+    // 純関数で確かめる(runner 全体を1万回回すのではなく、割り当ての公平さだけを見る)。
+    let n = 0;
+    const N = 20000;
+    let seed = 12345;
+    const rng = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    for (let i = 0; i < N; i++) if (decideChartVision('ab', false, rng).wantImage) n++;
+    expect(n / N).toBeGreaterThan(0.47);
+    expect(n / N).toBeLessThan(0.53);
+  });
+
+  it('★env(SCALP_CHART_VISION=0)は ab でも強制オフ(オンには倒せない)', () => {
+    expect(decideChartVision('ab', true, () => 0).wantImage).toBe(false);
+    expect(decideChartVision('off', false, () => 0).wantImage).toBe(false);
+    // 逆向き(env でオンに倒す)は存在しない=課金の効く方向へ倒す入口を増やさない。
+    expect(decideChartVision('off', false, () => 0).mode).toBe('off');
+  });
+
+  it('★sent は「実際に送ったか」: buildScalpPlan が imageSent:false を返せば requested:true でも sent:false', async () => {
+    // = ビジョン非対応プロバイダへフォールバックして画像が外れた回の再現。
+    chartVisionModeMock.mockReturnValue('ab');
+    const restore = setChartVisionRngForTest(() => 0);
+    buildScalpPlanMock.mockResolvedValue({ ...GOOD_PLAN, imageSent: false });
+    const r = await runScalpPlanWithChart() as Record<string, unknown>;
+    restore();
+    expect(r.chartVision).toEqual({ mode: 'ab', requested: true, sent: false });
+  });
+
+  it('★sent=true になるのは buildScalpPlan が imageSent:true を返した時だけ', async () => {
+    chartVisionModeMock.mockReturnValue('ab');
+    const restore = setChartVisionRngForTest(() => 0);
+    buildScalpPlanMock.mockResolvedValue({ ...GOOD_PLAN, imageSent: true });
+    const r = await runScalpPlanWithChart() as Record<string, unknown>;
+    restore();
+    expect(r.chartVision).toEqual({ mode: 'ab', requested: true, sent: true });
   });
 });

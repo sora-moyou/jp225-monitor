@@ -132,7 +132,10 @@ export function initSchema(db: DatabaseSync): void {
       error TEXT,                   -- 計画が得られなかった回の理由(chart-not-generated 等)。取れた回は NULL。
       -- ★凍結再生の突合(RECORD-ONLY): 下の ALTER と同じ2列。新規DBはここで、既存DBは ALTER で入る。
       context_at INTEGER,           -- 文脈を組み立てた時刻(epoch ms)。t(記録時刻)とは別物。
-      prompt_fp TEXT                -- 送った system+user プロンプトの一方向指紋。★本文は決して入れない。
+      prompt_fp TEXT,               -- 送った system+user プロンプトの一方向指紋。★本文は決して入れない。
+      -- ★v0.9.70(RECORD-ONLY): **実際に答えた** LLM プロバイダとモデル。下の ALTER と同じ2列。
+      provider TEXT,
+      provider_model TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -170,6 +173,22 @@ export function initSchema(db: DatabaseSync): void {
   //   ★判定には使わない(落としも直しもしない)。まず頻度を測るためだけの列。
   //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行 or 表明ゼロ)。
   if (!spCols.includes('omission_audit_json')) db.exec('ALTER TABLE signal_plans ADD COLUMN omission_audit_json TEXT');
+  // ★v0.9.70(RECORD-ONLY): **実際に答えた** LLM プロバイダ名(provider)とチャットモデル名(provider_model)。
+  //
+  //   ■ なぜ要るか(チャート画像 A/B の交絡)
+  //     画像を送る回は必ずビジョン対応(gemini/openai)へ行き、送らない回は groq/kimi でも通る。
+  //     つまり「画像あり/なし」は **モデルの違いと完全に絡む**。この2列が無いと、ab で貯めた標本は
+  //     後から層別できない=「測れないデータを貯める」ことになる(この機能の意味が消える)。
+  //   ■ モデル名も別列で持つ理由
+  //     同じプロバイダでもモデルが変われば別物(画像のトークン換算率も、そもそもビジョン可否も変わる)。
+  //     実際にこのリポジトリではモデル名を設定で差し替えられ、過去に差し替えの事故(404)も起きている。
+  //     provider と provider_model を1列に混ぜると `GROUP BY provider` に文字列分解が要る=集計を誤らせる。
+  //   ■ 値の意味(曖昧さを残さない)
+  //     **その計画の答えを返したプロバイダ**。答えが得られなかった回(プロバイダ不在・全滅・
+  //     再要求してもパースできなかった)は NULL。「送ろうとした先」は記録しない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('provider')) db.exec('ALTER TABLE signal_plans ADD COLUMN provider TEXT');
+  if (!spCols.includes('provider_model')) db.exec('ALTER TABLE signal_plans ADD COLUMN provider_model TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -952,6 +971,10 @@ export interface SignalPlanRow {
   /** 根拠文の「出さない」表明 と 実際に発注されるレッグの突き合わせ(OmissionClaimCheck[] の JSON)。
    *  旧行/表明ゼロは NULL。 */
   omission_audit_json: string | null;
+  /** ★実際に答えた LLM プロバイダ名(gemini/groq/kimi/openai)。答えが得られなかった回・旧行は NULL。 */
+  provider: string | null;
+  /** ★実際に答えたチャットモデル名。同上。 */
+  provider_model: string | null;
 }
 
 export interface SignalPlanInsert {
@@ -987,6 +1010,10 @@ export interface SignalPlanInsert {
   /** ★RECORD-ONLY: 「出さない」表明と実際に発注されるレッグの突き合わせ(OmissionClaimCheck[] の JSON)。
    *  1件も表明が読めなければ未指定=NULL。 */
   omissionAuditJson?: string | null;
+  /** ★RECORD-ONLY: 実際に答えた LLM プロバイダ名。答えが得られなかった回は未指定=NULL。 */
+  provider?: string | null;
+  /** ★RECORD-ONLY: 実際に答えたチャットモデル名。同上。 */
+  providerModel?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1002,8 +1029,9 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       limit_entry, stop_entry, stop_loss_for_limit, stop_loss_for_stop,
       leg_drops_json, settings_json, rationale, error,
       arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason,
-      context_at, prompt_fp, lc_audit_json, omission_audit_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      context_at, prompt_fp, lc_audit_json, omission_audit_json,
+      provider, provider_model
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1015,6 +1043,7 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     p.armWaitReason ?? null,
     finiteOrNull(p.contextAt), p.promptFp ?? null, p.lcAuditJson ?? null,
     p.omissionAuditJson ?? null,
+    p.provider ?? null, p.providerModel ?? null,
   );
 }
 

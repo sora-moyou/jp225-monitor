@@ -52,21 +52,51 @@ describe('★片レッグだけ落ちた回の理由が構造的に残る(parse 
     expect(r.legDrops?.[0]?.entry).toBeUndefined();
   });
 
-  it('SL向き違反: 買いなのに逆指値レッグの損切りが上 → stop=stopSide(生数値つき)', () => {
+  // ★v0.9.70: 「SL向き違反」は表現不能になった(LLM は幅しか出さず、符号はコードが付ける)。
+  //   旧形式で逆側の価格が来ても幅だけを採って正しい向きに置き直すので、レッグは落ちない=注記も出ない。
+  //   落ちる形は「使える幅が無い(非有限・0以下)」に移り、既存語彙の missing で記録される。
+  it('★旧形式で逆側の損切り価格が来ても落ちない(幅だけ採用・stopSide は記録されない)', () => {
     const r = parseScalpPlan(planJson({
       direction: 'buy',
       limitEntry: 38200, stopLossForLimit: 38150,
-      stopEntry: 38350, stopLossForStop: 38400,   // buy なのに SL が上=向き違反
+      stopEntry: 38350, stopLossForStop: 38400,   // 旧形式で上(逆側)= 幅50
     }), REF);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.plan.limitEntry).toBe(38200);
-    expect(r.plan.stopEntry).toBeUndefined();     // 採否は従来どおり(落とす)
-    expect(drops(r.legDrops)).toEqual([['stop', 'stopSide']]);
-    expect(r.legDrops?.[0]).toEqual({ name: 'stop', reason: 'stopSide', entry: 38350, stopLoss: 38400 });
-    // 表示用注記(日本語)も同じ理由を語る=台帳(legDrops)と画面が食い違わない。
-    // ★v0.9.59: 文面は「条件を満たさず不採用」(無内容)から具体的な理由へ差し替え(ユーザー指示)。
-    expect(r.plan.rationale).toContain('（逆指値は不採用: 損切りがエントリーの逆側）');
+    expect(r.plan.stopEntry).toBe(38350);
+    expect(r.plan.stopLossForStop).toBe(38300);   // 38350 − 50(コードが下へ置く)
+    expect(drops(r.legDrops)).toEqual([]);
+    expect(r.plan.rationale).not.toContain('損切りがエントリーの逆側');
+  });
+
+  // ★v0.9.70: 「AI が幅を書いたが値が使えない」は **提案せず(missing)ではない**。
+  //   'missing' にすると台帳と画面が「AIが提案せず」と虚偽を語り、書いた値も残らず件数も数えられなかった。
+  it('幅が使えないレッグ(lcWidth<=0)は geometry で記録され、書いた値が残る', () => {
+    const r = parseScalpPlan(planJson({
+      direction: 'buy',
+      limitEntry: 38200, lcWidthForLimit: 50,
+      stopEntry: 38350, lcWidthForStop: 0,
+    }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.stopEntry).toBeUndefined();
+    expect(drops(r.legDrops)).toEqual([['stop', 'geometry']]);
+    expect(r.legDrops?.[0]).toEqual({ name: 'stop', reason: 'geometry', entry: 38350, lcWidth: 0 });
+    expect(r.plan.rationale).toContain('（逆指値は不採用: ');
+    expect(r.plan.rationale).not.toContain('AIが提案せず');
+  });
+
+  it('★負の幅も同じ経路(reason=geometry・AI が書いた −55 が台帳に残る)', () => {
+    const r = parseScalpPlan(planJson({
+      direction: 'sell',
+      limitEntry: 38300, lcWidthForLimit: -55,
+      stopEntry: 38150, lcWidthForStop: 55,
+    }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.legDrops).toEqual([{ name: 'limit', reason: 'geometry', entry: 38300, lcWidth: -55 }]);
+    expect(r.plan.rationale).not.toContain('AIが提案せず');
   });
 
   it('向き違反(現在値との上下): 買いの逆指値が現在値より下 → stop=geometry', () => {

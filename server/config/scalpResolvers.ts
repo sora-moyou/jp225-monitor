@@ -83,6 +83,22 @@ export function resolveScalpChartFallbackText(): boolean {
   return typeof v === 'boolean' ? v : true;
 }
 
+// ★v0.9.70: チャート画像を AI に送るか(グローバル・A/B共有)。
+//   'off'(既定) … 1枚も送らない。★撮影(ヘッドレスChrome)自体も行わない。
+//   'ab'        … サイクルごとにランダムで半分だけ送る(画像の効き目を測るための対照群を作る)。
+//   ★「全量」は意図的に用意しない。実測で 1日約1,600回の画像付き呼び出しが OpenAI 課金の主因
+//     (1280x760・detail 未指定=高精細・gpt-4o-mini は画像の換算率が極端に高い)。二度と全額を払わない形にする。
+//   ★未設定/不正値は必ず 'off'。「知らない値なら安全側(送らない)」に倒す=課金は fail-safe でなければならない。
+export type ChartVisionMode = 'off' | 'ab';
+export function resolveScalpChartVisionMode(): ChartVisionMode {
+  return loadConfig().scalpChartVisionMode === 'ab' ? 'ab' : 'off';
+}
+
+/** 設定値を寛容にパースする純関数(HTTP body 用)。'ab' 以外は全て 'off'(安全側)。 */
+export function parseChartVisionMode(v: unknown): ChartVisionMode {
+  return typeof v === 'string' && v.trim().toLowerCase() === 'ab' ? 'ab' : 'off';
+}
+
 // ─── v0.7.56: 委任 directive リゾルバ({mode,value}) ───────────────────────
 // 各 knob を「手動(数値/enum を強制)」か「AI委任(該当制約を課さない)」で返す。
 // source が 'ai' のときだけ ai。それ以外(未設定/'manual'/不正値)は寛容に manual(=既定で現状の挙動)。

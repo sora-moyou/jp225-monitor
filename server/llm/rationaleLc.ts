@@ -80,16 +80,25 @@ export interface LcDeclarationCheck {
   equationSelfConsistent?: boolean;
 }
 
-/** 見出し(レッグ名)。★長い語を先に置く=「逆指値」の中の「指値」を拾わない。 */
-const HEADING_RE = /ブレイク新規|逆指値レッグ|逆指値|stopLossForStop|stopEntry|指値レッグ|指値|stopLossForLimit|limitEntry/g;
+/** 見出し(レッグ名)。★長い語を先に置く=「逆指値」の中の「指値」を拾わない。
+ *  ★v0.9.70: 損切りの契約が「価格(stopLossFor…)」→「幅(lcWidthFor…)」に変わったので、
+ *   新しいフィールド名も見出しとして拾う。足さないと、AI が新しい名前で書いた根拠文の申告幅が
+ *   どのレッグにも割り当たらず(unassigned)、突き合わせが **無言で undeclared に落ちる**。
+ *   旧名は残す(旧形式で書いてくる回も読めるように=フォールバックと同じ理由)。 */
+const HEADING_RE = /ブレイク新規|逆指値レッグ|逆指値|lcWidthForStop|stopLossForStop|stopEntry|指値レッグ|指値|lcWidthForLimit|stopLossForLimit|limitEntry/g;
 
-/** 書式①(幅の申告)。4つの書き方を1つの交替で1回だけ走査する(=拾う順序が文の順序と一致する)。 */
+/** 書式①(幅の申告)。書き方の交替を1回だけ走査する(=拾う順序が文の順序と一致する)。
+ *  ★v0.9.70(保険): 新契約のフィールド名で幅を申告する形(`lcWidthForStop = 60円` / `lcWidth: 60`)も読む。
+ *   プロンプトの例文は「LC幅は N円」に揃えたが、モデルが自分のフィールド名で書く回は必ず出る。
+ *   ★長い語を先に置く(`lcWidthForLimit` を `lcWidth` の枝で切らないため)。 */
 const WIDTH_RE = new RegExp(
   [
     'LC\\s*[=＝:：]\\s*(\\d{1,3})(?!\\d)\\s*円?',
     'LC幅\\s*[（(]\\s*(\\d{1,3})(?!\\d)\\s*[)）]',
     'LC幅\\s*(?:は|が|＝|=|:|：)\\s*(\\d{1,3})(?!\\d)\\s*円?',
     '損切り幅\\s*(?:は|が|＝|=|:|：)?\\s*(\\d{1,3})(?!\\d)\\s*円',
+    'lcWidthFor(?:Limit|Stop)\\s*(?:は|が|＝|=|:|：)\\s*(\\d{1,3})(?!\\d)\\s*円?',
+    'lcWidth\\s*(?:は|が|＝|=|:|：)\\s*(\\d{1,3})(?!\\d)\\s*円?',
   ].join('|'),
   'g',
 );
@@ -108,7 +117,7 @@ export function headingMarks(text: string): Array<{ at: number; leg: LcLegKind }
   while ((m = HEADING_RE.exec(text)) !== null) {
     const w = m[0];
     const leg: LcLegKind =
-      (w === 'ブレイク新規' || w.startsWith('逆指値') || w === 'stopEntry' || w === 'stopLossForStop') ? 'stop' : 'limit';
+      (w === 'ブレイク新規' || w.startsWith('逆指値') || w === 'stopEntry' || w === 'stopLossForStop' || w === 'lcWidthForStop') ? 'stop' : 'limit';
     marks.push({ at: m.index, leg });
   }
   return marks;
