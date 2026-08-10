@@ -25,6 +25,35 @@ describe('formatKeyTestLine', () => {
     expect(r.html).toContain('モデル');                   // どこを直すかが書いてある
   });
 
+  // ★実害: 一覧は <details> に入れていたが **既定で閉じていた**ため、画面には
+  //   「このキーで使えるモデル (4件)」の1行しか出ず、肝心のモデル名が見えなかった
+  //   (ユーザー報告「4行はありません」)。この分岐の存在理由そのものが隠れていた。
+  //   ★否定対照: 修正前の `<details class="model-list">` には open が無いので下記は赤。
+  it('★モデル一覧は既定で開いている(open が付く=モデル名が実際に見える)', () => {
+    const r = formatKeyTestLine({
+      name: 'kimi', ok: false, keyOk: true, modelOk: false, reason: 'model',
+      model: 'kimi-latest', models: ['kimi-k2-turbo-preview', 'moonshot-v1-8k'], modelsTotal: 2,
+    });
+    expect(r.html).toContain('<details class="model-list" open>');
+    // 実際に生成される HTML で、summary の後ろに <li> が並んでいること
+    expect(r.html).toContain('<li><code>kimi-k2-turbo-preview</code></li>');
+    expect(r.html).toContain('<li><code>moonshot-v1-8k</code></li>');
+  });
+
+  it('★open が付くのは reason==="model" だけ(他の分岐の表示は変えない)', () => {
+    const others = [
+      formatKeyTestLine({ name: 'openai', ok: false, keyOk: false, reason: 'key', model: 'gpt-4o-mini', error: '401' }),
+      formatKeyTestLine({ name: 'gemini', ok: true, keyOk: true, modelOk: true, reason: 'ok', model: 'gemini-flash-latest' }),
+      formatKeyTestLine({ name: 'groq', ok: true, via: 'ping', reason: 'ok', model: 'llama-3.3-70b-versatile' }),
+      formatKeyTestLine({ name: 'kimi', ok: false, notset: true }),
+      formatKeyTestLine({ name: 'kimi', ok: false, reason: 'unknown', model: 'x', error: 'なにか' }),
+    ];
+    for (const o of others) {
+      expect(o.html).not.toContain('<details');
+      expect(o.html).not.toMatch(/<\w+[^>]*\sopen[\s>]/);   // どのタグにも open 属性を足していない
+    }
+  });
+
   it('★キーが無効 → ❌ で「モデル以前の問題」と書く(モデル欄をいじらせない)', () => {
     const r = formatKeyTestLine({
       name: 'openai', ok: false, keyOk: false, reason: 'key', model: 'gpt-4o-mini',

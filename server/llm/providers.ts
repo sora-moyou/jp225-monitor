@@ -6,6 +6,10 @@ import type { GeneratorKeySource, GeneratorProviderName } from '../configStore.j
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { notifyDefaultQuota } from './generatorGate.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
+import { sanitizeErrorForOutput, stripParsedInputSnippet } from './redact.js';
+// ★V8 断片の除去は redact.ts(葉モジュール)へ移した: ログと HTTP 応答の両方で同じ規則・
+//   同じ順序を使うため。ここからの再エクスポートは維持する(既存の import 元は不変)。
+export { stripParsedInputSnippet };
 
 // ─── プロバイダ状態は「プール別」(default / generator) ───────────────────
 //
@@ -144,6 +148,28 @@ function logPrefix(p: ProviderState): string {
   return p.pool === DEFAULT_CALLER ? `[LLM:${p.config.name}] ` : `[LLM:${p.config.name}@${p.pool}] `;
 }
 
+/** ログに載せるエラー本文の長さ上限。
+ *  ★240 は「**実文の全体が入る長さ**」ではなく「**診断に要る数値が確実に入る長さ**」。
+ *    Groq の 413(稼働機で1日2,500回以上)の要点は `on tokens per minute (TPM): Limit N, Requested M` で、
+ *    実文ではモデル名・organization id・service tier の後、おおよそ **137〜200 文字目**に現れる
+ *    (id やモデル名の長さで前後する)。従来の 60 文字はモデル名の途中で切れており、
+ *    「どれだけ超過したか」が毎回捨てられていた(=打つ手が決まらない)。
+ *  ★実文はここで切れて構わない: 実文は `Limit/Requested` の後ろにも続くことが確認されている
+ *    (`… please reduce your message size and try again. Need more …`)。240 でも末尾は落ちる。
+ *    落としてよい部分(定型の依頼文)と、絶対に残す部分(数値)を分けた値、という位置づけ。
+ *  ★この機体の server.log には 60 字で切られた形しか残っていない(=旧実装で捨てられた後の姿)。
+ *    実文の続きは同期フォルダ側の記録で確認したもので、ここの数値はその観測に基づく。 */
+const ERR_LOG_MAX = 240;
+
+/** ログ用にエラー本文を整形する(純関数)。
+ *  ★順序が重要: **伏字 → アプリデータの除去 → 切り詰め**。前二段は sanitizeErrorForOutput が
+ *    SSOT(ログと HTTP 応答で同じ規則・同じ順序を使う)。ここが足すのは「切り詰め」だけ。
+ *    切ってから伏せると、伏せる前の文字列長で切った結果にキーの断片が残りうる。 */
+export function formatErrForLog(msg: string, max: number = ERR_LOG_MAX): string {
+  const cleaned = sanitizeErrorForOutput(msg);
+  return cleaned.length <= max ? cleaned : `${cleaned.slice(0, max)}…`;
+}
+
 // ─── APIキーの実効性テスト(ライブ ping) ───
 // 「設定済み(=キー文字列がある)」と「実際に有効(=そのキーで叩ける)」は別問題なので、
 // プロバイダごとに1トークンだけの極小 chat リクエストを投げてキーの有効性を確認する。
@@ -227,7 +253,7 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
   if (kind === 'oversize') {
     // この要求だけがモデル上限(TPM/コンテキスト)を超過。プロバイダ自体は健全なので
     // ポーズしない(小さい chat/explain は同プロバイダで通り続ける)。より大きいモデルへ流すだけ。
-    console.warn(`${logPrefix(p)}oversize (${msg.slice(0, 60)}) — ポーズせず次(大きいモデル)へフォールバック`);
+    console.warn(`${logPrefix(p)}oversize (${formatErrForLog(msg)}) — ポーズせず次(大きいモデル)へフォールバック`);
     return true;
   }
   if (kind === 'quota') {
@@ -260,12 +286,12 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     //   これで Kimi 404 等の誤設定プロバイダを避けて他プロバイダで継続できる(連鎖全滅を防ぐ)。
     p.lastFailAt = now;
     p.circuitOpenUntil = now + 30 * 60_000;
-    console.warn(`${logPrefix(p)}config error (${msg.slice(0, 70)}) — paused 30min → 次へフォールバック(キー/モデルを確認)`);
+    console.warn(`${logPrefix(p)}config error (${formatErrForLog(msg)}) — paused 30min → 次へフォールバック(キー/モデルを確認)`);
   } else {
     // 一過性: ladder を進めず短時間だけ休ませる(枠切れと違い恒久化させない)。
     p.lastFailAt = now;
     p.circuitOpenUntil = now + TRANSIENT_PAUSE_MS;
-    console.warn(`${logPrefix(p)}transient (${msg.slice(0, 60)}) — paused ${Math.round(TRANSIENT_PAUSE_MS / 1000)}s → 次へフォールバック`);
+    console.warn(`${logPrefix(p)}transient (${formatErrForLog(msg)}) — paused ${Math.round(TRANSIENT_PAUSE_MS / 1000)}s → 次へフォールバック`);
   }
   return true;
 }

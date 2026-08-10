@@ -14,6 +14,7 @@ import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 // 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
 import type { ChartShotIdentity } from '../chart/chartShot.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
+import { sanitizeErrorForOutput } from './redact.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 // ★RECORD-ONLY: 送るプロンプトの一方向指紋だけを作る純関数(本文はこのファイルの外へ出さない)。
@@ -2212,6 +2213,13 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     }
     return out;
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e), imageSent, ...(answeredBy ? { provider: answeredBy } : {}) };
+    // ★sanitize は必須(切り詰めはしない): この error は /api/scalp-plan の応答に**そのまま**載り、
+    //   trade2 が受け取って chrono_kabu.log に `monitorError=` として記録し、同期フォルダへ出す。
+    //   実測(同期フォルダ): 401 のキーエコー 1,758件 / 413 1,019件。実キー文字が出ていないのは
+    //   **提供元が `****` で伏せてくれていたから**で、こちら側の防御は無かった(=運任せ)。
+    //   ★落とすのは2種: ①APIキー ②V8 が埋め込むモデル生出力の断片。②は
+    //     **非公開の決済ロジックの数値**(describeExitLogic がプロンプトへ実行時注入し、モデルが
+    //     根拠文で言い直しうる)を同期フォルダへ運びうるため。長さは触らない(診断値を落とさない)。
+    return { ok: false, error: sanitizeErrorForOutput(e instanceof Error ? e.message : String(e)), imageSent, ...(answeredBy ? { provider: answeredBy } : {}) };
   }
 }

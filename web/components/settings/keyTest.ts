@@ -30,7 +30,10 @@ export function formatKeyTestLine(r: KeyTestResult): { mark: string; title: stri
       title: `キーは有効。モデル "${r.model ?? ''}" が使えません`,
       html: `<div>⚠️ ${name}: <strong>キーは有効</strong>ですが、モデル <code>${model}</code> は<strong>このキーでは使えません</strong>。`
         + `上の「${name} のモデル」欄に下記のいずれかを入れて保存してください。`
-        + `<details class="model-list"><summary>このキーで使えるモデル (${total}件)</summary><ul>${list}${more}</ul></details></div>`,
+        // ★`open` は必須。この分岐の存在理由は「使えるモデル名を選んでもらう」ことなので、
+        //   既定で閉じていると **一番大事な情報が画面に無い**(実際「4行はありません」と報告された)。
+        //   他の分岐(✅/❌/⚪)には一覧が無いので、開くのはここだけ。
+        + `<details class="model-list" open><summary>このキーで使えるモデル (${total}件)</summary><ul>${list}${more}</ul></details></div>`,
     };
   }
   if (r.ok) {

@@ -10,6 +10,7 @@ import { exitVariantImplKind } from '../signalTrade/exitVariantImpl.js';
 import { checkGeneratorGate } from '../llm/generatorGate.js';
 import { inPollWindow } from '../../core/session.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
+import { sanitizeErrorForOutput } from '../llm/redact.js';
 
 // ★実際の呼び出し元(2026-08-02 に実確認):
 //   - **trade2 は叩いていない**。trade2 は monitor のシグナルを SSE / `/api/current-signal` で追従するだけで、
@@ -241,12 +242,20 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
       //   ★数値は AI が出したレッグの価格(noneLegs)だけで、決済ラダーの実数値は一切含まれない。
       res.json({ ok: true, plan: result.plan, ...planDiagnostics(result, diagnosticsOn), ...echoVariant });
     } else {
-      // キー無し/パース失敗/LLM 失敗/チャート未生成は 200 + ok:false で返す(キーは決して漏らさない)。
+      // キー無し/パース失敗/LLM 失敗/チャート未生成は 200 + ok:false で返す。
       // 見送りも実験の1標本なので、変種名(名前のみ・数値なし)は同じように返す。
-      res.json({ ok: false, error: result.error, ...echoVariant });
+      // ★「キーは決して漏らさない」は **願望ではなく処理で**担保する: この応答は trade2 が受け取り
+      //   chrono_kabu.log に `monitorError=` として記録し、同期フォルダへ出る(実測: 401のキーエコー1,758件)。
+      //   実キー文字が出ていなかったのは提供元が `****` で伏せていたからで、こちら側の防御は無かった。
+      //   落とすのは ①APIキー ②V8 が埋め込むモデル生出力の断片(**非公開の決済数値**を運びうる)。
+      //   発生源(llm/scalpPlan.ts の catch)でも通すが、**プロセスから出る境界**でも必ず通す
+      //   (sanitizeErrorForOutput は冪等なので二重適用でも文字列は変わらない)。長さは触らない。
+      res.json({ ok: false, error: sanitizeErrorForOutput(result.error), ...echoVariant });
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    // ★ok:false の経路と同じ理由で通す。ここも応答が trade2 のログ経由で同期フォルダへ出る。
+    //   長さの扱い(200字)は従来どおり=増えるのは伏字と断片除去だけ。
+    const msg = sanitizeErrorForOutput(err instanceof Error ? err.message : String(err));
     console.error('[scalp-plan] error:', msg);
     res.status(500).json({ ok: false, error: msg.slice(0, 200) });
   }

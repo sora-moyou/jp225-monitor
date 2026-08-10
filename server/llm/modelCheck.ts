@@ -24,6 +24,7 @@ import { resolveApiKeyForPool } from '../configStore.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { testProviderState, type KeyTestResult } from './providers.js';
+import { redactSecrets } from './redact.js';
 
 /** 判定の理由。画面はこれを見て文言を変える(「404」で終わらせないため)。
  *  'ok'=モデルまで確認済 / 'key'=キーが無効 / 'model'=キーは有効だがモデルが使えない /
@@ -68,15 +69,10 @@ export function isKeyError(status: number | undefined, msg: string): boolean {
     .test(msg);
 }
 
-/** ★エラー本文に API キーらしき文字列が混ざっていたら伏せる。
- *  実測: OpenAI の 401 は `Incorrect API key provided: sk-proj-****…Y9EA` のように
- *  自分のキーを(一部伏せて)エコーバックしてくる。設定画面にそのまま出す必要はないので、
- *  こちらで確実に落としてから返す(画面・ログ・スクショのどれにも残さない)。 */
-export function redactSecrets(msg: string): string {
-  return msg
-    .replace(/\b(sk|gsk|sk-proj|sk-ant)[-_][A-Za-z0-9*_-]{6,}/g, '<キー伏字>')
-    .replace(/\bAIza[A-Za-z0-9*_-]{6,}/g, '<キー伏字>');
-}
+// ★実装は server/llm/redact.ts(依存の無い葉モジュール)へ移した。providers.ts のログ整形でも
+//   同じ規則が必要で、そちらから modelCheck を import すると循環になるため。
+//   ここからの再エクスポートは維持する(既存の import 元・テストは無改変)。
+export { redactSecrets };
 
 function errMsg(e: unknown): string {
   return redactSecrets(e instanceof Error ? e.message : String(e));
