@@ -66,6 +66,22 @@ export class UnusableResponseError extends Error {
   }
 }
 
+/** ★「この失敗ではフォールバックしない」とタスク側が型で申告するための基底クラス。
+ *
+ *  なぜ必要か(2026-08-11 実測): scalp-plan の parse 失敗は **意図的にフォールバックさせない**
+ *  (実データで 1198件中1件・一方の代償は1サイクルの外部呼び出しが2回→最大8回でトークンを実際に消費)。
+ *  ところが「型を知らなければ classifyLLMError に落ちる → null なら再投げ」に頼ると、
+ *  **メッセージ中の数値次第で決定が破れる**。実測:
+ *      'parse failed after retry: … refPrice 66,500'   → transient(30秒ポーズ + フォールバック)
+ *      'parse failed after retry: … 節目 41,503 円'    → transient
+ *      'parse failed after retry: … legs 40,413 …'     → oversize
+ *      'parse failed after retry: … at position 429'   → quota
+ *  日経の「500円刻み」はまさに節目なので、これは稀な偶然ではない。
+ *  ★避けたはずの課金が、文字列次第で発生してしまう = 決定が実装で保証されていない。
+ *
+ *  よって UnusableResponseError と同じく **文字列の分類より先に型で見る**。 */
+export class NoFallbackError extends Error {}
+
 /** LLM エラーを分類。'quota'=429/枯渇(長 ladder), 'oversize'=413/コンテキスト超過(ポーズせず次へ),
  *  'transient'=5xx/timeout/network(短ポーズ), 'config'=401/403/404・モデル不明/権限/キー無効(★長ポーズして次へ),
  *  'badrequest'=400・この要求が受け付けられない(★ポーズせず次へ),
@@ -309,6 +325,11 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     console.warn(`${logPrefix(p)}unusable response (${formatErrForLog(msg)}) — ポーズせず次へフォールバック(応答が使えない)`);
     return true;
   }
+  // ★「フォールバックしない」とタスク側が型で申告したもの。これも文字列の分類より **先** に見る。
+  //   後ろに置くと 'refPrice 66,500' の 500 が \b50[0-4]\b に当たって transient に化け、
+  //   フォールバックした上に健全なプロバイダを30秒ポーズする(=避けたはずの課金が発生する)。
+  //   ログはタスク側が既に出しているのでここでは出さない(同じ故障が2行になるのを避ける)。
+  if (err instanceof NoFallbackError) return false;
   const kind = classifyLLMError(msg);
   if (!kind) return false;
   const now = Date.now();

@@ -13,7 +13,7 @@ import { BB_BAND_LABEL } from '../../core/indicatorSpec.js';
 import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 // 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
 import type { ChartShotIdentity } from '../chart/chartShot.js';
-import { callWithFallback, isLLMEnabled, isVisionCapableProvider } from './providers.js';
+import { callWithFallback, isLLMEnabled, isVisionCapableProvider, formatErrForLog, NoFallbackError } from './providers.js';
 import { sanitizeErrorForOutput } from './redact.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
@@ -1434,6 +1434,45 @@ export function buildScalpUserContent(userPrompt: string, imageDataUrl?: string 
   ];
 }
 
+/**
+ * ★「200 は返ったが、その応答からは計画が作れなかった」ことを **診断のためだけに** 名乗る例外。
+ *
+ * ■ providers.ts の UnusableResponseError と **意図的に別の型** にしている(2026-08-11 の決定)
+ *   あちら(翻訳が使う)は tripCircuit が拾って「ポーズせず **次のプロバイダへ**」に落とす型。
+ *   こちらは **フォールバックさせない**。tripCircuit はこの型を知らないので classifyLLMError(null)
+ *   → callWithFallback の「429以外は再投げ」枝 → 1番目のプロバイダで打ち切る = **従来と完全に同じ挙動**。
+ *
+ * ■ ★なぜフォールバックさせないのか(頻度を測った結果・ここが要点)
+ *   台帳 signal_plans 全1198件(2026-08-04〜08-11 の8日間)の内訳:
+ *       400 invalid temperature ... 411件  ← v0.9.73(classifyLLMError に 400 を追加)で解決済み
+ *       parse failed after retry ...  1件  ← この経路
+ *       空応答 / no response ......... 0件
+ *   **8日で1件**。しかもその1件が「別のモデルなら正しい JSON を返した」保証は無い。
+ *   一方フォールバックの代償は:
+ *     ・全滅時の外部呼び出しが 1サイクル 2回 → **最大 8回**(プロバイダ4 × (tool ループ + 厳格な再要求))
+ *     ・★400 と違い、空応答/壊れた JSON は **トークンを実際に消費する**(400 は消費ゼロで即返る)
+ *     ・planning ロックが4系列ぶん延びて次のサイクルが押し出される。**この経路に独自のタイムアウトが無い**
+ *   そして払うのは「全滅が常態化したとき」= まさに事故の再発時。旧実装が1回で打ち切る場面で8回叩く
+ *   = **事故のときに最も高くつく**。頻度1/1198 に対して代償が見合わないので、**入れない**。
+ *   ★「400 と同型の穴が残っている」という構造の話だけで動くと、この判断を取り違える(一度取り違えた)。
+ *     直す前に台帳で頻度を測ること。
+ *
+ * ■ では何を直したのか = **無音**
+ *   この経路は失敗しても [LLM:*] の warn が1行も出なかった(tripCircuit が false で抜けるため)。
+ *   1件しか起きないからこそ、起きた1件の原因が分からないと詰む。だから buildScalpPlan が
+ *   **この型のときだけ** 1行 warn を出す(下の catch)。外部呼び出しは1回も増えない。
+ *
+ * firstLen / retryLen … 初回・再要求それぞれの応答の文字数。**本文は載せない**
+ *   (モデルの生出力には非公開の決済ロジックの数値が混じりうる=同期フォルダ経由で機外へ出る)。
+ *   長さだけで「空応答(0)」と「中身はあるが壊れた JSON(>0)」を区別できる。
+ */
+export class ScalpPlanUnparsableError extends NoFallbackError {
+  constructor(message: string, readonly firstLen: number, readonly retryLen: number) {
+    super(message);
+    this.name = 'ScalpPlanUnparsableError';
+  }
+}
+
 /** スキャルプラン生成の純ループ(LLM 非依存=テスト可能)。tool ループで回答→parse、失敗なら tools 無しで
  *  厳格に1回だけ再要求→再parse。成功で **parse 結果まるごと**(plan + noneReason/noneLegs)、失敗で例外。
  *  ★parseScalpPlan はこの関数の中でしか呼ばない=AI の生応答1つに対して parse は必ず1回(注記も1回)。
@@ -1465,7 +1504,10 @@ export async function runScalpPlanResult(
   const retryText = retry.choices?.[0]?.message?.content?.trim() ?? '';
   const parsed2 = parseScalpPlan(retryText, refPrice);
   if (parsed2.ok) return parsed2;
-  throw new Error(`parse failed after retry: ${parsed2.error}`);
+  // ★投げる型は ScalpPlanUnparsableError(= providers.ts の UnusableResponseError では **ない**)。
+  //   意味: 「診断のために種別は名乗るが、**フォールバックはしない**」。理由はクラス定義のコメント。
+  //   message は1バイトも変えない(台帳 signal_plans.error / trade2 の monitorError= に流れる既存の診断語彙)。
+  throw new ScalpPlanUnparsableError(`parse failed after retry: ${parsed2.error}`, first.length, retryText.length);
 }
 
 /** runScalpPlanResult の薄いラッパ(後方互換)。plan だけを返す=既存の呼び出し/テストは不変。 */
@@ -2135,7 +2177,30 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       } catch (e) {
         console.warn('[scalp-plan] プロンプト指紋の記録に失敗(計画は続行):', e instanceof Error ? e.message : String(e));
       }
-      planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis);
+      try {
+        planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis);
+      } catch (e) {
+        // ★無音の失敗を潰す(2026-08-11): 「200 は返ったが計画が作れなかった」回に **1行だけ** 残す。
+        //   この経路は tripCircuit が false で抜けるため [LLM:*] の warn が1行も出ず、事故が起きても
+        //   台帳の error 列以外に手がかりが無かった(実測: 8日で1件・その1件の原因が追えない)。
+        //
+        //   ★ログを出すだけ = **外部呼び出しは1回も増えない**。ここでは再要求もフォールバックもせず、
+        //     受け取った例外を **そのまま** 投げ直す(= callWithFallback から見て挙動は従来と1ミリも変わらない。
+        //     ScalpPlanUnparsableError は NoFallbackError を継承しており、tripCircuit が **文字列の分類より
+//     先に型で見て** false を返すので次のプロバイダへは進まない。★型で申告するのが要点で、
+//     「知らない型だから null に落ちて再投げ」に頼ると 'refPrice 66,500' の 500 が
+//     50[0-4] に当たって transient に化け、フォールバック+30秒ポーズが起きる(実測)。)
+        //   ★他の例外(HTTP 400/429/413/5xx 等)はここで **握らない**: あれらは tripCircuit が
+        //     既に [LLM:*] へ1行出しているので、ここで出すと同じ故障が2行になる。
+        if (e instanceof ScalpPlanUnparsableError) {
+          // 本文は載せない(モデルの生出力には非公開の決済数値が混じりうる)。長さだけで
+          // 「空応答(len=0)」と「中身はあるが壊れた JSON(len>0)」を区別できる。
+          // formatErrForLog = 伏字 → アプリデータ断片の除去 → 切り詰め(providers.ts が SSOT)。
+          console.warn(`[LLM:${p.config.name}] scalp-plan unparsable (${formatErrForLog(e.message)}) `
+            + `len1=${e.firstLen} len2=${e.retryLen} — フォールバックしない(頻度1/1198・代償が見合わない)`);
+        }
+        throw e;
+      }
       // ★ここまで来た＝このプロバイダが使える答えを返した。例外で抜けた試行では記録されない。
       answeredBy = { name: p.config.name, model: p.config.chatModel };
       // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。戻り値そのものは使わない。

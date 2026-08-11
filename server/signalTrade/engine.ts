@@ -404,6 +404,36 @@ export class SignalEngine {
     }
   }
 
+  /** ★保有中/未約定の再評価サイクル(held-eval=ドテン / range-reeval)で **計画が得られなかった** 回を
+   *  サーバログに1行だけ残す。**RECORD-ONLY**(採否・決済・SSE には一切触らない)。
+   *
+   *  ■ なぜ要るか(2026-08-10 13:30〜08-11 04:57 の事故から)
+   *    flat-plan(maybeRequestPlan)は結末を必ず signal_plans に1行残すので、15時間ぶん全滅したことに
+   *    「487件中411件が error 行」という形で **事後に** 気づけた。ところが held-eval / range-reeval は
+   *    persistPlanRecord を1回も呼ばず、失敗はどちらも `if (!result.ok) return 'reject'` で
+   *    **1バイトも残さず** 消える。同じ事故が起きても、この2経路は静かに全 reject されるだけで
+   *    検出手段が存在しない(=無音の失敗)。
+   *
+   *  ■ ★なぜ台帳(signal_plans)ではなくログか
+   *    あの表は「計画数」「エラー率」を **行数** で測るために使っている(実際に事故は行数比で判定した)。
+   *    そこへ別種のサイクルの行を混ぜると、**既に書かれた集計クエリ**(WHERE を持たない COUNT(*))の
+   *    意味が遡って変わる=過去との比較が壊れる。新しい判別列を足しても、直るのは「これから書く
+   *    クエリ」だけで、既存のクエリと過去の分析結果は救えない。このリポジトリには
+   *    「行数で率を測ると桁が狂う」という既知の罠の記録もある。
+   *    → signal_plans は **flat-plan 1サイクル=1行** の意味のまま1ミリも触らない。
+   *      この2経路はサーバログ(同期フォルダの serverlog_*.txt)へ出す。事後検出には十分で、
+   *      かつ台帳の統計的な意味を1つも動かさない。
+   *
+   *  ■ 検索できる形にする
+   *    固定トークン `plan-fail` を必ず含める(`grep 'plan-fail'` で両経路をまとめて数えられる)。
+   *    error はそのまま出す(sanitize 済みの文字列が result.error に入っている)。
+   *    provider は「答えを返したプロバイダ」。誰も答えなかった回は none= になる。 */
+  private logReevalPlanFailure(kind: 'held-eval' | 'range-reeval', result: ScalpPlanResult): void {
+    if (result.ok) return;
+    console.warn(`${this.logTag} ${kind} plan-fail error=${result.error} `
+      + `provider=${result.provider?.name ?? 'none'}`);
+  }
+
   // 非公開: FLAT かつ間隔経過なら AI へプランを1本要求(非同期・多重発火ガード)。
   // 見送り(none)抑止中は、価格が節目を跨ぐ(shouldRearmOnLevel)まで要求しない。安全弁として
   // SUPPRESS_SAFETY_MS 経過時のみ抑止中でも1本要求を許す(詰まり防止)。
@@ -642,6 +672,9 @@ export class SignalEngine {
         const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
         // held-context(§3.2)を注入して反転可否を AI に問う(profile で A/B の設定を解決)。
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile, heldPosition: { dir: heldDir, entry: heldEntry } });
+        // ★計画が得られなかった回を必ず1行残す(applyHeldEvalResult の中ではなく **ここ**: 中は
+        //   同一性再チェック(stale)を先に通すので、建玉が入れ替わっていると失敗が黙って消える)。
+        this.logReevalPlanFailure('held-eval', result);
         const nowR = Date.now();
         // priceR = P を成行決済する価格(従来どおり・キャッシュ欠落時は要求時価格へフォールバック)=挙動不変。
         // ★ゲート(stale plan veto)用の価格は別に取る: 新鮮値のみ(stale は null=素通し)。古い持ち越し価格で
@@ -797,6 +830,8 @@ export class SignalEngine {
         const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
         // armed-context(§3)を注入して「ブレイク切替 / 現状維持 / none」を AI に問う(profile で A/B の設定を解決)。
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile, armedContext: { mode: 'range-fade', ageMs, avgMs } });
+        // ★held-eval と同じ理由でここに置く(applyRangeReevalResult の中だと stale で先に return して消える)。
+        this.logReevalPlanFailure('range-reeval', result);
         const nowR = Date.now();
         // ★ゲート(stale plan veto)の判定は新鮮な live 価格のみ。取れない/stale は null=素通し
         //   (要求時価格へのフォールバックはしない=古い価格でレッグを落とさない)。

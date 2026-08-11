@@ -29,6 +29,9 @@ const createMock = vi.fn();
 
 // LLM プロバイダ: callWithFallback は task を1回だけ呼び、その戻りを返す(外部 LLM は呼ばない)。
 vi.mock('./providers.js', () => ({
+  // ★providers.js の実物が持つエラー型。scalpPlan.ts が import するのでモックにも要る
+  //   (無いと `extends undefined` で読み込みに失敗する)。検証の強さには関与しない。
+  NoFallbackError: class NoFallbackError extends Error {},
   isLLMEnabled: () => true,
   isVisionCapableProvider: () => false,
   callWithFallback: async (task: (p: unknown) => Promise<string>) =>
