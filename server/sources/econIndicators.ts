@@ -91,6 +91,91 @@ export function toNewsItem(ind: EconIndicator, reaction: number | null): NewsIte
   };
 }
 
+// ─── ★同じ発表を1枚にまとめる(2026-08-13) ─────────────────────────────────
+//
+// 症状: NEWS に「消費者物価指数（CPI）」が同じ見た目で並んだ。
+// 実データ(2026-08-12 21:30・minkabu 実取得)では CPI は **4つの下位系列**
+// (前月比 / 前年比 / コア前月比 / コア前年比)が同じ時刻に出る。tidyName がサブ種別を
+// 名前に残す(id 衝突を避けるため・v0.7.6)ので、そのまま NewsItem にすると4枚になる。
+//
+// ★見た目だけの問題ではない: 4枚すべてに **同じ反応(+265pt)** が付いていた。
+//   1つの値動きを4つの指標に別々に帰属させる記録は、それ自体が誤り。
+//   発表は1つ、反応も1つ。だから **発表(時刻 × 指標)を単位** にしてまとめる。
+
+/** 1回の発表(同じ時刻・同じ指標)。下位系列があれば parts に複数入る。 */
+export interface EconRelease {
+  /** 下位系列を外した指標名(単独なら指標名そのもの)。 */
+  baseName: string;
+  releaseAt: number;
+  importance: number;
+  /** 発表ページの並び順のまま。label=下位系列名(単独なら null)。 */
+  parts: Array<{ label: string | null; ind: EconIndicator }>;
+}
+
+/** 指標名の末尾の全角丸括弧を「下位系列」として切り出す。無ければ null。
+ *  ★"消費者物価指数（CPI）" のように **指標名そのものに括弧がある** 形もあるので、
+ *    切り出した結果を無条件に信じない。同じ時刻に同じ base を持つ相手が居るときだけ束ねる
+ *    (groupReleases 側の判断)。 */
+function splitSubType(name: string): { base: string; sub: string } | null {
+  const m = /^(.*?)（([^（）]*)）\s*$/.exec(name);
+  if (!m) return null;
+  const base = (m[1] ?? '').trim();
+  const sub = (m[2] ?? '').trim();
+  return base && sub ? { base, sub } : null;
+}
+
+/** 発表(時刻 × 指標)ごとにまとめる純関数。**並び順は入力のまま**(こちらで序列を作らない)。
+ *  ★束ねるのは「同じ時刻に、同じ base の下位系列が2つ以上ある」ときだけ。
+ *    1つしかないものは従来どおり指標名のまま=既存の見え方は1文字も変わらない。 */
+export function groupReleases(inds: readonly EconIndicator[]): EconRelease[] {
+  // 第1段: 束ねる候補(同時刻 × 同 base)の数を数える。
+  const count = new Map<string, number>();
+  for (const ind of inds) {
+    const sp = splitSubType(ind.name);
+    if (!sp) continue;
+    const key = `${ind.releaseAt}|${sp.base}`;
+    count.set(key, (count.get(key) ?? 0) + 1);
+  }
+  // 第2段: 実際にまとめる。相手が居ない下位系列は「単独」として扱う。
+  const out: EconRelease[] = [];
+  const index = new Map<string, EconRelease>();
+  for (const ind of inds) {
+    const sp = splitSubType(ind.name);
+    const grouped = sp !== null && (count.get(`${ind.releaseAt}|${sp.base}`) ?? 0) >= 2;
+    const baseName = grouped ? sp!.base : ind.name;
+    const key = `${ind.releaseAt}|${baseName}`;
+    const part = { label: grouped ? sp!.sub : null, ind };
+    const exist = index.get(key);
+    if (exist) { exist.parts.push(part); continue; }
+    const rel: EconRelease = { baseName, releaseAt: ind.releaseAt, importance: ind.importance, parts: [part] };
+    index.set(key, rel);
+    out.push(rel);
+  }
+  return out;
+}
+
+/** 1回の発表を NewsItem に整形。
+ *  ★下位系列が1つ(=従来の単独指標)のときは toNewsItem に委譲する = 文字列も id も **byte 一致**。 */
+export function toNewsItemForRelease(rel: EconRelease, reaction: number | null): NewsItem {
+  if (rel.parts.length === 1 && rel.parts[0]!.label === null) return toNewsItem(rel.parts[0]!.ind, reaction);
+  const react = reaction === null ? '' : ` → NK225 ${reaction >= 0 ? '+' : ''}${reaction}pt(10分)`;
+  const body = rel.parts.map(p => {
+    const fp: string[] = [];
+    if (p.ind.forecast && p.ind.forecast !== '---') fp.push(`予想 ${p.ind.forecast}`);
+    if (p.ind.previous && p.ind.previous !== '---') fp.push(`前回 ${p.ind.previous}`);
+    const ctx = fp.length ? `（${fp.join('／')}）` : '';
+    return `${p.label ?? '結果'} ${p.ind.actual}${ctx}`;
+  }).join('｜');
+  return {
+    id: `econ:${rel.baseName}:${rel.releaseAt}`,
+    title: `📊 米指標 ${rel.baseName}: ${body}${react}`,
+    source: '米経済指標',
+    lang: 'ja',
+    url: BASE_URL,
+    publishedAt: rel.releaseAt,
+  };
+}
+
 // --- 取得 + 反応算出(副作用あり) ---
 let _db: DatabaseSync | null = null;
 function db(): DatabaseSync { return (_db ??= openDb(resolveDbPath())); }
@@ -118,24 +203,31 @@ export async function fetchEconIndicators(): Promise<NewsItem[]> {
     inds = days.flat();
   } catch { return []; }
 
-  const items: NewsItem[] = [];
-  const seen = new Set<string>();
-  for (const ind of inds) {
-    if (now - ind.releaseAt > RECENT_MS) continue;   // 古い指標は出さない(板を埋めない)
-    const id = `econ:${ind.name}:${ind.releaseAt}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
+  // ★同じ指標が2日ぶんのページに現れることがあるので、まず行の重複を落とす(名前 × 時刻)。
+  const seenInd = new Set<string>();
+  const uniqInds = inds.filter(ind => {
+    if (now - ind.releaseAt > RECENT_MS) return false;   // 古い指標は出さない(板を埋めない)
+    const k = `${ind.name}:${ind.releaseAt}`;
+    if (seenInd.has(k)) return false;
+    seenInd.add(k);
+    return true;
+  });
 
-    let reaction = _reactionMemo.get(id) ?? null;
-    if (reaction === null && now >= ind.releaseAt + REACTION_WINDOW_MS) {
+  const items: NewsItem[] = [];
+  // ★発表(時刻 × 指標)を単位にする。下位系列(CPI の前年比/前月比/コア…)は1枚にまとまる。
+  for (const rel of groupReleases(uniqInds)) {
+    // ★反応は **発表に1つ**。以前は下位系列ごとに同じ値を付けていた(同じ値動きを4回主張していた)。
+    const key = `econ:${rel.baseName}:${rel.releaseAt}`;
+    let reaction = _reactionMemo.get(key) ?? null;
+    if (reaction === null && now >= rel.releaseAt + REACTION_WINDOW_MS) {
       try {
-        const base = getBarCloseNear(db(), REACTION_SYMBOL, ind.releaseAt, NEAR_TOL_MS);
-        const after = getBarCloseNear(db(), REACTION_SYMBOL, ind.releaseAt + REACTION_WINDOW_MS, NEAR_TOL_MS);
+        const base = getBarCloseNear(db(), REACTION_SYMBOL, rel.releaseAt, NEAR_TOL_MS);
+        const after = getBarCloseNear(db(), REACTION_SYMBOL, rel.releaseAt + REACTION_WINDOW_MS, NEAR_TOL_MS);
         reaction = computeReaction(base, after);
-        if (reaction !== null) _reactionMemo.set(id, reaction);
+        if (reaction !== null) _reactionMemo.set(key, reaction);
       } catch { reaction = null; }
     }
-    items.push(toNewsItem(ind, reaction));
+    items.push(toNewsItemForRelease(rel, reaction));
   }
   return items;
 }
