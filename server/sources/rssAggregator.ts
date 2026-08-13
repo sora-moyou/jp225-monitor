@@ -5,6 +5,7 @@ import { fetchNikkei225jpNews, fetchNikkei225jpNewsJp, fetchNikkei225jpNewsNy } 
 import { fetchEconIndicators } from './econIndicators.js';
 import { scoreNewsImpact } from '../../core/newsImpact.js';
 import { withConfidence } from '../../core/newsConfidence.js';
+import { dedupeSameArticle } from '../../core/newsDedup.js';
 
 // 金融関連かどうかを判定 (v0.3.9 タイトル+本文 ハイブリッド)
 // - BLACKLIST はタイトル限定 (本文の偶発ヒットで金融ニュースを誤除外しないため)
@@ -127,9 +128,15 @@ export async function fetchAllNews(now = Date.now()): Promise<NewsItem[]> {
   tasks.push(fetchEconIndicators());    // 米経済指標(minkabu・結果+NK225反応)
   const results = await Promise.allSettled(tasks);
   const items = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-  // id で重複排除(別ソース経由の同一記事に備える)。
+  // id で重複排除(同じフィードを2回読んだ等)。
   const seen = new Set<string>();
-  const uniq = items.filter(it => (seen.has(it.id) ? false : (seen.add(it.id), true)));
+  const byId = items.filter(it => (seen.has(it.id) ? false : (seen.add(it.id), true)));
+  // ★id だけでは足りない(2026-08-14): id は「ソース名 + そのソース内の識別子」なので、
+  //   **同じ記事を別フィードが運ぶと別 id** になる(報告: 東洋経済オンライン / 東洋経済 の2枚)。
+  //   実測(稼働機DB 5,789件)で同じ記事URLが複数 id で入っている組は 43組。
+  //   ★確度(裏取り)の判定より **前** に畳む: 同じ記事が2件在ると「別ソースが報じた」と
+  //     誤って裏が取れてしまう(実測1組が corroborated になっていた)。
+  const uniq = dedupeSameArticle(byId);
   // ★並びと件数の切り方は従来どおり「新しい順に NEWS_MAX_ITEMS 件」のまま変えない。
   //   ここを インパクト順で切ると **AI が見るニュースの集合が変わってしまう**
   //   (server/llm/explain.ts と chat の formatNewsForChat は、この配列の順序と内容に依存する)。
