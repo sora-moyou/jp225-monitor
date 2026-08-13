@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// ─── runScalpPlanWithChart: 撮影の同一性を **生成器の結果にだけ** additive で載せる ──────
+// ─── runScalpPlanWithChart: 撮影の同一性を **分析用の結果にだけ** additive で載せる ──────
 //
 // 何を守っているか:
-//   ・生成器(caller='generator')の提案には「どの1枚を見たか」が付く(①②の対応比較の土台)
-//   ・★実弾(A)につながる既存の全経路(caller 省略/'default')の結果オブジェクトは **不変**
+//   ・分析用(caller='generator')の提案には「どの1枚を見たか」が付く(①②の対応比較の土台)
+//   ・★実取引(A)につながる既存の全経路(caller 省略/'default')の結果オブジェクトは **不変**
 //     (engine.ts はこの結果を読んで発注につながる判断をするので、形を1ミリも変えない)
 //
 // ★否定対照: attachChartShot の caller ガードを外すと「default では増えない」が赤。
@@ -69,12 +69,12 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
   });
 
   // ★記録専用の出所2列(contextAt/promptFp)は **全経路** で載る(凍結再生の突合用)。
-  //   ここで守り続けているのは「生成器だけの記録(chartShot / contextOmitted)が A の結果に混ざらない」こと。
+  //   ここで守り続けているのは「分析用だけの記録(chartShot / contextOmitted)が A の結果に混ざらない」こと。
   //   plan は参照ごと素通し=engine が読む中身は1ミリも変わらない。
   const generatorOnlyKeys = (r: object): string[] =>
     Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision');
 
-  it('★caller 省略(実弾 A の経路)の結果に **生成器だけの記録は1つも付かない**', async () => {
+  it('★caller 省略(実取引 A の経路)の結果に **分析用だけの記録は1つも付かない**', async () => {
     const r = await runScalpPlanWithChart({});
     expect(generatorOnlyKeys(r)).toEqual([]);
     expect((r as { plan: unknown }).plan).toBe(PLAN_RESULT.plan);   // plan は同一参照=コピーすらしていない

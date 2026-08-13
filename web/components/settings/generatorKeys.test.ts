@@ -1,11 +1,11 @@
-// ★提案生成器のキー設定 UI: 「今どちらのキーが効いているか」の表示と、保存ペイロードの往復。
+// ★分析用のキー設定 UI: 「今どちらのキーが効いているか」の表示と、保存ペイロードの往復。
 //
 // この画面の一番の仕事は **専用キーが効いているのか共通キーに落ちているのかが一目で分かること**。
-// 専用キーが無いと生成器は黙って共通キーへフォールバックし、ローカルのポーズは分離されるのに
-// 上流のクォータは実弾(A)と共有されたまま=「分離したつもりで分離できていない」が無音で成立する。
+// 専用キーが無いと分析用は黙って共通キーへフォールバックし、ローカルのポーズは分離されるのに
+// 上流のクォータは実取引(A)と共有されたまま=「分離したつもりで分離できていない」が無音で成立する。
 //
 // ★否定対照(修正前のコードでこのテストが赤くなること):
-//   修正前は generatorKeys に UI が無く、status.ts に generatorKeyLabel も、form.ts に生成器キーの
+//   修正前は generatorKeys に UI が無く、status.ts に generatorKeyLabel も、form.ts に分析用キーの
 //   apply/build も存在しなかった(import 解決ができず collect で落ちる)。文言の規約
 //   (shared を「未設定」と書かない)も、保存ペイロードの往復も、どこにも存在しなかった。
 
@@ -44,7 +44,7 @@ const BASE: SettingsResponse = {
   providers: [], configFile: 'x.json',
 };
 
-describe('★生成器キーの「どのキーが効いているか」表示', () => {
+describe('★分析用キーの「どのキーが効いているか」表示', () => {
   it('共通キーへのフォールバックは「共通キーを使用中」と書く(「未設定」と書かない)', () => {
     const l = generatorKeyLabel('shared');
     expect(l.text).toBe('共通キーを使用中');
@@ -75,7 +75,7 @@ describe('★生成器キーの「どのキーが効いているか」表示', (
   });
 });
 
-describe('★生成器キー欄の反映と保存ペイロード', () => {
+describe('★分析用キー欄の反映と保存ペイロード', () => {
   it('専用キー設定済み/フォールバック中でプレースホルダが変わる', () => {
     const el = makeElements();
     applySettingsToForm(el, { ...BASE, generatorKeySources: { openai: 'own', gemini: 'shared' } });
@@ -125,7 +125,7 @@ describe('★生成器キー欄の反映と保存ペイロード', () => {
     expect(buildSavePayload(el).generatorDailyBudget).toBe(800);
     el.inputGeneratorBudget.value = '';
     expect(buildSavePayload(el).generatorDailyBudget).toBeNull();
-    el.inputGeneratorBudget.value = '0';   // 0=生成器を無効化(既定に戻すではない)
+    el.inputGeneratorBudget.value = '0';   // 0=分析用を無効化(既定に戻すではない)
     expect(buildSavePayload(el).generatorDailyBudget).toBe(0);
   });
 });

@@ -5,7 +5,7 @@ import type { Price } from '../types.js';
 
 // v0.7.20(全銘柄 HTTP 化): 価格の全経路を公開 HTTP(ajax_cme.js / ajax_fx.js)に統一。socket / Yahoo は全廃。
 // mergeSources は各 HTTP 源の fresh(stale:false)のみを採用し、stale(清算/取得失敗)は落とす →
-// 下流の mergeWithCached が前回値を古い timestamp のまま stale で持ち越す(実弾安全 v0.7.9 を全銘柄へ徹底)。
+// 下流の mergeWithCached が前回値を古い timestamp のまま stale で持ち越す(実取引安全 v0.7.9 を全銘柄へ徹底)。
 
 function px(symbol: Price['symbol'], price: number, stale = false, timestamp = 1000): Price {
   return { symbol, price, changePercent: 0.1, timestamp, stale };

@@ -12,10 +12,10 @@ import {
   type GeneratorHaltState, type GeneratorGateState,
 } from './generatorHeartbeat.js';
 
-// ─── ★B2: 書き出しから「生成器がどうなっているか」を判別できるようにする ────────────
+// ─── ★B2: 書き出しから「分析用がどうなっているか」を判別できるようにする ────────────
 //
-// 何が壊れていたか(実売買PCの実書き出し):
-//   別PCへ届く書き出しを見ても、生成器が
+// 何が壊れていたか(実取引PCの実書き出し):
+//   別PCへ届く書き出しを見ても、分析用が
 //     ・設定で無効なのか / ・有効だが前提検証で止まったのか / ・そもそも起動していないのか
 //   が区別できなかった。台帳DBが無い=「1行も書いていない」しか分からず、**無効のときは台帳自体が
 //   作られない** ので遠隔から診断できない。「観測できない」を「異常なし」と読み替える典型。
@@ -79,7 +79,7 @@ describe('★4つの状態が遠隔から判別できる(設定/プロセス/標
 
   it('前提検証で自ら停止した場合は台帳の理由がそのまま出る', () => {
     const hb = build({
-      ledger: { ...LEDGER_OK, halt: { at: IN_SESSION, phase: 'preflight', reason: '生成器専用キーが未設定です' } },
+      ledger: { ...LEDGER_OK, halt: { at: IN_SESSION, phase: 'preflight', reason: '分析用専用キーが未設定です' } },
     });
     expect(hb.state).toBe('stalled');
     expect(hb.reason).toContain('preflight');

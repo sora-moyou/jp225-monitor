@@ -3,7 +3,7 @@
 // ■ なぜ要るか(この観測が無いと起きること)
 //   exit/index.ts は private(非公開実装)が在れば describeExitLogicVariant を差し替え、無ければ
 //   公開フォールバック(数値が一切入らない定性文)のままにする。private 不在の環境では
-//   'candidate-a' のプロンプトが 'current' とほぼ同一になり、**2本の生成器が同じ質問を投げる**。
+//   'candidate-a' のプロンプトが 'current' とほぼ同一になり、**2本の分析用が同じ質問を投げる**。
 //   それでも route は exitVariant:'candidate-a' を応答に載せるので、記録には
 //   「候補仕様で生成した」と残る。実験は何も測っていないのに、標本は測ったふりをする。
 //   これは exit/index.ts 自身が「変種名の打ち間違いを黙って current に倒すのは最悪の壊れ方」と

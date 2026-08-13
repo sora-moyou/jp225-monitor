@@ -16,7 +16,7 @@ export interface SignalTradesElements {
   openBtn: HTMLButtonElement; modal: HTMLElement; backdrop: HTMLElement;
   closeBtn: HTMLButtonElement; summary: HTMLElement; body: HTMLElement;
   canvas: HTMLCanvasElement;
-  // ★v0.8.2: A/B 系統セレクタ(履歴を A=実売買 / B=紙専用 で切り替え)。lite は非表示=常に A。
+  // ★v0.8.2: A/B 系統セレクタ(履歴を A=実取引 / B=仮想取引専用 で切り替え)。lite は非表示=常に A。
   systemSelect?: HTMLSelectElement | null;
 }
 

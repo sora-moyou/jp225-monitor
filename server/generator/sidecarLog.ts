@@ -1,4 +1,4 @@
-// 提案生成器サイドカーの **ファイルログ**(診断専用・取引挙動には一切関与しない)。
+// 分析用サイドカーの **ファイルログ**(診断専用・取引挙動には一切関与しない)。
 //
 // ■ ★このファイルは薄い包みでしかない(規約は1か所)
 //   中身は server/processLog.ts(名前を引数に取る一般形)。**同じ規約が2か所に分かれている状態そのもの**
@@ -6,8 +6,8 @@
 //     ・processLog.ts は「unhandledRejection に listener を付けると Node 15+ の既定(=落ちる)が止まる。
 //       記録だけして生き残らせると『プロセスは生きているのに何もしない』という、いちばん分かりにくい
 //       状態をこちらが作ってしまう」と書いたうえで process.exit(1) している。
-//     ・こちら(生成器用)は **その listener を付けて exit していなかった**。
-//   生成器の名乗りは setInterval(server/generator/sidecarRun.ts)なので、本体の promise 連鎖が
+//     ・こちら(分析用用)は **その listener を付けて exit していなかった**。
+//   分析用の名乗りは setInterval(server/generator/sidecarRun.ts)なので、本体の promise 連鎖が
 //   死んでも心拍だけ打ち続け、共有DBは「生きている」と言い続ける = このリリースが解こうとしている
 //   誤診断そのものを、リリース自身が製造できる状態だった。
 //   → 規約を分けない。ここは名前と相乗り先を決めるだけにする。
@@ -31,7 +31,7 @@ import { appendSpawnLog } from '../spawnLog.js';
 /** これを超えたら1世代だけ退避する(同期フォルダを太らせない)。 */
 export const GENERATOR_LOG_MAX_BYTES = PROCESS_LOG_MAX_BYTES;
 
-/** 生成器のログ名(= resolveProcessLogPath に渡す名前)。 */
+/** 分析用のログ名(= resolveProcessLogPath に渡す名前)。 */
 export const GENERATOR_LOG_NAME = 'generator';
 
 /** 節目の行に付ける名札。 */
@@ -44,7 +44,7 @@ export function resolveGeneratorLogPath(): string {
   return resolveProcessLogPath(GENERATOR_LOG_NAME);
 }
 
-/** 1行書く。**絶対に throw しない**(ログのために生成器を落とさない)。 */
+/** 1行書く。**絶対に throw しない**(ログのために分析用を落とさない)。 */
 export function appendGeneratorLog(path: string, line: string, now: number = Date.now()): void {
   appendProcessLog(path, line, now);
 }

@@ -1,8 +1,8 @@
-// 提案生成器の台帳(**専用 DB ファイル**・追記のみ)。
+// 分析用の台帳(**専用 DB ファイル**・追記のみ)。
 //
 // ■ なぜ共有 DB(jp225.db)に入れないか
 //   trade2 の priceSnapshotWorker が 30分ごとに **DB 全体を `VACUUM INTO`** して prices_<host>.db を作る。
-//   実測 102MB で約1.3秒の同期ブロック。ここを太らせるほど実弾トレードのフィード/発注/約定検知を
+//   実測 102MB で約1.3秒の同期ブロック。ここを太らせるほど実取引トレードのフィード/発注/約定検知を
 //   止めるリスクが増える。→ ティック保管(db/tickArchive.ts)・影の記録(db/shadowStore.ts)と同じ判断で
 //   **別ファイル** に置く。(trade2 は %APPDATA%/jp225-monitor を列挙せず jp225.db と server.log しか
 //   見ないので、別ファイルを置くだけで自動的に VACUUM INTO の対象外になる。相手側の変更は不要。)
@@ -27,12 +27,12 @@ import type { PromptVariant } from '../llm/promptVariant.js';
 
 /** ★腕(arm)= 既存の語彙 ExitVariant に、**同じ入力へ2回問う対照** を足しただけのもの。
  *  新しい列挙を作らない(ExitVariant を並行して手書きし直すと、変種が増えたとき片方だけ古くなる)。
- *  - 'current'     … ①現行の決済仕様を教えた生成器
- *  - 'candidate-a' … ②候補の決済仕様を教えた生成器
+ *  - 'current'     … ①現行の決済仕様を教えた分析用
+ *  - 'candidate-a' … ②候補の決済仕様を教えた分析用
  *  - 'control'     … ①' ①と **同じ入力** でもう1回問う対照(LLM のばらつきの基準線)。
  *                    送る exitVariant は 'current' と同一で、腕名だけが違う。 */
 /** ★v0.9.75: 実験の軸が「決済仕様」から「質問文」へ移ったので、腕名にもう1つだけ足す。
- *  - 'prompt-v2' … ②**質問文 v2** を投げた生成器。送る exitVariant は 'current'(①と同じ)で、
+ *  - 'prompt-v2' … ②**質問文 v2** を投げた分析用。送る exitVariant は 'current'(①と同じ)で、
  *                  違うのは user プロンプトだけ。旧 'candidate-a'(決済仕様の候補)は
  *                  08-10〜08-12 の実測でどの指標も動かなかったため畳んだ。 */
 export type GeneratorArm = ExitVariant | 'control' | 'prompt-v2';
@@ -46,7 +46,7 @@ export const CONTROL_EXIT_VARIANT: ExitVariant = DEFAULT_EXIT_VARIANT;
 /** 1要求の結末。**欠測をランダムでなくする理由まで含めて** 区別する。
  *  - 'plan'          … 200 + ok:true。提案(見送り direction:'none' を含む)が返った
  *  - 'plan-error'    … 200 + ok:false。chart-not-generated / LLM 失敗 / キー無し等
- *  - 'skipped'       … 429。生成器ゲートが弾いた(busy / budget / default-quota / disabled / closed)
+ *  - 'skipped'       … 429。分析用ゲートが弾いた(busy / budget / default-quota / disabled / closed)
  *  - 'http-error'    … それ以外の HTTP エラー(400=変種や caller が拒否された等)
  *  - 'timeout'       … 応答が来なかった
  *  - 'network-error' … monitor に届かなかった */
@@ -107,14 +107,14 @@ export interface ProposalRow {
   shotAgeMs: number | null;
   shotOrigin: string | null;
   /** ★プロンプトから **外した** 文脈ブロックの JSON 配列(monitor の応答 contextOmitted をそのまま)。
-   *  現在は両腕とも ["paper-trade-history"](=A の紙成績を見せていない=母集団の独立性)。
-   *  ★NULL の意味: 「まだこの列を持たない版の monitor/生成器で記録された」= **紙成績を見せていた** 標本。
+   *  現在は両腕とも ["paper-trade-history"](=A の仮想取引の成績を見せていない=母集団の独立性)。
+   *  ★NULL の意味: 「まだこの列を持たない版の monitor/分析用で記録された」= **仮想取引の成績を見せていた** 標本。
    *    値が無いことと「外していない」を混同しないよう、ここに明記しておく。
    *  ★型上は optional(省略= NULL)。既存の呼び出し/テストが作る行をそのまま受け付けるため。
-   *    実際の生成器(cycle.ts)は **常に** 明示的に値(または null)を入れる。 */
+   *    実際の分析用(cycle.ts)は **常に** 明示的に値(または null)を入れる。 */
   contextOmittedJson?: string | null;
   /** ★monitor が文脈を組み立てた時刻(epoch ms・**monitor の時計**)。
-   *  requested_at/responded_at は生成器プロセスの時計で、撮影と LLM の待ちを含んだ両端でしかない
+   *  requested_at/responded_at は分析用プロセスの時計で、撮影と LLM の待ちを含んだ両端でしかない
    *  (実測でその差は秒オーダー)。凍結した断面から提案を再生して突き合わせるには、
    *  「どの時刻の断面を読んだか」そのものが要る。応答に無ければ NULL(= この列を返さない版と話した)。
    *  ★型上は optional(省略= NULL)。既存の呼び出し/テストが作る行をそのまま受け付けるため。 */
@@ -125,7 +125,7 @@ export interface ProposalRow {
   promptFp?: string | null;
   /** ★根拠文で AI が **申告した LC幅** と、AI が実際に出力した |entry − stopLoss| の突き合わせ
    *  (LcDeclarationCheck[] の JSON)。monitor の signal_plans.lc_audit_json と **同じ意味・同じ形**。
-   *  ★本線だけに在って生成器に無いと、同じ故障の頻度を腕どうしで比べられない(母集団が揃わない)。
+   *  ★本線だけに在って分析用に無いと、同じ故障の頻度を腕どうしで比べられない(母集団が揃わない)。
    *  ★型上は optional(省略= NULL)。NULL = この列を返さない版の monitor と話した or 突き合わせ0件。 */
   lcAuditJson?: string | null;
   /** ★根拠文の「そのレッグは出さない(省略/見送り)」という表明 と、実際に発注されるレッグの突き合わせ
@@ -184,7 +184,7 @@ export function initGeneratorSchema(db: DatabaseSync): void {
       shot_age_ms   INTEGER,
       shot_origin   TEXT,
       -- ★プロンプトから外した文脈ブロック(JSON 配列)。NULL = この列を持たない版で記録された
-      --   = **紙成績(A の履歴)を見せていた** 標本(値が無いことと「外していない」を混同しない)。
+      --   = **仮想取引の成績(A の履歴)を見せていた** 標本(値が無いことと「外していない」を混同しない)。
       context_omitted TEXT,
       -- ★凍結再生の突合(下の ALTER と同じ2列)。context_at=monitor が文脈を組み立てた時刻(monitor の時計)。
       --   prompt_fp=送ったプロンプトの一方向指紋。★本文は決して入れない。
@@ -235,7 +235,7 @@ export function initGeneratorSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_gen_tally ON daily_tally (session_date, at);
 
     -- ★「止まった理由」の **追記のみ** の台帳。
-    --   起動時検証(preflight)や稼働中の再検証で前提が崩れたとき、生成器は意図的に停止する。
+    --   起動時検証(preflight)や稼働中の再検証で前提が崩れたとき、分析用は意図的に停止する。
     --   運用PCではコンソールを見られないので、理由がログにしか出ないと「動いていない」ことは
     --   分かっても「なぜ止まったか」は永遠に分からない(= 別物である)。だから台帳に残し、
     --   monitor の /api/status → 死活ドットまで届ける。
@@ -250,8 +250,8 @@ export function initGeneratorSchema(db: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS meta ( key TEXT PRIMARY KEY, value TEXT );
   `);
-  // ★既に走っている台帳(実売買PCには数日ぶんの行がある)へ列を足す。冪等に足すのは
-  //   server/db/store.ts と同じ作法。既存行は NULL のまま = 「紙成績を見せていた版で記録された」。
+  // ★既に走っている台帳(実取引PCには数日ぶんの行がある)へ列を足す。冪等に足すのは
+  //   server/db/store.ts と同じ作法。既存行は NULL のまま = 「仮想取引の成績を見せていた版で記録された」。
   //   ここで足さないと、旧DBに対する INSERT が列不一致で毎回失敗して記録が丸ごと止まる。
   const cols = (db.prepare('PRAGMA table_info(proposals)').all() as Array<{ name: string }>).map(r => r.name);
   if (!cols.includes('context_omitted')) db.exec('ALTER TABLE proposals ADD COLUMN context_omitted TEXT');
@@ -272,11 +272,11 @@ export function initGeneratorSchema(db: DatabaseSync): void {
 }
 
 /** 台帳 DB を開く(書き込み用)。
- *  ★公開版(lite)では **入口を閉じる**。提案生成器は決済パラメータの分析専用で、公開版には要らない。
+ *  ★公開版(lite)では **入口を閉じる**。分析用は決済パラメータの分析専用で、公開版には要らない。
  *    黙って専用 DB が増え続けるより、開発中に大きな音で落ちる方が良い(「無音の失敗は欠陥」)。 */
 export function openGeneratorDb(path: string): DatabaseSync {
   if (!isAnalysisEnabled()) {
-    throw new Error('提案生成器の台帳は分析専用です(公開版では開けません) — server/analysisGate.ts');
+    throw new Error('分析用の台帳は分析専用です(公開版では開けません) — server/analysisGate.ts');
   }
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL');
@@ -391,7 +391,7 @@ export function appendDailyTally(db: DatabaseSync, at: number, sessionDate?: str
 /** 止まった理由の1行(追記のみ・更新も削除もしない)。 */
 export interface GeneratorHaltRow {
   at: number;
-  /** どの局面で止まったか('起動しません' / '停止します')。生成器 die() の第2引数と同じ語彙。 */
+  /** どの局面で止まったか('起動しません' / '停止します')。分析用 die() の第2引数と同じ語彙。 */
   phase: string;
   /** 理由の文言(preflight/recheck が返すもの)。★決済の実数値は含まれない。 */
   reason: string;
@@ -420,7 +420,7 @@ export const LIVENESS_WINDOW_MS = 60 * 60_000;
 
 /** /api/status に出す死活情報。**読むだけ**(採番も作成もしない)。 */
 export interface GeneratorLedgerStatus {
-  /** 台帳ファイルが在るか。false=生成器はこの PC で一度も動いていない。 */
+  /** 台帳ファイルが在るか。false=分析用はこの PC で一度も動いていない。 */
   available: boolean;
   /** 最後に1行記録した時刻(epoch ms)。 */
   lastRecordAt: number | null;
@@ -428,9 +428,9 @@ export interface GeneratorLedgerStatus {
   ageMin: number | null;
   /** ★死活の本体: 直近1時間に **標本が取れた**(status='plan')件数。
    *
-   *  なぜ ageMin では足りないか: 生成器はゲートに弾かれている間も2分ごとに status='skipped' を
+   *  なぜ ageMin では足りないか: 分析用はゲートに弾かれている間も2分ごとに status='skipped' を
    *  書き続ける。だから「最後の記録が何分前か」は **止まっている間も新しいまま** で、画面は緑のままになる。
-   *  実売買PCの実ログでは従属停止でセッションの 91〜100% が止まっていたのに、この指標は一度も
+   *  実取引PCの実ログでは従属停止でセッションの 91〜100% が止まっていたのに、この指標は一度も
    *  警告に変わらなかった(=無音の失敗)。溜めたいのは提案であって行数ではないので、
    *  **溜まっているか** を直接数える。
    *  ★台帳が読めない環境では **フィールドごと無い**(「0件」と「観測できない」を混同しない)。 */

@@ -3,7 +3,7 @@
 // ① 後始末を非同期化しても、Chrome を確実に始末する保証を弱めない
 //    (順序 kill→rm / 失敗は声を出す / kill 未確認は登録簿に残して終了時掃除へ)
 // ② Chrome の実起動をプロセス全体で直列化する。ただし **A(default)は絶対に待たせない**
-//    (生成器が待つ・譲る)。キャッシュのプール分離(caller 別)は別の仕組みで、こことは直交。
+//    (分析用が待つ・譲る)。キャッシュのプール分離(caller 別)は別の仕組みで、こことは直交。
 // ③ 撮影の開始と完了をログして全体所要が後から測れる
 //
 // ★否定対照: 修正前(git show HEAD:server/chart/chartShot.ts)には runCaptureCleanup /
@@ -146,7 +146,7 @@ describe('② Chrome 起動の直列化 — ただし A(default)は待たせな�
   beforeEach(() => { resetChromeSlots(); });
   afterEach(() => { resetChromeSlots(); });
 
-  it('★A(default)は待たない: 生成器が撮影中でも即座にスロットを取る', async () => {
+  it('★A(default)は待たない: 分析用が撮影中でも即座にスロットを取る', async () => {
     const gen = await acquireChromeSlot('generator', 'gen1');
     expect(gen.ok).toBe(true);
 
@@ -160,7 +160,7 @@ describe('② Chrome 起動の直列化 — ただし A(default)は待たせな�
     expect(a.ok).toBe(true);
   });
 
-  it('★A が来たら生成器は中断される(譲る)', async () => {
+  it('★A が来たら分析用は中断される(譲る)', async () => {
     const gen = await acquireChromeSlot('generator', 'gen1');
     if (!gen.ok) throw new Error('unreachable');
     const preempts: string[] = [];
@@ -175,7 +175,7 @@ describe('② Chrome 起動の直列化 — ただし A(default)は待たせな�
 
     expect(gen.ticket.preempted).toBe(true);                 // ★譲った
     expect(preempts).toEqual(['preempted-by-default']);      // ★撮影側へ中断が届く
-    expect(warns.some((w) => w.includes('生成器の撮影を中断') && w.includes('gen1'))).toBe(true);
+    expect(warns.some((w) => w.includes('分析用の撮影を中断') && w.includes('gen1'))).toBe(true);
   });
 
   it('中断が onPreempt 登録より先に起きても取りこぼさない', async () => {
@@ -189,7 +189,7 @@ describe('② Chrome 起動の直列化 — ただし A(default)は待たせな�
     expect(preempts).toEqual(['preempted-by-default']);
   });
 
-  it('★生成器は default が終わるまで Chrome を起動しない(直列化)', async () => {
+  it('★分析用は default が終わるまで Chrome を起動しない(直列化)', async () => {
     const a = await acquireChromeSlot('default', 'a1');
     if (!a.ok) throw new Error('unreachable');
 
@@ -207,7 +207,7 @@ describe('② Chrome 起動の直列化 — ただし A(default)は待たせな�
     expect(chromeSlotSnapshot().map((s) => s.caller)).toEqual(['generator']);
   });
 
-  it('生成器が待ち切れなければ撮影せず縮退する(無限待ちしない)', async () => {
+  it('分析用が待ち切れなければ撮影せず縮退する(無限待ちしない)', async () => {
     const a = await acquireChromeSlot('default', 'a1');
     expect(a.ok).toBe(true);
     const spy = vi.spyOn(console, 'log').mockImplementation(() => { /* silence */ });
@@ -220,7 +220,7 @@ describe('② Chrome 起動の直列化 — ただし A(default)は待たせな�
     } finally { spy.mockRestore(); wspy.mockRestore(); }
   });
 
-  it('同時に待った生成器は1つずつしか起動しない(起きても再確認する)', async () => {
+  it('同時に待った分析用は1つずつしか起動しない(起きても再確認する)', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => { /* silence */ });
     try {
       const a = await acquireChromeSlot('default', 'a1');

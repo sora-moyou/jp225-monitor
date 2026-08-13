@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setChartVisionRngForTest } from '../llm/scalpPlanRunner.js';
 import type { NextFunction, Request, Response } from 'express';
 
-// ─── POST /api/scalp-plan: 場外の生成器要求を **撮影より前に** 弾く ──────────────
+// ─── POST /api/scalp-plan: 場外の分析用要求を **撮影より前に** 弾く ──────────────
 //
 // 何を守っているか:
 //   runScalpPlanWithChart は refPrice の鮮度判定より **先に** チャートを撮る。つまり場外の
@@ -12,7 +12,7 @@ import type { NextFunction, Request, Response } from 'express';
 //
 // ★否定対照(修正前の routes/scalpPlan.ts / server/index.ts での結果):
 //   generatorSessionGate も isGeneratorRequestOutOfSession も存在せず import 解決に失敗 → 全部赤。
-//   route には時間ゲートが1つも無く、場外の生成器要求がそのまま撮影と予算計上へ抜けていた。
+//   route には時間ゲートが1つも無く、場外の分析用要求がそのまま撮影と予算計上へ抜けていた。
 //   (実証手順: git show HEAD:server/routes/scalpPlan.ts で旧版に差し替えて実行)
 
 const buildScalpPlanMock = vi.fn();
@@ -66,17 +66,17 @@ function mockRes(): MockRes {
 const reqOf = (body: Record<string, unknown> = {}) => ({ body, query: {} }) as unknown as Request;
 
 describe('isGeneratorRequestOutOfSession(純関数)', () => {
-  it('★場外の生成器要求だけ true(空白帯・週末)', () => {
+  it('★場外の分析用要求だけ true(空白帯・週末)', () => {
     expect(isGeneratorRequestOutOfSession({ caller: 'generator' }, {}, GAP)).toBe(true);
     expect(isGeneratorRequestOutOfSession({ caller: 'generator' }, {}, WEEKEND)).toBe(true);
   });
 
-  it('場中の生成器要求は通す(Day / Night とも)', () => {
+  it('場中の分析用要求は通す(Day / Night とも)', () => {
     expect(isGeneratorRequestOutOfSession({ caller: 'generator' }, {}, IN_DAY)).toBe(false);
     expect(isGeneratorRequestOutOfSession({ caller: 'generator' }, {}, IN_NIGHT)).toBe(false);
   });
 
-  it('★実弾につながる経路(caller 省略 / default)は場外でも一切弾かない', () => {
+  it('★実取引につながる経路(caller 省略 / default)は場外でも一切弾かない', () => {
     expect(isGeneratorRequestOutOfSession({}, {}, WEEKEND)).toBe(false);
     expect(isGeneratorRequestOutOfSession({ caller: 'default' }, {}, WEEKEND)).toBe(false);
     expect(isGeneratorRequestOutOfSession({}, {}, GAP)).toBe(false);
@@ -121,7 +121,7 @@ describe('generatorSessionGate(ミドルウェア)', () => {
     return res;
   }
 
-  it('★場外の生成器要求は 429 closed。**撮影も LLM も予算計上も起きない**', async () => {
+  it('★場外の分析用要求は 429 closed。**撮影も LLM も予算計上も起きない**', async () => {
     const res = await post({ caller: 'generator' }, GAP);
 
     expect(res._status).toBe(429);
@@ -131,20 +131,20 @@ describe('generatorSessionGate(ミドルウェア)', () => {
     expect(generatorGateSnapshot(GAP).used).toBe(0);   // ★予算を1回も食っていない
   });
 
-  it('★週末の生成器要求も同じく弾く', async () => {
+  it('★週末の分析用要求も同じく弾く', async () => {
     const res = await post({ caller: 'generator', exitVariant: 'current' }, WEEKEND);
     expect(res._status).toBe(429);
     expect(captureMock).not.toHaveBeenCalled();
   });
 
-  it('場中の生成器要求は通す(撮影と AI に到達する)', async () => {
+  it('場中の分析用要求は通す(撮影と AI に到達する)', async () => {
     const res = await post({ caller: 'generator' }, IN_DAY);
     expect(res._status).toBe(200);
     expect(captureMock).toHaveBeenCalled();
     expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);
   });
 
-  it('★レガシー経路は場外でも従来どおり通る(実弾側の挙動を1ミリも変えない)', async () => {
+  it('★レガシー経路は場外でも従来どおり通る(実取引側の挙動を1ミリも変えない)', async () => {
     const res = await post({}, WEEKEND);
     expect(res._status).toBe(200);
     expect(buildScalpPlanMock).toHaveBeenCalledTimes(1);

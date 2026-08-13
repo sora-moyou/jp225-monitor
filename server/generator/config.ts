@@ -1,10 +1,10 @@
-// 提案生成器(別プロセス)の実行時設定。
+// 分析用(別プロセス)の実行時設定。
 //
 // ★この設定は epoch(標本の期)の一部になる。間隔や対照の頻度を変えれば標本の性質が変わるので、
 //   「設定を変えたのに同じ期のまま集計される」ことが無いよう、epoch の計算入力に丸ごと入れる
 //   (server/generator/epoch.ts)。
 
-/** 既定値。**設計として確定済み**の値はここに1か所だけ置く(生成器の他のモジュールは env を読まない)。 */
+/** 既定値。**設計として確定済み**の値はここに1か所だけ置く(分析用の他のモジュールは env を読まない)。 */
 export const GENERATOR_DEFAULTS = {
   /** 1サイクルの間隔[ms]。2分ごとに1サイクル。 */
   intervalMs: 120_000,
@@ -60,7 +60,7 @@ export function resolveGeneratorConfig(env: NodeJS.ProcessEnv, defaultPort: numb
   };
 }
 
-/** ★epoch に食わせる生成器設定。**monitorUrl は含めない**:
+/** ★epoch に食わせる分析用設定。**monitorUrl は含めない**:
  *  接続先は「どの PC のどのポートに繋いだか」であって、標本の性質ではない。含めると
  *  ポートを変えただけで期が割れる(=同じ実験なのに集計が分断される)。接続先は runs 表に残す。 */
 export function epochGeneratorConfig(cfg: GeneratorConfig): Omit<GeneratorConfig, 'monitorUrl'> {

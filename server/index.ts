@@ -114,9 +114,9 @@ app.use(express.json({ limit: '256kb' }));
 app.get('/api/stream', streamHandler);
 app.post('/api/explain', explainHandler);
 app.post('/api/chat', chatHandler);
-// ★generatorSessionGate は **ハンドラより前**: 場外(取引セッション外)の生成器要求を、
+// ★generatorSessionGate は **ハンドラより前**: 場外(取引セッション外)の分析用要求を、
 //   チャート撮影(Chrome 起動)にも LLM にも予算計上にも到達させずに 429 で弾く。
-//   caller 省略/'default'(実弾につながる既存の呼び出し元)は素通しする=挙動不変。
+//   caller 省略/'default'(実取引につながる既存の呼び出し元)は素通しする=挙動不変。
 app.post('/api/scalp-plan', generatorSessionGate, scalpPlanHandler);
 app.get('/api/settings', getSettingsHandler);
 app.post('/api/settings/keys', postSettingsHandler);
@@ -188,7 +188,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   });
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
-  // ★提案生成器の状態(有効か/生きているか/標本/従属停止)を共有DBの meta に定期記録する。
+  // ★分析用の状態(有効か/生きているか/標本/従属停止)を共有DBの meta に定期記録する。
   //   別PCの書き出しから「無効なのか・止まったのか・起動していないのか」を判別するため
   //   (ティック保管・台帳書き出しと同じ meta 経由=trade2 の30分スナップショットに乗る)。
   //   分析用なので lite では起動しない(モジュール側でゲート)。記録専用=取引挙動に関与しない。

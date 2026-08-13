@@ -103,7 +103,7 @@ describe('generatorGate — 予算は腕ごとに独立する', () => {
 
   it('従属停止(default の quota)は **全腕を同時に** 止める(片腕だけ回り続けない)', () => {
     // 「腕ごとに独立」は予算の話。上流クォータの枯渇は全腕に等しく効くべきなので、
-    // ここで腕別にすると実弾(A)の枠を片腕が食い続けることになる。
+    // ここで腕別にすると実取引(A)の枠を片腕が食い続けることになる。
     notifyDefaultQuota('gemini', D1_DAY);
     expect(reason(D1_DAY, 'current')).toBe('default-quota');
     expect(reason(D1_DAY, 'candidate-a')).toBe('default-quota');
@@ -112,7 +112,7 @@ describe('generatorGate — 予算は腕ごとに独立する', () => {
   it('★既定の予算は「1本の腕だけでも1取引日をフルカバーできる」値である', async () => {
     // 2分間隔で日中7h+ナイト13hをフルカバーすると約 600 回/取引日。既定がこれを下回ると、
     // 腕ごとに分けても腕が **需要側の都合で** 枯れ、取引日の途中で標本が切れる(=時間帯で切れる)。
-    // 運用見込み(生成器2本+対照で約 1,584 回/日)を腕で割った値も満たすこと。
+    // 運用見込み(分析用2本+対照で約 1,584 回/日)を腕で割った値も満たすこと。
     const cfg = await vi.importActual<typeof import('../configStore.js')>('../configStore.js');
     expect(cfg.GENERATOR_DAILY_BUDGET_DEFAULT).toBeGreaterThanOrEqual(600);
     expect(cfg.GENERATOR_DAILY_BUDGET_DEFAULT * 2).toBeGreaterThanOrEqual(1584);

@@ -6,12 +6,12 @@ import { join } from 'node:path';
 // ─── ★「キーを検証」をプール別に分ける ────────────────────────────────
 //
 // 検証は **実際に外部へリクエストを送る**。だからプールごとに正しいキーで送らなければならない:
-//   - 「キーを検証」(pool 省略)      … 共通キー(実弾 A のキー)
-//   - 「生成器のキーを検証」(generator) … 生成器専用キー。**専用キーがある行で共通キーを消費しない**。
+//   - 「キーを検証」(pool 省略)      … 共通キー(実取引 A のキー)
+//   - 「分析用のキーを検証」(generator) … 分析用専用キー。**専用キーがある行で共通キーを消費しない**。
 //
 // ★否定対照(修正前のコードでこのテストが赤くなること):
 //   修正前は testProvider/testAllProviders が引数を取らず、常に default プールを ping していた。
-//   → 「生成器の検証が専用キー(AIza-gen)を使う」アサーションは成立しえない(共通キーで ping される)。
+//   → 「分析用の検証が専用キー(AIza-gen)を使う」アサーションは成立しえない(共通キーで ping される)。
 //   また testSettingsHandler は req を無視していたので、不正な pool でも 400 にならなかった。
 //
 // 外部 LLM は絶対に叩かない: 'openai' モジュールを差し替え、ping に使われた apiKey だけを記録する。
@@ -87,15 +87,15 @@ describe('/api/settings/test のプール別検証', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('pool 省略は従来どおり共通キー(実弾 A のキー)で ping する', async () => {
+  it('pool 省略は従来どおり共通キー(実取引 A のキー)で ping する', async () => {
     const out = await test({});
     expect(out.code).toBe(200);
     expect(out.body.pool).toBe('default');
     expect(rec.pings).toContain('AIza-shared');
-    expect(rec.pings).not.toContain('AIza-gen');   // 生成器の専用キーは消費しない
+    expect(rec.pings).not.toContain('AIza-gen');   // 分析用の専用キーは消費しない
   });
 
-  it('★pool=generator は専用キーで ping する(生成器の検証で共通キーを消費しない)', async () => {
+  it('★pool=generator は専用キーで ping する(分析用の検証で共通キーを消費しない)', async () => {
     const out = await test({ pool: 'generator' });
     expect(out.code).toBe(200);
     expect(out.body.pool).toBe('generator');

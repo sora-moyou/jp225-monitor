@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// ─── ★生成器の台帳にも、本線と同じ「根拠文の突き合わせ」を残す ────────────────────
+// ─── ★分析用の台帳にも、本線と同じ「根拠文の突き合わせ」を残す ────────────────────
 //
 // 何を守っているか:
-//   monitor の signal_plans には lc_audit_json(申告 LC幅 vs 実出力)が入るのに、生成器の
-//   proposals には無かった。同じ故障は生成器側にも出るので、**母集団が揃わないと腕どうしで
+//   monitor の signal_plans には lc_audit_json(申告 LC幅 vs 実出力)が入るのに、分析用の
+//   proposals には無かった。同じ故障は分析用側にも出るので、**母集団が揃わないと腕どうしで
 //   比べられない**(A/B の主指標が片側にしか無い状態だった)。
 //   配管は contextAt / promptFp と同じ経路(応答をそのまま写す・推測しない)。
 //   omission_audit_json(「出さない」表明 vs 実際に発注されるレッグ)も同じ経路で足す。
@@ -44,7 +44,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-describe('生成器の台帳: 根拠文の突き合わせ2種を行に写す', () => {
+describe('分析用の台帳: 根拠文の突き合わせ2種を行に写す', () => {
   it('★応答の lcAudit / omissionAudit をそのまま JSON にして行に写す', () => {
     const row = toProposalRow('g1:x', 'c1', req, outcome({
       ok: true, plan: { direction: 'sell' }, lcAudit: LC_AUDIT, omissionAudit: OMISSION,

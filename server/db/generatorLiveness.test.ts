@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os';
 // ─── ★B1(死活): 指標を「プロセスが生きているか」から「標本が溜まっているか」へ ──────
 //
 // 何が壊れていたか:
-//   死活表示は SELECT MAX(requested_at) を見ていた。ところが生成器はゲートに弾かれている間も
+//   死活表示は SELECT MAX(requested_at) を見ていた。ところが分析用はゲートに弾かれている間も
 //   2分ごとに status='skipped' を書き続ける。だから **止まっている間も「最終記録」は新しいまま**で、
-//   実売買PCの実ログでセッションの 91〜100% が停止していたのに表示は一度も警告に変わらなかった。
+//   実取引PCの実ログでセッションの 91〜100% が停止していたのに表示は一度も警告に変わらなかった。
 //   溜めたいのは提案(標本)であって行数ではない。→ 直近1時間の status='plan' の件数で判定する。
 //
 // ★否定対照(修正前 = git show HEAD:server/db/generatorStore.ts):
@@ -38,7 +38,7 @@ describe('★死活は「標本が溜まっているか」で測る', () => {
   it('停止中(skipped を書き続けている)は「最終記録」は新しいのに標本は 0 と読める', () => {
     withDb((path) => {
       const db = openGeneratorDb(path);
-      // 従属停止中の生成器がやること: 2分ごとに status='skipped' を書く。
+      // 従属停止中の分析用がやること: 2分ごとに status='skipped' を書く。
       for (let i = 0; i < 30; i++) {
         insertProposal(db, row({
           cycleId: `halt-${i}`, requestedAt: NOW - i * 120_000,

@@ -1,6 +1,6 @@
 import type { Price, Symbol } from '../types.js';
 
-// v0.7.16(実弾ルート修正 / 長寿命ドリフト対策): NIY=F(大阪取引所 OSE 日経225先物mini)の
+// v0.7.16(実取引ルート修正 / 長寿命ドリフト対策): NIY=F(大阪取引所 OSE 日経225先物mini)の
 // リアルタイム価格を、socket ではなく **公開 HTTP エンドポイント** ajax_cme.js から取得する。
 //
 // v0.7.20(全銘柄 HTTP 化): socket / Yahoo を全廃し、監視 4 銘柄すべてを公開 HTTP から取る。

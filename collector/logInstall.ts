@@ -1,6 +1,6 @@
 // ★副作用だけのモジュール: **読み込まれた瞬間に** collector のファイルログを有効にする。
 //
-// なぜ関数呼び出しではなく import なのか(生成器の server/generator/sidecarLogInstall.ts と同じ理由):
+// なぜ関数呼び出しではなく import なのか(分析用の server/generator/sidecarLogInstall.ts と同じ理由):
 //   ESM でも(SEA の CJS バンドルでも)import は **本文の実行より先に、書いた順に** 評価される。
 //   index.ts の1行目でこれを読み込めば、収集デーモン本体の依存(node:sqlite・検知エンジン・
 //   フィード取得など)が評価されるより **前** にログが開く。

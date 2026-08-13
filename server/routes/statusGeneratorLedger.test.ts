@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response } from 'express';
 
-// ─── GET /api/status: 「生成器 最終記録 N分前」を出す ──────────────────────────────
+// ─── GET /api/status: 「分析用 最終記録 N分前」を出す ──────────────────────────────
 //
 // 何を守っているか:
 //   1年かけて溜める実験の最悪の失敗形は「1年後に、実は3か月動いていなかった」。
-//   生成器側だけの死活監視は生成器が死んだら一緒に死ぬので、**ユーザーが見る画面** が読む
+//   分析用側だけの死活監視は分析用が死んだら一緒に死ぬので、**ユーザーが見る画面** が読む
 //   /api/status に出す。専用DBを **readOnly** で読むだけ(台帳を作らない・書かない)。
 //
 // ★否定対照(修正前の routes/status.ts): generatorLedger を返さない → 下の2件が赤。
@@ -47,7 +47,7 @@ const row = (over: Partial<ProposalRow> = {}): ProposalRow => ({
   ...over,
 });
 
-describe('/api/status — 生成器の台帳の死活', () => {
+describe('/api/status — 分析用の台帳の死活', () => {
   const savedVariant = process.env.MONITOR_VARIANT;
   const savedDb = process.env.JP225_GENERATOR_DB;
   let dir: string;

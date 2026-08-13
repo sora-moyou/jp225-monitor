@@ -102,7 +102,7 @@
       </fieldset>
 
 <!-- ★キーの撤回導線: 「空欄=変更なし」(うっかり全消去の防止)はそのままに、明示チェックのときだけ
-           空欄の欄を消せるようにする。生成器キーの「消去」(#genkey-clear)と同じ作法。lite でも表示する
+           空欄の欄を消せるようにする。分析用キーの「消去」(#genkey-clear)と同じ作法。lite でも表示する
            (従来は誤って貼ったキーを取り消す手段が config.json の手編集しか無かった)。 -->
       <label class="exit-check" style="margin-top:8px">
         <input type="checkbox" id="keys-clear" />
@@ -117,55 +117,55 @@
       </div>
 
       <fieldset class="settings-section" id="generator-keys-fieldset">
-        <legend>提案生成器（分析用・実弾とは別プール）</legend>
+        <legend>分析用（実取引とは別プール）</legend>
         <label class="exit-check">
           <input type="checkbox" id="generator-enabled" />
-          提案生成器を動かす（<strong>既定はオフ</strong>）
+          分析用を動かす（<strong>既定はオフ</strong>）
         </label>
-        <div class="exit-hint">オフのあいだ、同梱の生成器は<strong>待機するだけ</strong>です——LLM を1回も叩かず、台帳にも1行も書きません。オンにすると2分ごとに提案を作り始め、<strong>LLM の予算を消費します</strong>。画面右上の <strong>Ge</strong> ドットで状態が分かります（⚪無効／🟡有効だが記録なし／🟢標本が溜まっている／🔴前提が崩れて停止＝理由はマウスを乗せると出ます）。</div>
-        <div class="exit-hint">分析用の「提案生成器」は実弾（A）とは<strong>別のプロバイダ・プール</strong>で動きます。専用キーを入れると上流のクォータまで分けられます。<strong>空欄ならこの上の共通キーへ黙ってフォールバックします</strong>——その状態でも生成器は動きますが、実弾と同じ枠を消費します。各行の表示で「今どちらのキーが効いているか」を確認してください。</div>
+        <div class="exit-hint">オフのあいだ、同梱の分析用プロセスは<strong>待機するだけ</strong>です——LLM を1回も叩かず、台帳にも1行も書きません。オンにすると2分ごとに提案を作り始め、<strong>LLM の予算を消費します</strong>。画面右上の <strong>Ge</strong> ドットで状態が分かります（⚪無効／🟡有効だが記録なし／🟢標本が溜まっている／🔴前提が崩れて停止＝理由はマウスを乗せると出ます）。</div>
+        <div class="exit-hint">分析用は実取引（A）とは<strong>別のプロバイダ・プール</strong>で動きます。専用キーを入れると上流のクォータまで分けられます。<strong>空欄ならこの上の共通キーへ黙ってフォールバックします</strong>——その状態でも分析用は動きますが、実取引と同じ枠を消費します。各行の表示で「今どちらのキーが効いているか」を確認してください。</div>
         <div class="setting-row">
           <label>
-            <span id="genkey-gemini-status" class="key-status" title="キー状態"></span>Gemini（生成器）
+            <span id="genkey-gemini-status" class="key-status" title="キー状態"></span>Gemini（分析用）
             <span id="genkey-gemini-src" class="gen-key-src"></span>
           </label>
           <input type="password" id="genkey-gemini" autocomplete="off" />
         </div>
         <div class="setting-row">
           <label>
-            <span id="genkey-groq-status" class="key-status" title="キー状態"></span>Groq（生成器）
+            <span id="genkey-groq-status" class="key-status" title="キー状態"></span>Groq（分析用）
             <span id="genkey-groq-src" class="gen-key-src"></span>
           </label>
           <input type="password" id="genkey-groq" autocomplete="off" />
         </div>
         <div class="setting-row">
           <label>
-            <span id="genkey-openai-status" class="key-status" title="キー状態"></span>OpenAI（生成器）
+            <span id="genkey-openai-status" class="key-status" title="キー状態"></span>OpenAI（分析用）
             <span id="genkey-openai-src" class="gen-key-src"></span>
           </label>
           <input type="password" id="genkey-openai" autocomplete="off" />
         </div>
         <div class="setting-row">
           <label>
-            <span id="genkey-kimi-status" class="key-status" title="キー状態"></span>Kimi（生成器）
+            <span id="genkey-kimi-status" class="key-status" title="キー状態"></span>Kimi（分析用）
             <span id="genkey-kimi-src" class="gen-key-src"></span>
           </label>
           <input type="password" id="genkey-kimi" autocomplete="off" />
         </div>
         <label class="exit-check" style="margin-top:8px">
           <input type="checkbox" id="genkey-clear" />
-          保存時に生成器の専用キーを消去する（＝共通キーの使用に戻す）
+          保存時に分析用の専用キーを消去する（＝共通キーの使用に戻す）
         </label>
-        <div class="exit-hint gen-key-warn">★<strong>専用キーを設定しても、同じアカウントのキーでは提供元側の枠は共有されます</strong>（多くの提供元でレート制限は組織／プロジェクト単位です）。完全に分けるには<strong>別アカウント</strong>、または<strong>実弾とは違う提供元</strong>を使ってください。</div>
+        <div class="exit-hint gen-key-warn">★<strong>専用キーを設定しても、同じアカウントのキーでは提供元側の枠は共有されます</strong>（多くの提供元でレート制限は組織／プロジェクト単位です）。完全に分けるには<strong>別アカウント</strong>、または<strong>実取引とは違う提供元</strong>を使ってください。</div>
         <div class="setting-row">
-          <button type="button" id="settings-test-genkeys" class="btn-secondary">生成器のキーを検証</button>
+          <button type="button" id="settings-test-genkeys" class="btn-secondary">分析用のキーを検証</button>
           <div id="settings-test-genkeys-result" class="update-result"></div>
-          <div class="exit-hint">生成器プールが実際に使うキーで極小(1トークン)の ping を1回ずつ送ります。<strong>専用キーがある行は専用キーで、「共通キーを使用中」の行は共通キーで検証します</strong>（後者は実弾と同じ枠を消費します）。上の「キーを検証」は従来どおり共通キー（実弾側）が対象です。</div>
+          <div class="exit-hint">分析用プールが実際に使うキーで極小(1トークン)の ping を1回ずつ送ります。<strong>専用キーがある行は専用キーで、「共通キーを使用中」の行は共通キーで検証します</strong>（後者は実取引と同じ枠を消費します）。上の「キーを検証」は従来どおり共通キー（実取引側）が対象です。</div>
         </div>
         <div class="setting-row">
-          <label>生成器の日次予算（回 / 取引日・<strong>腕ごと</strong>・0 で生成器を無効化）</label>
+          <label>分析用の日次予算（回 / 取引日・<strong>腕ごと</strong>・0 で停止）</label>
           <input type="number" id="generator-budget" min="0" max="5000" step="10" placeholder="800 (既定)" />
-          <div class="exit-hint">2分間隔でフルカバーすると約 <strong>600 回/取引日</strong>、生成器2本＋対照の運用見込みは約 <strong>1,584 回/日</strong>。この予算は<strong>「腕」（決済仕様の変種）ごとに独立して</strong>効きます——共有にすると先に叩いた腕が取引日の残りを食い切り、標本が日中前半に偏るためです。既定は <strong>800 / 腕</strong>（旧: 全腕で共有する <strong>200</strong>）。<strong>上限に達した腕は停止し、記録に残ります</strong>（無音で縮退したりモードを書き換えたりはしません）。空欄で既定に戻ります。</div>
+          <div class="exit-hint">2分間隔でフルカバーすると約 <strong>600 回/取引日</strong>、分析用2本＋対照の運用見込みは約 <strong>1,584 回/日</strong>。この予算は<strong>「腕」（決済仕様 × 質問文の変種）ごとに独立して</strong>効きます——共有にすると先に叩いた腕が取引日の残りを食い切り、標本が日中前半に偏るためです。既定は <strong>800 / 腕</strong>（旧: 全腕で共有する <strong>200</strong>）。<strong>上限に達した腕は停止し、記録に残ります</strong>（無音で縮退したりモードを書き換えたりはしません）。空欄で既定に戻ります。</div>
         </div>
       </fieldset>
 
@@ -275,7 +275,7 @@
 
       <fieldset class="settings-section" id="ai-entry-fieldset">
         <legend>AIエントリー</legend>
-        <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。<br>★v0.8.2: 各行は <b>A(実売買・trade2が追従)</b> と <b>B(📝紙のみ・並走比較)</b> を横並びで設定します。B は空欄/「A追従」なら A と同じ設定で動きます(B だけ差分を付けて比較)。B は実売買に一切渡りません。</div>
+        <div class="exit-hint">各項目は「手動(数値/enumを強制)」か「AI委任(この値をAIが決める=該当制約を課さない)」を選べます。既定は全て手動＝現状の挙動のまま。1項目ずつ AI に倒して、書き出し(どの設定でエントリーしたか)で効果を検証できます。<br>★v0.8.2: 各行は <b>A(実取引・trade2が追従)</b> と <b>B(📝仮想取引のみ・並走比較)</b> を横並びで設定します。B は空欄/「A追従」なら A と同じ設定で動きます(B だけ差分を付けて比較)。B は実取引に一切渡りません。</div>
         <!-- ★lite 専用の説明(既定 hidden・variant=lite のときだけ表示。full の見た目は不変)。 -->
         <div class="exit-hint lite-hint" hidden>AIエントリーの<b>損切り幅</b>と<b>バイアス(狙う方向)</b>の設定です。変更したら「保存」を押すと、次のエントリーから反映されます。<br><b>手動</b>＝設定した数値を必ず守らせます（コードで判定し、外れた注文は出しません）。<b>AI委任</b>＝この項目はAIが場面ごとに決めます（設定値は使いません）。<br>★<b>初期LC下限だけは委任の対象外</b>です（そのためモード選択がありません）。ここに入れた数値はコードで必ず強制します（決済ロジックが成立するための前提条件のため）。</div>
         <!-- ★初期LC下限には委任モード select を置かない(LC安全上限と同じ扱い=委任対象外の項目)。
@@ -456,7 +456,7 @@
           </span>
           <div class="exit-hint lite-hint" hidden>AI にチャート画像(TradingView の撮影)を送るかどうかです。<b>送らない</b>＝1枚も送らず、撮影(ヘッドレスChrome の起動)も行いません。<b>半分だけ送る</b>＝サイクルごとにランダムで半分の回だけ送り、「画像があると成績が変わるのか」を比べられるようにします(その分だけ課金も半分)。★全部送る設定はありません。</div>
         </div>
-        <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC下限=下限未満のレッグ落とし / LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。いずれもレッグが両方落ちれば見送り(none)になります。<br>★<b>初期LC下限は委任の対象外</b>です。「AI委任」を選んでもコードは下限を強制します(設定より優先)。理由: 決済は含み益が一定に達して初めて利益をロックしていく方式なので、下限より狭い初期LCは床が働く前に切られ、決済ロジックが構造的に成立しないためです。※これは明らかに前提の壊れた計画を止めるだけで、成績の改善を意味するものではありません。<br>★<b>最大初期LCをAI委任にしても上限は完全には消えません</b>: LC安全上限が有効ならその値、無効でも 300円(設定として指定できるLC幅の上限)を実効上限として残します。<b>A</b> は monitorのシグナルエンジンと jp225-Trade の両方(実売買)に反映されます。<b>B</b> は紙専用の並走比較のみで、実売買には一切渡りません。<br>★LC安全上限: 実弾の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・159円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・紙で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。<br>★ドテン許可(AIが保有中に反転を判断してよい): 保有中に AI が「決済と同時に反対方向へ新規」した方がよいと判断した場面だけ、monitor が反転(=決済+反対新規)シグナルを出します。常に反転するわけではなく AI が都度判断します。既定=OFF(反転しない=従来どおり)。反転は通常の決済→別の新規とは区別して記録されます。<br>★レンジ未約定でブレイク再評価: レンジ両指値(逆張りフェード)が「平均約定所要 × 1.5」を超えて約定しないとき、AI に「両逆指値(ブレイク追随)へ切替 / 現状維持 / 見送り」を再判断させます。レンジを使う設定のときだけ実効(レンジ自体が既定OFF)。既定=ON。<br>★チャート撮影失敗でもテキストで継続: チャート画像(TradingView撮影)が ws-error 等で取れない時、1回リトライ後もダメなら画像なし(価格/レベル/指標のテキストのみ)で AI に戦略を作らせて取引を継続します。既定=ON(チャート障害で全停止するのを防ぐ)。OFF にすると撮影できない間は見送り(ストリクトvision=従来挙動)。</div>
+        <div class="exit-hint">AI委任にすると、その項目の数値/enum強制を外し、AI が自分で決めます(プロンプトで委任を明示・根拠を述べさせる)。手動なら従来どおりコードで強制します(LC下限=下限未満のレッグ落とし / LC上限=超過レッグ落とし / バイアス=逆方向を見送り / トレンドveto=逆行フェードを落とす / クールダウン=決済後の再ARM抑止 / レンジ両面=on/off)。いずれもレッグが両方落ちれば見送り(none)になります。<br>★<b>初期LC下限は委任の対象外</b>です。「AI委任」を選んでもコードは下限を強制します(設定より優先)。理由: 決済は含み益が一定に達して初めて利益をロックしていく方式なので、下限より狭い初期LCは床が働く前に切られ、決済ロジックが構造的に成立しないためです。※これは明らかに前提の壊れた計画を止めるだけで、成績の改善を意味するものではありません。<br>★<b>最大初期LCをAI委任にしても上限は完全には消えません</b>: LC安全上限が有効ならその値、無効でも 300円(設定として指定できるLC幅の上限)を実効上限として残します。<b>A</b> は monitorのシグナルエンジンと jp225-Trade の両方(実取引)に反映されます。<b>B</b> は仮想取引専用の並走比較のみで、実取引には一切渡りません。<br>★LC安全上限: 実取引の暴走を防ぐ最終安全網です。有効時は最大初期LCが手動でもAIでも、|エントリー−損切り| がこの円を超えるレッグを必ず落とします(最大初期LCのAI委任とは独立)。無効にするとハード上限なし=AI完全自由(明示的に選んだ場合のみ)。既定=有効・159円。<br>レンジ両面: レンジ判断時に上下両面のエントリーを出す(実験・仮想取引で別枠計測)。フェード(指値両面)は過去検証+実データでも不利だったため、★実験終了(手動の既定OFF)。<br>★ドテン許可(AIが保有中に反転を判断してよい): 保有中に AI が「決済と同時に反対方向へ新規」した方がよいと判断した場面だけ、monitor が反転(=決済+反対新規)シグナルを出します。常に反転するわけではなく AI が都度判断します。既定=OFF(反転しない=従来どおり)。反転は通常の決済→別の新規とは区別して記録されます。<br>★レンジ未約定でブレイク再評価: レンジ両指値(逆張りフェード)が「平均約定所要 × 1.5」を超えて約定しないとき、AI に「両逆指値(ブレイク追随)へ切替 / 現状維持 / 見送り」を再判断させます。レンジを使う設定のときだけ実効(レンジ自体が既定OFF)。既定=ON。<br>★チャート撮影失敗でもテキストで継続: チャート画像(TradingView撮影)が ws-error 等で取れない時、1回リトライ後もダメなら画像なし(価格/レベル/指標のテキストのみ)で AI に戦略を作らせて取引を継続します。既定=ON(チャート障害で全停止するのを防ぐ)。OFF にすると撮影できない間は見送り(ストリクトvision=従来挙動)。</div>
         <div class="exit-hint">★<b>AIにチャート画像を送る</b>: 既定は<b>送らない</b>です。チャート画像はテキストに比べて桁違いに大きく、無料枠のプロバイダが使えない時間帯は有料プロバイダに全てかかるため、課金の主因になります。しかも<b>画像が成績に効いているかは一度も測れていません</b>(ほぼ全ての呼び出しに画像が付いていて、比較対象=画像なしの回が存在しないため)。「半分だけ送る」にすると、サイクルごとにランダムで半分の回にだけ画像を付けるので、課金を抑えたまま画像あり/なしを比較できます(どちらの群だったかは計画の台帳に記録されます)。全部送るモードは用意していません。</div>
       </fieldset>
       </div>
@@ -643,7 +643,7 @@
           <button type="button" id="signal-trades-close" class="btn-secondary">閉じる</button>
         </div>
       </div>
-      <!-- ★v0.8.2: A/B 系統セレクタ。A=実売買 / B=紙専用。lite は非表示=常に A。 -->
+      <!-- ★v0.8.2: A/B 系統セレクタ。A=実取引 / B=仮想取引専用。lite は非表示=常に A。 -->
       <div id="signal-trades-system-row" class="setting-row" style="margin-bottom:8px">
         <label for="signal-trades-system">系統</label>
         <select id="signal-trades-system">

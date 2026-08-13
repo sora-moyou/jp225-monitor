@@ -7,7 +7,7 @@ import { initSchema, insertSignalTrade, getSignalTrades } from './store.js';
 import { backupViaVacuum } from './mergeDb.js';
 
 // ★記録専用(ADD-ONLY): signal_trades の ARM(武装)時刻 armed_t と「ARM 時点で monitor が見ていた価格」armed_price。
-//   過去の各紙トレードについて「武装から約定までの経過(entry_t − armed_t)」と「武装時点の状況」を遡って解析する
+//   過去の各仮想取引について「武装から約定までの経過(entry_t − armed_t)」と「武装時点の状況」を遡って解析する
 //   ための2列。★armed_price が要る理由: 事後に prices_*.db の ticks で代用すると collector が別プロセス・別位相
 //   (+AJAXキャッシュ)で記録した価格列になり、monitor が実際に feed した価格と一致しない(実測で誤検出多数)。
 //   検知/決済/エントリー採否には一切触らない(列が増えるだけ)。

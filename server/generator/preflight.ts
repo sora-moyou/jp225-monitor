@@ -12,16 +12,16 @@
 //   ③ 変種の実装が実体を持つこと(exit.variantImpl==='private')
 //      フォールバックだと 'candidate-a' の説明文が 'current' とほぼ同一になり、①と②が
 //      **同じ質問** を投げる。それでも記録には「候補仕様で生成した」と残る=最悪の壊れ方。
-//   ④ 生成器専用キーが全プロバイダで設定済みであること
-//      ★共通キーへフォールバックしている状態で走らせない。生成器が上流クォータを食い潰すと
-//      A(実弾)が 429 を踏み、最大8時間ポーズする。generatorGate の従属規則は **事後的** で、
+//   ④ 分析用専用キーが全プロバイダで設定済みであること
+//      ★共通キーへフォールバックしている状態で走らせない。分析用が上流クォータを食い潰すと
+//      A(実取引)が 429 を踏み、最大8時間ポーズする。generatorGate の従属規則は **事後的** で、
 //      A が最初の一発を必ず食う。事後の停止では守れない以上、事前に止めるしかない。
 //   ⑤ 凍結設定を /api/settings から取得して記録(★取引記録から推測しない)
 //   ⑥ 決済設定の版と指紋(exit.configVersion / exit.configHash)を記録
 
 import { GENERATOR_PROVIDERS, type GeneratorProviderName } from '../configStore.js';
 
-/** 生成器が「専用キーで動いている」と言える出どころ。'shared'(共通キー)と 'none' は不可。 */
+/** 分析用が「専用キーで動いている」と言える出どころ。'shared'(共通キー)と 'none' は不可。 */
 const DEDICATED_KEY_SOURCES: readonly string[] = ['own', 'env'];
 
 export interface PreflightOk {
@@ -93,9 +93,9 @@ export function evaluatePreflight(statusJson: unknown, settingsJson: unknown): P
   if (shared.length > 0) {
     return {
       ok: false, kind: 'violated',
-      reason: `生成器専用キーが未設定のプロバイダがあります(${shared.join(' ')})。`
-        + '共通キーへフォールバックしたまま走らせると、生成器が上流クォータを食い潰して'
-        + '実弾(A)が429を踏み、最大8時間ポーズします(従属規則は事後的で A が最初の一発を必ず食う)',
+      reason: `分析用専用キーが未設定のプロバイダがあります(${shared.join(' ')})。`
+        + '共通キーへフォールバックしたまま走らせると、分析用が上流クォータを食い潰して'
+        + '実取引(A)が429を踏み、最大8時間ポーズします(従属規則は事後的で A が最初の一発を必ず食う)',
     };
   }
 

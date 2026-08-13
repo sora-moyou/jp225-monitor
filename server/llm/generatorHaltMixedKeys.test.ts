@@ -4,14 +4,14 @@ import {
   notifyDefaultQuota, checkGeneratorGate, resetGeneratorGateForTest, generatorQuotaIgnored,
 } from './generatorGate.js';
 
-// ─── ★従属停止の見送りは「生成器 **全体** が専用キー」のときだけ ────────────────────
+// ─── ★従属停止の見送りは「分析用 **全体** が専用キー」のときだけ ────────────────────
 //
 // 何が食い違っていたか(サブリーダー指摘 E):
-//   generatorGate.ts のコメントは「停止そのものは従来どおり生成器 **全体** に効く。
-//   共有プロバイダの枠を食う経路は生成器のフォールバック順で必ず通りうるので、そこは弱めない」
+//   generatorGate.ts のコメントは「停止そのものは従来どおり分析用 **全体** に効く。
+//   共有プロバイダの枠を食う経路は分析用のフォールバック順で必ず通りうるので、そこは弱めない」
 //   と書いているのに、**見送り(止めない)の判断は 429 を踏んだそのプロバイダだけ** を見ていた。
 //   例) gemini=専用 / openai=共有 のとき、gemini の429で停止が丸ごと見送られ、
-//       生成器はフォールバックで **共有の openai** を食える = A の枠を守れていない。
+//       分析用はフォールバックで **共有の openai** を食える = A の枠を守れていない。
 //
 // ★否定対照(修正前): notifyDefaultQuota に allSources が無く、
 //   `isDedicatedGeneratorKey(keySource)` だけで見送りを決めていた
@@ -64,7 +64,7 @@ describe('notifyDefaultQuota(実際に止まる/止まらない)', () => {
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it('★混在(gemini=専用 / openai=共有)で gemini が429 → 生成器は止まる', () => {
+  it('★混在(gemini=専用 / openai=共有)で gemini が429 → 分析用は止まる', () => {
     notifyDefaultQuota('gemini', Date.now(), 60_000, 'own', { gemini: 'own', openai: 'shared' });
     const g = checkGeneratorGate();
     expect(g.allowed).toBe(false);

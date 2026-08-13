@@ -1,4 +1,4 @@
-// 提案生成器の **開発用 CLI 入口**。
+// 分析用の **開発用 CLI 入口**。
 //
 //   npm run generator:dev        (接続先は既定 localhost / GENERATOR_MONITOR_URL で変更)
 //

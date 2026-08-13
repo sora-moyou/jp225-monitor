@@ -196,7 +196,7 @@ export function initSchema(db: DatabaseSync): void {
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
   if (!stCols.includes('mode')) db.exec('ALTER TABLE signal_trades ADD COLUMN mode TEXT');
-  // ★v0.8.2: A/B 2系統タグ。'A'(実売買・現行) / 'B'(紙専用の並走エンジン)。
+  // ★v0.8.2: A/B 2系統タグ。'A'(実取引・現行) / 'B'(仮想取引専用の並走エンジン)。
   //   既存DBへ後付けマイグレーション(NULL は 'A' 扱い=後方互換・既存行は全て A)。
   if (!stCols.includes('system')) db.exec('ALTER TABLE signal_trades ADD COLUMN system TEXT');
   // ★検証(monitor2⇔trade2 突合)用: signal_id を1級列にして signals_<host>.db⇔forward_<host>.db を equijoin できるようにする。
@@ -717,7 +717,7 @@ export function getSessionOHLC(db: DatabaseSync, symbol: string, limit: number):
   return [...map.values()].sort((a, b) => b.openT - a.openT).slice(0, limit);
 }
 
-// ─── トレードシグナル(表示専用・紙トラッキング)の決済履歴 ───
+// ─── トレードシグナル(表示専用・仮想取引の記録)の決済履歴 ───
 // エントリーは AI(scalp-plan)、決済は非公開 phase-exit。実発注はせず SSE 現在値で擬似約定した
 // 1トレード(entry→exit)を決済確定ごとに1行記録する。既存テーブルとは独立(trade2 非干渉)。
 
@@ -727,7 +727,7 @@ export interface SignalTradeRow {
   exit_t: number; exit_price: number; pnl: number; qty: number;
   rationale: string | null; meta: string | null;
   mode: string | null;   // 'range' / 'directional'(NULL は directional 扱い=後方互換)
-  system: string | null; // ★v0.8.2: 'A'(実売買) / 'B'(紙専用)。NULL は 'A' 扱い(後方互換)。
+  system: string | null; // ★v0.8.2: 'A'(実取引) / 'B'(仮想取引専用)。NULL は 'A' 扱い(後方互換)。
   signal_id: number | null; // ★検証用: そのトレードの ARM 采番(trade2 の signal_id と join)。NULL=旧行/未采番。
   armed_t: number | null;     // ★ARM(武装)時刻。entry_t − armed_t = ARM→約定の経過[ms]。NULL=旧行。
   armed_price: number | null; // ★ARM 時点で monitor が見ていた価格(新鮮値)。NULL=旧行/取れない・stale。
@@ -918,7 +918,7 @@ export function resetArmedTimeoutCounter(db: DatabaseSync, system?: SignalSystem
 // 「武装したが一度も約定せず ARMED_TIMEOUT_MS で失効した」回数。monitor が正規シグナルを出したのに
 // trade2 が受け取ってから拒否し続ける(=乖離)と、その終着点が必ずここになる。実測 sid=361(2026-07-30)は
 // trade2 が6秒おきに147回拒否したのに monitor 側の記録は1行ログのみ・件数はどこにも残らなかった。
-// 系統別(A=実売買 / B=紙専用)に永続し、履歴消去でのみ 0 に戻る。
+// 系統別(A=実取引 / B=仮想取引専用)に永続し、履歴消去でのみ 0 に戻る。
 
 /** count=累計(生涯・約定でも減らない) / streak=連続(約定のたびに 0 へ戻る)。両方を永続する。 */
 export interface ArmedTimeoutStats { count: number; streak: number; lastAt: number | null }
@@ -951,10 +951,10 @@ export function resetArmedTimeoutStreak(db: DatabaseSync, system: SignalSystemFi
 }
 
 // ─── トレードシグナルの決済逆指値(exit-stop)遷移履歴(検証用・RECORD-ONLY) ───
-// 紙建玉の hold.exitStop が「変化するたび」に1行記録する時系列(毎tickではなく変化時のみ=dedupe)。
+// 仮想取引の建玉の hold.exitStop が「変化するたび」に1行記録する時系列(毎tickではなく変化時のみ=dedupe)。
 // monitor2 のこの系列と trade2 の exit_stop_history を突き合わせ、決済逆指値ラダーの乖離・決済時刻ずれ・
 // 片レッグ約定を検証できる。opened_at(建値時刻)+ direction は signalId 欠落時の二次結合キー。
-// 決済ロジック/SSE/紙トレード結果には一切影響しない(追加の DB 書込のみ)。
+// 決済ロジック/SSE/仮想取引結果には一切影響しない(追加の DB 書込のみ)。
 
 export interface SignalExitStopRow {
   id: number;

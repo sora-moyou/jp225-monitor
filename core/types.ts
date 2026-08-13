@@ -19,7 +19,7 @@ export interface SignalRangeLeg {
 }
 
 // ★v0.7.56: 設定スナップショット。各シグナル発生時の実効設定(委任モード+値)を1オブジェクトにまとめ、
-// 紙 meta / 実弾 entry_meta に記録し、trade2 が「どの設定でエントリーしたか」を残せるようにする。
+// 紙 meta / 実取引 entry_meta に記録し、trade2 が「どの設定でエントリーしたか」を残せるようにする。
 // value は AI委任項目で実測可能なもの(LC幅=|entry−SL|)のみ数値、それ以外の ai は省略(mode のみ)。
 export interface KnobSettingSnapshot {
   mode: 'manual' | 'ai';
@@ -146,7 +146,7 @@ export interface LevelsResult {
   hlLevels?: { price: number; label: string }[];
 }
 
-// トレードシグナル(表示専用・紙トラッキング)の SSE state。エントリーは AI(scalp-plan)、
+// トレードシグナル(表示専用・仮想取引の記録)の SSE state。エントリーは AI(scalp-plan)、
 // 決済は非公開 phase-exit。売買命令は送らず、現在シグナルの表示のみ(backend→frontend の唯一の IF)。
 export interface SignalTradeState {
   phase: 'flat' | 'armed' | 'filled';
@@ -199,7 +199,7 @@ export interface SignalTradeState {
     tpTrigger?: number;    // 成行TPの発火価格(buy=rangeTp−5 / sell=rangeTp+5)。
   };
   // ★直近に「決済(filled→flat)した」シグナルの signalId(trade2 の即時再同期用・A のみ)。
-  //   紙エンジンが約定中の建玉を決済した瞬間に、そのエントリーの ARM 采番(currentSignal.signalId)を載せ、
+  //   仮想取引エンジンが約定中の建玉を決済した瞬間に、そのエントリーの ARM 采番(currentSignal.signalId)を載せ、
   //   次の決済まで保持する(late-join の追従側も読める)。ADD-ONLY: 一度も決済していない state では欠落=
   //   既存 SSE JSON は不変(lastBroadcastJson の dedupe と既定挙動を保つ)。決済ロジック/紙損益には無影響。
   lastExitedSignalId?: number;
@@ -259,8 +259,8 @@ export type SSEEvent =
   | { type: 'indicators'; payload: IndicatorSnapshotPayload }
   // v0.7.24: 市場開場フラグ。価格ボードが「取引時間外(閉場・正常)」と「取得不能(フィード障害)」を区別する。
   | { type: 'market'; payload: { open: boolean } }
-  // トレードシグナルの現在状態(flat/armed/filled)。既存イベントは不変・これは A(実売買)系統。
+  // トレードシグナルの現在状態(flat/armed/filled)。既存イベントは不変・これは A(実取引)系統。
   | { type: 'signalTrade'; payload: SignalTradeState }
-  // ★v0.8.2: System B(紙専用の並走系統)の現在状態。A とは別イベントで露出する。
+  // ★v0.8.2: System B(仮想取引専用の並走系統)の現在状態。A とは別イベントで露出する。
   //   B は currentSignal/hold を持たない(trade2 は B を絶対に追わない)=payload の signal/hold は常に欠落。
   | { type: 'signalTradeB'; payload: SignalTradeState };

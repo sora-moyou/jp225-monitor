@@ -12,9 +12,9 @@ interface StreamHandlers {
   onIndicators?: (snap: IndicatorSnapshot) => void;
   // v0.7.24: 市場開場フラグ。閉場(取引時間外)なら価格ボードが「取引時間外」と表示する。省略可(任意ハンドラ)。
   onMarket?: (open: boolean) => void;
-  // トレードシグナル (表示専用・紙トラッキング)。backend の broadcast({type:'signalTrade'}) を受ける。省略可。
+  // トレードシグナル (表示専用・仮想取引の記録)。backend の broadcast({type:'signalTrade'}) を受ける。省略可。
   onSignalTrade?: (s: SignalTradeState) => void;
-  // ★v0.8.2: System B(紙専用の並走系統)。backend の broadcast({type:'signalTradeB'}) を受ける。省略可。
+  // ★v0.8.2: System B(仮想取引専用の並走系統)。backend の broadcast({type:'signalTradeB'}) を受ける。省略可。
   onSignalTradeB?: (s: SignalTradeState) => void;
 }
 

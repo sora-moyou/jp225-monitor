@@ -17,12 +17,12 @@ import {
 } from '../db/generatorHeartbeat.js';
 import type { GeneratorLedgerStatus } from '../db/generatorStore.js';
 
-// ─── ★バグ究明のための書き出し(生成器が「なぜ動いていないか」を別PCから読む) ────────
+// ─── ★バグ究明のための書き出し(分析用が「なぜ動いていないか」を別PCから読む) ────────
 //
-// 何が行き詰まっていたか(実売買PC・monitor2 full v0.9.53):
-//   ・「提案生成器を動かす」は有効・専用キーも4プロバイダ設定済み
+// 何が行き詰まっていたか(実取引PC・monitor2 full v0.9.53):
+//   ・「分析用を動かす」は有効・専用キーも4プロバイダ設定済み
 //   ・それでも台帳(generator_proposals.db)が1行も作られていない
-//   ・生成器の出力は Rust のコンソール止まりで、同期フォルダには1行も届かない
+//   ・分析用の出力は Rust のコンソール止まりで、同期フォルダには1行も届かない
 //   → 「動いていない」ことしか分からず、「なぜ」を見る手段がゼロだった。
 //
 // ★否定対照(修正前 = git show HEAD:server/generator/sidecar.ts / HEAD:src-tauri/src/lib.rs):
@@ -50,7 +50,7 @@ afterEach(() => {
 });
 
 // ─────────────────────────────────────────────────────────
-describe('★① 生成器が自分のログをファイルに書く(コンソール止まりをやめる)', () => {
+describe('★① 分析用が自分のログをファイルに書く(コンソール止まりをやめる)', () => {
   it('書き出しフォルダが設定されていれば、そこへ generator_<host>.log を置く(既存の同期に乗る)', () => {
     const dir = join(tmp, 'trade');
     mkdirSync(dir, { recursive: true });
@@ -96,7 +96,7 @@ describe('★① 生成器が自分のログをファイルに書く(コンソ�
     expect(readFileSync(p, 'utf-8')).toContain('new');
   });
 
-  it('書けない場所でも例外を投げない(ログのために生成器を落とさない)', () => {
+  it('書けない場所でも例外を投げない(ログのために分析用を落とさない)', () => {
     expect(() => appendGeneratorLog('', 'x')).not.toThrow();
   });
 });
@@ -141,7 +141,7 @@ describe('★② サイドカー自身の名乗り(「居るのか」を台帳�
     now: NOW, enabled: true, ledger: LEDGER_NONE, halt: HALT, gate: GATE, ...over,
   });
 
-  it('★有効・名乗り無し・台帳無し = 「プロセスが起動していない疑い」と言い切れる(実売買PCの症状)', () => {
+  it('★有効・名乗り無し・台帳無し = 「プロセスが起動していない疑い」と言い切れる(実取引PCの症状)', () => {
     const h = hb({});
     expect(h.state).toBe('stalled');
     expect(h.reason).toContain('起動していない');
@@ -185,7 +185,7 @@ describe('★② サイドカー自身の名乗り(「居るのか」を台帳�
     expect(line).toContain('接続先=http://127.0.0.1:3000');
     expect(line).toContain('前提検証=NG(unreachable)');
     expect(line).toContain('再生=');
-    expect(line).toContain('生成器キーの出どころ=gemini=own groq=own openai=own kimi=shared');
+    expect(line).toContain('分析用キーの出どころ=gemini=own groq=own openai=own kimi=shared');
     expect(line).toContain('spawned pid=99');
     // ★キーの値は絶対に出さない。
     expect(line).not.toMatch(/AIza|sk-|gsk_/);
@@ -196,7 +196,7 @@ describe('★② サイドカー自身の名乗り(「居るのか」を台帳�
 describe('★④ 起動順序で永久停止しない(monitor と同時 spawn される事実に合わせる)', () => {
   // 何が壊れていたか: サイドカーは monitor 本体と同時に spawn されるので、monitor の HTTP が
   // 待ち受ける前に前提検証が走ると 'unreachable' で止まり、**設定を無効→有効に切り替えるまで
-  // 永久に待機** していた。ユーザーは何もしていないのに、起動のたびに生成器だけが死にうる。
+  // 永久に待機** していた。ユーザーは何もしていないのに、起動のたびに分析用だけが死にうる。
   // ★'violated'(前提が崩れた)は従来どおり止める=測っていない標本を溜め続けない。
   it('到達できない(unreachable)は再試行する理由になる', () => {
     expect(isRetryableHalt({ ok: false, kind: 'unreachable' })).toBe(true);

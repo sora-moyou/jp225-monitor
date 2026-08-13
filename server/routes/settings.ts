@@ -56,10 +56,10 @@ const EXPLICIT_PARAM_KEYS = [
   'scalpCooldownSource', 'scalpBiasSource', 'scalpRangeSource',
   'scalpLcHardMaxEnabled',
   'signalB', 'lite',
-  // ★提案生成器(caller='generator')の設定。UI を持たせた(⚙️「提案生成器」fieldset)。
-  'generatorKeys',          // 生成器プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では値を返さない。
-  'generatorDailyBudget',   // 生成器の日次予算[回/取引日]。0=無効。未設定は GENERATOR_DAILY_BUDGET_DEFAULT。
-  'generatorEnabled',       // ★生成器サイドカーを走らせるか。未設定/false=無効(既定)。有効化するまで LLM も台帳も触らない。
+  // ★分析用(caller='generator')の設定。UI を持たせた(⚙️「分析用」fieldset)。
+  'generatorKeys',          // 分析用プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では値を返さない。
+  'generatorDailyBudget',   // 分析用の日次予算[回/取引日]。0=無効。未設定は GENERATOR_DAILY_BUDGET_DEFAULT。
+  'generatorEnabled',       // ★分析用サイドカーを走らせるか。未設定/false=無効(既定)。有効化するまで LLM も台帳も触らない。
 ] as const satisfies readonly (keyof UserConfig)[];
 type ExplicitParamKey = typeof EXPLICIT_PARAM_KEYS[number];
 
@@ -133,17 +133,17 @@ function llmModelSnapshot(config: UserConfig, kind: 'raw' | 'effective'): Record
 
 export function getSettingsHandler(_req: Request, res: Response): void {
   const config = loadConfig();
-  // ★公開版(lite)は提案生成器(分析用)を持たない=2つ目の API キーの欄も日次予算の欄も出さない。
+  // ★公開版(lite)は分析用を持たない=2つ目の API キーの欄も日次予算の欄も出さない。
   //   画面から消すだけでなく **応答からも落とす**(残っていると「隠しただけ」で、次に UI を触った人が
   //   また出してしまう)。full では isAnalysisEnabled()===true なので従来と同じ4フィールドが返る。
   const generator = isAnalysisEnabled()
     ? {
-      // ★提案生成器(分析用・実弾 A とは別プール)。
+      // ★分析用(実取引 A とは別プール)。
       //   generatorKeySources は **キーの値ではなく「どのキーを使うか」** を返す
       //   ('own'/'env'=専用キー / 'shared'=共通キーへフォールバック中=上流クォータは A と共有 / 'none'=キー無し)。
       //   フォールバックしていることが画面から見えないと「分離したつもりで分離できていない」が無音で成立する。
       generatorKeySources: resolveGeneratorKeySources(),
-      // ★生成器サイドカーの有効/無効。**既定は false**(同梱されていても、有効化するまで走らない)。
+      // ★分析用サイドカーの有効/無効。**既定は false**(同梱されていても、有効化するまで走らない)。
       generatorEnabled: resolveGeneratorEnabled(),
       generatorDailyBudget: resolveGeneratorDailyBudget(),   // 実効値(config → env → 既定・クランプ済み)
       generatorDailyBudgetDefault: GENERATOR_DAILY_BUDGET_DEFAULT,
@@ -196,7 +196,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     scalpRangeSource: resolveScalpRangeDirective().mode,
     // ★v0.7.56: LC安全上限(policy とは独立の安全系)。既定 enabled=true / value=159。
     scalpLcHardMaxEnabled: resolveScalpLcHardMax().enabled,
-    // ★v0.8.2: System B(紙専用)の設定。raw=signalB に保存された生値(未設定=A追従) /
+    // ★v0.8.2: System B(仮想取引専用)の設定。raw=signalB に保存された生値(未設定=A追従) /
     //   effective=実効値(A へフォールバック済み。UI のプレースホルダ/select 初期値の表示補助)。
     signalB: config.signalB ?? {},
     signalBEffective: {
@@ -232,7 +232,7 @@ export function getSettingsHandler(_req: Request, res: Response): void {
 //   **そのキーで使えるモデルの一覧**を返す。「404」で終わらせず次の一手が決まるようにするため
 //   (Moonshot の "Not found the model … or Permission denied" はキーごとに違う=こちらでは選べない)。
 //   一覧が取れないプロバイダは従来どおり 1トークンの ping に落ちる(server/llm/modelCheck.ts)。
-// ★?pool=generator で **生成器プールのキー**を検証する(省略/'default' は従来と同じキー選択)。
+// ★?pool=generator で **分析用プールのキー**を検証する(省略/'default' は従来と同じキー選択)。
 //   検証は実際に外部へリクエストを送るので、プールごとに正しいキー(resolveApiKeyForPool)で送る。
 //   未知の pool は黙って default に倒さず 400(caller と同じ規約: 失敗は声を出す)。
 export async function testSettingsHandler(req: Request, res: Response): Promise<void> {
@@ -277,7 +277,7 @@ interface SettingsBody {
   nwaveEnabled?: boolean | null;           // ★N波動の節目/アラート(true/null=ON=既定 / false=OFF)
   bandwalkEnabled?: boolean | null;        // ★バンドウォークのアラート/AI文脈(true/null=ON=既定 / false=OFF)
   newsOffHoursEnabled?: boolean | null;    // ★取引時間外もニュースを取得(true=ON / false/null=OFF=既定=現行挙動)
-  generatorEnabled?: boolean | null;       // ★提案生成器サイドカー(true=有効 / false/null=無効=既定)
+  generatorEnabled?: boolean | null;       // ★分析用サイドカー(true=有効 / false/null=無効=既定)
   scalpTrendVetoYen?: number | null;   // AIエントリー: トレンド veto 閾値(円)。null=既定(100)に戻す / 0=無効
   // ★v0.7.56: 委任 source(手動/AI)。'ai'→委任 / それ以外=manual。
   scalpLcFloorSource?: string | null;
@@ -290,14 +290,14 @@ interface SettingsBody {
   scalpLcHardMaxEnabled?: boolean | null;   // true=有効(既定) / false=無効 / null=既定(true)に戻す
   scalpLcHardMaxYen?: number | null;        // LC安全上限(円)。null=既定(159)に戻す
   scalpLcFloorYen?: number | null;          // 初期LC下限(円)。null=既定(55)に戻す
-  // ★v0.8.2: System B(紙専用)の設定。ネストしたオブジェクトで送る。各フィールドは A と同名。
+  // ★v0.8.2: System B(仮想取引専用)の設定。ネストしたオブジェクトで送る。各フィールドは A と同名。
   //   値の空欄/未設定(null)=「A追従」(signalB から外す)/ source は ''(A追従)/'manual'/'ai'。
   signalB?: Record<string, unknown> | null;
-  // ★提案生成器の専用 API キー。秘密フィールドの規約に揃える:
+  // ★分析用の専用 API キー。秘密フィールドの規約に揃える:
   //   未指定/''=変更なし / 文字列=保存 / **null=そのプロバイダの専用キーを消去(=共通キーへ戻す)** /
   //   generatorKeys 自体が null=全プロバイダの専用キーを消去。
   generatorKeys?: Record<string, unknown> | null;
-  generatorDailyBudget?: number | null;   // 生成器の日次予算[回/取引日]。null=既定(200)に戻す / 0=無効。
+  generatorDailyBudget?: number | null;   // 分析用の日次予算[回/取引日]。null=既定(200)に戻す / 0=無効。
   pricePollMs?: number | null;   // null = リセット (= default に戻す), number = 上書き, undefined = 変更なし
   newsPollMs?: number | null;
   port?: number | null;
@@ -429,7 +429,7 @@ export function applyLiteTopLevelGuard(existing: UserConfig, next: UserConfig): 
   return out as UserConfig;
 }
 
-// ★提案生成器の専用 API キー。既存の秘密フィールド(applyStringField)と同じ規約に、
+// ★分析用の専用 API キー。既存の秘密フィールド(applyStringField)と同じ規約に、
 //   「専用キーを外して共通キーへ戻す」ための明示クリア(null)を足したもの。
 //   ・incoming 未指定           → 変更なし
 //   ・incoming === null         → 全プロバイダの専用キーを消去(=すべて共通キーへフォールバック)
@@ -457,7 +457,7 @@ export function buildGeneratorKeys(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
-// ★生成器の日次予算。null=既定に戻す(未設定で保存)/ 0=生成器を無効化 / 1..MAX=採用。
+// ★分析用の日次予算。null=既定に戻す(未設定で保存)/ 0=分析用を無効化 / 1..MAX=採用。
 //   範囲外や非数値は 400 にする(黙って丸めない=設定した値と動く値がずれない)。
 export function applyGeneratorBudget(
   existing: number | undefined,
@@ -548,12 +548,12 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
   // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
   const autoPublishValue = applyBoolField(existing.basedataAutoPublish, bodyRec.basedataAutoPublish);
-  // ★v0.8.2: System B(紙専用)の設定を組み立てる(未指定=変更なし・数値/bias 検証込み)。
+  // ★v0.8.2: System B(仮想取引専用)の設定を組み立てる(未指定=変更なし・数値/bias 検証込み)。
   const signalBValue = buildSignalB(existing.signalB, body.signalB, errors);
-  // ★提案生成器: 専用キー(秘密・空欄=変更なし / null=消去)と日次予算(範囲検証)。
-  //   ★公開版(lite)は生成器を持たない=**既存値を据え置き、body を一切見ない**。
+  // ★分析用: 専用キー(秘密・空欄=変更なし / null=消去)と日次予算(範囲検証)。
+  //   ★公開版(lite)は分析用を持たない=**既存値を据え置き、body を一切見ない**。
   //     lite と full は同じ config ファイルを共有するので、ここを素通しにすると
-  //     lite の保存が monitor2 側の生成器設定(2つ目のキー/日次予算)を黙って消す。
+  //     lite の保存が monitor2 側の分析用設定(2つ目のキー/日次予算)を黙って消す。
   const analysis = isAnalysisEnabled();
   const generatorKeysValue = analysis
     ? buildGeneratorKeys(existing.generatorKeys, body.generatorKeys)
@@ -562,8 +562,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
     ? applyGeneratorBudget(existing.generatorDailyBudget, bodyRec.generatorDailyBudget)
     : { value: existing.generatorDailyBudget, error: null };
   if (generatorBudget.error) errors.push(generatorBudget.error);
-  // ★生成器サイドカーの有効/無効(boolean・既定 false)。null/false=無効(未設定で保存)。
-  //   lite は生成器を持たない=body を見ずに既存値を据え置く(lite の保存が monitor2 の設定を消さない)。
+  // ★分析用サイドカーの有効/無効(boolean・既定 false)。null/false=無効(未設定で保存)。
+  //   lite は分析用を持たない=body を見ずに既存値を据え置く(lite の保存が monitor2 の設定を消さない)。
   const generatorEnabledValue = analysis
     ? applyBoolField(existing.generatorEnabled, bodyRec.generatorEnabled)
     : existing.generatorEnabled;
@@ -622,11 +622,11 @@ export function postSettingsHandler(req: Request, res: Response): void {
     scalpRangeSource: applySourceField(existing.scalpRangeSource, bodyRec.scalpRangeSource),
     // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。
     scalpLcHardMaxEnabled: hardMaxEnabledValue,
-    // ★v0.8.2: System B(紙専用)の設定(空=undefined で保存=全て A追従)。
+    // ★v0.8.2: System B(仮想取引専用)の設定(空=undefined で保存=全て A追従)。
     signalB: signalBValue,
     // ★lite 独立設定(full では existing.lite をそのまま持ち越す=触らない)。
     lite: liteValue,
-    // ★提案生成器(分析用・実弾 A とは別プール)。キーは秘密扱い(値は GET で返さない)。
+    // ★分析用(実取引 A とは別プール)。キーは秘密扱い(値は GET で返さない)。
     generatorKeys: generatorKeysValue,
     generatorDailyBudget: generatorBudget.value,
     generatorEnabled: generatorEnabledValue,   // ★既定(無効)は未設定で保存

@@ -4,9 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 //
 // ★これが無いと何が起きるか(このテストが守っている実害):
 //   providers.ts のプロバイダ状態は **モジュール単位のシングルトン**で、プロセス内の全呼び出し元が
-//   circuitOpenUntil を共有していた。分析用の「提案生成器」(2分間隔で1日700〜1,600回の
+//   circuitOpenUntil を共有していた。分析用の「分析用」(2分間隔で1日700〜1,600回の
 //   チャート画像つき LLM 呼び出し)が 429 を踏むと、PAUSE_LADDER_MS の最大 8 時間まで
-//   **実弾(A)のエントリー経路が止まる**。過去に全プロバイダ429で取引が全停止した事故がある。
+//   **実取引(A)のエントリー経路が止まる**。過去に全プロバイダ429で取引が全停止した事故がある。
 //   別プロセス化しても解決しない: /api/scalp-plan の LLM 呼び出しは monitor のプロセス内で起きるため。
 //
 // ★否定対照(修正前のコードでこのテストが赤くなること):
@@ -50,12 +50,12 @@ describe('providers: プール別のサーキットブレーカー', () => {
     expect(pausedNames()).toEqual([]);
   });
 
-  it('★核心(否定対照): 生成器が全プロバイダで429を踏んでも default プールはポーズしない', async () => {
+  it('★核心(否定対照): 分析用が全プロバイダで429を踏んでも default プールはポーズしない', async () => {
     await expect(callWithFallback(throw429, 'generator-task', 'generator')).rejects.toThrow(/429/);
 
     // generator プールは(全プロバイダが429で落ちたので)ポーズしている
     expect(pausedNames('generator').length).toBe(getProviderStatus('generator').length);
-    // ★default プールは1つもポーズしていない = 実弾(A)は止まらない
+    // ★default プールは1つもポーズしていない = 実取引(A)は止まらない
     expect(pausedNames('default')).toEqual([]);
     // 引数なしの getProviderStatus(=既存の呼び出し側)も default を見る
     expect(pausedNames()).toEqual([]);
@@ -98,7 +98,7 @@ describe('providers: プール別のサーキットブレーカー', () => {
     await expect(callWithFallback(async () => 'gen-ok', 'gen', 'generator')).resolves.toBe('gen-ok');
   });
 
-  it('★従属規則の発火: default の quota は生成器を止める / generator 自身の quota は止めない', async () => {
+  it('★従属規則の発火: default の quota は分析用を止める / generator 自身の quota は止めない', async () => {
     // ① generator が429を踏んでも従属停止は起きない(自分の429では止まらない)
     await expect(callWithFallback(throw429, 'gen', 'generator')).rejects.toThrow();
     expect(checkGeneratorGate().allowed).toBe(true);
@@ -106,14 +106,14 @@ describe('providers: プール別のサーキットブレーカー', () => {
     resetGeneratorGateForTest();
     reloadProviders();
 
-    // ② default が quota を踏むと生成器は停止する(★A の429で止まる)
+    // ② default が quota を踏むと分析用は停止する(★A の429で止まる)
     await expect(callWithFallback(throw429, 'default', 'default')).rejects.toThrow();
     const gate = checkGeneratorGate();
     expect(gate.allowed).toBe(false);
     expect(gate.allowed === false && gate.reason).toBe('default-quota');
   });
 
-  it('★従属規則は quota 限定: default の transient(5xx)では生成器を止めない', async () => {
+  it('★従属規則は quota 限定: default の transient(5xx)では分析用を止めない', async () => {
     await expect(callWithFallback(throw503, 'default-transient')).rejects.toThrow();
     expect(checkGeneratorGate().allowed).toBe(true);
   });

@@ -185,7 +185,7 @@ describe('configStore: lite 独立名前空間(config.lite)', () => {
   });
 
   // ─── System B との関係 ───────────────────────────────────────────────
-  it('B(紙専用)は signalB を最優先し、未設定なら lite の実効値へフォールバックする', () => {
+  it('B(仮想取引専用)は signalB を最優先し、未設定なら lite の実効値へフォールバックする', () => {
     writeConfig({
       scalpLcCeilingYen: 65, lite: { scalpLcCeilingYen: 100 },
       signalB: { scalpLcFloorYen: 33 },

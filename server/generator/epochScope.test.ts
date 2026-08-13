@@ -83,7 +83,7 @@ describe('★実験の条件を変えたら必ず期が割れる(B2 の性質を
       expect(epochOf({ ...SETTINGS, [key]: value })).not.toBe(epochOf(SETTINGS));
     });
   }
-  it('★生成器の専用キーの出どころが共通キーに落ちたら期が変わる(誰が答えたかが変わる)', () => {
+  it('★分析用の専用キーの出どころが共通キーに落ちたら期が変わる(誰が答えたかが変わる)', () => {
     const fallen = { ...SETTINGS, generatorKeySources: { gemini: 'shared', groq: 'own', openai: 'own' } };
     expect(epochOf(fallen)).not.toBe(epochOf(SETTINGS));
   });

@@ -364,7 +364,7 @@ describe('planToArmed', () => {
     expect(planToArmed({ direction: 'buy', rationale: 'r' }, 0)).toBeNull();
   });
 
-  // ★向きの belt-and-suspenders: 万一 parse/enforce をすり抜けた不正な向きの損切りを紙エンジンが arm しない。
+  // ★向きの belt-and-suspenders: 万一 parse/enforce をすり抜けた不正な向きの損切りを仮想取引エンジンが arm しない。
   it('buy で指値SLが entry の上(逆側)→ 指値レッグを arm しない(逆指値が正なら残す)', () => {
     const a = planToArmed(
       { direction: 'buy', limitEntry: 38200, stopLossForLimit: 38260, stopEntry: 38350, stopLossForStop: 38300, rationale: 'r' },
@@ -559,8 +559,8 @@ describe('detectRangeFill', () => {
 
 // ★レンジ両面の約定条件はレッグ type で分岐する(指値=5円行き過ぎ / 逆指値=タッチ)。
 //   旧実装は両レッグ一律に LIMIT_FILL_MARGIN_YEN を課していた(=stop レッグが 1tick 遅い)。
-//   実弾(trade2)の逆指値はタッチで発火して成行になるため、紙が待つと
-//   「タッチして反転した回=実弾は建玉あり・紙は建玉なし」の台帳食い違いになる。
+//   実取引(trade2)の逆指値はタッチで発火して成行になるため、紙が待つと
+//   「タッチして反転した回=実取引は建玉あり・仮想取引は建玉なし」の台帳食い違いになる。
 describe('detectRangeFill: レッグ type 別の約定条件(境界値)', () => {
   const mk = (upper?: RangeLeg, lower?: RangeLeg): ArmedBracket =>
     ({ direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { upper, lower } });
@@ -1377,7 +1377,7 @@ describe('buildExitStopRecord(exit-stop 遷移の dedupe)', () => {
   });
 });
 
-// ★v0.8.2: B は currentSignal/hold を一切露出しない。A の getter は B の存在に影響されない(実売買 A の不変性)。
+// ★v0.8.2: B は currentSignal/hold を一切露出しない。A の getter は B の存在に影響されない(実取引 A の不変性)。
 describe('System B は currentSignal を露出しない / A は不変', () => {
   beforeEach(() => { _resetSignalEngine(); _resetSignalEngineB(); });
   it('getSignalTradeStateB は flat で signal/hold を持たない', () => {

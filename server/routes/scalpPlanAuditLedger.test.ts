@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response } from 'express';
 
-// ─── ★根拠文の突き合わせ2種を HTTP まで通す(記録の鎖: runner → 応答 → 生成器の台帳) ────
+// ─── ★根拠文の突き合わせ2種を HTTP まで通す(記録の鎖: runner → 応答 → 分析用の台帳) ────
 //
 // 何を守っているか:
-//   本線の台帳(signal_plans)には lc_audit_json / omission_audit_json が入るのに、生成器の台帳
-//   (proposals)に無いと **A/B の母集団が揃わない**(同じ故障は生成器側にも出る)。
+//   本線の台帳(signal_plans)には lc_audit_json / omission_audit_json が入るのに、分析用の台帳
+//   (proposals)に無いと **A/B の母集団が揃わない**(同じ故障は分析用側にも出る)。
 //   応答に載せる経路は既存の contextOmitted / contextAt / promptFp と同じ planDiagnostics。
 //   ★どちらも記録専用。数値は AI が出したレッグ価格と幅だけで、非公開の決済仕様は入らない。
 //

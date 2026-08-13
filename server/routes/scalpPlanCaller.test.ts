@@ -5,7 +5,7 @@ import type { Request, Response } from 'express';
 //
 // 実際の呼び出し元(2026-08-02 実確認): trade2 はこの route を叩いていない(コメントのヒットのみ)。
 // monitor 自身のシグナルエンジンは共通関数 runScalpPlanWithChart を直呼びする。
-// よってこの route の呼び出し元は「手動診断」と「これから追加する提案生成器(caller='generator')」。
+// よってこの route の呼び出し元は「手動診断」と「これから追加する分析用(caller='generator')」。
 //
 // ★このテストは **route → 共通 runner → ゲート** を実物で通す(runner はモックしない)。
 //   進行中カウンタは runner が上下させるので、モックすると backpressure の配線が検証できないため。
@@ -82,14 +82,14 @@ describe('/api/scalp-plan — caller による分離', () => {
       expect(callerOfCall(0)).toBe('default');
     });
 
-    it('caller 省略の呼び出しは **生成器の予算を1回も消費しない**', async () => {
+    it('caller 省略の呼び出しは **分析用の予算を1回も消費しない**', async () => {
       for (let i = 0; i < 5; i++) await scalpPlanHandler(reqOf({}), mockRes());
       expect(generatorGateSnapshot().used).toBe(0);
       expect(buildScalpPlanMock).toHaveBeenCalledTimes(5);
     });
 
-    it('caller 省略の呼び出しは予算切れでも従属停止中でも通る(実弾経路は実験系の都合で止まらない)', async () => {
-      h.budget = 0;                        // 生成器は無効
+    it('caller 省略の呼び出しは予算切れでも従属停止中でも通る(実取引経路は実験系の都合で止まらない)', async () => {
+      h.budget = 0;                        // 分析用は無効
       notifyDefaultQuota('gemini');        // 従属停止も発火済み
       const res = mockRes();
       await scalpPlanHandler(reqOf({}), res);
@@ -148,7 +148,7 @@ describe('/api/scalp-plan — caller による分離', () => {
       const resA = mockRes();
       const pA = scalpPlanHandler(reqOf({}), resA);      // ← await しない(進行中のまま)
 
-      // 生成器は弾かれる
+      // 分析用は弾かれる
       const resGen = mockRes();
       await scalpPlanHandler(reqOf({ caller: 'generator' }), resGen);
       expect(resGen._status).toBe(429);
@@ -164,7 +164,7 @@ describe('/api/scalp-plan — caller による分離', () => {
       await pA;
       expect(resA._json).toEqual(GOOD_PLAN);
 
-      // 弾かれた生成器は予算を消費していない
+      // 弾かれた分析用は予算を消費していない
       expect(generatorGateSnapshot().used).toBe(0);
     });
 

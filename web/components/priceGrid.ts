@@ -54,7 +54,7 @@ export function renderPriceGrid(container: HTMLElement, prices: Price[], showOnl
     card.className = 'price-card';
     card.dataset.symbol = meta.symbol;
     if (p) {
-      // 実弾安全(NIY=F): 実際に建てる大阪日経先物が取得不能(stale)のとき。数字は捏造しない。
+      // 実取引安全(NIY=F): 実際に建てる大阪日経先物が取得不能(stale)のとき。数字は捏造しない。
       // 「取引時間外」/「取得不能」の出し分けは buildNiyStaleCard(純関数)に集約(テスト対象)。
       if (meta.symbol === 'NIY=F' && p.stale) {
         const { classes, html } = buildNiyStaleCard(meta.labelJa, marketOpen);

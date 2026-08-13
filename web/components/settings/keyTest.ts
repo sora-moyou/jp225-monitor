@@ -1,6 +1,6 @@
 // APIキーの実効性検証セクションの配線。settingsModal.ts から純粋に切り出したもの(挙動不変)。
-// ★プール別: 既存の「キーを検証」は default プール(=実弾 A のキー・URL も文言も従来どおり)。
-//   「生成器のキーを検証」は generator プール(=専用キー、無ければ共通キーへフォールバックした結果)。
+// ★プール別: 既存の「キーを検証」は default プール(=実取引 A のキー・URL も文言も従来どおり)。
+//   「分析用のキーを検証」は generator プール(=専用キー、無ければ共通キーへフォールバックした結果)。
 //   検証は実際に外部へリクエストを送るので、**プールごとに正しいキーで送る**ことをサーバ側で担保している
 //   (/api/settings/test?pool=… → testAllProviders(pool) → resolveApiKeyForPool)。
 
@@ -50,7 +50,7 @@ export function formatKeyTestLine(r: KeyTestResult): { mark: string; title: stri
 }
 
 // 1つの検証ボタンを配線する。markPrefix は各キー行のマーク id の前置き
-// ('key-' = 既存の共通キー行 / 'genkey-' = 生成器キー行)。
+// ('key-' = 既存の共通キー行 / 'genkey-' = 分析用キー行)。
 function wireOne(opts: {
   btn: HTMLButtonElement;
   result: HTMLElement;
@@ -97,9 +97,9 @@ export function wireKeyTestSection(el: SettingsElements): void {
     btn: el.testKeysBtn, result: el.testResult,
     url: '/api/settings/test', defaultLabel: 'キーを検証', markPrefix: 'key-',
   });
-  // --- ★提案生成器プールの検証(専用キー、無ければ共通キーへフォールバックした結果で ping) ---
+  // --- ★分析用プールの検証(専用キー、無ければ共通キーへフォールバックした結果で ping) ---
   wireOne({
     btn: el.testGenKeysBtn, result: el.testGenResult,
-    url: '/api/settings/test?pool=generator', defaultLabel: '生成器のキーを検証', markPrefix: 'genkey-',
+    url: '/api/settings/test?pool=generator', defaultLabel: '分析用のキーを検証', markPrefix: 'genkey-',
   });
 }

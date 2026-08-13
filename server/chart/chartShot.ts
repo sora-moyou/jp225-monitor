@@ -14,7 +14,7 @@ import { loadConfig } from '../configStore.js';
 import { DEFAULT_CALLER, type LlmCaller } from '../llm/caller.js';
 
 // ★同期の外部プロセス起動はイベントループを止める(= SSE・価格ループ・A の約定判定が全停止する)。
-//   実測(この開発PC・実撮影 n=5): 撮影1回あたり 307ms の停止が必ず1回。実売買PCでは 2.24s。
+//   実測(この開発PC・実撮影 n=5): 撮影1回あたり 307ms の停止が必ず1回。実取引PCでは 2.24s。
 //   停止の中身は「後始末が全部同期」= reg 照会 + Desktop 書込 + taskkill + rmSync が
 //   await を1つも挟まず1本の同期ブロックになっていたこと。
 //   → 外部プロセス起動もファイル操作も **すべて非同期版**に置き換える。
@@ -36,9 +36,9 @@ const SETTLE_AFTER_READY_MS = 1500;      // ready 後の追加待ち(描画確�
 const WINDOW = '1280,760';
 // CDP デバッグポート: 撮影用サーバのポートと衝突しないよう、固定の高位ポートから派生する。
 // ★旧実装は「サーバのポートから派生」= 同じサーバなら **毎回同じデバッグポート** だった。
-//   「同時撮影は想定しない」という前提が崩れると(A と生成器が別プールになった時点で崩れていた)、
+//   「同時撮影は想定しない」という前提が崩れると(A と分析用が別プールになった時点で崩れていた)、
 //   後から起動した Chrome はポートを bind できず、CDP 照会が **先に起きた別の Chrome に当たる**。
-//   実測(修正中の overlap 実験): 割込んだ A が中断中の生成器の Chrome に接続し、
+//   実測(修正中の overlap 実験): 割込んだ A が中断中の分析用の Chrome に接続し、
 //   その Chrome が死んだ後 __chartReady を 30 秒待って chart-ready-timeout。
 //   → 撮影ごとにポートをずらし、さらに「掴んだターゲットが自分の URL か」を照合する。
 const DEBUG_PORT_BASE = 47800;
@@ -97,7 +97,7 @@ async function resolveDesktopDir(env: NodeJS.ProcessEnv = process.env): Promise<
   return fb;
 }
 
-// 撮影した最新1枚を実デスクトップに上書き保存する(確認用)。実弾ロジックには無関係。
+// 撮影した最新1枚を実デスクトップに上書き保存する(確認用)。実取引ロジックには無関係。
 // 書込の実パスと成否を必ずログに出す(サイレント失敗の撲滅=自己診断)。失敗しても throw しない。
 // ★非同期化: ログ文言・判定・失敗時の握りつぶしはすべて従来どおり(await を挟むだけ)。
 async function saveShotToDesktop(buf: Buffer): Promise<void> {
@@ -386,15 +386,15 @@ class CdpClient {
 // ═══ ★Chrome 起動スロット: 実際の Chrome 起動を **プロセス全体で直列化** する ═══════════
 //
 // なぜキャッシュのプール分離だけでは足りないか:
-//   キャッシュ/相乗りは caller ごとに分けてある(v0.9.51・実弾の入力汚染を実際に塞いでいるので維持)。
+//   キャッシュ/相乗りは caller ごとに分けてある(v0.9.51・実取引の入力汚染を実際に塞いでいるので維持)。
 //   しかし「同時2起動で Chrome が資源逼迫し ws-error/クラッシュを誘発する」という実際に起きた問題は
-//   **プール間**ではなく **Chrome プロセス間** で起きる。プールを分けた結果、A(default)と生成器は
+//   **プール間**ではなく **Chrome プロセス間** で起きる。プールを分けた結果、A(default)と分析用は
 //   別プールなので同時に Chrome を起動しうる = プール分離が保護を回避していた。
 //   → 起動そのものをここで直列化する。キャッシュのプール分離には一切触らない(直交)。
 //
 // 優先規約(★A を待たせない):
 //   ・default(A/B) は **絶対に待たない**。要求した瞬間にスロットを取る。
-//     「A が撮りたいときに生成器の撮影(最大42秒)を待つ」のでは、実弾を遅らせる元の問題に戻る。
+//     「A が撮りたいときに分析用の撮影(最大42秒)を待つ」のでは、実取引を遅らせる元の問題に戻る。
 //   ・generator は **待つ / 譲る**。
 //       - 起動前: スロットが空くまで待つ(上限 CHROME_SLOT_WAIT_TIMEOUT_MS。超えたら諦めて縮退)。
 //       - 起動後に default が来たら: 即座に中断(preempt)して Chrome を落とし、default に明け渡す。
@@ -457,7 +457,7 @@ function preemptGeneratorsFor(byId: string): void {
   for (const s of activeSlots) {
     if (s.caller === DEFAULT_CALLER || s.preempted) continue;
     s.preempted = true;
-    console.warn(`[chart-shot] ★生成器の撮影を中断(A に譲る) 中断された撮影=${s.id} / 割込んだ撮影=${byId}`);
+    console.warn(`[chart-shot] ★分析用の撮影を中断(A に譲る) 中断された撮影=${s.id} / 割込んだ撮影=${byId}`);
     try { s.onPreempt?.('preempted-by-default'); } catch { /* 中断通知の失敗で本流を壊さない */ }
   }
 }
@@ -505,13 +505,13 @@ export async function acquireChromeSlot(
     const remain = waitTimeoutMs - (now() - t0);
     if (remain <= 0) {
       const busy = [...activeSlots].map((s) => `${s.caller}:${s.id}`).join(',');
-      console.warn(`[chart-shot] 生成器の撮影を見送り(${(waitTimeoutMs / 1000).toFixed(0)}秒待っても Chrome スロットが空かず) 使用中=${busy}`);
+      console.warn(`[chart-shot] 分析用の撮影を見送り(${(waitTimeoutMs / 1000).toFixed(0)}秒待っても Chrome スロットが空かず) 使用中=${busy}`);
       return { ok: false, reason: 'chrome-slot-busy' };
     }
     if (!announced) {   // 待機中は1秒ごとに起きるので、告知は最初の1回だけ(ログを埋めない)。
       announced = true;
       const busy = [...activeSlots].map((s) => `${s.caller}:${s.id}`).join(',');
-      console.log(`[chart-shot] 生成器は Chrome スロット待ち id=${id} 使用中=${busy} (実弾側の撮影を優先)`);
+      console.log(`[chart-shot] 分析用は Chrome スロット待ち id=${id} 使用中=${busy} (実取引側の撮影を優先)`);
     }
     await new Promise<void>((resolve) => {
       const wake = () => { slotWaiters.delete(wake); clearTimeout(timer); resolve(); };
@@ -852,13 +852,13 @@ export async function captureChartPng(port: number, caller: LlmCaller = DEFAULT_
 // ここで「成功画像を短時間キャッシュ」+「進行中の撮影に相乗り(二重起動しない)」して起動数を半減する。
 //
 // ★呼び出し元(caller)ごとに **プールを分ける**(v0.9.51)。
-//   分けない実装では、2分間隔で回る生成器(caller='generator')の撮影がキャッシュを常時温めてしまい、
+//   分けない実装では、2分間隔で回る分析用(caller='generator')の撮影がキャッシュを常時温めてしまい、
 //   TTL 60秒 < plan間隔 180秒 という「A は毎サイクル撮り直す」不変条件が壊れる
 //   (=A が二度と自前で撮らず、常に最大60秒前の画像で判断する。refPrice は毎回新鮮に取り直すので
 //     「数値だけ新しく画像だけ古い」不整合になり、checkRefDrift/checkStaleLegs は価格しか見ないので誰も気づかない)。
-//   さらに in-flight 相乗りも分けないと、生成器の撮影開始41秒後に来た A が1秒後に buffer=null を掴み、
+//   さらに in-flight 相乗りも分けないと、分析用の撮影開始41秒後に来た A が1秒後に buffer=null を掴み、
 //   リトライでプラン生成が最大84秒遅れ、2回失敗ならテキストのみへ縮退する(=A の入力から画像が消える)。
-//   generatorGate の busy ゲートは「A が生成中なら生成器を止める」の片方向しか守っていない。
+//   generatorGate の busy ゲートは「A が生成中なら分析用を止める」の片方向しか守っていない。
 //
 //   **'default'(A と B)は従来どおり1プールを共有する**。A/B の共有は「同時2起動で Chrome が資源逼迫し
 //   ws-error/クラッシュを誘発する」という実際に起きた問題への対策なので、絶対に壊さない。
@@ -867,10 +867,10 @@ const CHART_CACHE_TTL_MS = 60_000;   // 成功画像を最大60秒 共有(plan�
 
 // ─── ★「同じ画像を見たか」を **仮定ではなく記録** にするための識別子 ───────────────
 //
-// 提案生成器は1サイクルの中で ①現行仕様 → ②候補仕様 を **直列** に問う。①と②が同じ相場・同じ画像を
+// 分析用は1サイクルの中で ①現行仕様 → ②候補仕様 を **直列** に問う。①と②が同じ相場・同じ画像を
 // 見ていることが対応比較の前提だが、その保証は「キャッシュ TTL が60秒だから間に合うはず」という
 // **仮定** でしかなかった。1サイクルが60秒を超えれば②は別の画像を見るが、**誰にも分からない**。
-// (齢はログには出るが、生成器の台帳には残らないので1年後の分析者は再構成できない。)
+// (齢はログには出るが、分析用の台帳には残らないので1年後の分析者は再構成できない。)
 //
 // → 撮影1回ごとに識別子を振り、応答に「識別子と齢」を additive に載せる。
 //   ①と②の shotId が一致すれば同じ画像、違えば別の画像だったと **記録で** 言える。

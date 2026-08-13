@@ -10,13 +10,13 @@
 //   唯一 完全に効いたのは v0.9.70 の「書けなくする」(損切りの符号をコードが決める)だけ。
 //
 // ★このテストが守るもの:
-//   (1) v2 は **promptVariant:'v2' を明示した時だけ** 使われる(既定は v1 = 稼働機・実弾経路は不変)
+//   (1) v2 は **promptVariant:'v2' を明示した時だけ** 使われる(既定は v1 = 稼働機・実取引経路は不変)
 //   (2) v2 が「システムの分担」を明示し、コードが検証する規則を **繰り返さない**
 //   (3) 上限を **ハードコードしていない**(設定を変えたらプロンプトも追随する)
 //   (4) 案A(範囲を見せる) と 案B(見せない) が **その1点しか違わない**(1変数ずつ動かす)
 //   (5) 台帳の列が候補の腕だけ欠測にならない(regime / confidence / refPrice を返させる)
 //
-// ★接続先(2026-08-13・v0.9.75): 提案生成器の②の腕 'prompt-v2' だけが promptVariant:'v2' を送る。
+// ★接続先(2026-08-13・v0.9.75): 分析用の②の腕 'prompt-v2' だけが promptVariant:'v2' を送る。
 //   ①(current)と①'(control)は v1 のまま。①と②の違いは **質問文だけ**(決済仕様は両方 'current')。
 //   主指標は「両レッグ同幅率」(実測 87〜92%)。語りでは満たせない指標を主に置く。
 
@@ -32,7 +32,7 @@ const B = () => buildScalpQuestionV2({ floorYen: 55, ceilYen: 159, showRange: fa
 describe('v2 質問文', () => {
   it('★既定は v1(v2 は promptVariant を明示した時だけ選ばれる)', () => {
     // 本体で v2 を呼ぶ行は「promptVariant === 'v2' のときだけ」の分岐の中にしか無いこと。
-    // 無条件で呼ぶ行が1つでもあれば、実弾につながる既定経路の質問文が変わってしまう。
+    // 無条件で呼ぶ行が1つでもあれば、実取引につながる既定経路の質問文が変わってしまう。
     const src = readFileSync(fileURLToPath(new URL('./scalpPlan.ts', import.meta.url)), 'utf8');
     const lines = src.split('\n');
     const callers = lines
@@ -44,7 +44,7 @@ describe('v2 質問文', () => {
     expect(near, 'v2 が無条件に選ばれている').toContain(`promptVariant === 'v2'`);
   });
 
-  it('★生成器の腕: ①①\'は v1・②だけが v2(違いは質問文の1点)', () => {
+  it('★分析用の腕: ①①\'は v1・②だけが v2(違いは質問文の1点)', () => {
     const arms = planCycleArms(0, 1);   // 対照を必ず含むサイクル
     expect(arms.map(a => a.arm)).toEqual(['current', 'control', 'prompt-v2']);
     // 決済仕様は3本とも同じ = 動かす変数は質問文だけ。

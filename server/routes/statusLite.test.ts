@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response } from 'express';
 
-// ─── GET /api/status: 公開版(lite)は提案生成器のスナップショットを出さない ────────────
+// ─── GET /api/status: 公開版(lite)は分析用のスナップショットを出さない ────────────
 //
 // 存在しない機構の予算・従属停止・腕別消費を返しても意味が無い(画面に「使っていない機構の状態」が並ぶ)。
 //

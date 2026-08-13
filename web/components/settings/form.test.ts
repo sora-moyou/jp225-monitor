@@ -73,7 +73,7 @@ describe('applySettingsToForm → buildSavePayload の往復', () => {
     expect((body.signalB as Record<string, unknown>).scalpLcFloorSource).toBe('');
   });
 
-  it('★lite で隠す委任 source(A) と System B(紙専用) の設定も壊れず往復する', () => {
+  it('★lite で隠す委任 source(A) と System B(仮想取引専用) の設定も壊れず往復する', () => {
     expect(body.scalpTrendVetoSource).toBe('ai');
     expect(body.scalpCooldownSource).toBe('ai');
     expect(body.scalpBiasSource).toBe('manual');

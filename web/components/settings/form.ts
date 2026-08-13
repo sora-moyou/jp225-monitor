@@ -9,7 +9,7 @@ import type {
   GeneratorProviderName,
 } from './types.js';
 
-// ★提案生成器のキー欄(プロバイダ → 入力要素)。apply/save の両方がこの1か所を使う。
+// ★分析用のキー欄(プロバイダ → 入力要素)。apply/save の両方がこの1か所を使う。
 function genKeyInputs(el: SettingsElements): Record<GeneratorProviderName, HTMLInputElement> {
   return { gemini: el.inputGenGemini, groq: el.inputGenGroq, openai: el.inputGenOpenai, kimi: el.inputGenKimi };
 }
@@ -64,7 +64,7 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
     wsResolvable
       ? (current?.webSearchKeySet ? '専用キー設定済' : wsGemini ? '共通 Gemini キーを使用' : 'OpenAI で検索')
       : '未設定(Web検索は無効)');
-  // ★提案生成器(分析用・実弾 A とは別プール): プロバイダごとに「実際にどのキーを使うか」を出す。
+  // ★分析用(実取引 A とは別プール): プロバイダごとに「実際にどのキーを使うか」を出す。
   //   専用キー未設定なら黙って共通キーへ落ちる=この表示が無いと分離できていないことが分からない。
   const genSrc = current?.generatorKeySources;
   const genInputs = genKeyInputs(el);
@@ -75,12 +75,12 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
     genInputs[n].placeholder = genSrc?.[n] === 'own'
       ? '専用キー設定済み (上書きする場合のみ入力)'
       : genSrc?.[n] === 'env' ? '環境変数の専用キーを使用中 (上書きするにはここに入力)'
-      : '空欄なら共通キーを使用 (=上流クォータは実弾と共有)';
+      : '空欄なら共通キーを使用 (=上流クォータは実取引と共有)';
     genInputs[n].value = '';   // 秘密フィールド: 反映のたびに空へ戻す(値はサーバから来ない)
   }
   el.checkGenKeysClear.checked = false;   // 消去チェックは毎回オフから(誤って消さない)
   el.checkKeysClear.checked = false;     // ★共通キーの消去チェックも毎回オフから(同上)
-  // ★生成器サイドカーの有効/無効: 既定オフ(=同梱されていても、明示的にオンにするまで走らない)。
+  // ★分析用サイドカーの有効/無効: 既定オフ(=同梱されていても、明示的にオンにするまで走らない)。
   el.checkGeneratorEnabled.checked = current ? current.generatorEnabled === true : false;
   // 日次予算: 可視フィールド。実効値を出し、空欄で既定に戻せる。
   el.inputGeneratorBudget.value = current?.generatorDailyBudget === undefined ? '' : String(current.generatorDailyBudget);
@@ -108,7 +108,7 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.selectRangeMode.value = current?.scalpRangeSource ?? 'manual';
   el.checkScalpLcHardMaxEnabled.checked = current ? current.scalpLcHardMaxEnabled : true;   // 既定=有効(安全網ON)
   el.inputScalpLcHardMax.value = current ? String(current.scalpLcHardMaxYen) : '';
-  // ★v0.8.2: System B(紙専用)を反映。value 系は raw(未設定=空欄=A追従)/ mode/tri-state は raw ?? ''(A追従)。
+  // ★v0.8.2: System B(仮想取引専用)を反映。value 系は raw(未設定=空欄=A追従)/ mode/tri-state は raw ?? ''(A追従)。
   //   プレースホルダ/選択初期値は effective(A フォールバック済み)を補助表示に使う。
   const b = current?.signalB ?? {};
   const be = current?.signalBEffective;
@@ -192,7 +192,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   const wsk = el.inputWebSearch.value.trim();
   // ★秘密フィールドの規約は不変: 入力があれば保存 / 空欄は **送らない**(=変更なし)。
   //   「消去」チェックが入っているときだけ、空欄の欄を null で送って消せる(=未設定に戻す)。
-  //   生成器キー(下)と同じ作法。これが無いと、誤って貼ったキーを撤回する手段が
+  //   分析用キー(下)と同じ作法。これが無いと、誤って貼ったキーを撤回する手段が
   //   設定ファイルの手編集しか無かった(空欄保存では消えない=仕様どおり動いてしまう)。
   const clearKeys = el.checkKeysClear.checked;
   const keyField = (value: string, set: (v: string | null) => void): void => {
@@ -204,7 +204,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   keyField(kv, v => { body.kimiKey = v; });
   keyField(ov, v => { body.openaiKey = v; });
   keyField(wsk, v => { body.webSearchKey = v; });
-  // ★提案生成器の専用キー(秘密)。入力があれば保存、消去チェックが入っていれば未入力分を null で消去。
+  // ★分析用の専用キー(秘密)。入力があれば保存、消去チェックが入っていれば未入力分を null で消去。
   //   どちらも無ければフィールドごと送らない(=変更なし)。
   const genInputs = genKeyInputs(el);
   const clearGen = el.checkGenKeysClear.checked;
@@ -215,10 +215,10 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
     else if (clearGen) genKeys[n] = null;   // 明示クリア=共通キーへ戻す
   }
   if (Object.keys(genKeys).length > 0) body.generatorKeys = genKeys;
-  // 生成器の日次予算: 可視フィールド。空欄=既定に戻す(null)。0 は「生成器を無効化」の意味で有効な値。
+  // 分析用の日次予算: 可視フィールド。空欄=既定に戻す(null)。0 は「分析用を無効化」の意味で有効な値。
   const genBudgetRaw = el.inputGeneratorBudget.value.trim();
   body.generatorDailyBudget = genBudgetRaw === '' ? null : Number(genBudgetRaw);
-  // ★生成器サイドカーの有効/無効: チェックボックスなので常に true/false を送る(既定=false)。
+  // ★分析用サイドカーの有効/無効: チェックボックスなので常に true/false を送る(既定=false)。
   body.generatorEnabled = el.checkGeneratorEnabled.checked;
   // ★基礎データ公開(225labo)認証: 秘密フィールド。空欄は送らない(=変更なし)。
   const laboUser = el.inputLaboUser.value.trim();
@@ -249,7 +249,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   // トレンド veto 閾値: 可視フィールド。空欄=既定(100)に戻す(null)。数値なら上書き(0で無効)。
   const tvRaw = el.inputScalpTrendVeto.value.trim();
   body.scalpTrendVetoYen = tvRaw === '' ? null : Number(tvRaw);
-  // レンジ両面(実験・紙で別枠計測): チェックボックス(常に値あり)。true/false を送る。
+  // レンジ両面(実験・仮想取引で別枠計測): チェックボックス(常に値あり)。true/false を送る。
   body.scalpRangeEnabled = el.checkScalpRangeEnabled.checked;
   // ★ドテン(反転)許可: チェックボックス(常に値あり)。true/false を送る。
   body.dotenEnabled = el.checkScalpDotenEnabled.checked;
@@ -277,7 +277,7 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.scalpLcHardMaxEnabled = el.checkScalpLcHardMaxEnabled.checked;
   const hardMaxRaw = el.inputScalpLcHardMax.value.trim();
   body.scalpLcHardMaxYen = hardMaxRaw === '' ? null : Number(hardMaxRaw);
-  // ★v0.8.2: System B(紙専用)。value 系は空欄→null(=A追従で unset) / mode・tri-state は select 値をそのまま
+  // ★v0.8.2: System B(仮想取引専用)。value 系は空欄→null(=A追従で unset) / mode・tri-state は select 値をそのまま
   //   ('' A追従 / 'manual'|'ai' / 'true'|'false' / 'none'|'long'|'short')。サーバ側 buildSignalB で unset/明示保存を判定。
   const numOrNull = (v: string): number | null => (v.trim() === '' ? null : Number(v.trim()));
   body.signalB = {

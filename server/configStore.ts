@@ -28,13 +28,13 @@ export interface UserConfig {
   kimiModel?: string;
   openaiModel?: string;
   chromePath?: string;    // scalp-plan のチャート撮影に使う chrome.exe の明示パス(未設定は自動解決)
-  // ★提案生成器(caller='generator')専用の API キー。**未設定なら共通キーへフォールバック**する。
+  // ★分析用(caller='generator')専用の API キー。**未設定なら共通キーへフォールバック**する。
   //   「今回キーを分けるかは未定・分けられる構造にする」への答え: プール分離(providers.ts)は既に
   //   キー解決をプール別に通しているので、ここへ値を入れるだけで上流クォータまで完全に分離できる。
   generatorKeys?: { gemini?: string; groq?: string; openai?: string; kimi?: string };
-  // ★提案生成器の日次予算(1取引日あたりの許可回数)。0=生成器を無効化。未設定は保守的な既定値。
+  // ★分析用の日次予算(1取引日あたりの許可回数)。0=分析用を無効化。未設定は保守的な既定値。
   generatorDailyBudget?: number;
-  // ★提案生成器(サイドカー)を走らせるか。**未設定/false=無効(既定)**。
+  // ★分析用(サイドカー)を走らせるか。**未設定/false=無効(既定)**。
   //   配布物に同梱する以上、インストールしただけで LLM 予算を食い始めてはいけない。
   //   無効のあいだサイドカーは **待機するだけ**(LLM を1回も叩かない・台帳に1行も書かない)。
   //   予算(generatorDailyBudget)は「有効にしたあと、どこまで使ってよいか」の天井であって、
@@ -111,13 +111,13 @@ export interface UserConfig {
   scalpCooldownSource?: KnobSource;    // クールダウン: manual→ゲート / ai→ゲート無効
   scalpBiasSource?: KnobSource;        // バイアス: manual→方向veto / ai→veto無効(自由方向)
   scalpRangeSource?: KnobSource;       // レンジ両面: manual→on/off設定どおり / ai→AIが採用可否(range許可)
-  // ★v0.7.56: LC安全上限(実弾暴走防止・policy の scalpLcCeiling とは独立の安全系)。
+  // ★v0.7.56: LC安全上限(実取引暴走防止・policy の scalpLcCeiling とは独立の安全系)。
   //   有効時は手動でもAIでも |entry−SL| がこの円超のレッグを必ず落とす(最後の安全網)。無効時はハード上限なし。
   scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 159。
   scalpLcHardMaxEnabled?: boolean;     // LC安全上限を有効にするか。未設定は true(既定で安全網ON)。
-  // ★v0.8.2: System B(紙専用の並走エンジン)の独立設定。A と同じ knob 一式を持つ(全て任意)。
+  // ★v0.8.2: System B(仮想取引専用の並走エンジン)の独立設定。A と同じ knob 一式を持つ(全て任意)。
   //   B リゾルバは signalB.<knob> を優先し、未設定は A(グローバル)値/directive にフォールバックする
-  //   (箱出しは B も A と同一挙動→そこから B だけ差分)。実売買 A には一切影響しない(B は currentSignal を出さない)。
+  //   (箱出しは B も A と同一挙動→そこから B だけ差分)。実取引 A には一切影響しない(B は currentSignal を出さない)。
   signalB?: SignalBConfig;
   // ★lite(簡易公開版)の独立設定。lite の 🎛️ に露出した項目だけをここに持ち、monitor2(full)の
   //   最上位キーと混ざらないようにする(同一PCで両方使っても互いに干渉しない)。
@@ -169,7 +169,7 @@ export interface SignalBConfig {
   scalpRangeSource?: KnobSource;
 }
 
-// ★v0.8.2: シグナル系統プロファイル。'A'(実売買・グローバル設定=既定/省略と同一) / 'B'(紙専用・signalB 設定)。
+// ★v0.8.2: シグナル系統プロファイル。'A'(実取引・グローバル設定=既定/省略と同一) / 'B'(仮想取引専用・signalB 設定)。
 export type SignalProfile = 'A' | 'B';
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
@@ -293,7 +293,7 @@ export function resolveApiKey(provider: ProviderName): string | undefined {
   return process.env[envName]?.trim();
 }
 
-/** 環境変数名(生成器プール用)。共通キーの env 名に GENERATOR_ を前置する。 */
+/** 環境変数名(分析用プール用)。共通キーの env 名に GENERATOR_ を前置する。 */
 const GENERATOR_ENV: Record<ProviderName, string> = {
   kimi:   'GENERATOR_KIMI_API_KEY',
   gemini: 'GENERATOR_GEMINI_API_KEY',
@@ -306,32 +306,32 @@ const GENERATOR_ENV: Record<ProviderName, string> = {
  *  - pool==='generator' → 専用キー(config.generatorKeys → env GENERATOR_*)があればそれ。
  *    無ければ **共通キーへフォールバック**する(=キーを分けなくても動く)。
  *  ★フォールバック時は上流のクォータが共有されたままである点に注意。それは
- *    generatorGate.ts の日次予算 + 従属規則(default が quota を踏んだら生成器停止)で受け持つ。 */
+ *    generatorGate.ts の日次予算 + 従属規則(default が quota を踏んだら分析用停止)で受け持つ。 */
 export function resolveApiKeyForPool(provider: ProviderName, pool: LlmCaller): string | undefined {
   if (pool === 'default') return resolveApiKey(provider);
   return resolveGeneratorKey(provider).key;
 }
 
-/** ★生成器プールが実際に使うキーの「出どころ」。**キーの値は含めない**(表示/診断用)。
+/** ★分析用プールが実際に使うキーの「出どころ」。**キーの値は含めない**(表示/診断用)。
  *  - 'own'    … config.generatorKeys[provider] の専用キー
  *  - 'env'    … 環境変数 GENERATOR_*_API_KEY の専用キー
- *  - 'shared' … ★共通キーへフォールバック中。**実弾(A)と同じキー**=上流のクォータは共有されたまま。
- *  - 'none'   … 共通キーも無い(このプロバイダは生成器でも使えない)
+ *  - 'shared' … ★共通キーへフォールバック中。**実取引(A)と同じキー**=上流のクォータは共有されたまま。
+ *  - 'none'   … 共通キーも無い(このプロバイダは分析用でも使えない)
  *  ★'shared' を「未設定」と呼ばないこと: 実際には使われていて、しかも A と同じ枠を消費する。 */
 export type GeneratorKeySource = 'own' | 'env' | 'shared' | 'none';
 
-/** 設定画面に並べる生成器プロバイダ(LLM_PROVIDERS と同じ4種)。 */
+/** 設定画面に並べる分析用プロバイダ(LLM_PROVIDERS と同じ4種)。 */
 export const GENERATOR_PROVIDERS = ['gemini', 'groq', 'openai', 'kimi'] as const;
 export type GeneratorProviderName = typeof GENERATOR_PROVIDERS[number];
 
-/** ★生成器プールのキー解決を1か所に集約する内部ヘルパ(値と出どころを同時に返す)。
+/** ★分析用プールのキー解決を1か所に集約する内部ヘルパ(値と出どころを同時に返す)。
  *  resolveApiKeyForPool(実際に使うキー)と resolveGeneratorKeySource(画面の表示)が
  *  同じ関数を通ることで、「表示は専用キーなのに実際は共通キー」という食い違いが起こり得なくなる。
  *
  *  ★出どころは「どの欄に入っていたか」ではなく **値** で決める。
- *    共通キーと同じ文字列を生成器キー欄に貼っても上流のクォータは 100% 共有されたままで、
+ *    共通キーと同じ文字列を分析用キー欄に貼っても上流のクォータは 100% 共有されたままで、
  *    「A が429を踏んで最大8時間ポーズする」危険は1ミリも減っていない。それを 'own' と呼ぶと、
- *    その出どころだけを見る生成器の起動時検証(server/generator/preflight.ts)が通ってしまい、
+ *    その出どころだけを見る分析用の起動時検証(server/generator/preflight.ts)が通ってしまい、
  *    **検証が守ろうとしている当のものを守れない**。だから値が同じなら 'shared' と呼ぶ。 */
 function resolveGeneratorKey(provider: ProviderName): { source: GeneratorKeySource; key?: string } {
   const shared = resolveApiKey(provider);
@@ -345,7 +345,7 @@ function resolveGeneratorKey(provider: ProviderName): { source: GeneratorKeySour
   return shared ? { source: 'shared', key: shared } : { source: 'none' };
 }
 
-/** 生成器プールが当該プロバイダで使うキーの出どころ(キー値は返さない)。 */
+/** 分析用プールが当該プロバイダで使うキーの出どころ(キー値は返さない)。 */
 export function resolveGeneratorKeySource(provider: ProviderName): GeneratorKeySource {
   return resolveGeneratorKey(provider).source;
 }
@@ -357,22 +357,22 @@ export function resolveGeneratorKeySources(): Record<GeneratorProviderName, Gene
   return out;
 }
 
-// ─── 提案生成器の日次予算 ────────────────────────────────────────────────
-/** 生成器の日次予算の既定値[回/取引日・★腕(exitVariant)ごと]。
+// ─── 分析用の日次予算 ────────────────────────────────────────────────
+/** 分析用の日次予算の既定値[回/取引日・★腕(exitVariant)ごと]。
  *  ★単位が「腕ごと」であることが要点: 全腕で1本の帳簿にすると先着の腕が取引日の残りを食い切り、
  *    20時間の取引日が先着順で切られて **標本が Day セッション前半に偏る**。時間帯はこの案件で
  *    実測された最大の効果(ADR)なので、それを標本設計に混ぜてはならない(generatorGate.ts 参照)。
  *  ★値の根拠: 2分間隔でフルカバー(日中7h + ナイト13h)すると約 600 回/取引日。
- *    運用見込みは生成器2本+対照で約 1,584 回/日。**800/腕** なら
+ *    運用見込みは分析用2本+対照で約 1,584 回/日。**800/腕** なら
  *      - 1本の腕だけでもフルカバー(600)を上回る=需要側の都合で腕が枯れない
  *      - 2腕合計 1,600 ≧ 運用見込み 1,584 = 設計どおりの標本が1年ぶん溜まる
  *    旧既定 200(全腕共有)は設計の 1/8 で、初日から予算切れ=標本が時間帯で切れる値だった。
  *  ★上限(GENERATOR_DAILY_BUDGET_MAX)は残す: 予算は上流クォータへの露出の天井であり、
- *    上限に達した生成器は **止まって記録する**(無音の縮退やモード書き換えは絶対にしない)。 */
+ *    上限に達した分析用は **止まって記録する**(無音の縮退やモード書き換えは絶対にしない)。 */
 export const GENERATOR_DAILY_BUDGET_DEFAULT = 800;
 export const GENERATOR_DAILY_BUDGET_MAX = 5000;
 
-/** 生成器の日次予算[回/取引日・腕ごと]を解決。config.json → env GENERATOR_DAILY_BUDGET → 既定。
+/** 分析用の日次予算[回/取引日・腕ごと]を解決。config.json → env GENERATOR_DAILY_BUDGET → 既定。
  *  0 は「無効」の意味で受理する。 */
 export function resolveGeneratorDailyBudget(): number {
   const v = loadConfig().generatorDailyBudget;
@@ -381,13 +381,13 @@ export function resolveGeneratorDailyBudget(): number {
   return Math.min(Math.max(Math.floor(raw), 0), GENERATOR_DAILY_BUDGET_MAX);
 }
 
-/** ★提案生成器を走らせてよいか。**既定は false(無効)**。
+/** ★分析用を走らせてよいか。**既定は false(無効)**。
  *  config.json の generatorEnabled → env GENERATOR_ENABLED('1'/'true')→ false。
  *
- *  ★なぜ既定を無効にするか: 生成器は配布物(サイドカー)に同梱されるので、既定で有効だと
+ *  ★なぜ既定を無効にするか: 分析用は配布物(サイドカー)に同梱されるので、既定で有効だと
  *    インストールした瞬間から2分ごとに LLM を叩き始める。予算はユーザーの財布なので、
  *    **明示的に有効化するまで1回も叩かない**。
- *  ★生成器サイドカーは monitor と同じ PC の同じ config.json を読む(loadConfig は mtime キャッシュ
+ *  ★分析用サイドカーは monitor と同じ PC の同じ config.json を読む(loadConfig は mtime キャッシュ
  *    なので、設定画面で保存した値を再起動なしで拾う)= 新しい設定機構を作らない。 */
 export function resolveGeneratorEnabled(): boolean {
   const v = loadConfig().generatorEnabled;

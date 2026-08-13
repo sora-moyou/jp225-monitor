@@ -4,10 +4,10 @@
 // ■ なぜ【直列】か
 //   ①(現行の決済仕様を教える)と②(候補の決済仕様を教える)を別スケジュールにすると、
 //   違う時刻・違う相場を見るので、提案の差に **市場変動が混ざる**。直列なら monitor 側の
-//   撮影キャッシュ(60秒・生成器プール)を3本で共有でき、①②が同じ画像を見た対応比較になる。
+//   撮影キャッシュ(60秒・分析用プール)を3本で共有でき、①②が同じ画像を見た対応比較になる。
 //   generatorGate の busy 衝突も自分同士では起きない。
 //
-// ■ なぜ ①' が3本目の生成器でないか
+// ■ なぜ ①' が3本目の分析用でないか
 //   別に走らせると違う時刻を見るので、LLM のばらつきに市場変動が混ざる。
 //   **同じ入力に2回問う** のが定義どおりの対照。だから同じサイクルの中で、同じ exitVariant を送る。
 //
@@ -104,7 +104,7 @@ export function classifyAttempt(httpStatus: number, bodyJson: unknown): Attempt 
     };
   }
   if (httpStatus === 429) {
-    // 生成器ゲート(busy / budget / default-quota / disabled)と場外(closed)。
+    // 分析用ゲート(busy / budget / default-quota / disabled)と場外(closed)。
     return { status: 'skipped', httpStatus, skipReason: str(body?.error) ?? 'unknown', error: str(body?.detail), body: null };
   }
   return {
@@ -233,10 +233,10 @@ export function toProposalRow(
     shotAgeMs: typeof shot?.ageMs === 'number' ? shot.ageMs : null,
     shotOrigin: str(shot?.origin),
     // ★monitor が「プロンプトから外した文脈ブロック」をそのまま台帳へ写す(推測しない)。
-    //   応答に無ければ NULL = 外していない版の monitor と話した = 紙成績を見せた標本。
+    //   応答に無ければ NULL = 外していない版の monitor と話した = 仮想取引の成績を見せた標本。
     contextOmittedJson: Array.isArray(b?.contextOmitted) ? JSON.stringify(b.contextOmitted) : null,
     // ★monitor が「いつの断面から文脈を組んだか」と「送ったプロンプトの指紋」をそのまま写す(推測しない)。
-    //   requested_at/responded_at は生成器の時計の両端でしかない。応答に無ければ NULL
+    //   requested_at/responded_at は分析用の時計の両端でしかない。応答に無ければ NULL
     //   = この2つを返さない版の monitor と話した(= 突合できない標本)。
     contextAt: typeof b?.contextAt === 'number' ? b.contextAt : null,
     promptFp: str(b?.promptFp),

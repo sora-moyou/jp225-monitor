@@ -8,9 +8,9 @@ import { evaluatePreflight } from './generator/preflight.js';
 // ─── ★C1: 専用キーの検証は「出どころ」ではなく **値** を見る ─────────────────────────
 //
 // 何を守っているか:
-//   生成器の起動時検証(preflight)は generatorKeySources が 'own'/'env' であることだけを見ている。
-//   その検証が守ろうとしているのは「生成器が上流クォータを食って **A が429を踏み、最大8時間ポーズする**」
-//   という一点。だから **共通キーと同じ文字列** を生成器キー欄に貼った状態は、欄がどこであれ
+//   分析用の起動時検証(preflight)は generatorKeySources が 'own'/'env' であることだけを見ている。
+//   その検証が守ろうとしているのは「分析用が上流クォータを食って **A が429を踏み、最大8時間ポーズする**」
+//   という一点。だから **共通キーと同じ文字列** を分析用キー欄に貼った状態は、欄がどこであれ
 //   上流クォータ 100% 共有で、危険は1ミリも減っていない。それを 'own' と呼ぶと検証が通ってしまう。
 //
 // ★否定対照(修正前 = git show HEAD:server/configStore.ts):
@@ -32,7 +32,7 @@ function writeConfig(obj: Record<string, unknown>): void {
   resetConfigCache();
 }
 
-describe('★生成器専用キーの判定は値で行う(コピペした共通キーを own と呼ばない)', () => {
+describe('★分析用専用キーの判定は値で行う(コピペした共通キーを own と呼ばない)', () => {
   beforeEach(() => {
     for (const k of ['HOME', 'USERPROFILE', 'APPDATA', ...ENV_KEYS]) ORIG[k] = process.env[k];
     dir = mkdtempSync(join(tmpdir(), 'jp225-genkeyval-'));
@@ -46,7 +46,7 @@ describe('★生成器専用キーの判定は値で行う(コピペした共通
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('★共通キーをそのまま生成器キー欄に貼った場合は shared(上流クォータは分かれていない)', () => {
+  it('★共通キーをそのまま分析用キー欄に貼った場合は shared(上流クォータは分かれていない)', () => {
     writeConfig({ geminiKey: 'AIza-same', generatorKeys: { gemini: 'AIza-same' } });
     expect(resolveGeneratorKeySource('gemini')).toBe('shared');
     // 実際に使うキーは変わらない(=だからこそ危険が減っていない)。
@@ -62,7 +62,7 @@ describe('★生成器専用キーの判定は値で行う(コピペした共通
     writeConfig({ geminiKey: 'AIza-shared', generatorKeys: { gemini: 'AIza-dedicated' } });
     expect(resolveGeneratorKeySource('gemini')).toBe('own');
     expect(resolveApiKeyForPool('gemini', 'generator')).toBe('AIza-dedicated');
-    // ★default プール(実弾 A)は一切変わらない。
+    // ★default プール(実取引 A)は一切変わらない。
     expect(resolveApiKeyForPool('gemini', 'default')).toBe('AIza-shared');
   });
 
@@ -73,7 +73,7 @@ describe('★生成器専用キーの判定は値で行う(コピペした共通
     expect(resolveGeneratorKeySource('gemini')).toBe('shared');
   });
 
-  it('★その shared を preflight が拾って生成器を走らせない(検証が実際に守れるようになる)', () => {
+  it('★その shared を preflight が拾って分析用を走らせない(検証が実際に守れるようになる)', () => {
     writeConfig({ geminiKey: 'AIza-same', generatorKeys: { gemini: 'AIza-same' } });
     const status = { exit: { impl: 'private', variantImpl: 'private', configVersion: 1, configHash: 'h' } };
     const settings = {

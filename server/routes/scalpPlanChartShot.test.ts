@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 // ─── ★①と②が同じ画像を見たことを、仮定でなく記録にする(HTTP まで通す)────────────
 //
 // 何を守っているか:
-//   生成器は1サイクルで ①現行仕様 → ②候補仕様 を直列に問う。「撮影キャッシュが60秒だから
+//   分析用は1サイクルで ①現行仕様 → ②候補仕様 を直列に問う。「撮影キャッシュが60秒だから
 //   同じ画像のはず」という **仮定** に依存していると、1サイクルが60秒を超えたときに
 //   ②が別の画像を見たことを **誰にも分からない**。撮影の識別子と齢を応答に additive に載せ、
 //   台帳に残せるようにする。
@@ -70,7 +70,7 @@ describe('/api/scalp-plan — 撮影の同一性を応答に載せる', () => {
     expect(b.chartShot).toEqual({ shotId: 'aa-1', ageMs: 12_000, origin: 'cache' });
   });
 
-  it('exitVariant を明示しただけ(caller 省略)でも載る=生成器から見て記録に穴が空かない', async () => {
+  it('exitVariant を明示しただけ(caller 省略)でも載る=分析用から見て記録に穴が空かない', async () => {
     runMock.mockResolvedValue(shotOf('aa-2', 5_000, 'cache'));
     const res = mockRes();
     await scalpPlanHandler(reqOf({ exitVariant: 'candidate-a' }), res);

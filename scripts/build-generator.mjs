@@ -24,7 +24,7 @@ const OUT_PATH      = join(BIN_DIR, OUT_NAME);
 mkdirSync('dist',   { recursive: true });
 mkdirSync(BIN_DIR,  { recursive: true });
 
-// ── Step 0: 実行中の生成器を停止 ──────────────────────────────────────────────
+// ── Step 0: 実行中の分析用を停止 ──────────────────────────────────────────────
 // collector と同じ理由: 実行中の exe は上書きできず EPERM になる。
 // bin の直接実行版とバンドル版(triple名)の両方を掃除する。
 const generatorTargets = platform === 'win32'

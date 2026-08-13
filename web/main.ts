@@ -180,7 +180,7 @@ const settingsCtl = initSettingsModal({
   selectRangeMode:     document.getElementById('scalp-range-mode') as HTMLSelectElement,
   checkScalpLcHardMaxEnabled: document.getElementById('scalp-lc-hardmax-enabled') as HTMLInputElement,
   inputScalpLcHardMax: document.getElementById('scalp-lc-hardmax') as HTMLInputElement,
-  // ★v0.8.2: System B(紙専用)の設定入力。
+  // ★v0.8.2: System B(仮想取引専用)の設定入力。
   inputScalpLcCeilingB: document.getElementById('scalp-lc-ceiling-b') as HTMLInputElement,
   selectScalpBiasB:     document.getElementById('scalp-bias-b') as HTMLSelectElement,
   inputScalpCooldownB:  document.getElementById('scalp-cooldown-b') as HTMLInputElement,
@@ -215,7 +215,7 @@ const settingsCtl = initSettingsModal({
   replaceResult:  document.getElementById('settings-replace-result') as HTMLElement,
   testKeysBtn:    document.getElementById('settings-test-keys') as HTMLButtonElement,
   testResult:     document.getElementById('settings-test-result') as HTMLElement,
-  // ★提案生成器(分析用・実弾 A とは別プール)の専用キー / 消去 / 日次予算 / プール別検証。
+  // ★分析用(実取引 A とは別プール)の専用キー / 消去 / 日次予算 / プール別検証。
   inputGenGemini: document.getElementById('genkey-gemini') as HTMLInputElement,
   inputGenGroq:   document.getElementById('genkey-groq') as HTMLInputElement,
   inputGenOpenai: document.getElementById('genkey-openai') as HTMLInputElement,
@@ -446,7 +446,7 @@ fetch(apiUrl('/api/version'))
       dataFieldset: document.getElementById('data-fieldset'),
       // ★基礎データ公開(225labo)は monitor2 メンテナ専用=lite で非表示。
       basedataPublishFieldset: document.getElementById('basedata-publish-fieldset'),
-      // ★lite: 提案生成器(分析用)の fieldset = 2つ目の API キー欄 + 日次予算欄。lite は生成器を
+      // ★lite: 分析用の fieldset = 2つ目の API キー欄 + 日次予算欄。lite は分析用を
       //   走らせない(server の analysisGate が拒否する)ので、キーを入れる場所も出さない。
       generatorKeysFieldset: document.getElementById('generator-keys-fieldset'),
       // ★lite: 詳細設定の右カラム(ポーリング/急変閾値/節目/データ)は丸ごと非表示。

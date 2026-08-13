@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 //
 // 何を守っているか:
 //   1年かけて溜める標本(generator_proposals.db / shadow_exits.db)に **書き出し経路が無かった**。
-//   = 1年分が実売買PCの1ファイルにしか存在しない。過去に「別PCの書き出しが空だった」実事故が
+//   = 1年分が実取引PCの1ファイルにしか存在しない。過去に「別PCの書き出しが空だった」実事故が
 //   あるので、①機構で書き出し、②その **成否と件数** を必ず観測できるようにする。
 //
 // ★否定対照: git show HEAD:collector/index.ts / server/db/ledgerExport.ts(存在しない)に戻すと

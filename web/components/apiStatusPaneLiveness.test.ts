@@ -3,14 +3,14 @@ import { renderGeneratorDot } from './apiStatusPane.js';
 
 // ─── ★B1(死活): 停止中に緑にならないこと ──────────────────────────────────────
 //
-// 旧表示は「最終記録 N分前」だけを見ていた。生成器はゲートに弾かれている間も2分ごとに
+// 旧表示は「最終記録 N分前」だけを見ていた。分析用はゲートに弾かれている間も2分ごとに
 // status='skipped' を書き続けるので、**セッションの 91〜100% が停止していても表示は緑のまま**
-// だった(実売買PCの実ログで確認済み)。無音の失敗は欠陥。
+// だった(実取引PCの実ログで確認済み)。無音の失敗は欠陥。
 //
 // ★否定対照(修正前 = git show HEAD:web/components/apiStatusPane.ts):
 //   planLastHour を見ない実装なので、下の「停止中は緑にならない」が **赤**(🟢 が返る)。
 
-describe('★生成器の死活は標本の量で決まる', () => {
+describe('★分析用の死活は標本の量で決まる', () => {
   it('★停止中(標本 0 / 取引時間内)は緑にならない', () => {
     const html = renderGeneratorDot({
       available: true, lastRecordAt: 1, ageMin: 0, total: 5_000,

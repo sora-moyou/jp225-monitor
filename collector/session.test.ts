@@ -126,7 +126,7 @@ describe('classifySession 休場日', () => {
   });
 
   // ★事故の形: 休場表が 2026年の4日分しか無く、2027年以降が空だった。年を越すと正月が「取引時間」と
-  //   判定され、isMarketOpen / inPollWindow が true になって実弾 bot が動く(無言の誤作動)。
+  //   判定され、isMarketOpen / inPollWindow が true になって実取引 bot が動く(無言の誤作動)。
   it('2027年の休場日(元日/年末/敬老の日BCP)は Day も Night も null', () => {
     expect(classifySession(jst(2027, 1, 1, 9, 0))).toBeNull();     // 元日(金) Day
     expect(classifySession(jst(2027, 1, 1, 18, 0))).toBeNull();    // 元日(金) Night 夕

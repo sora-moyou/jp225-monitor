@@ -3,7 +3,7 @@ import { getProviderStatus, testProvider } from './providers.js';
 
 // ─── 公開版(lite)は generator プールを **構築しない** ────────────────────────────
 //
-// 生成器は分析専用。プールを組むと 2つ目の API キーを解決してクライアントまで作ってしまう。
+// 分析用は分析専用。プールを組むと 2つ目の API キーを解決してクライアントまで作ってしまう。
 // lite では空(=キー未設定と同じ扱い)にして、外部へは1回も出ない状態にする。
 //
 // ★否定対照(修正前の llm/providers.ts): lite でも poolOf('generator') が遅延構築し、
@@ -12,7 +12,7 @@ import { getProviderStatus, testProvider } from './providers.js';
 //
 // ★外部 LLM は叩かない: testProvider は client が無いと ping せずに notset を返す経路だけを通す。
 
-describe('LLM プロバイダ・プール — variant による生成器プールの有無', () => {
+describe('LLM プロバイダ・プール — variant による分析用プールの有無', () => {
   const saved = process.env.MONITOR_VARIANT;
   beforeEach(() => { delete process.env.MONITOR_VARIANT; });
   afterEach(() => {
@@ -25,13 +25,13 @@ describe('LLM プロバイダ・プール — variant による生成器プー�
     expect(getProviderStatus('generator')).toEqual([]);
   });
 
-  it('lite: 生成器プールのキー検証は必ず notset(外部へ ping しない)', async () => {
+  it('lite: 分析用プールのキー検証は必ず notset(外部へ ping しない)', async () => {
     process.env.MONITOR_VARIANT = 'lite';
     const r = await testProvider('gemini', 'generator');
     expect(r).toEqual({ name: 'gemini', ok: false, notset: true });
   });
 
-  it('lite でも default プール(実弾につながる経路)は従来どおり存在する', () => {
+  it('lite でも default プール(実取引につながる経路)は従来どおり存在する', () => {
     process.env.MONITOR_VARIANT = 'lite';
     expect(getProviderStatus().length).toBeGreaterThan(0);
     expect(getProviderStatus('default').length).toBeGreaterThan(0);

@@ -36,7 +36,7 @@ export function resolveEffectiveScalpBias(profile?: SignalProfile): ScalpBias {
 }
 
 // AIエントリー: レンジ両面ストラドルの許可。★実験終了(v0.7.53)により既定OFF。
-// 未設定/非boolean は false(実験終了・紙計測で不利=フェードを既定で出さない)。true で再有効化可(コード温存)。
+// 未設定/非boolean は false(実験終了・仮想取引での計測で不利=フェードを既定で出さない)。true で再有効化可(コード温存)。
 export function resolveScalpRangeEnabled(profile?: SignalProfile): boolean {
   const v = readKnobRaw(profile, 'scalpRangeEnabled');
   return typeof v === 'boolean' ? v : false;

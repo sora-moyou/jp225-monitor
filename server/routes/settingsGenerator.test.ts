@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { resetConfigCache, resolveApiKeyForPool, GENERATOR_DAILY_BUDGET_DEFAULT } from '../configStore.js';
 import { getSettingsHandler, postSettingsHandler } from './settings.js';
 
-// ★提案生成器(caller='generator')の設定を ⚙️ から扱えるようにした分の契約テスト。
+// ★分析用(caller='generator')の設定を ⚙️ から扱えるようにした分の契約テスト。
 //
 // この機能の一番の要点は **「専用キーが効いているのか共通キーに落ちているのかが一目で分かること」**。
-// 専用キーが無いと生成器は黙って共通キーへフォールバックし、ローカルのポーズは分離されるのに
-// 上流のクォータは実弾(A)と共有されたまま=「分離したつもりで分離できていない」が無音で成立する。
+// 専用キーが無いと分析用は黙って共通キーへフォールバックし、ローカルのポーズは分離されるのに
+// 上流のクォータは実取引(A)と共有されたまま=「分離したつもりで分離できていない」が無音で成立する。
 // そこで GET は **キーの値ではなく「どのキーを使うか」** を返し、UI がそれを文言にする。
 //
 // 併せて: キーの値は絶対に GET に出さない / 保存で他のフィールドを壊さない、も固定する。
@@ -64,7 +64,7 @@ function sources(): Record<string, string> {
   return get().generatorKeySources as Record<string, string>;
 }
 
-describe('/api/settings 提案生成器(キー/予算)', () => {
+describe('/api/settings 分析用(キー/予算)', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'jp225-setgen-'));
     process.env.HOME = dir; process.env.USERPROFILE = dir;
@@ -88,7 +88,7 @@ describe('/api/settings 提案生成器(キー/予算)', () => {
   // ─── ★要点: フォールバックが見えること ──────────────────────────────
   it('★専用キーが無いプロバイダは shared(=共通キーを使用中) として返る。none(未設定) ではない', () => {
     writeConfig({ geminiKey: 'AIza-shared', openaiKey: 'sk-shared' });
-    // 共通キーはあるが生成器専用キーは無い → 生成器は共通キーで動く(=上流クォータは A と共有)。
+    // 共通キーはあるが分析用専用キーは無い → 分析用は共通キーで動く(=上流クォータは A と共有)。
     expect(sources().gemini).toBe('shared');
     expect(sources().openai).toBe('shared');
     // 共通キーすら無いプロバイダだけが none。
@@ -96,7 +96,7 @@ describe('/api/settings 提案生成器(キー/予算)', () => {
     expect(sources().kimi).toBe('none');
   });
 
-  it('★専用キーを入れると own に切り替わり、実際に生成器プールがその値を使う', () => {
+  it('★専用キーを入れると own に切り替わり、実際に分析用プールがその値を使う', () => {
     writeConfig({ geminiKey: 'AIza-shared', openaiKey: 'sk-shared' });
     expect(post({ generatorKeys: { openai: 'sk-generator' } }).code).toBe(200);
     expect(sources().openai).toBe('own');
@@ -104,7 +104,7 @@ describe('/api/settings 提案生成器(キー/予算)', () => {
     // 表示と実際の解決が一致すること(表示だけ own で中身は共通キー、を許さない)。
     expect(resolveApiKeyForPool('openai', 'generator')).toBe('sk-generator');
     expect(resolveApiKeyForPool('gemini', 'generator')).toBe('AIza-shared');
-    // ★default プール(実弾 A)は一切変わらない。
+    // ★default プール(実取引 A)は一切変わらない。
     expect(resolveApiKeyForPool('openai', 'default')).toBe('sk-shared');
   });
 
@@ -160,7 +160,7 @@ describe('/api/settings 提案生成器(キー/予算)', () => {
     expect(get().generatorDailyBudget).toBe(GENERATOR_DAILY_BUDGET_DEFAULT);
   });
 
-  it('0(=生成器を無効化)は有効な値として保存される', () => {
+  it('0(=分析用を無効化)は有効な値として保存される', () => {
     expect(post({ generatorDailyBudget: 0 }).code).toBe(200);
     expect(readRaw().generatorDailyBudget).toBe(0);
     expect(get().generatorDailyBudget).toBe(0);

@@ -1,22 +1,22 @@
-// 提案生成器の本体(ループそのもの)。**取引しない**。AI にエントリー計画を要求し、提案を全数記録するだけ。
+// 分析用の本体(ループそのもの)。**取引しない**。AI にエントリー計画を要求し、提案を全数記録するだけ。
 //
 // ■ なぜ index.ts から分けたか
 //   同じループを2つの入口から走らせるため:
 //     ・server/generator/index.ts   … 開発用 CLI(`npm run generator:dev`)
 //     ・server/generator/sidecar.ts … 配布物に同梱するサイドカー(第3の externalBin)
-//   ★ロジックは1本のまま(入口が増えても「生成器が2つある」状態を作らない)。
+//   ★ロジックは1本のまま(入口が増えても「分析用が2つある」状態を作らない)。
 //
 // ■ ★ライブでは約定判定をしない
-//   別プロセスの生成器は「その瞬間のライブ価格」を持てないので、ライブで判定すると A と違う価格で
-//   判定することになる。記録だけに絞れば経路が1本になり、実弾へのリスクもゼロになる。
+//   別プロセスの分析用は「その瞬間のライブ価格」を持てないので、ライブで判定すると A と違う価格で
+//   判定することになる。記録だけに絞れば経路が1本になり、実取引へのリスクもゼロになる。
 //   約定判定・影の決済模擬は **オフラインの再生**(記録済み提案 + 保管ティック)で後から行う。
 //   → このプロセスは ShadowSim を呼ばない。取引経路にも一切触らない。
 //
 // ■ 止まったことに気づく仕組み
 //   「1年後に、実は3か月動いていなかった」が最悪の失敗形。だから
 //     ・取引日ごとの件数(腕別・見送り理由別)を専用 DB に **追記**(いつ止まったかが必ず読める)
-//     ・monitor の /api/status に「生成器 最終記録 N分前」を出す(ユーザーが見る画面に出す)
-//   生成器側だけの死活監視は、生成器が死んだら一緒に死ぬ。
+//     ・monitor の /api/status に「分析用 最終記録 N分前」を出す(ユーザーが見る画面に出す)
+//   分析用側だけの死活監視は、分析用が死んだら一緒に死ぬ。
 
 import { randomUUID } from 'node:crypto';
 import { isAnalysisEnabled } from '../analysisGate.js';
@@ -75,10 +75,10 @@ export interface GeneratorRunOptions {
     | { kind: 'cycle'; at: number }) => void;
 }
 
-/** 生成器の本体。前提が崩れたら GeneratorHalt を throw する(黙って縮退しない)。
+/** 分析用の本体。前提が崩れたら GeneratorHalt を throw する(黙って縮退しない)。
  *  shouldContinue が false を返したときだけ、停止ではなく **正常に戻る**。 */
 export async function runGenerator(opts: GeneratorRunOptions = {}): Promise<void> {
-  /** 診断通知。**絶対に throw させない**(記録のために生成器を落とさない)。 */
+  /** 診断通知。**絶対に throw させない**(記録のために分析用を落とさない)。 */
   const notify: NonNullable<GeneratorRunOptions['onEvent']> = (e) => {
     try { opts.onEvent?.(e); } catch { /* 記録の失敗で本体を止めない */ }
   };
@@ -102,7 +102,7 @@ export async function runGenerator(opts: GeneratorRunOptions = {}): Promise<void
   console.log(`[generator] 前提OK: 決済実装=${pre.exit.impl} 変種実装=${pre.exit.variantImpl} `
     + `決済設定 版=${pre.exit.configVersion ?? '(未採番)'} 指紋=${pre.exit.configHash}`);
 
-  // ── epoch。凍結設定 + 決済指紋 + 生成器設定のハッシュ。★入力が動けば自動で変わる。
+  // ── epoch。凍結設定 + 決済指紋 + 分析用設定のハッシュ。★入力が動けば自動で変わる。
   //    ★「動けば変わる」を本当にするために、**サイクルごとに取り直す**(主ループの先頭)。
   //      起動時1回だと、バイアスや LC 安全上限をライブで切り替えた瞬間から
   //      別条件の標本が同じ期のラベルで積まれ続ける(=静かに嘘になる)。

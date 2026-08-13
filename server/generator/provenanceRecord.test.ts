@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 
-// ─── ★生成器の台帳にも「文脈を組み立てた時刻」と「プロンプトの指紋」を残す ────────────
+// ─── ★分析用の台帳にも「文脈を組み立てた時刻」と「プロンプトの指紋」を残す ────────────
 //
 // 何を守っているか:
-//   台帳が持つ requested_at / responded_at は **生成器プロセスの時計** の両端でしかなく、
+//   台帳が持つ requested_at / responded_at は **分析用プロセスの時計** の両端でしかなく、
 //   その間には撮影と LLM の待ち(実測で秒オーダー)が入る。「monitor がどの断面から文脈を組んだか」は
 //   monitor 側にしか無い値なので、応答で受け取ってそのまま写す(推測しない)。
 //   指紋は一方向ハッシュで、プロンプト本文も非公開の決済仕様の数値も一切含まない。
@@ -33,7 +33,7 @@ describe('計画の出所(文脈の時刻・プロンプトの指紋)を台帳�
     }));
     expect(row.contextAt).toBe(CONTEXT_AT);
     expect(row.promptFp).toBe(FP);
-    // ★生成器の時計の両端とは別物(要求より後・応答より前に文脈が組まれている)。
+    // ★分析用の時計の両端とは別物(要求より後・応答より前に文脈が組まれている)。
     expect(row.contextAt).toBeGreaterThan(row.requestedAt);
     expect(row.contextAt).toBeLessThan(row.respondedAt!);
   });

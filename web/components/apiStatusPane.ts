@@ -3,7 +3,7 @@ import { apiUrl } from '../lib/apiBase.js';
 interface StatusResponse {
   yahoo: { fallback: boolean; skipUntil: number };
   llm: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
-  /** ★提案生成器(分析用)の台帳の死活。公開版(lite)や未導入の PC では返らない(=表示しない)。 */
+  /** ★分析用の台帳の死活。公開版(lite)や未導入の PC では返らない(=表示しない)。 */
   generatorLedger?: {
     available: boolean; lastRecordAt: number | null; ageMin: number | null; total: number;
     /** 直近1時間に **標本が取れた** 件数(status='plan')。台帳を読めない環境では無い。 */
@@ -13,7 +13,7 @@ interface StatusResponse {
     /** ★まだ効いている停止理由(最後の記録より後に止まったときだけ入る)。決済の実数値は含まれない。 */
     halt?: { at: number; phase: string; reason: string };
   };
-  /** ★生成器サイドカーが有効化されているか(設定・既定 false)。公開版(lite)では返らない。 */
+  /** ★分析用サイドカーが有効化されているか(設定・既定 false)。公開版(lite)では返らない。 */
   generatorEnabled?: boolean;
   /** ★収集デーモン(collector)の死活。**両 variant 共通**(収集デーモンは lite でも走る)。
    *  判定は monitor(生きている側)が出す = 収集デーモンが死んでも判定は凍らない。
@@ -31,7 +31,7 @@ interface StatusResponse {
   };
 }
 
-/** 生成器が「止まった」と見なす無記録の分数。1サイクル=2分なので、数サイクル落ちても
+/** 分析用が「止まった」と見なす無記録の分数。1サイクル=2分なので、数サイクル落ちても
  *  すぐ赤にはせず、明らかに止まっている領域で警告にする。
  *  ★これは **プロセスが生きているか** の指標でしかない(下の説明)。 */
 const GENERATOR_STALE_MIN = 15;
@@ -41,14 +41,14 @@ const GENERATOR_STALE_MIN = 15;
  *  この線は割らない。取引時間内でここを割ったら「溜まっていない」と言い切ってよい。 */
 const GENERATOR_MIN_PLANS_PER_HOUR = 10;
 
-/** ★「生成器」の1点表示(純関数)。
- *  1年かけて溜める実験の最悪の失敗形は「実は3か月動いていなかった」。生成器側だけの死活監視は
- *  生成器が死ぬと一緒に死ぬので、**ユーザーが毎日見る画面** に出す。
+/** ★「分析用」の1点表示(純関数)。
+ *  1年かけて溜める実験の最悪の失敗形は「実は3か月動いていなかった」。分析用側だけの死活監視は
+ *  分析用が死ぬと一緒に死ぬので、**ユーザーが毎日見る画面** に出す。
  *  台帳そのものが無い環境(未導入・公開版)では **何も出さない**(存在しない機構の警告を出さない)。
  *
  *  ★指標は「プロセスが生きているか」ではなく **「標本が溜まっているか」**。
- *    生成器はゲートに弾かれている間も2分ごとに status='skipped' を書き続けるので、
- *    「最終記録 N分前」は **止まっている間も新しいまま** = 画面は緑のまま(実売買PCの実ログで
+ *    分析用はゲートに弾かれている間も2分ごとに status='skipped' を書き続けるので、
+ *    「最終記録 N分前」は **止まっている間も新しいまま** = 画面は緑のまま(実取引PCの実ログで
  *    セッションの 91〜100% が停止していたのに一度も警告色にならなかった)。溜めたいのは提案なので、
  *    直近1時間の status='plan' の件数で判定する。
  *  ★planLastHour を返さない応答(台帳を読めない/古い monitor)だけ、従来の「最終記録 N分前」に落ちる。 */
@@ -60,28 +60,28 @@ export function renderGeneratorDot(
   //   (無効なのに「止まっている」と警告したら、warnings が読まれなくなる)。
   //   enabled===undefined は **この情報を返さない monitor**(公開版 lite / 旧版)= 従来どおり無言。
   if (enabled === false) {
-    return renderDot('Ge', 'off', '提案生成器: 無効（設定 ⚙️「提案生成器」で有効にすると動き出します）');
+    return renderDot('Ge', 'off', '分析用: 無効（設定 ⚙️「分析用」で有効にすると動き出します）');
   }
   // ★止まった理由は、記録が有る/無いに関わらず最優先で出す。運用PCではコンソールを見られないので、
   //   ここに出ないと「なぜ止まったか」は永遠に分からない(理由はログにしか無かった)。
   if (ledger?.halt) {
     return renderDot('Ge', 'halted',
-      `提案生成器: ★停止しました（${ledger.halt.phase}）— ${ledger.halt.reason}`);
+      `分析用: ★停止しました（${ledger.halt.phase}）— ${ledger.halt.reason}`);
   }
   if (!ledger || !ledger.available) {
     // 有効化されているのに台帳がまだ無い=サイドカーが1行も書いていない(起動直後 or 起動していない)。
     return enabled === true
-      ? renderDot('Ge', 'paused', '提案生成器: 有効だが記録がまだありません（起動直後、または生成器が起動していません）')
+      ? renderDot('Ge', 'paused', '分析用: 有効だが記録がまだありません（起動直後、または分析用プロセスが起動していません）')
       : '';
   }
   if (ledger.ageMin === null) {
-    return renderDot('Ge', 'off', '提案生成器: 台帳はあるが記録が1件もありません');
+    return renderDot('Ge', 'off', '分析用: 台帳はあるが記録が1件もありません');
   }
   const age = `最終記録 ${ledger.ageMin}分前 (通算 ${ledger.total} 件)`;
   if (typeof ledger.planLastHour === 'number') {
     const plans = ledger.planLastHour;
     const inSession = ledger.inSessionLastHour ?? 0;
-    const head = `提案生成器: 直近1時間の標本 ${plans} 件 / ${age}`;
+    const head = `分析用: 直近1時間の標本 ${plans} 件 / ${age}`;
     // 取引時間外は「取れなくて当たり前」。常態を警告色にすると警告が読まれなくなるので灰にする。
     if (inSession === 0 && plans < GENERATOR_MIN_PLANS_PER_HOUR) {
       return renderDot('Ge', 'off', `${head} — 取引時間外(標本を取る時間帯ではありません)`);
@@ -94,11 +94,11 @@ export function renderGeneratorDot(
   }
   const stale = ledger.ageMin >= GENERATOR_STALE_MIN;
   return renderDot('Ge', stale ? 'paused' : 'ok',
-    `提案生成器: ${age}`
+    `分析用: ${age}`
     + (stale ? ' — ★止まっている可能性があります' : ''));
 }
 
-/** ★「収集デーモン(Co)」の1点表示(純関数)。生成器の Ge ドットと **同じ流儀**。
+/** ★「収集デーモン(Co)」の1点表示(純関数)。分析用の Ge ドットと **同じ流儀**。
  *
  *  ■ 何を防ぐか
  *    実運用で collector のプロセスが 10:13:44 に停止し、ティック保管も台帳の毎時書き出しも

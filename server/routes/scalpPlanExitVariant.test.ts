@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 
 // ─── POST /api/scalp-plan: 決済仕様の「名前付き変種」(exitVariant) ───────────────
 //
-// 目的: 生成器②に「候補の決済仕様」を AI へ教えさせる。★数値は HTTP に載せない。
+// 目的: 分析用②に「候補の決済仕様」を AI へ教えさせる。★数値は HTTP に載せない。
 //   リクエストに載るのは **名前だけ**(exitVariant: 'current' | 'candidate-a')で、
 //   実数値は monitor プロセス内の非公開定義から解決される。
 //
@@ -93,7 +93,7 @@ describe('/api/scalp-plan — exitVariant(決済仕様の変種)', () => {
   });
 
   describe('変種の受理', () => {
-    it("exitVariant:'current' → 変種が渡り、応答にも載る(生成器が記録できる)", async () => {
+    it("exitVariant:'current' → 変種が渡り、応答にも載る(分析用が記録できる)", async () => {
       const res = mockRes();
       await scalpPlanHandler(reqOf({ exitVariant: 'current' }), res);
 

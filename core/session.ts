@@ -56,7 +56,7 @@ export const HOLIDAY_TABLE_RENEW_LEAD_DAYS = 90;
 //
 // ★年ごとに手動メンテする。**次に足すのは 2028 年分**(2028-01-03 は月曜=平日なので要追加、
 //   2028-01-01/02 は土日。2028 の BCP テスト日は未告知)。空のまま年を越すと正月が「取引時間」と
-//   判定され、実弾 bot が動く。→ HOLIDAY_TABLE_COVERED_THROUGH も同時に更新すること。
+//   判定され、実取引 bot が動く。→ HOLIDAY_TABLE_COVERED_THROUGH も同時に更新すること。
 export const DERIV_NON_TRADING: ReadonlySet<string> = new Set<string>([
   // ── 2026年 ───────────────────────────────────────────────
   '2026-01-01',  // 元日(木)

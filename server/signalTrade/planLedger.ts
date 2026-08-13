@@ -12,7 +12,7 @@
 // ■ ★語彙を増やさない
 //   direction / noneReason / vetoFired / regime / confidence / legDrops は
 //   すべて ScalpPlanResult(server/llm/scalpPlan.ts)に既に在る値をそのまま写すだけ。
-//   leg_drops_json の書き方は生成器の台帳(proposals.leg_drops_json)と同じ = LegDrop[] をそのまま JSON 化する。
+//   leg_drops_json の書き方は分析用の台帳(proposals.leg_drops_json)と同じ = LegDrop[] をそのまま JSON 化する。
 //   settings は signal_trades.meta に入れているものと **同じ組み立て**(persist.ts の buildSettingsSnapshot)を
 //   呼び出し側から受け取る(この関数は二重に組み立てない)。
 //
@@ -112,7 +112,7 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   if (plan.stopEntry !== undefined) row.stopEntry = plan.stopEntry;
   if (plan.stopLossForLimit !== undefined) row.stopLossForLimit = plan.stopLossForLimit;
   if (plan.stopLossForStop !== undefined) row.stopLossForStop = plan.stopLossForStop;
-  // ★生成器の台帳(proposals.leg_drops_json)と同じ書き方: LegDrop[] をそのまま JSON 配列にする。
+  // ★分析用の台帳(proposals.leg_drops_json)と同じ書き方: LegDrop[] をそのまま JSON 配列にする。
   //   1本も落ちなければ列ごと NULL(= 空配列 '[]' は書かない。proposals と同じ規約)。
   if (result.legDrops?.length) row.legDropsJson = JSON.stringify(result.legDrops);
   // ★RECORD-ONLY: 根拠文で AI が申告した LC幅 と 実際に出力した |entry − stopLoss| の突き合わせ。

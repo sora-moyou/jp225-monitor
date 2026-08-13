@@ -1,12 +1,12 @@
 // ─── チャート撮影キャッシュの「呼び出し元(caller)分離」 ─────────────────────────
 //
 // 欠陥(修正前): 撮影キャッシュ/進行中(in-flight)はモジュール単位でプロセスに1個しかなく、
-// caller で分かれていなかった。そこへ 2分間隔で回る生成器(caller='generator')を挿すと:
+// caller で分かれていなかった。そこへ 2分間隔で回る分析用(caller='generator')を挿すと:
 //   S1) TTL 60秒 < plan間隔 180秒 という「A は毎サイクル撮り直す」不変条件が壊れ、
 //       A は二度と自前で撮影せず、常に最大60秒前の画像で判断するようになる。
 //       refPrice は毎回新鮮に取り直すので「数値だけ新しく画像だけ古い」不整合が入り、
 //       checkRefDrift/checkStaleLegs は価格しか見ないので誰も検出しない。
-//   S2) 生成器の進行中撮影に A が相乗りし、その遅延(最大42s)や失敗をそのまま継承する。
+//   S2) 分析用の進行中撮影に A が相乗りし、その遅延(最大42s)や失敗をそのまま継承する。
 //       2回失敗すればテキストのみへ縮退=A の入力から画像が消える。
 //
 // 一方で **'default'(A と B)の共有は壊してはいけない**: 同時2起動で Chrome が資源逼迫し
@@ -29,12 +29,12 @@ const fail: CaptureResult = { buffer: null, reason: 'ws-error', chromePath: 'c',
 describe('captureChartPngCached — caller ごとのプール分離', () => {
   beforeEach(() => resetChartCache());
 
-  // ★否定対照(修正前は赤): 生成器が撮ると A の撮影がスキップされる。
-  it('★否定対照: 生成器の撮影は A(default) の撮影をスキップさせない', async () => {
+  // ★否定対照(修正前は赤): 分析用が撮ると A の撮影がスキップされる。
+  it('★否定対照: 分析用の撮影は A(default) の撮影をスキップさせない', async () => {
     let now = 1_000;
     const cap = vi.fn(async () => ok(`shot-${now}`));
 
-    // 生成器が撮影(2分間隔の実験系)。
+    // 分析用が撮影(2分間隔の実験系)。
     const gen = await captureChartPngCached(3000, cap, () => now, 'generator');
     expect(cap).toHaveBeenCalledTimes(1);
 
@@ -44,23 +44,23 @@ describe('captureChartPngCached — caller ごとのプール分離', () => {
 
     // ★A は自分で撮り直す(毎サイクル新鮮な画像、という不変条件)。
     expect(cap).toHaveBeenCalledTimes(2);
-    // ★A の画像は生成器の画像の使い回しではない。
+    // ★A の画像は分析用の画像の使い回しではない。
     expect(a.buffer).not.toBe(gen.buffer);
     expect(a.buffer?.toString()).toBe('shot-11000');
   });
 
-  // ★否定対照(修正前は赤): 生成器の進行中撮影に A が相乗りして遅延/失敗を継承する。
-  it('★否定対照: A は生成器の進行中撮影に相乗りしない(遅延/失敗を継承しない)', async () => {
+  // ★否定対照(修正前は赤): 分析用の進行中撮影に A が相乗りして遅延/失敗を継承する。
+  it('★否定対照: A は分析用の進行中撮影に相乗りしない(遅延/失敗を継承しない)', async () => {
     const calls: Array<(r: CaptureResult) => void> = [];
     const cap = vi.fn(() => new Promise<CaptureResult>((res) => { calls.push(res); }));
 
-    // 生成器が撮影開始(まだ解決しない = Chrome 起動中)。
+    // 分析用が撮影開始(まだ解決しない = Chrome 起動中)。
     const genP = captureChartPngCached(3000, cap, () => 1_000, 'generator');
     expect(cap).toHaveBeenCalledTimes(1);
 
     // その最中に A が来る。旧実装は in-flight に相乗りする。
     const aP = captureChartPngCached(3000, cap, () => 1_000, 'default');
-    // ★A は自分の撮影を開始する(生成器の完了を待たない)。
+    // ★A は自分の撮影を開始する(分析用の完了を待たない)。
     expect(cap).toHaveBeenCalledTimes(2);
 
     // A の撮影だけ先に成功させる。
@@ -68,14 +68,14 @@ describe('captureChartPngCached — caller ごとのプール分離', () => {
     const a = await aP;
     expect(a.buffer?.toString()).toBe('a');
 
-    // 生成器が後から失敗しても A には影響しない。
+    // 分析用が後から失敗しても A には影響しない。
     calls[0]!(fail);
     const gen = await genP;
     expect(gen.buffer).toBeNull();
     expect(a.buffer?.toString()).toBe('a');
   });
 
-  it('★否定対照: 生成器は default のキャッシュを読まない(A の画像を使い回さない)', async () => {
+  it('★否定対照: 分析用は default のキャッシュを読まない(A の画像を使い回さない)', async () => {
     let now = 1_000;
     const cap = vi.fn(async () => ok(`shot-${now}`));
 
@@ -87,19 +87,19 @@ describe('captureChartPngCached — caller ごとのプール分離', () => {
     expect(gen.buffer?.toString()).toBe('shot-11000');
   });
 
-  it('生成器の撮影は default のキャッシュを書かない(A のキャッシュ齢を汚さない)', async () => {
+  it('分析用の撮影は default のキャッシュを書かない(A のキャッシュ齢を汚さない)', async () => {
     let now = 1_000;
     const cap = vi.fn(async () => ok(`shot-${now}`));
 
     // A が撮影 → default キャッシュは t=1000 の画像。
     await captureChartPngCached(3000, cap, () => now, 'default');
-    // 30秒後に生成器が撮影(default キャッシュを更新してはいけない)。
+    // 30秒後に分析用が撮影(default キャッシュを更新してはいけない)。
     now += 30_000;
     await captureChartPngCached(3000, cap, () => now, 'generator');
     expect(cap).toHaveBeenCalledTimes(2);
 
     // さらに 31秒後(A の最初の撮影から 61秒 = default の TTL 超過)。
-    // 生成器の撮影がキャッシュを温めていたら A は撮り直さない(=旧実装の欠陥)。
+    // 分析用の撮影がキャッシュを温めていたら A は撮り直さない(=旧実装の欠陥)。
     now += 31_000;
     await captureChartPngCached(3000, cap, () => now, 'default');
     expect(cap).toHaveBeenCalledTimes(3);   // ★A は TTL 超過でちゃんと撮り直す
@@ -128,7 +128,7 @@ describe('captureChartPngCached — caller ごとのプール分離', () => {
     expect(cap).toHaveBeenCalledTimes(1);                                   // ★同じプール
   });
 
-  it('生成器プールも従来どおり TTL/相乗り/失敗非キャッシュが効く', async () => {
+  it('分析用プールも従来どおり TTL/相乗り/失敗非キャッシュが効く', async () => {
     let now = 1_000;
     const okCap = vi.fn(async () => ok('g'));
     await captureChartPngCached(3000, okCap, () => now, 'generator');

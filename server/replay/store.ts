@@ -44,7 +44,7 @@ export interface CoverageRow {
   sessionDate: string;
   /** 影ラダーの版(= 影の行の epoch)。 */
   ladderEpoch: string;
-  /** ★提案の epoch(生成器の版)。影の epoch とは別物なので両方持つ。 */
+  /** ★提案の epoch(分析用の版)。影の epoch とは別物なので両方持つ。 */
   epoch: string;
   reason: CoverageReason;
   n: number;

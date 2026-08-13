@@ -9,7 +9,7 @@ import { getSettingsHandler, postSettingsHandler } from './settings.js';
 //
 // ① GET は generator* を **1つも返さない** → 画面に描くものが無い(隠すだけにしない)。
 // ② POST は generator* を **一切見ない** → lite と full は同じ config ファイルを共有するので、
-//    lite の保存が monitor2 側の生成器設定(専用キー/日次予算)を黙って消してはならない。
+//    lite の保存が monitor2 側の分析用設定(専用キー/日次予算)を黙って消してはならない。
 //    ★これは実害のある壊れ方: UI を隠すと入力欄は空のまま送られ、空=null=「既定に戻す」として
 //      full 側の設定が消える。隠すだけで済ませると、この消去が無音で起きる。
 //
@@ -59,7 +59,7 @@ function writeConfig(obj: Record<string, unknown>): void {
   resetConfigCache();
 }
 
-describe('/api/settings — lite は提案生成器の設定を持たない', () => {
+describe('/api/settings — lite は分析用の設定を持たない', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'jp225-setgenlite-'));
     process.env.HOME = dir; process.env.USERPROFILE = dir;
@@ -88,7 +88,7 @@ describe('/api/settings — lite は提案生成器の設定を持たない', ()
     expect(body.geminiSet).toBe(true);
   });
 
-  it('★lite の保存は full 側の生成器設定を消さない(空欄=null が届いても無視する)', () => {
+  it('★lite の保存は full 側の分析用設定を消さない(空欄=null が届いても無視する)', () => {
     process.env.MONITOR_VARIANT = 'lite';
     writeConfig({ generatorKeys: { openai: 'sk-gen' }, generatorDailyBudget: 300, chromePath: 'C:\\chrome.exe' });
     // UI を隠しても、input が空のまま buildSavePayload に載って null が飛んでくる形を再現する。
@@ -99,7 +99,7 @@ describe('/api/settings — lite は提案生成器の設定を持たない', ()
     expect(raw.chromePath).toBe('C:\\chrome.exe');   // 既存フィールドも巻き込まない
   });
 
-  it('lite では新しい生成器キー/予算を **設定できない**(入口ごと閉じている)', () => {
+  it('lite では新しい分析用キー/予算を **設定できない**(入口ごと閉じている)', () => {
     process.env.MONITOR_VARIANT = 'lite';
     writeConfig({ chromePath: 'C:\\chrome.exe' });
     expect(post({ generatorKeys: { openai: 'sk-new' }, generatorDailyBudget: 900 }).code).toBe(200);

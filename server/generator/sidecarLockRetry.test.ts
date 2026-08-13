@@ -26,7 +26,7 @@ import type { GeneratorLedgerStatus } from '../db/generatorStore.js';
 // 付けると Node 15+ の既定(=落ちる)が止まる。記録だけして生き残らせると『プロセスは生きているのに
 // 何もしない』という、いちばん分かりにくい状態をこちらが作ってしまう」と書いたうえで exit(1) している。
 // ところが同じリリースの server/generator/sidecarLog.ts は **その listener を付けて exit していなかった**。
-// 生成器の名乗りは setInterval なので、本体の promise 連鎖が死んでも心拍だけ打ち続け、
+// 分析用の名乗りは setInterval なので、本体の promise 連鎖が死んでも心拍だけ打ち続け、
 // 共有DBは「生きている」と言い続ける = このリリースが解こうとしている誤診断そのものを製造できた。
 //
 // ★実プロセスでの実証(このユニットテストとは別に実施):
@@ -35,7 +35,7 @@ import type { GeneratorLedgerStatus } from '../db/generatorStore.js';
 //   否定対照は「修正前の sidecarLog.ts をそのまま別ファイルとして置いて実行」で取った
 //   (このファイル群は未コミットなので `git show HEAD:` では取れない)。
 
-describe('★A-1 生成器のログは processLog の薄い包み(規約が1か所)', () => {
+describe('★A-1 分析用のログは processLog の薄い包み(規約が1か所)', () => {
   let dir = '';
   const ORIG: Record<string, string | undefined> = {};
   beforeEach(() => {
@@ -71,7 +71,7 @@ describe('★A-1 生成器のログは processLog の薄い包み(規約が1か�
     expect(processLogPath()).toBeNull();
   });
 
-  it('名札は生成器のもの(コレクタと取り違えない)', () => {
+  it('名札は分析用のもの(コレクタと取り違えない)', () => {
     expect(GENERATOR_LOG_TAG).toBe('generator-sidecar');
   });
 });
@@ -142,7 +142,7 @@ describe('★A-2 ロックが取れないときの振る舞い', () => {
 
 // ─── ★A-2: 理由が meta に載る(別PCから読める) ────────────────────────────────
 //
-// ロック待ちの生成器は共有DBに **名乗らない**(名乗ると実際に走っている本体の名乗りを30秒ごとに
+// ロック待ちの分析用は共有DBに **名乗らない**(名乗ると実際に走っている本体の名乗りを30秒ごとに
 // 上書きし、pid が交互に入れ替わって遠隔からはかえって読めなくなる)。
 // 代わりに、Rust が spawn の成否を書いている共用ログへ1行出す。それは monitor が既に
 // meta(generator_heartbeat.spawn / generator_status)へ運んでいる = 新しい配管を作らない。
@@ -182,7 +182,7 @@ describe('★A-2 保留の理由が monitor 側の状態として読める', () 
     expect(h.reason).toContain('起動していない');
   });
 
-  it('生成器以外の行(collector など)には引きずられない', () => {
+  it('分析用以外の行(collector など)には引きずられない', () => {
     expect(pidLockBlockedFromSpawn([
       `1 [generator] ★${GENERATOR_PID_LOCK_BLOCKED_MARK}`,
       '2 [collector] spawned pid=7',

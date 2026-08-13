@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 //   混ざったことに誰も気づけないのが最悪なので、期を決める入力が動けば epoch が **自動で** 変わる。
 //
 // ★否定対照: computeEpoch を「固定文字列を返す」実装に変えると、下の
-//   「設定/決済指紋/生成器設定を動かすと epoch が変わる」3件がすべて赤になる。
+//   「設定/決済指紋/分析用設定を動かすと epoch が変わる」3件がすべて赤になる。
 
 import {
   EPOCH_SCHEMA, VOLATILE_SETTINGS_KEYS, canonicalJson, freezeSettings, buildEpochInput, computeEpoch,
@@ -55,7 +55,7 @@ describe('computeEpoch — 入力が動けば自動で上がる', () => {
   it('★決済実装が公開フォールバックに落ちると epoch が変わる', () => {
     expect(epochOf(settings, { ...exit, variantImpl: 'fallback' })).not.toBe(epochOf(settings));
   });
-  it('★生成器の設定(間隔・対照の頻度)が変わると epoch が変わる', () => {
+  it('★分析用の設定(間隔・対照の頻度)が変わると epoch が変わる', () => {
     expect(epochOf(settings, exit, { ...gen, intervalMs: 60_000 })).not.toBe(epochOf(settings));
     expect(epochOf(settings, exit, { ...gen, controlEvery: 10 })).not.toBe(epochOf(settings));
   });

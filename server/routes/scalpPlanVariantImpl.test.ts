@@ -6,7 +6,7 @@ import type { Request, Response } from 'express';
 // 何を守っているか:
 //   private(非公開の決済定義)が無い環境では describeExitLogicVariant が公開フォールバック
 //   (数値が一切入らない定性文)のままになり、'candidate-a' のプロンプトが 'current' と
-//   ほぼ同一になる。**2本の生成器が同じ質問を投げている**のに、応答は exitVariant:'candidate-a'
+//   ほぼ同一になる。**2本の分析用が同じ質問を投げている**のに、応答は exitVariant:'candidate-a'
 //   を返すので記録には「候補仕様で生成した」と残る。実験は何も測っていないのに標本は
 //   測ったふりをする=exit/index.ts 自身が「最悪の壊れ方」と書いているものと同じ形。
 //   未知の変種名を 400 にするのと同じ作法で、実体が無い変種も 400 で拒否する。

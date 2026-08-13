@@ -13,7 +13,7 @@ import {
 //   ・pid ファイルの解放は `finally` にしかなく、process.exit(0) でも taskkill でも通らない
 //     → **stale pid が常態**。
 //   ・その stale pid を OS が別プロセスに再利用すると、素の kill(pid,0) は「生きている」と答える
-//     → 常駐プロセス(生成器)が「別インスタンスが居る」と誤認して二度と上がらない。
+//     → 常駐プロセス(分析用)が「別インスタンスが居る」と誤認して二度と上がらない。
 //   ・同じリリースの Rust 側(src-tauri/src/lib.rs の is_alive_with_image)は、まさにこの
 //     pid 再利用対策に **イメージ名照合** を入れている。TS 側だけ素の kill(pid,0) = 二つの基準。
 //
@@ -89,7 +89,7 @@ describe('ロックの解放は「自分のものだけ」', () => {
     expect(readFileSync(pidLockPath(NAME), 'utf-8')).toBe('4242');
   });
 
-  it('生存判定は差し替えられる(既定は従来の kill(pid,0)・生成器はイメージ名まで見る)', () => {
+  it('生存判定は差し替えられる(既定は従来の kill(pid,0)・分析用はイメージ名まで見る)', () => {
     writeFileSync(pidLockPath(NAME), '4242', 'utf-8');
     expect(acquirePidLock(NAME, process.pid, () => true)).toBe(false);    // 生きている扱い → 取らない
     expect(acquirePidLock(NAME, process.pid, () => false)).toBe(true);    // 死んでいる扱い → 引き継ぐ

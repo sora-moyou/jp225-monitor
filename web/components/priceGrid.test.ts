@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildNiyStaleCard } from './priceGrid.js';
 
-// buildNiyStaleCard は DOM 非依存の純関数。NIY=F(実弾銘柄)が stale のとき、
+// buildNiyStaleCard は DOM 非依存の純関数。NIY=F(実取引銘柄)が stale のとき、
 // 市場閉場(取引時間外=正常)と取引時間中のフィード障害(取得不能)を出し分けることを検証する。
 
 describe('buildNiyStaleCard — 取引時間外 vs 取得不能の出し分け', () => {

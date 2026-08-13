@@ -97,7 +97,7 @@ export function initSettingsModal(el: SettingsElements): SettingsController {
     el.inputLaboUser.value = '';   // ★基礎データ公開(225labo)認証は秘密=閉じるでクリア。
     el.inputLaboPass.value = '';
     el.inputGithubToken.value = '';   // ★GitHub PAT も秘密=閉じるでクリア(保存先フォルダは可視なので保持)。
-    // ★提案生成器の専用キーも秘密=閉じるでクリア。消去チェックも必ずオフに戻す(次回開いて保存した
+    // ★分析用の専用キーも秘密=閉じるでクリア。消去チェックも必ずオフに戻す(次回開いて保存した
     //   ときに、意図せず専用キーが消えて共通キーへ落ちる=無音のフォールバックを作らない)。
     el.inputGenGemini.value = '';
     el.inputGenGroq.value = '';

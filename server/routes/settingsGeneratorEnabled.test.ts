@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { resetConfigCache, resolveGeneratorEnabled } from '../configStore.js';
 import { getSettingsHandler, postSettingsHandler } from './settings.js';
 
-// ★生成器サイドカーの有効/無効(既定=無効)を、**既存の設定機構**(config.json + /api/settings)に載せた分の契約。
+// ★分析用サイドカーの有効/無効(既定=無効)を、**既存の設定機構**(config.json + /api/settings)に載せた分の契約。
 //
-// この設定の存在理由はただ1つ: 生成器は配布物(サイドカー)に同梱されるので、**既定で有効だと
+// この設定の存在理由はただ1つ: 分析用は配布物(サイドカー)に同梱されるので、**既定で有効だと
 // インストールした瞬間から LLM 予算を食い始める**。だから「明示的に有効化するまで走らない」を
 // 設定として持ち、既定は false に倒す。
 //
@@ -54,7 +54,7 @@ function writeConfig(obj: Record<string, unknown>): void {
   resetConfigCache();
 }
 
-describe('/api/settings 提案生成器の有効/無効(既定=無効)', () => {
+describe('/api/settings 分析用の有効/無効(既定=無効)', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'jp225-genen-'));
     process.env.HOME = dir; process.env.USERPROFILE = dir; process.env.APPDATA = dir;
@@ -93,9 +93,9 @@ describe('/api/settings 提案生成器の有効/無効(既定=無効)', () => {
     expect(get().generatorEnabled).toBe(false);
   });
 
-  it('★他の設定を保存しても生成器の有効/無効は巻き添えにならない(既存値を持ち越す)', () => {
+  it('★他の設定を保存しても分析用の有効/無効は巻き添えにならない(既存値を持ち越す)', () => {
     post({ generatorEnabled: true });
-    post({ indicatorsEnabled: false });   // 生成器のフィールドを送らない保存
+    post({ indicatorsEnabled: false });   // 分析用のフィールドを送らない保存
     expect(resolveGeneratorEnabled()).toBe(true);
   });
 

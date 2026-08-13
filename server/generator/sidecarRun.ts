@@ -1,7 +1,7 @@
-// 提案生成器サイドカーの本体(ロジック)。入口は server/generator/sidecar.ts。
+// 分析用サイドカーの本体(ロジック)。入口は server/generator/sidecar.ts。
 //
 // ■ なぜ同梱するのか
-//   生成器は monitor を HTTP で叩くので **同じ PC に居る必要がある**。運用PCにはインストーラしか
+//   分析用は monitor を HTTP で叩くので **同じ PC に居る必要がある**。運用PCにはインストーラしか
 //   入らないので、開発用スクリプト(`tsx server/generator/index.ts`)のままでは提案が1件も記録されない。
 //   → コレクタ(binaries/jp225-collector)と **同じ流儀** で SEA バイナリにして同梱する
 //     (scripts/build-generator.mjs / scripts/copy-generator.mjs / src-tauri/src/lib.rs の spawn)。
@@ -25,7 +25,7 @@
 //   monitor の /api/status → 死活ドット(web/components/apiStatusPane.ts)まで運ぶ。
 //
 // ■ 再生(replay)は **別プロセス** で1日1回
-//   再生は日が溜まるほど伸びる(実測3日で7秒)。同じイベントループで回すと生成器の2分サイクルを
+//   再生は日が溜まるほど伸びる(実測3日で7秒)。同じイベントループで回すと分析用の2分サイクルを
 //   侵食する。だから自分自身を `--replay` で spawn する(=サイクルは1ミリも待たない)。
 //   どの取引日を再生してよいか(取引日の確定＋地平＋猶予)の判定は server/replay/ に既存のものを使う。
 
@@ -50,20 +50,20 @@ import { appendSpawnLog, GENERATOR_PID_LOCK_BLOCKED_MARK } from '../spawnLog.js'
 import { generatorLogPath } from './sidecarLog.js';
 import { runGenerator, GeneratorHalt } from './run.js';
 
-/** ★生成器の pid ファイル名(collector.pid と **同じ流儀・同じ置き場**)。
+/** ★分析用の pid ファイル名(collector.pid と **同じ流儀・同じ置き場**)。
  *
- *  なぜ要るか: collector は collector.pid を書くので外から死活が読める。生成器は何も残さず、
+ *  なぜ要るか: collector は collector.pid を書くので外から死活が読める。分析用は何も残さず、
  *  「起動していない」と「有効化待ちで待機していた」を外から区別できなかった(共有DBの名乗りは
- *  生成器がDBを書けるときしか出ない)。生存の一次証拠は **プロセスが自分で書く pid** に置く。
+ *  分析用がDBを書けるときしか出ない)。生存の一次証拠は **プロセスが自分で書く pid** に置く。
  *
- *  ついでに単一インスタンスも collector と同じ規律で保証する: 生成器はアプリ終了後も生き残る
- *  設計なので、アプリを2回起動すると生成器が2本走り、LLM 予算と台帳行が二重になる。 */
+ *  ついでに単一インスタンスも collector と同じ規律で保証する: 分析用はアプリ終了後も生き残る
+ *  設計なので、アプリを2回起動すると分析用が2本走り、LLM 予算と台帳行が二重になる。 */
 export const GENERATOR_PID_FILE = 'generator.pid';
 
 // ─── ★自分の状態を名乗る(遠隔診断の一次情報) ────────────────────────────────
 //
-// 実売買PCで「有効なのに台帳が1行も無い」が起きたとき、**プロセスが居るのかどうかすら** 分からなかった。
-// 待機中(設定が無効)の生成器は設計上 台帳に1行も書かないので、台帳の有無では
+// 実取引PCで「有効なのに台帳が1行も無い」が起きたとき、**プロセスが居るのかどうかすら** 分からなかった。
+// 待機中(設定が無効)の分析用は設計上 台帳に1行も書かないので、台帳の有無では
 //   「起動していない」 と 「待機していた」 が区別できない。
 // → サイドカー自身が共有DB(jp225.db)の meta に30秒ごとに名乗る。meta は trade2 の30分ごとの
 //   `VACUUM INTO` にそのまま乗るので、既存の同期経路で別PCへ届く(新しい配管を作らない)。
@@ -80,7 +80,7 @@ const sidecarState: GeneratorSidecarState = {
 let sharedDb: DatabaseSync | null = null;
 let beatTimer: NodeJS.Timeout | null = null;
 
-/** 現在の名乗りを共有DBへ書く。**絶対に throw しない**(診断のために生成器を落とさない)。 */
+/** 現在の名乗りを共有DBへ書く。**絶対に throw しない**(診断のために分析用を落とさない)。 */
 export function beatSidecar(now: number = Date.now()): void {
   sidecarState.at = now;
   sidecarState.atJst = jstStamp(now);
@@ -129,7 +129,7 @@ export const ENABLE_POLL_MS = 15_000;
  *  なぜ要るか: サイドカーは monitor 本体と **同時に** spawn される。monitor の HTTP が待ち受けを
  *  始める前に前提検証が走ると 'unreachable' で止まり、従来はそのまま
  *  「設定を無効→有効に切り替えるまで永久待機」だった。ユーザーは何もしていないのに
- *  **アプリを起動するたびに生成器だけが死んでいる** 状態が起こりうる(標本が溜まらない)。
+ *  **アプリを起動するたびに分析用だけが死んでいる** 状態が起こりうる(標本が溜まらない)。
  *  ★'unreachable' は run.ts の稼働中再検証でも「前提が崩れた証拠ではない」と扱っている。
  *    起動時だけ永久停止にする理由は無いので、同じ規律で **再試行** する(黙って縮退はしない=毎回ログ)。
  *  ★前提が崩れた('violated')場合は従来どおり止める。測っていない標本を溜め続けない。 */
@@ -138,7 +138,7 @@ export const UNREACHABLE_RETRY_MS = 60_000;
 /** ★pid ロックが取れなかったときの再判定間隔[ms]。
  *
  *  なぜ要るか(この分岐は以前 **恒久終了** だった): ロックが取れないと `return` していたので、
- *  一度でも判定を誤れば **アプリを再インストールするまで生成器が二度と上がらない**。
+ *  一度でも判定を誤れば **アプリを再インストールするまで分析用が二度と上がらない**。
  *  しかも失敗は名乗り(startSidecarHeartbeat)より前に起きるので meta に何も残らず、
  *  別PCからは「起動していない疑い」としか読めなかった。
  *  ★ロックの目的(2本走らせない)は1ミリも緩めない: 取れるまで **待つ** だけで、走り出しはしない。 */
@@ -174,7 +174,7 @@ export function replaySelfCommand(
   return { cmd: execPath, args: [...carry, REPLAY_FLAG] };
 }
 
-/** 再生を **別プロセス** で走らせる。生成器のイベントループを1ミリも占有しない。
+/** 再生を **別プロセス** で走らせる。分析用のイベントループを1ミリも占有しない。
  *  ★同時に2本走らせない(前の再生が終わっていなければ見送る=次の周期で拾える)。 */
 export function makeReplaySpawner(): () => void {
   let running = false;
@@ -224,7 +224,7 @@ export function startReplaySchedule(
   };
   const first = setTimeout(() => { fire(); }, initialDelayMs);
   const timer = setInterval(fire, intervalMs);
-  // タイマーがプロセスを起こし続けないように(生成器のループが本体)。
+  // タイマーがプロセスを起こし続けないように(分析用のループが本体)。
   first.unref?.();
   timer.unref?.();
   return () => { clearTimeout(first); clearInterval(timer); };
@@ -330,7 +330,7 @@ async function waitUntil(want: boolean, pollMs: number): Promise<void> {
   for (;;) {
     await sleep(pollMs);
     if (resolveGeneratorEnabled() === want) {
-      if (want) log('設定が有効になりました — 生成器を起動します');
+      if (want) log('設定が有効になりました — 分析用を起動します');
       return;
     }
   }
@@ -355,10 +355,10 @@ export async function runSidecar(): Promise<void> {
   }
 
   // ★pid を残す(collector と同じ流儀)。ここから先は「居ること」が外から1秒で分かる。
-  //   既に生きている生成器が居れば **走り出さない**(2本走らせて LLM 予算と台帳を二重にしない)が、
+  //   既に生きている分析用が居れば **走り出さない**(2本走らせて LLM 予算と台帳を二重にしない)が、
   //   ★取れないまま **終わらない**: 取れるまで待って自力で復帰する(理由は共用ログ経由で meta に出る)。
   //   生存判定は pid 実在 **＋ イメージ名一致**(Rust の相互排他と同じ考え方)= 強制終了で残った
-  //   stale pid が別プロセスに再利用されても、それを「生きている生成器」と誤認しない。
+  //   stale pid が別プロセスに再利用されても、それを「生きている分析用」と誤認しない。
   await acquireGeneratorPidLock();
   log(`pid=${process.pid} を ${pidLockPath(GENERATOR_PID_FILE)} に記録しました(イメージ=${ownImageName()})`);
   // 正常終了(process.exit を含む)で自分のロックだけ片付ける。★他人のロックには触らない実装。

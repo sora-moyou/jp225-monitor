@@ -1,4 +1,4 @@
-// ★提案生成器の設定 UI が index.html に実在すること(main.ts が id で拾うので、ここが緑なら配線が繋がる)。
+// ★分析用の設定 UI が index.html に実在すること(main.ts が id で拾うので、ここが緑なら配線が繋がる)。
 // あわせて **作業4の注記**(同一アカウントの別キーでは上流の枠は分かれない)が画面に書かれていることを固定する。
 // これを書かないとユーザーは「キーを入れたから安全」と誤解する。
 // jsdom は導入していないため、依存済みの cheerio で静的にパースする(描画はしない)。
@@ -15,7 +15,7 @@ const html = readFileSync(fileURLToPath(new URL('../../index.html', import.meta.
 const $ = cheerio.load(html);
 const fs = $('#generator-keys-fieldset');
 
-describe('提案生成器の設定 UI(index.html)', () => {
+describe('分析用の設定 UI(index.html)', () => {
   it('fieldset が設定モーダル(⚙️)の中にある', () => {
     expect(fs.length).toBe(1);
     expect($('#settings-modal').find('#generator-keys-fieldset').length).toBe(1);
@@ -64,7 +64,7 @@ describe('提案生成器の設定 UI(index.html)', () => {
       expect($(`#key-${n}-status`).hasClass('key-status')).toBe(true);
     }
     expect($('#settings-test-keys').text().trim()).toBe('キーを検証');
-    // 既存のキー欄と生成器のキー欄が混ざっていない(生成器 fieldset の外に key-* がある)。
+    // 既存のキー欄と分析用のキー欄が混ざっていない(分析用 fieldset の外に key-* がある)。
     expect(fs.find('#key-gemini').length).toBe(0);
   });
 });

@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ─── 生成器ゲート: 日次予算 / ★従属規則 / backpressure ────────────────────
+// ─── 分析用ゲート: 日次予算 / ★従属規則 / backpressure ────────────────────
 //
 // 守っているもの:
-//   1. 生成器は **自分の予算** を持ち、使い切ったら **止まる**(モードを書き換えたり無音で縮退したりしない)。
+//   1. 分析用は **自分の予算** を持ち、使い切ったら **止まる**(モードを書き換えたり無音で縮退したりしない)。
 //      過去に「上限50回で無音の dryrun 化」が保護注文を消した事故がある。同じ形にしない。
-//   2. ★従属規則: **default(実弾A)が quota を踏んだら**、生成器はそのセッションの残りを停止する。
+//   2. ★従属規則: **default(実取引A)が quota を踏んだら**、分析用はそのセッションの残りを停止する。
 //      同一APIキーだと上流クォータは共有されたままなので、プール分離だけでは A の枠を食える。
-//   3. backpressure: A/B のプラン生成中に生成器が叩くと vision 呼び出しが同時多重になる。生成中は弾く。
+//   3. backpressure: A/B のプラン生成中に分析用が叩くと vision 呼び出しが同時多重になる。生成中は弾く。
 //
 // ★否定対照: 修正前は generatorGate.ts 自体が存在しない(=このファイルは import で失敗して赤)。
-//   予算も従属も backpressure も、生成器を止める手段がひとつも無かった。
+//   予算も従属も backpressure も、分析用を止める手段がひとつも無かった。
 
 const h = vi.hoisted(() => ({ budget: 100 }));
 vi.mock('../configStore.js', () => ({
@@ -91,7 +91,7 @@ describe('generatorGate', () => {
       expect(generatorGateSnapshot(D2_DAY).dayKey).toBe('2026-06-02');
     });
 
-    it('予算 0 = 生成器を無効化(reason=disabled)', () => {
+    it('予算 0 = 分析用を無効化(reason=disabled)', () => {
       h.budget = 0;
       expect(reason(D1_DAY)).toBe('disabled');
       expect(generatorGateSnapshot(D1_DAY).used).toBe(0);
@@ -106,7 +106,7 @@ describe('generatorGate', () => {
     });
   });
 
-  describe('★従属規則(default が quota を踏んだら生成器を止める)', () => {
+  describe('★従属規則(default が quota を踏んだら分析用を止める)', () => {
     it('default の quota でそのセッションの残りを停止する(予算が余っていても止まる)', () => {
       h.budget = 100;
       expect(reason(D1_DAY)).toBe(true);

@@ -5,11 +5,11 @@ import type { Request, Response } from 'express';
 //
 // なぜ:
 //   caller='generator' と exitVariant は「決済パラメータの分析」専用の入口。公開版は分析を持たない。
-//   黙って現行に倒すと、実験のつもりの要求が実弾と同じプール・同じ予算で走ってしまう(=このゲートが
+//   黙って現行に倒すと、実験のつもりの要求が実取引と同じプール・同じ予算で走ってしまう(=このゲートが
 //   守ろうとしたものが壊れる)。だから **受理せず 400 で落とす**。
 //
 // ★否定対照(修正前の routes/scalpPlan.ts での結果): MONITOR_VARIANT='lite' でも caller='generator' は
-//   従来どおり受理され 200 が返る(生成器の予算まで消費する) → 「lite は 400」の 3本が赤。
+//   従来どおり受理され 200 が返る(分析用の予算まで消費する) → 「lite は 400」の 3本が赤。
 //   実証手順: git show HEAD:server/routes/scalpPlan.ts でファイルを差し替えて実行。
 //
 // ★full(MONITOR_VARIANT 未設定)側の不変も同じファイルで確かめる(分岐を入れて壊していないこと)。
@@ -100,7 +100,7 @@ describe('/api/scalp-plan — lite(公開版)は分析用の入口を閉じる',
     expect(buildScalpPlanMock).not.toHaveBeenCalled();
   });
 
-  it('拒否は生成器の予算を1回も消費しない(存在しない機構の帳簿を動かさない)', async () => {
+  it('拒否は分析用の予算を1回も消費しない(存在しない機構の帳簿を動かさない)', async () => {
     await scalpPlanHandler(reqOf({ caller: 'generator' }), mockRes());
     await scalpPlanHandler(reqOf({ exitVariant: 'candidate-a' }), mockRes());
     expect(generatorGateSnapshot().used).toBe(0);

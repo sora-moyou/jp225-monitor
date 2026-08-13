@@ -61,7 +61,7 @@ describe('設定モーダルの並び(index.html)', () => {
       .children('fieldset.settings-section').children('legend').toArray()
       .map(el => $(el).text().trim());
     expect(all.slice().sort()).toEqual(
-      ['APIキー（無料）', 'APIキー（有料）', '提案生成器（分析用・実弾とは別プール）',
+      ['APIキー（無料）', 'APIキー（有料）', '分析用（実取引とは別プール）',
         '更新', '基礎データ(225labo)', '終了', '売買シグナル'].slice().sort(),
     );
     expect(legendsOf(leftCol)[0]).toBe('APIキー（無料）');

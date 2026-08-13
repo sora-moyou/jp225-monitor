@@ -1,10 +1,10 @@
-// ★記録が「生成器の台帳の列」まで届くことの実証(応答 → ProposalRow → proposals.leg_drops_json)。
+// ★記録が「分析用の台帳の列」まで届くことの実証(応答 → ProposalRow → proposals.leg_drops_json)。
 //
 // ■ 何を守っているか
 //   片レッグだけ落ちた理由(legDrops)を scalpPlan.ts で作っても、
 //     ① /api/scalp-plan の応答に載らない  ② 台帳の列に写されない
 //   のどちらかで落ちれば、A系統/B系統の実験は結局また測れない。だから
-//   **HTTP 応答 → 生成器の行 → SQLite の列 → SELECT で読み出す** まで一続きで確認する。
+//   **HTTP 応答 → 分析用の行 → SQLite の列 → SELECT で読み出す** まで一続きで確認する。
 //
 // ■ ★否定対照(この修正前のコードでの結果)
 //   git show HEAD:server/routes/scalpPlan.ts > <tmp> の planDiagnostics は legDrops を透過しないため
@@ -137,12 +137,12 @@ describe('★応答 → 台帳の列(proposals.leg_drops_json)まで届く', () 
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
-  it('HTTP 応答をそのまま生成器の1行にして書き込むと、列から読み出せる', async () => {
+  it('HTTP 応答をそのまま分析用の1行にして書き込むと、列から読み出せる', async () => {
     // ① 実際のハンドラを叩いて応答本体を得る(手で JSON を書かない=経路を跨ぐ変換を実物で確かめる)。
     const res = mockRes();
     await scalpPlanHandler(reqOf({ caller: 'generator', exitVariant: 'current' }), res);
 
-    // ② 生成器の分類 → 台帳の行(cycle.ts の純関数をそのまま使う)。
+    // ② 分析用の分類 → 台帳の行(cycle.ts の純関数をそのまま使う)。
     const attempt = classifyAttempt(200, res._json);
     expect(attempt.status).toBe('plan');
     const req: ArmRequest = { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 };
@@ -194,7 +194,7 @@ describe('★応答 → 台帳の列(proposals.leg_drops_json)まで届く', () 
 
   it('★旧台帳(列が無い DB)にも冪等に列を足して記録が止まらない', () => {
     const path = tmpDb();
-    // 旧スキーマ(leg_drops_json 無し)を手で作ってから開き直す=実売買PCの既存台帳と同じ状況。
+    // 旧スキーマ(leg_drops_json 無し)を手で作ってから開き直す=実取引PCの既存台帳と同じ状況。
     const first = openGeneratorDb(path);
     first.exec('ALTER TABLE proposals DROP COLUMN leg_drops_json');
     first.close();

@@ -134,7 +134,7 @@ async function checkOne(cfg: LLMProvider, pool: LlmCaller): Promise<ProviderMode
 }
 
 /** 全プロバイダについて「キーは有効か / 設定中のモデルはそのキーで使えるか」を並列に確認する。
- *  引数なしは default プール(実弾 A のキー)。pool='generator' は生成器プールのキー。 */
+ *  引数なしは default プール(実取引 A のキー)。pool='generator' は分析用プールのキー。 */
 export async function checkProviderModels(pool: LlmCaller = DEFAULT_CALLER): Promise<ProviderModelCheck[]> {
   return Promise.all(LLM_PROVIDERS.map(cfg => checkOne(cfg, pool)));
 }

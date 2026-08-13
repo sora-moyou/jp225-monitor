@@ -96,7 +96,7 @@ describe('偽 monitor を立てて実走(実 HTTP + 実 SQLite・外部 LLM は�
     if (!pre.ok) return;
     expect(pre.exit.configHash).toBe('e01dde67fe62b2f8');
 
-    // epoch(凍結設定 + 決済指紋 + 生成器設定)
+    // epoch(凍結設定 + 決済指紋 + 分析用設定)
     const epochInput = buildEpochInput(pre.settings, pre.exit, epochGeneratorConfig(cfg));
     const epoch = computeEpoch(epochInput);
     // ★接頭辞は意図的に literal。方式(epoch の計算)を変えたらここが落ちるのが正しい
@@ -171,7 +171,7 @@ describe('偽 monitor を立てて実走(実 HTTP + 実 SQLite・外部 LLM は�
     if (!pre.ok) expect(pre.reason).toContain('変種が実体を持ちません');
   });
 
-  it('★生成器専用キーが共通キーへ落ちていたら実走しない', async () => {
+  it('★分析用専用キーが共通キーへ落ちていたら実走しない', async () => {
     const server = createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(req.url === '/api/status'

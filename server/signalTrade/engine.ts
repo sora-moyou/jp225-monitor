@@ -78,7 +78,7 @@ const SUPPRESS_SAFETY_MS = 20 * 60_000;
 // ★診断ハートビートの間隔[ms]。各エンジンがこの間隔で phase/planning/経過を1行ログする(固着の早期発見)。
 const HEARTBEAT_MS = 5 * 60_000;
 
-/** System B(紙専用)を個別に無効化する env(既定は有効)。SIGNAL_TRADE_B=0/false/off でオフ。
+/** System B(仮想取引専用)を個別に無効化する env(既定は有効)。SIGNAL_TRADE_B=0/false/off でオフ。
  *  A は SIGNAL_TRADE(engineEnabled)配下で不変。B の並走(独立の AI 呼び出し)を止めたい時に使う。 */
 function engineBEnabled(): boolean {
   const v = process.env.SIGNAL_TRADE_B;
@@ -86,7 +86,7 @@ function engineBEnabled(): boolean {
   return !/^(0|false|off|no)$/i.test(v.trim());
 }
 
-/** ★v0.8.2: エンジンインスタンスの構成。A(実売買・グローバル設定)と B(紙専用・signalB 設定)で切り替える。 */
+/** ★v0.8.2: エンジンインスタンスの構成。A(実取引・グローバル設定)と B(仮想取引専用・signalB 設定)で切り替える。 */
 export interface EngineConfig {
   profile: SignalProfile;                       // 設定解決 & scalp-plan プロファイル('A' | 'B')
   systemTag: 'A' | 'B' | null;                  // persist の system 列。A は null(=既存挙動と byte 一致)/ B は 'B'
@@ -94,9 +94,9 @@ export interface EngineConfig {
   maintainsCurrentSignal: boolean;              // A=true(currentSignal/hold を露出)/ B=false(絶対に露出しない)
 }
 
-/** ★v0.8.2: トレードシグナル紙エンジン(インスタンス化)。純関数(advance/detectFill/…)は共有・不変。
- *  A インスタンスは currentSignal/hold を露出し 'signalTrade' を出す(=trade2 が従来どおり追従・実売買A)。
- *  B インスタンスは currentSignal を一切持たず 'signalTradeB' を別露出する(紙のみ・trade2 は B を追わない)。
+/** ★v0.8.2: トレードシグナル仮想取引エンジン(インスタンス化)。純関数(advance/detectFill/…)は共有・不変。
+ *  A インスタンスは currentSignal/hold を露出し 'signalTrade' を出す(=trade2 が従来どおり追従・実取引A)。
+ *  B インスタンスは currentSignal を一切持たず 'signalTradeB' を別露出する(仮想取引のみ・trade2 は B を追わない)。
  *  ★A(profile:'A')の挙動は全て従来のモジュール singleton と byte 一致(提案/arm/約定/決済/記録/SSE/currentSignal)。 */
 export class SignalEngine {
   private state: EngineState = { phase: 'flat' };
@@ -285,7 +285,7 @@ export class SignalEngine {
 
   /** ★stale plan veto に渡す「新鮮な」live 価格(NIY=F)。取れない/古い(stale)なら null。
    *  ★必ず stale を見る: priceLoop は取得失敗/清算の銘柄を「前回値を古い timestamp のまま stale:true で持ち越す」
-   *    (実弾安全ルール)ため、キャッシュには古い価格が残る。約定判定側は `if (niy && !niy.stale)` で新鮮値のみを
+   *    (実取引安全ルール)ため、キャッシュには古い価格が残る。約定判定側は `if (niy && !niy.stale)` で新鮮値のみを
    *    feed している。ここで stale を見ないと、フィード断中に解決した計画を「古い価格」で判定して
    *    (a) 跨いでいなければ抑止漏れ(元のバグが残る)、(b) 跨いでいれば未到達レッグを落とす誤抑止 が起きる。
    *    null = 判定せず素通し(=従来どおり ARM。新しい抑止で取引を止めない)。 */
@@ -493,7 +493,7 @@ export class SignalEngine {
         if (this.state.phase === 'flat' && result.ok) {
           // ★正規シグナルのゲート(A/B 共通): trade2 の送信直前サニティ(src/ai/sanity.ts)を先取りして
           //   検証し、trade2 が REJECT する構造の計画は「正規シグナル」として出さない(=紙 ARM もしない・
-          //   currentSignal も更新しない・broadcast もしない)。これで monitor の紙と trade2 の実弾が乖離しない。
+          //   currentSignal も更新しない・broadcast もしない)。これで monitor の紙と trade2 の実取引が乖離しない。
           //   maintainsCurrentSignal に依らず適用(=計画が構造的にトレード可能かの判定・A/B とも通過した計画だけが
           //   シグナルになる)。
           //   ★検証は計画自身の参照価格 plan.refPrice(計画ビルド時に見た NIY=F=各レッグが挟む基準値)に対して行う。
@@ -1012,10 +1012,10 @@ export class SignalEngine {
   }
 }
 
-// ─── インスタンス: A(実売買・グローバル設定)/ B(紙専用・signalB 設定) ─────────────
+// ─── インスタンス: A(実取引・グローバル設定)/ B(仮想取引専用・signalB 設定) ─────────────
 // ★A は従来の singleton と同一構成(profile:'A'・system=null・'signalTrade'・currentSignal 露出)=挙動 byte 不変。
 const engineA = new SignalEngine({ profile: 'A', systemTag: null, broadcastType: 'signalTrade', maintainsCurrentSignal: true });
-// B は紙専用: signalB 設定・system='B'・'signalTradeB'・currentSignal を一切持たない(trade2 は B を追わない)。
+// B は仮想取引専用: signalB 設定・system='B'・'signalTradeB'・currentSignal を一切持たない(trade2 は B を追わない)。
 const engineB = new SignalEngine({ profile: 'B', systemTag: 'B', broadcastType: 'signalTradeB', maintainsCurrentSignal: false });
 
 /** 起動: A と B の両エンジンを有効化(冪等)。A の起動挙動/ログは従来と同一。 */
@@ -1026,10 +1026,10 @@ export async function startSignalEngine(): Promise<void> {
 
 export function stopSignalEngine(): void { engineA.stop(); engineB.stop(); }
 
-/** 現在の SSE state(A=実売買)。stream.ts の初回送出 / 各 tick の broadcast 用。外部契約は従来と byte 一致。 */
+/** 現在の SSE state(A=実取引)。stream.ts の初回送出 / 各 tick の broadcast 用。外部契約は従来と byte 一致。 */
 export function getSignalTradeState(now = Date.now()): SignalTradeState { return engineA.getState(now); }
 
-/** ★v0.8.2: System B(紙専用)の現在 SSE state。signal/hold は含まない(currentSignal を露出しない)。 */
+/** ★v0.8.2: System B(仮想取引専用)の現在 SSE state。signal/hold は含まない(currentSignal を露出しない)。 */
 export function getSignalTradeStateB(now = Date.now()): SignalTradeState { return engineB.getState(now); }
 
 /** 現在シグナル(trade2 追従用=A のみ)。まだ ARM していなければ null。表示/連携専用(発注はしない)。 */

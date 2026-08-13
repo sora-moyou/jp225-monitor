@@ -2,8 +2,8 @@ import type { Request, Response } from 'express';
 import { openDb, resolveDbPath, getSignalTrades, clearSignalTradesAudited, type SignalSystemFilter } from '../db/store.js';
 import { equitySeries, resetSignalEngineArmedTimeouts } from '../signalTrade/engine.js';
 
-// トレードシグナル(表示専用・紙トラッキング)の履歴 + 収益曲線。発注系は持たない(表示/管理専用)。
-// ★v0.8.2: 系統 A(実売買)/ B(紙専用)を ?system= で切り替える。既定は A(後方互換=既存クライアントは A を見る)。
+// トレードシグナル(表示専用・仮想取引の記録)の履歴 + 収益曲線。発注系は持たない(表示/管理専用)。
+// ★v0.8.2: 系統 A(実取引)/ B(仮想取引専用)を ?system= で切り替える。既定は A(後方互換=既存クライアントは A を見る)。
 
 /** ?system= を 'A'|'B' に正規化(未指定/不明は 'A')。NULL 行は A 側にまとまる(store 側で吸収)。 */
 export function parseSystemQuery(v: unknown): SignalSystemFilter {

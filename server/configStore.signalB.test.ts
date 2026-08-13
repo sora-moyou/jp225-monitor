@@ -12,7 +12,7 @@ import {
 
 // ★v0.8.2: System B(signalB)の profile 解決テスト。
 //   B は signalB.<knob> を優先し、未設定は A(グローバル)値/source へフォールバックする。
-//   ★A(profile 省略)は signalB の有無に関わらず一切影響を受けない(実売買 A の不変性)。
+//   ★A(profile 省略)は signalB の有無に関わらず一切影響を受けない(実取引 A の不変性)。
 const ORIG_HOME = process.env.HOME;
 const ORIG_USERPROFILE = process.env.USERPROFILE;
 let tmpHome: string;

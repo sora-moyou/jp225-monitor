@@ -13,7 +13,7 @@ import { feedSignalEngine } from '../signalTrade/engine.js';
 // v0.7.20(全銘柄 HTTP 化): 価格の全経路を公開 HTTP(ajax_cme.js / ajax_fx.js)に統一。socket と Yahoo を
 // 全廃した。ajax_cme.js を 1 GET して NIY=F(136)/YM=F(731)/NQ=F(737)、ajax_fx.js を 1 GET して JPY=X(511)。
 // どちらも毎 GET 新スナップショット = 長寿命セッションドリフト(約10分遅延)の事故が原理的に起きない。
-// すべて real-time なので NIY=F の「遅延源を混ぜない」実弾安全ルールは自動的に満たされる(遅延 substitute が
+// すべて real-time なので NIY=F の「遅延源を混ぜない」実取引安全ルールは自動的に満たされる(遅延 substitute が
 // 存在しない)。取得失敗/清算(stale)の銘柄は mergeWithCached で前回値を stale として持ち越す。全滅時のみ
 // バックオフして劣化中 (ステータス黄) を示す。
 
@@ -45,7 +45,7 @@ const OFFHOURS_IDLE_MS = 30_000;   // 取引時間外はフェッチせず 30s �
  * HTTP 各源(ajax_cme=NIY=F/YM=F/NQ=F, ajax_fx=JPY=X)の価格を合成する純関数(テスト容易化)。
  * v0.7.20: 全経路が real-time HTTP なので、遅延 substitute(旧 Yahoo/socket)を混ぜる余地は無い。
  * ここでは各源の fresh(stale:false)のみを採用し、stale(清算/取得失敗)は落とす → 下流の
- * mergeWithCached が前回値を古い timestamp のまま stale で持ち越す(v0.7.9 実弾安全ルールを踏襲)。
+ * mergeWithCached が前回値を古い timestamp のまま stale で持ち越す(v0.7.9 実取引安全ルールを踏襲)。
  * これにより NIY=F を含む全銘柄で「遅延した現在値を新鮮に見せる」ことが原理的に起きない。
  */
 export function mergeSources(sources: Price[][]): Price[] {
@@ -111,7 +111,7 @@ async function tick(): Promise<number> {
     }
     setPrices(merged);
     broadcast({ type: 'prices', payload: merged });
-    // トレードシグナル紙エンジンに現在値を供給(擬似約定/擬似決済 → signalTrade を別途 broadcast)。
+    // トレードシグナル仮想取引エンジンに現在値を供給(擬似約定/擬似決済 → signalTrade を別途 broadcast)。
     // エンジン未起動時は no-op。既存の 'prices' イベントは不変。
     if (niy && !niy.stale) feedSignalEngine(niy.price, Date.now());
     degradedUntil = 0;

@@ -110,7 +110,7 @@ describe('★稼働中の再検証(実 HTTP)', () => {
     expect((await recheck(cfg, fetch, 5_000, first.epoch)).kind).toBe('same');
   });
 
-  it('★稼働中に生成器専用キーが外れたら violated(=止める)', async () => {
+  it('★稼働中に分析用専用キーが外れたら violated(=止める)', async () => {
     const state = { status: STATUS_JSON, settings: { ...SETTINGS_JSON } };
     const { server, url } = await fakeMonitor(state);
     cleanup.push(() => server.close());

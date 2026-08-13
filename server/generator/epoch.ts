@@ -10,7 +10,7 @@
 //   ① 実験の条件に関わる設定 … /api/settings のうち **実験の条件に関係する項目だけ**
 //      (下の EXPERIMENT_SETTINGS_* が SSOT・★取引記録から推測しない)。
 //   ② 決済設定の指紋 … exit.configHash(一方向・実数値は復元できない)と実装種別。
-//   ③ 生成器自身の設定 … 間隔・対照の頻度・再試行・タイムアウト。標本の作り方が変われば別の期。
+//   ③ 分析用自身の設定 … 間隔・対照の頻度・再試行・タイムアウト。標本の作り方が変われば別の期。
 //
 // ■ ★なぜ /api/settings 丸ごとを止めたか(2026-08-03)
 //   丸ごと食わせると、アラート閾値・ニュース設定・chromePath など **実験と無関係な設定** を
@@ -35,7 +35,7 @@ import { describeArmPlan } from './cycle.js';
 /** epoch の計算方式そのものの版。★計算方式を変えたらここを上げる(過去の期と繋がらなくなるため)。
  *
  *  ★2026-08-03 に 'g1' → 'g2' へ。設定の入力を「丸ごと」から allowlist へ変え、
- *    同時に生成器のプロンプトから A の紙成績を外した(= 計算方式が変わった)。
+ *    同時に分析用のプロンプトから A の仮想取引の成績を外した(= 計算方式が変わった)。
  *
  *    ハッシュは入力構成が変わった時点で必ず変わるので、旧標本と衝突はしない。
  *    それでも接頭辞を上げるのは、**この接頭辞の存在理由が「方式が変わったこと」を
@@ -54,11 +54,11 @@ export const EPOCH_SCHEMA = 'g3';
  *  - 'scalp'     … AI エントリーの質問そのものを決める(バイアス / LC 下限・上限・安全上限 /
  *                  トレンド veto / クールダウン / レンジ両面 / 各項目の委任(手動・AI) /
  *                  撮影失敗時のテキスト縮退)。提案の中身と見送り率が直接動く。
- *  - 'signalB'   … System B(紙専用)の設定。★迷って入れた: 生成器の要求は profile を渡さない
+ *  - 'signalB'   … System B(仮想取引専用)の設定。★迷って入れた: 分析用の要求は profile を渡さない
  *                  ので B の値はプロンプトに入らない。しかし B のエンジンも同じ関門(busy)を
  *                  使い、B の設定変更は「この時期に何をしていたか」の一部でもある。
  *                  落として後悔するより入れる(サブリーダーの指示: 迷ったら入れる)。
- *  - 'generator' … 生成器プールのキーの出どころ・日次予算。標本の作られ方(どのプロバイダが
+ *  - 'generator' … 分析用プールのキーの出どころ・日次予算。標本の作られ方(どのプロバイダが
  *                  答えるか・1日に何本取れるか)を直接決める。 */
 export const EXPERIMENT_SETTINGS_PREFIXES: readonly string[] = ['scalp', 'signalB', 'generator'];
 
@@ -66,7 +66,7 @@ export const EXPERIMENT_SETTINGS_PREFIXES: readonly string[] = ['scalp', 'signal
  *  - indicatorsEnabled  … テクニカル指標ブロック(G)を AI に供給するか = プロンプトが変わる。
  *  - aiTechnicalEnabled … その指標をエントリーのタイミング判断に使ってよいか = 質問が変わる。
  *  - dotenEnabled / rangeReevalEnabled … 保有中の反転評価 / 未約定レンジの再評価の許可。
- *    生成器は flat-plan しか投げないので直接は効かないが、A/B の行動(=関門 busy と紙の建玉)を
+ *    分析用は flat-plan しか投げないので直接は効かないが、A/B の行動(=関門 busy と仮想取引の建玉)を
  *    変える。★迷って入れた側。
  *  - tradeBias          … ★バイアスの **別名**。monitor の /api/settings は 'scalpBias' を返すので
  *    通常は現れないが、同じノブの名前として入れておく(接続先が別名で返す版でも期が割れるように。
@@ -82,7 +82,7 @@ export const EXPERIMENT_SETTINGS_KEYS: readonly string[] =
  *      停止規則の分母が計算できなくなるので、期の分割対象からは外す(サブリーダーの指示)。
  *      触った事実は runs.settings_json に毎回残るので、後から時期を切って調べられる。
  *  - ニュース/翻訳/Web検索/基礎データ/GitHub/chromePath/ポート/各ポーリング間隔/共通キーの有無
- *    … 提案の質問文にも生成器の標本の作り方にも入らない。
+ *    … 提案の質問文にも分析用の標本の作り方にも入らない。
  *  - providers(プロバイダのポーズ状態)/ basedataAutoLastRun … 数分で変わる(下の VOLATILE)。 */
 export const VOLATILE_SETTINGS_KEYS: readonly string[] = ['providers', 'basedataAutoLastRun'];
 

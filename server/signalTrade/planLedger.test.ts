@@ -66,7 +66,7 @@ describe('buildSignalPlanInsert', () => {
     expect(row.legDropsJson).toBeUndefined();
   });
 
-  it('レッグ脱落: 生成器の台帳(proposals.leg_drops_json)と同じ書き方で JSON 配列にする', () => {
+  it('レッグ脱落: 分析用の台帳(proposals.leg_drops_json)と同じ書き方で JSON 配列にする', () => {
     const legDrops = [{ name: 'stop' as const, reason: 'missing' as const }];
     const row = buildSignalPlanInsert({
       t: 3000, system: 'A', signalId: 538,

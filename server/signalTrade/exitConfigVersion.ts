@@ -113,7 +113,7 @@ export interface ExitConfigStamp { version: number; hash: string; }
 //                                  (exit/index.ts の「2人目は待たせない」早期 return)
 //     ③ engine.start() が warmExitConfigHash() を呼ぶ ← ここで **公開フォールバックの指紋** が焼き付く
 //   焼き付いた値はプロセスの寿命のあいだ返り続けるので、① が private を読み終えた後も
-//   台帳の採番・取引に刻む版・/api/status・生成器の runs が **全部その嘘の指紋** になる。
+//   台帳の採番・取引に刻む版・/api/status・分析用の runs が **全部その嘘の指紋** になる。
 //   実測: 実装 private のまま /api/status が f7264…(=公開フォールバックの指紋)を返した。
 //
 // ■ 直し方
@@ -159,7 +159,7 @@ export function exitConfigStamp(db: DatabaseSync, now: number): ExitConfigStamp 
 // ─── ★既に誤って採番された版に印をつける(追記のみ・過去の行は書き換えない) ─────────────
 //
 // 焼き付いた指紋は台帳(exit_config_versions)に **公開フォールバックの指紋** として採番済みで、
-// その版が取引にも生成器の runs にも刻まれている。台帳の行を消す/採番し直すのは
+// その版が取引にも分析用の runs にも刻まれている。台帳の行を消す/採番し直すのは
 // 「過去の記録を書き換えない」に反するし、既に刻まれた取引の版番号は動かせない。
 // → **別表に追記** して「この版は公開フォールバックの指紋 = 非公開実装のプロセスで採番されたなら誤り」
 //   と分かる形にする。1年後の分析者は runs / signal_trades をこの表と突き合わせるだけで、

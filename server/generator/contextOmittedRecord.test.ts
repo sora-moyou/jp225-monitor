@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-// ─── ★「紙成績を外した」事実が台帳に残ること(D1 の記録側) ────────────────────────
+// ─── ★「仮想取引の成績を外した」事実が台帳に残ること(D1 の記録側) ────────────────────────
 //
 // 何を守っているか:
-//   生成器のプロンプトから A の紙成績を外した(母集団の独立性)。**1年後の分析者はそれを知る必要がある**。
-//   monitor が応答に載せた contextOmitted を、生成器が推測せずそのまま台帳へ写す。
-//   ★NULL は「外していない版で記録された標本」= 紙成績を見せていたことを意味する(混同しない)。
+//   分析用のプロンプトから A の仮想取引の成績を外した(母集団の独立性)。**1年後の分析者はそれを知る必要がある**。
+//   monitor が応答に載せた contextOmitted を、分析用が推測せずそのまま台帳へ写す。
+//   ★NULL は「外していない版で記録された標本」= 仮想取引の成績を見せていたことを意味する(混同しない)。
 //
 // ★否定対照: git show HEAD:server/generator/cycle.ts / server/db/generatorStore.ts に戻すと
 //   「台帳に残る」「列がある」が赤(旧版はこの値をどこにも書かない)。
@@ -48,7 +48,7 @@ describe('外した文脈ブロックを台帳に写す', () => {
 
   it('★既に走っている台帳(列が無い旧版)に冪等で列を足す=記録が止まらない', () => {
     const db = openGeneratorDb(':memory:');
-    // 旧版の形に戻す(実売買PCには数日ぶんの行が入った旧スキーマの台帳が既にある)。
+    // 旧版の形に戻す(実取引PCには数日ぶんの行が入った旧スキーマの台帳が既にある)。
     db.exec('ALTER TABLE proposals DROP COLUMN context_omitted');
     expect((db.prepare('PRAGMA table_info(proposals)').all() as Array<{ name: string }>).map(c => c.name))
       .not.toContain('context_omitted');

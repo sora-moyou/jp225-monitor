@@ -70,7 +70,7 @@ describe('レンジ両面プランがパイプライン全段を通る(両指値
     const armed = planToArmed(
       { direction: 'range', rationale: 'r', range: { upper: BREAK_UPPER, lower: BREAK_LOWER } }, 1_000,
     )!;
-    // ★逆指値(type:'stop')はタッチで約定(実弾 trade2 の逆指値はタッチ発火→成行)。建値は逆指値価格ちょうど(実測)。
+    // ★逆指値(type:'stop')はタッチで約定(実取引 trade2 の逆指値はタッチ発火→成行)。建値は逆指値価格ちょうど(実測)。
     expect(detectRangeFill(armed, BREAK_UPPER.entry)).toEqual({
       side: 'buy', entryPrice: BREAK_UPPER.entry + STOP_SLIPPAGE_YEN, initialStop: BREAK_UPPER.stopLoss,
     });

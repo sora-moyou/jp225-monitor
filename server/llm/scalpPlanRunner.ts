@@ -23,11 +23,11 @@ import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 // 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
 const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
 
-/** ★生成器(caller!=='default')のプロンプトから **外した** 文脈ブロックの名前(記録専用の不透明な識別子)。
- *  値は HTTP 応答 → 生成器の台帳(proposals.context_omitted)へそのまま流れる。
+/** ★分析用(caller!=='default')のプロンプトから **外した** 文脈ブロックの名前(記録専用の不透明な識別子)。
+ *  値は HTTP 応答 → 分析用の台帳(proposals.context_omitted)へそのまま流れる。
  *
  *  なぜ外すか(母集団の独立性):
- *    紙成績の履歴は **A の建玉列** で、A の決済設定の関数になっている。これを両腕に見せると、
+ *    仮想取引の成績の履歴は **A の建玉列** で、A の決済設定の関数になっている。これを両腕に見せると、
  *    ②(候補の決済仕様を教えた腕)は「候補で建てろ」と言われながら **現行決済で決済された成績表** を
  *    読むことになり、①vs② の対比が汚染される(しかも②の適応を弱める=帰無側へ倒す方向)。
  *    この実験で一番使いたい結論が帰無側(「①と②で提案がほとんど変わらない」)である以上、
@@ -35,12 +35,12 @@ const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
  *  なぜ **両腕から等しく** 外すか:
  *    片腕だけ外すと不公平な対比になる。等しく外せば ①vs② の対比は清潔になる。
  *    代償(提案が A の見るものと更に違う)は承知の上で、記録に残して1年後の分析者へ渡す。
- *  ★A/B(caller='default'・実弾につながる経路)では **一切外さない**(従来どおり履歴を入れる)。 */
+ *  ★A/B(caller='default'・実取引につながる経路)では **一切外さない**(従来どおり履歴を入れる)。 */
 export const GENERATOR_OMITTED_CONTEXT: readonly string[] = ['paper-trade-history'];
 
-/** 構造化データ(数値主軸)＋自分の紙トレード成績を組み立てる(DB 読み・欠損は各ブロック省略)。
+/** 構造化データ(数値主軸)＋自分の仮想取引成績を組み立てる(DB 読み・欠損は各ブロック省略)。
  *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。
- *  ★caller!=='default'(生成器)のときだけ紙成績ブロックを外す(理由は GENERATOR_OMITTED_CONTEXT)。
+ *  ★caller!=='default'(分析用)のときだけ仮想取引の成績ブロックを外す(理由は GENERATOR_OMITTED_CONTEXT)。
  *  ★export しているのは負荷の実測(1要求あたりのイベントループ停止時間)を **本物の関数で** 測るため。
  *    呼び出し元は増やさない(この経路の唯一の呼び出しは下の runScalpPlanWithChartInner)。 */
 export function buildRichScalpContext(
@@ -58,7 +58,7 @@ export function buildRichScalpContextResult(
   if (!(typeof currentPrice === 'number' && currentPrice > 0)) return { text: '' };
   // ★DB が開けなくても止めない: メモリ内ライブ足だけで足/ボラ/スイング/テクニカルは組める。
   //   indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で AI 文脈をゼロにしない。
-  //   DB 依存のブロック(アラート履歴/セッションOHLC/紙成績)だけが欠落し、各ブロックは元々欠損で省略される。
+  //   DB 依存のブロック(アラート履歴/セッションOHLC/仮想取引の成績)だけが欠落し、各ブロックは元々欠損で省略される。
   let db: DatabaseSync | null = null;
   try { db = openDb(resolveDbPath()); }
   catch (e) {
@@ -71,9 +71,9 @@ export function buildRichScalpContextResult(
     const levels = getLevelsSnapshot();
     const alerts = db ? getRecentAlerts(db, 8) : [];
     const session = db ? (getSessionOHLC(db, symbol, 1)[0] ?? null) : null;
-    // ★v0.8.2: 自系統の紙成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
-    //   A は自分の履歴だけを見る=B の紙トレードに汚染されない(=A の提案が B の存在で変わらない)。
-    // ★生成器(caller!=='default')は **両腕とも** 紙成績を読まない(DB も引かない)。理由は
+    // ★v0.8.2: 自系統の仮想取引の成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
+    //   A は自分の履歴だけを見る=B の仮想取引に汚染されない(=A の提案が B の存在で変わらない)。
+    // ★分析用(caller!=='default')は **両腕とも** 仮想取引の成績を読まない(DB も引かない)。理由は
     //   GENERATOR_OMITTED_CONTEXT。A/B(default)は従来どおり=1ミリも変わらない。
     const omitHistory = caller !== DEFAULT_CALLER;
     const trades = db && !omitHistory ? getSignalTrades(db, 30, profile === 'B' ? 'B' : 'A') : [];
@@ -128,8 +128,8 @@ export interface RunScalpPlanOverrides {
   lcFloorYen?: number;
   /** 初期 LC(損切り)幅の上限[円]。未指定は monitor 設定(resolveScalpLcCeiling・既定65)。 */
   lcCeilingYen?: number;
-  /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル(実売買A・現行と byte 一致) / 'B'=System B(紙専用・signalB 設定)。
-   *  trend veto 閾値・LC/バイアス・自系統の紙成績文脈が profile で切り替わる。 */
+  /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル(実取引A・現行と byte 一致) / 'B'=System B(仮想取引専用・signalB 設定)。
+   *  trend veto 閾値・LC/バイアス・自系統の仮想取引の成績文脈が profile で切り替わる。 */
   profile?: SignalProfile;
   /** ★ドテン(保有中の反転評価=held-eval)。渡すとプロンプトに保有中の建玉(方向・建値)を注入し、反転可否を AI に問う。
    *  未指定(flat-plan)は従来どおり注入なし=byte 一致。 */
@@ -137,7 +137,7 @@ export interface RunScalpPlanOverrides {
   /** ★レンジ再評価(未約定→ブレイク)。渡すとプロンプトにレンジ両指値の未約定経過を注入し、ブレイク切替可否を AI に問う。
    *  未指定(通常)は注入なし=byte 一致。 */
   armedContext?: { mode: 'range-fade'; ageMs: number; avgMs: number };
-  /** ★呼び出し元。未指定は 'default'(シグナルエンジン・既存 route = 実弾につながる経路。挙動不変)。
+  /** ★呼び出し元。未指定は 'default'(シグナルエンジン・既存 route = 実取引につながる経路。挙動不変)。
    *  'generator' のときだけ LLM プロバイダ・プールが generator に切り替わる。 */
   caller?: LlmCaller;
   /** ★決済仕様の「名前付き変種」。未指定は従来どおり(プロンプトの決済ブロックは byte 不変)。
@@ -196,7 +196,7 @@ export async function runScalpPlanWithChart(
 ): Promise<ScalpPlanResult> {
   // ★作業3(backpressure)の計上点: **全経路**(A/B シグナルエンジン・route)がここで進行中カウンタを上下させる。
   //   このカウンタを読むのは caller='generator' の関門だけなので、default 経路の挙動は一切変わらない。
-  //   生成器からは A/B の起動条件(lastPlanAt + flat + 抑止アンカーの合成)が外部から予測不能なため、
+  //   分析用からは A/B の起動条件(lastPlanAt + flat + 抑止アンカーの合成)が外部から予測不能なため、
   //   「今 A/B が生成中か」はサーバ側にしか判断材料がない。だから共通関数で数える。
   beginScalpPlan();
   try {
@@ -217,7 +217,7 @@ async function runScalpPlanWithChartInner(
 
   // ── チャートビジョン + 逐次オンデマンドゲート(②生成→③確認→④戦略)。
   let chartImageDataUrl: string | null = null;
-  // ★「その提案がどの1枚を見たか」。生成器の①と②が同じ画像を見たことを **仮定でなく記録** にする。
+  // ★「その提案がどの1枚を見たか」。分析用の①と②が同じ画像を見たことを **仮定でなく記録** にする。
   let chartShot: ChartShotIdentity | null = null;
   // ★v0.9.70: そのサイクルの群を **撮影の前に** 決める(off なら撮影自体を行わない=ヘッドレスChromeを起動しない)。
   const visionDecision = decideChartVision(resolveScalpChartVisionMode(), chartVisionEnvKill(), chartVisionRng);
@@ -227,8 +227,8 @@ async function runScalpPlanWithChartInner(
   const vision = visionOn ? firstAvailableVisionProvider(caller) : null;
   if (visionOn && vision) {
     // ② 画像生成(A/B共有キャッシュ+進行中相乗り=同時2起動を防ぐ)。ws-error 等の一過性に備え失敗時は1回リトライ。
-    //   ★キャッシュ/相乗りは caller ごとに隔離する(第4引数)。生成器の撮影が A のキャッシュを温めて
-    //     「A は毎サイクル撮り直す」不変条件を壊すことも、生成器の進行中撮影に A が相乗りして
+    //   ★キャッシュ/相乗りは caller ごとに隔離する(第4引数)。分析用の撮影が A のキャッシュを温めて
+    //     「A は毎サイクル撮り直す」不変条件を壊すことも、分析用の進行中撮影に A が相乗りして
     //     その遅延/失敗を継承することも無い。caller='default'(A/B)は従来と完全に同一。
     //   第2/第3引数は撮影関数/時計のテスト注入点なので既定のまま(undefined)を渡す。
     let shot = await captureChartPngCached(resolvePort(), undefined, undefined, caller);
@@ -275,9 +275,9 @@ async function runScalpPlanWithChartInner(
   const rangeEnabled = resolveEffectiveRangeEnabled(overrides.profile);
   // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
   const baseTech = buildNikkeiTechnical(undefined, price);
-  // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の紙トレード成績を末尾に追記。
+  // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の仮想取引成績を末尾に追記。
   //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
-  //   ★caller を渡す: 生成器では紙成績の履歴ブロックを外す(母集団の独立性)。default は不変。
+  //   ★caller を渡す: 分析用では仮想取引の成績の履歴ブロックを外す(母集団の独立性)。default は不変。
   // ★RECORD-ONLY: 「どの時刻の断面から文脈を組み立てたか」を控える。
   //   値そのものは従来と同じ Date.now() を1回読むだけ(渡す値も回数も変わらない=挙動不変)。
   //   台帳の t(=計画が解決した時刻)は撮影/LLM の待ち時間ぶん後ろにずれるので、**別物として**残す。
@@ -335,8 +335,8 @@ function attachChartVision(
 /** ★RECORD-ONLY: 計画の出所(文脈を組み立てた時刻・プロンプトの指紋)を結果に additive で載せる。
  *
  *  ■ なぜ **全経路**(A/B=default も)で載せるか
- *    凍結した入力からの再生を突き合わせたいのは、まさに実弾につながる A/B の計画サイクルだから。
- *    生成器だけの記録(chartShot / contextOmitted)と違い、この2点は A/B でこそ要る。
+ *    凍結した入力からの再生を突き合わせたいのは、まさに実取引につながる A/B の計画サイクルだから。
+ *    分析用だけの記録(chartShot / contextOmitted)と違い、この2点は A/B でこそ要る。
  *  ■ 何を壊さないか
  *    足すのは記録用の2フィールドだけ。plan・noneReason・legDrops・価格・error は一切触らない。
  *    HTTP 応答は route 側が列挙で組み立てるので、この2つが勝手に外へ出ることも無い。
@@ -355,13 +355,13 @@ function attachPlanProvenance(
   return out;
 }
 
-/** ★生成器の記録専用フィールドを結果に additive で載せる。
- *  caller==='default'(実弾 A につながる既存の全経路)では **元のオブジェクトをそのまま返す**
+/** ★分析用の記録専用フィールドを結果に additive で載せる。
+ *  caller==='default'(実取引 A につながる既存の全経路)では **元のオブジェクトをそのまま返す**
  *  =フィールドが1つも増えない=engine/route/既存テストから見て byte 不変。
- *  生成器(caller!=='default')のときだけ:
+ *  分析用(caller!=='default')のときだけ:
  *    ・chartShot      … その提案がどの1枚を見たか(identity が取れた時だけ)
  *    ・contextOmitted … ★プロンプトから外した文脈ブロック(母集団の独立性のため外した事実の記録)。
- *      これが応答に無い版で記録された標本は「外していない(＝A の紙成績を見ている)」ことを意味する。 */
+ *      これが応答に無い版で記録された標本は「外していない(＝A の仮想取引の成績を見ている)」ことを意味する。 */
 function attachGeneratorRecord(
   result: ScalpPlanResult, caller: LlmCaller, identity: ChartShotIdentity | null,
 ): ScalpPlanResult {

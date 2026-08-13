@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 // ─── ★「止まったことに気づく」表示 ───────────────────────────────────────────────
 //
 // 1年かけて溜める実験の最悪の失敗形は「1年後に、実は3か月動いていなかった」。
-// 生成器側だけの死活監視は生成器が死んだら一緒に死ぬので、**ユーザーが毎日見る画面** に出す。
+// 分析用側だけの死活監視は分析用が死んだら一緒に死ぬので、**ユーザーが毎日見る画面** に出す。
 //
 // ★否定対照: renderGeneratorDot を常に '' を返す実装にすると、下の「無記録が長いと警告色」
 //   「最終記録の分数を出す」が赤。逆に available:false でも出す実装にすると
@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 
 import { renderGeneratorDot } from './apiStatusPane.js';
 
-describe('生成器の死活表示', () => {
+describe('分析用の死活表示', () => {
   it('★台帳が無い(未導入・公開版)なら何も出さない', () => {
     expect(renderGeneratorDot(undefined)).toBe('');
     expect(renderGeneratorDot({ available: false, lastRecordAt: null, ageMin: null, total: 0 })).toBe('');

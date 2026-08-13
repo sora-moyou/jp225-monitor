@@ -50,7 +50,7 @@ function row(over: Partial<ProposalRow> = {}): ProposalRow {
   };
 }
 
-describe('提案生成器: 止まった理由を画面まで届ける', () => {
+describe('分析用: 止まった理由を画面まで届ける', () => {
   beforeEach(() => {
     _resetExitStatusCacheForTest();
     dir = mkdtempSync(join(tmpdir(), 'jp225-genhalt-'));
@@ -67,7 +67,7 @@ describe('提案生成器: 止まった理由を画面まで届ける', () => {
 
   it('★一度も成功しなかった PC でも、停止理由が台帳に残る(台帳を作ってでも残す)', () => {
     expect(existsSync(process.env.JP225_GENERATOR_DB!)).toBe(false);
-    recordHalt(new GeneratorHalt('生成器専用キーが未設定のプロバイダがあります(gemini=shared)', '起動しません'), 1000);
+    recordHalt(new GeneratorHalt('分析用専用キーが未設定のプロバイダがあります(gemini=shared)', '起動しません'), 1000);
     const led = readGeneratorLedgerStatus(process.env.JP225_GENERATOR_DB!, 2000);
     expect(led.available).toBe(true);
     expect(led.halt?.phase).toBe('起動しません');
@@ -114,7 +114,7 @@ describe('提案生成器: 止まった理由を画面まで届ける', () => {
   });
 });
 
-describe('提案生成器: 再生を2分サイクルから切り離す', () => {
+describe('分析用: 再生を2分サイクルから切り離す', () => {
   it('★再生は「自分自身を別プロセスで起動する」形にする(同じイベントループで回さない)', () => {
     // SEA バイナリ: argv[1] は exe 自身 → 渡すのはフラグだけ。
     expect(replaySelfCommand(['C:/app/jp225-generator.exe', 'C:/app/jp225-generator.exe'], 'C:/app/jp225-generator.exe'))

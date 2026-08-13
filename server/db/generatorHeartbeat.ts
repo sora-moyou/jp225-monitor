@@ -1,7 +1,7 @@
-// 提案生成器の**状態ハートビート**(RECORD-ONLY・取引挙動には一切関与しない)。
+// 分析用の**状態ハートビート**(RECORD-ONLY・取引挙動には一切関与しない)。
 //
-// ■ 何のためか(実売買PCで起きたこと)
-//   別PCへ届く書き出しを見ても、生成器が
+// ■ 何のためか(実取引PCで起きたこと)
+//   別PCへ届く書き出しを見ても、分析用が
 //     ・設定で無効なのか / ・有効だが前提検証(preflight)で止まったのか / ・そもそも起動していないのか
 //   が **区別できなかった**。台帳DB(generator_proposals.db)が存在しない=「1行も書いていない」しか
 //   分からず、無効のときは台帳自体が作られないので遠隔から診断できない。
@@ -14,10 +14,10 @@
 //
 // ■ ★何を出すか(遠隔から次の4つが判別できること)
 //   ① 設定で有効か            … enabled(resolveGeneratorEnabled)= monitor が知っている設定
-//   ② 生成器プロセスが生きているか … ledger.lastRecordAt の古さ。生成器はゲートに弾かれている間も
+//   ② 分析用プロセスが生きているか … ledger.lastRecordAt の古さ。分析用はゲートに弾かれている間も
 //                                2分ごとに1行書く(status='skipped')ので、**沈黙は死**を意味する。
 //   ③ 直近1時間の提案件数      … ledger.planLastHour(「行が増えているか」ではなく「標本が溜まっているか」)
-//   ④ 従属停止の状態          … halt(monitor プロセス内の generatorGate が権威)+ 生成器自身の停止理由
+//   ④ 従属停止の状態          … halt(monitor プロセス内の generatorGate が権威)+ 分析用自身の停止理由
 //                                (ledger.halt = preflight/recheck が台帳 halts に書いた理由)
 //   ★①〜④は出どころが違う(設定 / 台帳 / メモリ)。畳まずに **別フィールド** のまま出す
 //     (畳むと後から「どちらが正か」が読めなくなる)。
@@ -41,7 +41,7 @@ import { readSpawnLogTail, resolveSpawnLogPath, GENERATOR_PID_LOCK_BLOCKED_MARK 
 /** 共有DB(jp225.db)meta のキー。JSON 本体と、人が読む1行の2本(ティック保管と同じ作法)。 */
 export const GENERATOR_HEARTBEAT_KEY = 'generator_heartbeat';
 export const GENERATOR_STATUS_KEY = 'generator_status';
-/** ★生成器サイドカー **自身** が書くハートビート(出どころが違うので monitor の物と混ぜない)。
+/** ★分析用サイドカー **自身** が書くハートビート(出どころが違うので monitor の物と混ぜない)。
  *  monitor が知っているのは設定と台帳だけで、「プロセスが生きているか」は本人しか知らない。 */
 export const GENERATOR_SIDECAR_KEY = 'generator_sidecar';
 
@@ -49,12 +49,12 @@ export const GENERATOR_SIDECAR_KEY = 'generator_sidecar';
 export const GENERATOR_HEARTBEAT_MS = 60_000;
 /** 読み手が「ハートビート自体が止まった(monitor 停止)」と判定する猶予(= 3周期)。 */
 export const GENERATOR_HEARTBEAT_FRESH_MS = 3 * GENERATOR_HEARTBEAT_MS;
-/** 生成器は2分ごとに必ず1行書く(見送りも記録する)。これより長い沈黙は **プロセスが居ない**。
+/** 分析用は2分ごとに必ず1行書く(見送りも記録する)。これより長い沈黙は **プロセスが居ない**。
  *  2分周期の5倍。ネットワーク待ちや1サイクルの取りこぼしでは越えない幅にしてある。 */
 export const GENERATOR_QUIET_STALE_MS = 10 * 60_000;
 /** サイドカー自身のハートビート間隔と、読み手が「居ない」と判定する猶予(= 3周期)。
- *  ★これが「プロセスが生きているか」の唯一の直接証拠: 待機中(設定が無効)の生成器は台帳に
- *    1行も書かないので、台帳からは「起動していない」と区別できない(実売買PCで実際に詰まった点)。 */
+ *  ★これが「プロセスが生きているか」の唯一の直接証拠: 待機中(設定が無効)の分析用は台帳に
+ *    1行も書かないので、台帳からは「起動していない」と区別できない(実取引PCで実際に詰まった点)。 */
 export const GENERATOR_SIDECAR_HEARTBEAT_MS = 30_000;
 export const GENERATOR_SIDECAR_FRESH_MS = 3 * GENERATOR_SIDECAR_HEARTBEAT_MS;
 
@@ -71,7 +71,7 @@ export type GeneratorSidecarPhase =
   /** 公開版(lite)なので何もしない。 */
   | 'lite';
 
-/** ★生成器サイドカー自身が書く状態。**キーの値・決済の実数値は一切含めない**。 */
+/** ★分析用サイドカー自身が書く状態。**キーの値・決済の実数値は一切含めない**。 */
 export interface GeneratorSidecarState {
   v: 1;
   at: number;
@@ -140,7 +140,7 @@ export type GeneratorHeartbeatState =
   | 'disabled'
   /** 取引時間外(=標本を取る時間帯ではない)。 */
   | 'idle'
-  /** ★従属停止中(default プールが quota を踏んだため生成器を止めている)。 */
+  /** ★従属停止中(default プールが quota を踏んだため分析用を止めている)。 */
   | 'halted'
   /** 有効なのに動いていない/標本が溜まっていない(=人が見るべき状態)。 */
   | 'stalled';
@@ -159,13 +159,13 @@ export interface GeneratorHaltState {
   sessionKey: string | null;
   /** その取引日に従属停止で見送った回数(通算)。 */
   skipped: number;
-  /** ★従属停止を **見送った**(生成器が専用キーなので止めなかった)回数と直近の内訳。
-   *  「A は429を踏んでいるのに生成器が止まっていない」を遠隔から説明できるようにするため。 */
+  /** ★従属停止を **見送った**(分析用が専用キーなので止めなかった)回数と直近の内訳。
+   *  「A は429を踏んでいるのに分析用が止まっていない」を遠隔から説明できるようにするため。 */
   ignored: number;
   lastIgnored: { provider: string; source: string; at: number } | null;
 }
 
-/** 生成器の関門(予算・backpressure)の状態。回数のみでキーも決済値も含まない。 */
+/** 分析用の関門(予算・backpressure)の状態。回数のみでキーも決済値も含まない。 */
 export interface GeneratorGateState {
   dayKey: string;
   sessionKey: string;
@@ -188,7 +188,7 @@ export interface GeneratorHeartbeat {
   enabled: boolean;
   sessionOpen: boolean;
   sessionDate: string | null;
-  /** 台帳(生成器が書く)の死活。available:false = この PC で一度も書いていない。 */
+  /** 台帳(分析用が書く)の死活。available:false = この PC で一度も書いていない。 */
   ledger: GeneratorLedgerStatus;
   /** 台帳の最終記録からの沈黙[ms]。台帳が空/無ければ null。 */
   quietMs: number | null;
@@ -197,9 +197,9 @@ export interface GeneratorHeartbeat {
   lastRun: { startedAt: number; epoch: string; monitorUrl: string } | null;
   halt: GeneratorHaltState;
   gate: GeneratorGateState;
-  /** ★生成器サイドカー自身のハートビート(プロセスが生きているかの直接証拠)。 */
+  /** ★分析用サイドカー自身のハートビート(プロセスが生きているかの直接証拠)。 */
   sidecar: GeneratorSidecarView;
-  /** ★プロバイダごとの生成器キーの **出どころだけ**(own/env/shared/none)。値は絶対に載せない。 */
+  /** ★プロバイダごとの分析用キーの **出どころだけ**(own/env/shared/none)。値は絶対に載せない。 */
   keySources: Record<string, GeneratorKeySource>;
   /** ★Rust(src-tauri)がサイドカーを spawn できたかの記録(末尾数行)。 */
   spawn: { path: string; lines: string[] };
@@ -207,15 +207,15 @@ export interface GeneratorHeartbeat {
   ledgerPath: string;
 }
 
-/** ★共用の1行ログ(sidecar-spawn.log)の末尾から「生成器が pid ロック待ちで **保留中**」を読み取る。
+/** ★共用の1行ログ(sidecar-spawn.log)の末尾から「分析用が pid ロック待ちで **保留中**」を読み取る。
  *
- *  なぜ要るか: ロック待ちの生成器は共有DBに名乗らない(名乗ると、実際に走っている本体の名乗りを
+ *  なぜ要るか: ロック待ちの分析用は共有DBに名乗らない(名乗ると、実際に走っている本体の名乗りを
  *  30秒ごとに上書きして pid が交互に入れ替わり、遠隔からはかえって読めなくなる)。
  *  そのため名乗り側だけを見ると「起動していない疑い」としか言えず、**理由が別PCに届かない**。
- *  生成器が書く1行はこの共用ログに載り、それは既に meta(generator_heartbeat.spawn)へ運ばれている
+ *  分析用が書く1行はこの共用ログに載り、それは既に meta(generator_heartbeat.spawn)へ運ばれている
  *  ので、**そこから読む**(新しい配管を作らない)。
  *
- *  ★判断は「生成器が書いた最後の行」だけで決める。復帰すると生成器が「起動を再開しました」を書くので、
+ *  ★判断は「分析用が書いた最後の行」だけで決める。復帰すると分析用が「起動を再開しました」を書くので、
  *    その時点で自動的に null に戻る(古い保留の行が残り続けて誤報にならない)。 */
 export function pidLockBlockedFromSpawn(lines: readonly string[]): string | null {
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -263,23 +263,23 @@ export function buildGeneratorHeartbeat(input: {
   } else if (sidecar.alive && sidecar.state?.phase === 'halted') {
     // 本人が「止まった」と言っている。理由は本人の記録が最も正確(台帳より先に読む)。
     state = 'stalled';
-    reason = `生成器が自ら停止(${sidecar.state.halt?.phase ?? '?'}): ${sidecar.state.halt?.reason ?? '(理由不明)'}`;
+    reason = `分析用が自ら停止(${sidecar.state.halt?.phase ?? '?'}): ${sidecar.state.halt?.reason ?? '(理由不明)'}`;
   } else if (ledger.halt) {
     // 台帳に残った停止理由(サイドカーが古い版/既に落ちている場合の受け皿)。
     // ★readGeneratorLedgerStatus は「最後の記録より後の停止」だけを返す = **まだ効いている**理由。
     state = 'stalled';
-    reason = `生成器が自ら停止(${ledger.halt.phase}): ${ledger.halt.reason}`;
+    reason = `分析用が自ら停止(${ledger.halt.phase}): ${ledger.halt.reason}`;
   } else if (!processAlive && blockedLine !== null) {
     // ★「起動していない」ではなく「**起動を保留している**」= 理由が分かっている状態。
     //   ロックが取れないと以前は恒久終了していたので、遠隔からは「起動していない疑い」としか読めなかった。
     state = 'stalled';
-    reason = '生成器が pid ロック待ちで起動を保留中(別インスタンスが保持 — 再判定を続けています)'
+    reason = '分析用が pid ロック待ちで起動を保留中(別インスタンスが保持 — 再判定を続けています)'
       + `: ${blockedLine}`;
   } else if (!processAlive) {
-    // ★ここが実売買PCで詰まった点: 「動いていない」の中身を必ず言い分ける。
+    // ★ここが実取引PCで詰まった点: 「動いていない」の中身を必ず言い分ける。
     state = 'stalled';
     reason = !sidecar.present && !ledger.available
-      ? '有効だがサイドカーのハートビートも台帳も無い(生成器プロセスが起動していない疑い'
+      ? '有効だがサイドカーのハートビートも台帳も無い(分析用プロセスが起動していない疑い'
         + ' — spawn の記録[spawn]とファイルログ[logPath]を確認)'
       : !sidecar.present
         ? `有効だがサイドカーのハートビートが無く、台帳も${quietMs == null ? '空' : `${fmtDur(quietMs)}前で沈黙`}`
@@ -350,7 +350,7 @@ export function formatGeneratorStatus(hb: GeneratorHeartbeat): string {
     ? `台帳=有 最終記録=${hb.ledger.lastRecordAt == null ? '無し' : `${jstStamp(hb.ledger.lastRecordAt)}(${fmtDur(hb.quietMs ?? 0)}前)`}`
       + ` 標本1h=${hb.ledger.planLastHour ?? '?'}件 要求1h(場中)=${hb.ledger.inSessionLastHour ?? '?'}件 通算=${hb.ledger.total}件`
     : '台帳=無し(この PC で1行も書いていない)');
-  if (hb.ledger.halt) parts.push(`★生成器の停止理由=${hb.ledger.halt.phase}: ${hb.ledger.halt.reason}`);
+  if (hb.ledger.halt) parts.push(`★分析用の停止理由=${hb.ledger.halt.phase}: ${hb.ledger.halt.reason}`);
   if (hb.lastRun) parts.push(`最終起動(前提OK)=${jstStamp(hb.lastRun.startedAt)} epoch=${hb.lastRun.epoch} 接続先=${hb.lastRun.monitorUrl}`);
   parts.push(hb.halt.active
     ? `★従属停止=中(${hb.halt.provider ?? '?'} / 残り${hb.halt.remainingSec}秒 / 明ける ${jstStamp(hb.halt.untilAt)} / 発火 ${hb.halt.sessionKey ?? '?'})`
@@ -362,7 +362,7 @@ export function formatGeneratorStatus(hb: GeneratorHeartbeat): string {
     + ` default-quota=${hb.gate.skipped.defaultQuota} disabled=${hb.gate.skipped.disabled}`);
   // ★キーの出どころ(値は絶対に出さない)。専用キーなのに止まる/止まらないの説明に要る。
   const ks = Object.entries(hb.keySources).map(([k, v]) => `${k}=${v}`).join(' ');
-  parts.push(`生成器キーの出どころ=${ks || '(観測できず)'}`);
+  parts.push(`分析用キーの出どころ=${ks || '(観測できず)'}`);
   parts.push(`台帳の場所=${hb.ledgerPath || '(未解決)'}`);
   parts.push(hb.spawn.lines.length > 0
     ? `spawn記録=${hb.spawn.lines.slice(-3).join(' / ')}`
@@ -383,7 +383,7 @@ export function readGeneratorHeartbeat(db: DatabaseSync): GeneratorHeartbeat | n
   }
 }
 
-/** いまの生成器の状態を1回測る(設定 + 台帳 + プロセス内ゲート)。
+/** いまの分析用の状態を1回測る(設定 + 台帳 + プロセス内ゲート)。
  *  ★台帳は **readOnly** で読むだけ(作らない・書かない)。例外は投げない。 */
 export function measureGeneratorHeartbeat(now: number = Date.now(), sharedDb?: DatabaseSync): GeneratorHeartbeat {
   let enabled = false;
@@ -464,7 +464,7 @@ export function describeGenerator(
   if (!hb) {
     return {
       state: 'missing', ageMs: null,
-      text: 'MISSING 提案生成器のハートビートが無い(記録が始まっていない/古い版で動いている/公開版 lite)',
+      text: 'MISSING 分析用のハートビートが無い(記録が始まっていない/古い版で動いている/公開版 lite)',
     };
   }
   const ageMs = now - hb.at;
@@ -495,7 +495,7 @@ function tick(): void {
   }
 }
 
-/** 生成器の状態を共有DBの meta に定期記録する。
+/** 分析用の状態を共有DBの meta に定期記録する。
  *  ★公開版(lite)では起動しない(存在しない機構の状態を書かない)。
  *  ★取引時間でゲートしない: 「時間外で静かなのか」「止まっているのか」を区別するために、
  *    場外でも状態を更新し続ける必要がある(場外は state='idle' として正常と読める)。 */

@@ -36,7 +36,7 @@ export function getCachedBars(symbol: string): Bar[] {
 // v0.7.20(no-Yahoo): 評価に使う 1m bars は **リアルタイム足のみ**(全 4 銘柄が HTTP フィード→feedBars に
 // 蓄積される)。日経(NIY=F)の z-score も横断確認(NQ/YM/JPY)も同じ実時間軸で評価できる。ウォームアップ中
 // (リアルタイム足<65)は空/浅い配列を返し、呼び出し側の `bars.length < 65` で単にスキップされる(遅延した
-// Yahoo 足で評価/「足が遅延」ログを出さない=実弾安全 v0.7.9)。リアルタイム足は warmFromDb(DB 種付け)/
+// Yahoo 足で評価/「足が遅延」ログを出さない=実取引安全 v0.7.9)。リアルタイム足は warmFromDb(DB 種付け)/
 // ajax_cme・ajax_fx 蓄積で満たされ次第、新鮮に評価する。
 // v0.3.32: 相関ループ・AIチャット文脈でも同じロジックを使えるよう export。
 export function barsFor(symbol: string): Bar[] {
@@ -51,7 +51,7 @@ function evaluateAndFire(): void {
     if (sym !== 'NIY=F') continue;
     // v0.7.20(no-Yahoo): NIY=F はリアルタイム OSE バー(ajax_cme / DB 種付け)**のみ**で z-score 評価。
     // ウォームアップ中(リアルタイム足<65)は barsFor が空を返し、下の length<65 で単にスキップ
-    // (遅延源を混ぜない=実弾安全 v0.7.9)。
+    // (遅延源を混ぜない=実取引安全 v0.7.9)。
     const bars = barsFor(sym);
     if (!bars || bars.length < 65) continue;
     // フィード停止/復帰中の古い足では発火しない(数分遅れの stale なアラートを防ぐ)。

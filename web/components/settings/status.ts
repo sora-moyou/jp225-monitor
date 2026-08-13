@@ -22,10 +22,10 @@ export function setKeyStatus(id: string, mark: string, title: string): void {
   if (node) { node.textContent = mark; node.title = `キー状態: ${title}`; }
 }
 
-// ★提案生成器の「どのキーが効いているか」表示(純関数)。
+// ★分析用の「どのキーが効いているか」表示(純関数)。
 //   この画面の一番の仕事は **専用キーが効いているのか共通キーに落ちているのかが一目で分かること**。
 //   共通キーへのフォールバックを「未設定」と書くと「使われていない」と誤読される。実際には使われていて、
-//   しかも実弾(A)と同じ上流クォータを消費する=「分離したつもりで分離できていない」状態になる。
+//   しかも実取引(A)と同じ上流クォータを消費する=「分離したつもりで分離できていない」状態になる。
 //   だから 'shared' は必ず **「共通キーを使用中」** と書き、分離できていないことを明示する。
 export function generatorKeyLabel(src: GeneratorKeySource | undefined): {
   mark: string; text: string; title: string; shared: boolean;
@@ -33,23 +33,23 @@ export function generatorKeyLabel(src: GeneratorKeySource | undefined): {
   switch (src) {
     case 'own':
       return { mark: '🟢', text: '専用キー設定済み', shared: false,
-        title: '生成器は専用キーで動きます(実弾 A のキーとは別)' };
+        title: '分析用は専用キーで動きます(実取引 A のキーとは別)' };
     case 'env':
       return { mark: '🟢', text: '専用キー設定済み（環境変数）', shared: false,
         title: '環境変数 GENERATOR_*_API_KEY の専用キーで動きます' };
     case 'shared':
       return { mark: '🔁', text: '共通キーを使用中', shared: true,
-        title: '専用キーが無いため実弾(A)と同じ共通キーで動きます。ローカルのポーズは分離されますが、'
-          + '提供元側のクォータは共有されたままです(生成器が枠を食えば A が 429 を踏みます)' };
+        title: '専用キーが無いため実取引(A)と同じ共通キーで動きます。ローカルのポーズは分離されますが、'
+          + '提供元側のクォータは共有されたままです(分析用が枠を食えば A が 429 を踏みます)' };
     case 'none':
       return { mark: '⚪', text: 'キー未設定（このプロバイダは使えません）', shared: false,
-        title: '専用キーも共通キーも無いので、生成器はこのプロバイダを使いません' };
+        title: '専用キーも共通キーも無いので、分析用はこのプロバイダを使いません' };
     default:
       return { mark: '⚪', text: '—', shared: false, title: '状態不明(設定の取得に失敗)' };
   }
 }
 
-// 生成器キー行の「どのキーを使うか」テキストを DOM へ反映する(id は index.html の genkey-<name>-src)。
+// 分析用キー行の「どのキーを使うか」テキストを DOM へ反映する(id は index.html の genkey-<name>-src)。
 export function setKeySourceLabel(id: string, text: string, title: string, shared: boolean): void {
   const node = document.getElementById(id);
   if (!node) return;

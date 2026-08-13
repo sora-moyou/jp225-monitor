@@ -19,7 +19,7 @@ import { sanitizeErrorForOutput } from '../llm/redact.js';
 //     かつては trade2 が自前で AI 要求(planner.ts)を持っていた名残の記述で、現在は事実と異なる。
 //   - monitor 自身のシグナルエンジン(server/signalTrade/engine.ts)は HTTP を経由せず
 //     共通関数 runScalpPlanWithChart を **直呼び**する(この route は通らない)。
-//   - よって現状この route を叩くのは **手動診断**と、これから追加する **提案生成器(caller='generator')** のみ。
+//   - よって現状この route を叩くのは **手動診断**と、これから追加する **分析用(caller='generator')** のみ。
 //
 // 兄弟アプリ jp225-trade2(AI トレーダー)向けとして作られた route。monitor の LLM を固定のスキャル戦略質問で走らせ、
 // buildMonitorContext + データツール + 既存プロバイダ/キーを再利用して構造化プラン(AiPlan)を返す。
@@ -66,7 +66,7 @@ function optionalNumber(v: unknown): number | undefined {
   return undefined;
 }
 
-// ─── ★場外(取引セッション外)の生成器要求を **撮影より前に** 弾く ─────────────
+// ─── ★場外(取引セッション外)の分析用要求を **撮影より前に** 弾く ─────────────
 //
 // runScalpPlanWithChart は refPrice の鮮度判定(scalpPlan.ts)より **先に** チャートを撮る。
 // つまり場外の無意味な要求でも毎回 Chrome が起動し(実測1撮影あたりイベントループが 286ms 停止)、
@@ -74,14 +74,14 @@ function optionalNumber(v: unknown): number | undefined {
 // 保持する(=予算がリセットされない正しい設計)ため、15:45〜17:00 の 75 分や週末の要求が
 // **その取引日の予算をそのまま食う**。どちらも「撮る前に弾く」だけで消える。
 //
-// ★実弾(A)につながる経路は一切通さない: 判定するのは caller='generator' の要求だけで、
+// ★実取引(A)につながる経路は一切通さない: 判定するのは caller='generator' の要求だけで、
 //   caller 省略/'default'(シグナルエンジン・手動診断・既存の呼び出し元)は素通しする。
 //   既存の「時間外でも通る」挙動(server/llm/refPriceGate.test.ts の注記)は default では不変。
 //
 // ★ミドルウェアとして **ハンドラの前** に置く(server/index.ts で登録)。ハンドラ内に置くと
-//   「撮影より前」ではあっても、生成器の関門(予算計上)と順序が絡んで責務が混ざる。
+//   「撮影より前」ではあっても、分析用の関門(予算計上)と順序が絡んで責務が混ざる。
 
-/** 場外の生成器要求か(純関数・now 注入可)。true なら弾く。
+/** 場外の分析用要求か(純関数・now 注入可)。true なら弾く。
  *  不正な caller は **ここでは判定しない**(ハンドラが 400 で理由付きに落とす=誤設定を無音にしない)。 */
 export function isGeneratorRequestOutOfSession(body: unknown, query: unknown, now: number): boolean {
   const b = (body ?? {}) as Body;
@@ -91,14 +91,14 @@ export function isGeneratorRequestOutOfSession(body: unknown, query: unknown, no
   return !inPollWindow(now);
 }
 
-/** POST /api/scalp-plan の前段ミドルウェア。場外の生成器要求を 429 で弾く(撮影も LLM も行わない)。 */
+/** POST /api/scalp-plan の前段ミドルウェア。場外の分析用要求を 429 で弾く(撮影も LLM も行わない)。 */
 export function generatorSessionGate(req: Request, res: Response, next: NextFunction): void {
   if (!isGeneratorRequestOutOfSession(req.body, req.query, Date.now())) {
     next();
     return;
   }
   // 弾いたことは必ず1行残す(無音にしない)。予算は1回も消費していない。
-  console.warn('[scalp-plan] 見送り(closed): 取引時間外の生成器要求 → 撮影も LLM も行わない');
+  console.warn('[scalp-plan] 見送り(closed): 取引時間外の分析用要求 → 撮影も LLM も行わない');
   res.status(429).json({ ok: false, error: 'closed', detail: '取引時間外(セッション外)です' });
 }
 
@@ -121,17 +121,17 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
   // ★画像の同一性(撮影の識別子と齢)。①と②が同じ1枚を見たことを、仮定ではなく **記録** にするため。
   //   1サイクルが撮影キャッシュの TTL を超えれば②は別の画像を見るが、これが無いと誰にも分からない。
   if (r.chartShot !== undefined) out.chartShot = r.chartShot;
-  // ★プロンプトから外した文脈ブロック(生成器のみ)。1年後の分析者が「この標本は A の紙成績を
-  //   見ていない」ことを台帳から読めるように、応答へそのまま載せて生成器に記録させる。
+  // ★プロンプトから外した文脈ブロック(分析用のみ)。1年後の分析者が「この標本は A の仮想取引の成績を
+  //   見ていない」ことを台帳から読めるように、応答へそのまま載せて分析用に記録させる。
   if (r.contextOmitted !== undefined) out.contextOmitted = r.contextOmitted;
   // ★凍結再生の突合(記録専用): 文脈を組み立てた時刻(monitor の時計)と、送ったプロンプトの指紋。
-  //   生成器の台帳が持つ requested_at/responded_at は **生成器プロセスの時計** で、撮影と LLM の待ちを
+  //   分析用の台帳が持つ requested_at/responded_at は **分析用プロセスの時計** で、撮影と LLM の待ちを
   //   含んだ両端でしかない。「どの断面から文脈を組んだか」は monitor 側にしか無い値なので応答で渡す。
   //   ★指紋は一方向ハッシュ(`sp1:<16桁hex>`)で、プロンプト本文も決済仕様の数値も一切含まない。
   if (r.contextAt !== undefined) out.contextAt = r.contextAt;
   if (r.promptFp !== undefined) out.promptFp = r.promptFp;
   // ★RECORD-ONLY(v0.9.66): 本線の台帳(signal_plans)に載せているのと **同じ2つの突き合わせ** を
-  //   生成器の台帳にも載せる。母集団が揃っていないと A/B の比較ができない(同じ故障は生成器側にも出る)。
+  //   分析用の台帳にも載せる。母集団が揃っていないと A/B の比較ができない(同じ故障は分析用側にも出る)。
   //   lcAudit=申告 LC幅 vs 実出力 / omissionAudit=「出さない」表明 vs 実際に発注されるレッグ。
   //   どちらも数値は AI が出したレッグ価格と幅だけで、非公開の決済仕様は入らない。
   if (r.lcAudit !== undefined) out.lcAudit = r.lcAudit;
@@ -142,7 +142,7 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
 /** ★公開版(lite)で受け付けてはいけない要求か(純関数・テスト対象)。
  *  caller='generator' も exitVariant も **決済パラメータの分析専用** の入口なので、
  *  分析を持たないビルドでは受理せず 400 で落とす(黙って現行に倒すと、実験のつもりの
- *  要求が実弾と同じプール・同じ予算で走ってしまう=このゲートが守るものが壊れる)。
+ *  要求が実取引と同じプール・同じ予算で走ってしまう=このゲートが守るものが壊れる)。
  *  ★caller 省略/'default' かつ exitVariant 省略 = 既存の全経路。lite でも素通し(挙動不変)。 */
 export function analysisOnlyRequestField(
   body: unknown, query: unknown,
@@ -155,7 +155,7 @@ export function analysisOnlyRequestField(
   const specified = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
   if (specified(rawCaller) && rawCaller !== DEFAULT_CALLER) return 'caller';
   if (specified(rawVariant)) return 'exitVariant';
-  // ★質問文の変種も分析専用の入口。lite で受理すると、公開版が実験用のプロンプトで実弾経路を回す。
+  // ★質問文の変種も分析専用の入口。lite で受理すると、公開版が実験用のプロンプトで実取引経路を回す。
   if (specified(rawPrompt)) return 'promptVariant';
   return null;
 }
@@ -184,7 +184,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   // ── ★呼び出し元の識別(作業1)。この1つの値がプール選択・backpressure・予算計上を駆動する。
   const callerResult = normalizeCaller(body.caller ?? query.caller);
   if (!callerResult.ok) {
-    // 未知の caller を黙って default に倒すと、実験系が実弾のプール/予算をそのまま使ってしまう。
+    // 未知の caller を黙って default に倒すと、実験系が実取引のプール/予算をそのまま使ってしまう。
     // だから受理せず 400 で落とす(誤設定を無音にしない)。
     res.status(400).json({ ok: false, error: callerResult.error });
     return;
@@ -206,7 +206,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   const exitVariant: ExitVariant | undefined = variantSpecified ? variantResult.variant : undefined;
   // 応答へ「どの変種で生成したか」と「見送り理由」を載せるか。レガシー経路(caller 省略 かつ
   // exitVariant 省略)だけは応答も従来どおりにする(フィールドを増やさない=byte 一致)。
-  // 生成器は caller または exitVariant を必ず指定するので、生成器から見れば **常に** 返る=記録に穴が空かない。
+  // 分析用は caller または exitVariant を必ず指定するので、分析用から見れば **常に** 返る=記録に穴が空かない。
   // ★変種のエコーも見送り理由の付随情報も、この1つの条件で揃って on/off する。
   // ── ★質問文の変種(v0.9.75)。**名前だけ**を受け取る。省略は 'v1' = 従来の質問文。
   //    ExitVariant と同じ作法で、未知の名前は 400(黙って v1 に倒さない)。
@@ -242,7 +242,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
     }
   }
 
-  // ── ★生成器だけの関門(作業3 backpressure + 作業4 予算/従属)。
+  // ── ★分析用だけの関門(作業3 backpressure + 作業4 予算/従属)。
   //    caller 省略/'default' はこのブロックを **一切通らない**(既存の呼び出し元に影響ゼロ)。
   //    ★予算は **腕(=決済仕様の変種)ごと** に独立させる。全腕で1本の帳簿だと先着の腕が
   //      取引日の残りを食い切り、標本が Day セッション前半に偏る(=時間帯という既知最大の交絡)。
@@ -252,7 +252,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
     //   ★v1 のときは従来と同じ鍵文字列になる(過去の期の帳簿と繋がる)。
     const gate = checkGeneratorGate(Date.now(), generatorArmKey(variantResult.variant, promptResult.variant));
     if (!gate.allowed) {
-      // 429 = 「今は投げるな」。生成器は reason で busy / budget / default-quota / disabled を区別できる。
+      // 429 = 「今は投げるな」。分析用は reason で busy / budget / default-quota / disabled を区別できる。
       // 見送りは checkGeneratorGate 側で必ず1行ログ+カウンタに記録される(無音にしない)。
       res.status(429).json({ ok: false, error: gate.reason, detail: gate.detail });
       return;
@@ -265,7 +265,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
       // ★見送りの経路を **応答に載せる**(記録専用・判定には一切影響しない)。
       //   これが無いと direction:'none' のとき、外の記録側は「AI が見送った(ai)」「LC上限で落ちた(lc)」
       //   「下限未満で落ちた(lcFloor)」「トレンド veto(trend)」を区別できない。区別できないと
-      //   2本の生成器の見送り率の差が「AI の適応」なのか「enforce の副作用」なのか判別不能になり、
+      //   2本の分析用の見送り率の差が「AI の適応」なのか「enforce の副作用」なのか判別不能になり、
       //   実験の主要比較そのものが成立しない(エンジンは engine.ts でログに出しているが HTTP 越しには届かない)。
       //   ★数値は AI が出したレッグの価格(noneLegs)だけで、決済ラダーの実数値は一切含まれない。
       res.json({ ok: true, plan: result.plan, ...planDiagnostics(result, diagnosticsOn), ...echoVariant });

@@ -1,4 +1,4 @@
-// トレードシグナル紙エンジンの「純粋な決定コア」。
+// トレードシグナル仮想取引エンジンの「純粋な決定コア」。
 //
 // ここには engine の状態遷移/約定判定/phase 遷移/SSE state 組み立て/plan→armed 変換など、
 // EngineState を引数で受け取り副作用を持たない純関数(と、それらが扱う型)だけを置く。
@@ -31,7 +31,7 @@ export interface ArmedBracket {
   stopLossForStop?: number;
   rationale: string;
   at: number;
-  // レンジ両面ストラドル(実験・紙で別枠計測)。mode==='range' の時は range で判定し、
+  // レンジ両面ストラドル(実験・仮想取引で別枠計測)。mode==='range' の時は range で判定し、
   // direction はプレースホルダ(range 分岐は必ず mode/range で gating し direction では判定しない)。
   mode?: 'range';
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -116,7 +116,7 @@ export interface SignalHold {
 export interface RecordedTrade {
   entryT: number; entryPrice: number; dir: 'buy' | 'sell';
   exitT: number; exitPrice: number; pnl: number; qty: number; rationale: string;
-  mode?: 'range';   // レンジ由来の紙トレード(別枠集計タグ)。directional は付与しない=既存記録と互換。
+  mode?: 'range';   // レンジ由来の仮想取引(別枠集計タグ)。directional は付与しない=既存記録と互換。
   planMeta?: PlanMeta;   // v0.7.54: 決済時に signal_trades.meta へ JSON 保存する自己レジーム/確信度/veto。
   settings?: SignalSettingsSnapshot;   // ★v0.7.56: 決済時に signal_trades.meta へ保存する実効設定スナップショット。
   doten?: true;   // ★ドテン(反転)関連トレード(add-only)。P の反転決済 or 反転建玉の決済。meta.doten に残す。
@@ -139,7 +139,7 @@ export interface RecordedTrade {
 // ─── 純関数(単体テスト対象) ─────────────────────────────
 
 /** 損切りがエントリーの正しい外側(買い=下 / 売り=上)にあるか。境界(等値=幅0)は不正。純関数。
- *  ★実害バグ対策の最終ガード: 買いなのに損切りが上(逆側)のような不正プランを紙エンジンが arm/約定しないようにする
+ *  ★実害バグ対策の最終ガード: 買いなのに損切りが上(逆側)のような不正プランを仮想取引エンジンが arm/約定しないようにする
  *    (発生源は llm/openai の parse/enforce で落とすが、engine 単独でも同じ向き規約を保証する=trade2 サニティと一致)。
  *  openai.stopSideOk と同一規約。engine の静的 import を軽く保つため、依存を作らずここに小さく持つ。 */
 function stopOnCorrectSide(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
@@ -200,8 +200,8 @@ export function detectRangeFill(
   // ★約定条件はレッグ type で分岐する(detectFill の指値/逆指値と同じ規約に統一):
   //   type==='limit'(fade=逆張り指値): 節目を LIMIT_FILL_MARGIN_YEN 円 “行き過ぎ” て約定(保守モデル。
   //     現実の指値は主要水準ちょうどでは約定しづらいため)。
-  //   type==='stop'(breakout=抜け追随の逆指値): タッチ(0円)で約定。実弾(trade2)の逆指値はタッチで発火して
-  //     成行になるため、紙が 5円 待つと「タッチして反転した回=実弾は建玉あり・紙は建玉なし」の台帳食い違いが出る。
+  //   type==='stop'(breakout=抜け追随の逆指値): タッチ(0円)で約定。実取引(trade2)の逆指値はタッチで発火して
+  //     成行になるため、紙が 5円 待つと「タッチして反転した回=実取引は建玉あり・仮想取引は建玉なし」の台帳食い違いが出る。
   //   type 欠落は limit 扱い(保守側=行き過ぎ要求)。
   const legHit = (leg: RangeLeg, up: boolean): boolean => {
     const margin = leg.type === 'stop' ? 0 : LIMIT_FILL_MARGIN_YEN;
@@ -234,7 +234,7 @@ export interface StaleLegReport {
  *  monitor は ARM 前サニティを plan.refPrice(チャート撮影時の価格)に対して行う(そこは設計判断として不変。
  *  anchorPrice で弾くと過剰抑止と trade2 との乖離が起きる)。しかし画像生成+LLM 応答に数秒〜十数秒かかる間に
  *  価格が動くため、refPrice には妥当でも **ARM 時点の live 価格では既にエントリーを通過している** 計画が届く。
- *  それを武装すると次の価格tickで即約定し、現実には執行不可能な取引が紙の成績に混ざる(紙と実弾の忠実性を損なう)。
+ *  それを武装すると次の価格tickで即約定し、現実には執行不可能な取引が紙の成績に混ざる(紙と実取引の忠実性を損なう)。
  *  → ARM 時点で「そのレッグが即約定してしまう」なら、そのレッグを落とす。
  *  ★判定は detectFill / detectRangeFill を **そのまま再利用** する(1レッグだけのブラケットを組んで問う)ので、
  *    約定条件と完全に同一規約になる(指値=LIMIT_FILL_MARGIN_YEN 行き過ぎ / 逆指値=タッチ / レンジは type 別分岐)。
@@ -310,7 +310,7 @@ export function unrealizedPt(direction: 'buy' | 'sell', entry: number, price: nu
 
 /** 現在の決済逆指値(絶対価格)。非公開 phase-exit(または簡易フォールバック)に委譲。
  *  ★exitFn(省略可)は **分析用の影の模擬だけ** が渡す差し替え(既定=computeExitStop=実運用)。
- *    省略時の挙動は従来と byte 一致(実弾に繋がる呼び出し元は渡さない)。
+ *    省略時の挙動は従来と byte 一致(実取引に繋がる呼び出し元は渡さない)。
  *  ★なぜ引数で渡すか: グローバル差し替え(_setExitImpl)にすると、影の模擬が走っている最中に
  *    **実建玉の決済逆指値が影のパラメータで算出される** 競合が起きる。引数なら並走しても干渉しない。
  *  ★OpenPosition → ExitState の写像はここ1箇所だけ(影も同じこの関数を通る=写像を二重に書かない)。 */
@@ -400,7 +400,7 @@ export function armedWaitMsOf(a: { waitMs?: number } | null | undefined): number
   return v != null && Number.isFinite(v) && v > 0 ? v : ARMED_TIMEOUT_MS;
 }
 
-/** advance の任意オプション。**実弾に繋がる呼び出し元は渡さない**(渡さなければ従来と byte 一致)。 */
+/** advance の任意オプション。**実取引に繋がる呼び出し元は渡さない**(渡さなければ従来と byte 一致)。 */
 export interface AdvanceOptions {
   /** 決済逆指値の算出を差し替える(既定=computeExitStop=実運用の非公開 phase-exit)。
    *  分析用の「影」は同じ advance を **パラメータだけ変えて** 呼ぶためにこれを渡す
@@ -676,7 +676,7 @@ export function planToArmed(
     let upper = plan.range?.upper;
     let lower = plan.range?.lower;
     // ★向きの belt-and-suspenders: 損切りがエントリーの内側/反対側(境界=幅0 含む)のレッグは arm しない。
-    //   発生源(parse/enforce)で落ちている想定だが、万一到達しても紙エンジンが不正約定しないよう最終ガード。
+    //   発生源(parse/enforce)で落ちている想定だが、万一到達しても仮想取引エンジンが不正約定しないよう最終ガード。
     if (upper && !stopOnCorrectSide(upper.side, upper.entry, upper.stopLoss)) upper = undefined;
     if (lower && !stopOnCorrectSide(lower.side, lower.entry, lower.stopLoss)) lower = undefined;
     if (!upper && !lower) return null;
@@ -689,7 +689,7 @@ export function planToArmed(
   }
   if (plan.direction !== 'buy' && plan.direction !== 'sell') return null;
   // ★向きの belt-and-suspenders(directional): buy は損切りが entry の下・sell は上。境界(==)は不正。
-  //   有限性に加えて向きも満たすレッグだけを arm する(不正な向きの損切りは紙エンジンでも約定させない)。
+  //   有限性に加えて向きも満たすレッグだけを arm する(不正な向きの損切りは仮想取引エンジンでも約定させない)。
   const hasLimit = Number.isFinite(plan.limitEntry) && Number.isFinite(plan.stopLossForLimit)
     && stopOnCorrectSide(plan.direction, plan.limitEntry as number, plan.stopLossForLimit as number);
   const hasStop = Number.isFinite(plan.stopEntry) && Number.isFinite(plan.stopLossForStop)
@@ -766,7 +766,7 @@ export function shouldRequestHeldEval(a: {
 /** ★ドテン(反転)の反映(純関数・肝)。filled の保有 P を「現在値で成行決済」し、AI の反対プランを
  *  反対ブラケット(doten:true)として armed に据える。engine は返る recorded を記録し、armed から新 signalId を
  *  1回だけ採番して currentSignal を更新し broadcast する。
- *  ★monitor 紙は即時約定しない: ここでは反対ブラケットを arm するだけ。反対建玉は以降 detectFill の交差で filled になる
+ *  ★monitor 仮想取引は即時約定しない: ここでは反対ブラケットを arm するだけ。反対建玉は以降 detectFill の交差で filled になる
  *   (=trade2 と同じタイミング/価格ソースで約定)。
  *  前提: 呼び出し側が「plan.direction === opposite(保有方向)」と checkSanity 通過を既に確認済み(第一級ガードは engine)。
  *  filled でない / planToArmed が null / range になった 場合は null(ドテンしない=保有継続)。 */

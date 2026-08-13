@@ -15,7 +15,7 @@ export { stripParsedInputSnippet };
 //
 // ★以前はモジュール単位のシングルトン(`let providers = LLM_PROVIDERS.map(buildProvider)`)で、
 //   プロセス内の全呼び出し元が circuitOpenUntil を共有していた。そのため
-//   **分析用の実験系が 429 を踏むと、実弾(A)の経路が PAUSE_LADDER の最大 8 時間まで止まる**。
+//   **分析用の実験系が 429 を踏むと、実取引(A)の経路が PAUSE_LADDER の最大 8 時間まで止まる**。
 //   別プロセス化しても解決しない(/api/scalp-plan の LLM 呼び出しは monitor のプロセス内で起きる)。
 //
 // そこで状態を LlmCaller をキーにしたプールへ分ける。プールは
@@ -268,7 +268,7 @@ export async function testProviderState(
 
 /** 指定プロバイダのキーが実際に有効か、1トークンの ping で確認する。キー未設定は notset。
  *  ★引数なしは従来どおり **default プールのキー**を検証する(既存の呼び出し側は無改変で同じ経路)。
- *  ★pool='generator' を渡すと **生成器プールのキー**(専用キー→env→共通キーのフォールバック結果)で
+ *  ★pool='generator' を渡すと **分析用プールのキー**(専用キー→env→共通キーのフォールバック結果)で
  *    ping する。プールごとに resolveApiKeyForPool でクライアントを組んでいるので、専用キーがある
  *    プロバイダの検証で共通キーを消費することはない。 */
 export async function testProvider(name: string, pool: PoolKey = DEFAULT_CALLER): Promise<KeyTestResult> {
@@ -297,7 +297,7 @@ export function isVisionCapableProvider(name: string, chatModel = ''): boolean {
 /** 現在「利用可能(キーあり・非ポーズ)」で、かつビジョン対応の先頭プロバイダ名。無ければ null。
  *  scalp-plan が「画像を撮るべきか」を事前判断するために使う(callWithFallback の選択順と同じ優先順)。
  *  ★プールを指定すると **そのプールの** ポーズ状態で判断する(引数なしは従来どおり default)。
- *    生成器が「default がポーズ中だから撮らない」と誤判断しない/その逆もない、を保つため。 */
+ *    分析用が「default がポーズ中だから撮らない」と誤判断しない/その逆もない、を保つため。 */
 export function firstAvailableVisionProvider(pool: PoolKey = DEFAULT_CALLER): { name: string; chatModel: string } | null {
   for (const p of poolOf(pool)) {
     if (!isAvailable(p)) continue;
@@ -316,7 +316,7 @@ export function firstAvailableVisionProvider(pool: PoolKey = DEFAULT_CALLER): { 
 //   config(401/403/404)→ 長ポーズ(30分)+ フォールバック(誤設定のプロバイダを避けて他で継続)
 //
 // ★プールの独立性: p は呼び出し元のプールの状態オブジェクトなので、ここでのポーズは **そのプールにしか効かない**。
-//   生成器が 429 を踏んでも default プールの circuitOpenUntil は 0 のままで、実弾(A)は止まらない。
+//   分析用が 429 を踏んでも default プールの circuitOpenUntil は 0 のままで、実取引(A)は止まらない。
 function tripCircuit(p: ProviderState, err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   // ★応答が使えない(空 / 長さ切れ)= タスク側が型で申告したもの。文字列の分類より **先** に見る:
@@ -359,16 +359,16 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     p.circuitOpenUntil = now + pause;
     const human = pause < 90_000 ? `${Math.round(pause / 1000)}s` : `${Math.round(pause / 60_000)}min`;
     console.warn(`${logPrefix(p)}429 #${p.consecutiveFails + 1} — paused for ${human}`);
-    // ★従属規則(作業4-2)の発火点: **default プールが quota を踏んだ瞬間**だけ生成器を止める。
+    // ★従属規則(作業4-2)の発火点: **default プールが quota を踏んだ瞬間**だけ分析用を止める。
     //   transient(5xx)/config(401/403/404)/oversize(413)/badrequest(400) では発火しない(枠の枯渇ではない)。
     //   ★停止の長さは **A が実際に入れたポーズ(pause)と同じ**。危険なのは「A がポーズしている間に
-    //     生成器が同じ上流を食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば
+    //     分析用が同じ上流を食うこと」なので、危険が続く時間 = A のポーズ時間。ラダーが深くなれば
     //     停止も自動で深くなる(=保護の目的は弱まらない)。旧実装のようにセッションの残り全部は捨てない。
-    //   ★default 経路の挙動はこの呼び出しで1ミリも変わらない(このカウンタを読むのは生成器だけ)。
-    //   ★2026-08-03 修正: **キーの共有を見る**。生成器がこのプロバイダで専用キー(own/env)を
-    //     使っているなら上流クォータは分かれており、A の429は生成器の枠について何も語らない。
-    //     判定と「止める/止めない」の決定は generatorGate 側(=生成器の政策が1か所にある)。
-    //     ここは事実(どのプロバイダが・どれだけポーズし・生成器のキーはどこ由来か)を渡すだけ。
+    //   ★default 経路の挙動はこの呼び出しで1ミリも変わらない(このカウンタを読むのは分析用だけ)。
+    //   ★2026-08-03 修正: **キーの共有を見る**。分析用がこのプロバイダで専用キー(own/env)を
+    //     使っているなら上流クォータは分かれており、A の429は分析用の枠について何も語らない。
+    //     判定と「止める/止めない」の決定は generatorGate 側(=分析用の政策が1か所にある)。
+    //     ここは事実(どのプロバイダが・どれだけポーズし・分析用のキーはどこ由来か)を渡すだけ。
     if (p.pool === DEFAULT_CALLER) {
       notifyDefaultQuota(p.config.name, now, pause, generatorKeySourceOf(p.config.name),
         generatorKeySourcesAll());
@@ -388,28 +388,28 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
   return true;
 }
 
-/** ★生成器プールが **そのプロバイダで** 実際に使うキーの出どころ(値は返さない)。
- *  従属停止(generatorGate)が「A の429は生成器の枠について語るのか」を判断する唯一の材料。
+/** ★分析用プールが **そのプロバイダで** 実際に使うキーの出どころ(値は返さない)。
+ *  従属停止(generatorGate)が「A の429は分析用の枠について語るのか」を判断する唯一の材料。
  *
  *  ★絶対に throw させない: tripCircuit は callWithFallback の catch の **中** で呼ばれるので、
- *    ここで例外が出ると **A が次プロバイダへフォールバックできなくなる**(実弾経路の破壊)。
+ *    ここで例外が出ると **A が次プロバイダへフォールバックできなくなる**(実取引経路の破壊)。
  *    解決できなかった場合は undefined を返し、generatorGate は従来どおり止める(保護側に倒す)。 */
 function generatorKeySourceOf(name: string): GeneratorKeySource | undefined {
   try {
     return resolveGeneratorKeySource(name as GeneratorProviderName);
   } catch (e) {
-    console.warn(`[LLM] 生成器キーの出どころを解決できません(${name}): `
+    console.warn(`[LLM] 分析用キーの出どころを解決できません(${name}): `
       + `${e instanceof Error ? e.message : String(e)} — 共有とみなして従属停止します`);
     return undefined;
   }
 }
 
-/** ★生成器が **フォールバックで通りうる全プロバイダ** のキー出どころ(値は返さない)。
+/** ★分析用が **フォールバックで通りうる全プロバイダ** のキー出どころ(値は返さない)。
  *
- *  なぜ要るか: 従属停止は生成器 **全体** に効くので、守る対象も全体。
+ *  なぜ要るか: 従属停止は分析用 **全体** に効くので、守る対象も全体。
  *  「429 を踏んだプロバイダが専用キーだから止めない」だけでは、
- *  gemini=専用 / openai=共有 のときに生成器がフォールバックで共有 openai を食える。
- *  ここは **事実を渡すだけ**(止める/止めないの決定は generatorGate 側=生成器の政策は1か所)。
+ *  gemini=専用 / openai=共有 のときに分析用がフォールバックで共有 openai を食える。
+ *  ここは **事実を渡すだけ**(止める/止めないの決定は generatorGate 側=分析用の政策は1か所)。
  *  ★generatorKeySourceOf と同じく絶対に throw しない(A のフォールバック経路を壊さない)。 */
 function generatorKeySourcesAll(): Record<string, GeneratorKeySource | undefined> {
   const out: Record<string, GeneratorKeySource | undefined> = {};
@@ -428,8 +428,8 @@ function recordSuccess(p: ProviderState): void {
 //
 // ★caller(=プール)は **既定 'default'**。引数を渡さない既存の呼び出し元(chat/explain/translate/scalp-plan)は
 //   従来と完全に同じ default プールを、従来と同じ順序・同じ判定・同じメッセージで使う。
-// ★caller='generator' を渡した時だけ generator プールの状態を使う。生成器がここで 429 を積んでも
-//   default プールの circuitOpenUntil には触れない=実弾(A)は止まらない。
+// ★caller='generator' を渡した時だけ generator プールの状態を使う。分析用がここで 429 を積んでも
+//   default プールの circuitOpenUntil には触れない=実取引(A)は止まらない。
 export async function callWithFallback(
   task: (p: ProviderState) => Promise<string>,
   label: string,

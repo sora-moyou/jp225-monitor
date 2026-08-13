@@ -128,15 +128,15 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
   });
 
   // ★撮影キャッシュの呼び出し元分離: runner は自分の caller を撮影側へ渡す。
-  //   渡さないと生成器の撮影が A のキャッシュを温め、A が「毎サイクル撮り直す」不変条件が壊れる。
-  it('★caller を撮影キャッシュへ渡す(既定=default / 生成器=generator)', async () => {
+  //   渡さないと分析用の撮影が A のキャッシュを温め、A が「毎サイクル撮り直す」不変条件が壊れる。
+  it('★caller を撮影キャッシュへ渡す(既定=default / 分析用=generator)', async () => {
     firstVisionMock.mockReturnValue({ name: 'gemini' });
     captureMock.mockResolvedValue({ buffer: Buffer.from('png'), reason: null, chromePath: 'c', chromeVersion: 'v1' });
 
     await runScalpPlanWithChart();                              // 既存の呼び出し元(A/B エンジン・既存 route)
     expect(captureMock.mock.calls[0]![3]).toBe('default');      // 第4引数=caller
 
-    await runScalpPlanWithChart({ caller: 'generator' });       // 提案生成器
+    await runScalpPlanWithChart({ caller: 'generator' });       // 分析用
     expect(captureMock.mock.calls[1]![3]).toBe('generator');
   });
 

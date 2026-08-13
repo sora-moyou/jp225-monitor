@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 // ─── ★B1(死活)の通し実証: 実 DB → 実ハンドラ(/api/status) → 実描画 ────────────────
 //
 // 単体のモックだけだと「サーバは新しい数字を返しているのに画面は緑のまま」に気づけない。
-// ここでは **従属停止中の生成器が実際に書く行**(2分ごとの status='skipped')を実ファイルの台帳に入れ、
+// ここでは **従属停止中の分析用が実際に書く行**(2分ごとの status='skipped')を実ファイルの台帳に入れ、
 // statusHandler を通し、その JSON をそのまま画面の描画関数に渡して **緑にならないこと** を見る。
 //
 // ★否定対照: git show HEAD:server/db/generatorStore.ts / HEAD:web/components/apiStatusPane.ts に
@@ -53,7 +53,7 @@ async function ledger(): Promise<Parameters<typeof renderGeneratorDot>[0]> {
   return (res._json as { generatorLedger: Parameters<typeof renderGeneratorDot>[0] }).generatorLedger;
 }
 
-describe('★停止中の生成器は画面で緑にならない(実DB→実ハンドラ→実描画)', () => {
+describe('★停止中の分析用は画面で緑にならない(実DB→実ハンドラ→実描画)', () => {
   const savedVariant = process.env.MONITOR_VARIANT;
   const savedDb = process.env.JP225_GENERATOR_DB;
   let dir: string;

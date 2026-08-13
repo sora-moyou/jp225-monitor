@@ -4,9 +4,9 @@ import type { Request, Response } from 'express';
 // ─── POST /api/scalp-plan: 見送り(none)の経路を応答に載せる ────────────────────
 //
 // 何を守っているか:
-//   direction:'none' のとき、外の記録側(別プロセスの提案生成器)は
+//   direction:'none' のとき、外の記録側(別プロセスの分析用)は
 //     'ai'(AI が見送った) / 'lc'(LC上限で落ちた) / 'lcFloor'(下限未満で落ちた) / 'trend'(トレンド veto)
-//   を **区別できなければならない**。区別できないと、2本の生成器の見送り率の差が
+//   を **区別できなければならない**。区別できないと、2本の分析用の見送り率の差が
 //   「AI の適応」なのか「enforce の副作用」なのか判別不能になり、実験の主要比較が成立しない。
 //   monitor 自身のシグナルエンジンは engine.ts でこれをログに出しているが、HTTP 越しには届かない。
 //
@@ -104,7 +104,7 @@ describe('/api/scalp-plan — 見送り理由(決定台帳)の返却', () => {
     expect((res._json as { rangeAnomaly?: unknown }).rangeAnomaly).toEqual({ kind: 'inverted' });
   });
 
-  it('exitVariant だけ指定した呼び出しでも載る(生成器は caller か exitVariant を必ず指定する)', async () => {
+  it('exitVariant だけ指定した呼び出しでも載る(分析用は caller か exitVariant を必ず指定する)', async () => {
     const res = mockRes();
     await scalpPlanHandler(reqOf({ exitVariant: 'current' }), res);
     expect((res._json as { noneReason?: string }).noneReason).toBe('lcFloor');

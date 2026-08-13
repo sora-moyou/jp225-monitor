@@ -37,7 +37,7 @@ import {
 // buildMonitorContext + データツール(explain_move/query_alerts/price_history/web_search)を使って
 // ライブデータに基づく構造化プランを返す。既存の chat と同じプロバイダ選択・キー解決・tool ループを再利用する。
 
-/** レンジ両面ストラドルの1レッグ(実験・紙で別枠計測)。現在値の上/下に1つずつ置く。
+/** レンジ両面ストラドルの1レッグ(実験・仮想取引で別枠計測)。現在値の上/下に1つずつ置く。
  *  side=buy/sell × type=limit(レンジ内逆張り指値)/stop(抜け追随逆指値)。entry=新規価格・stopLoss=初期LC。
  *  ★v0.9.70: stopLoss(価格)は **内部表現のまま不変**。LLM から受け取るのは lcWidth(正の幅)だけで、
  *   符号は parse がここで付ける(=逆位置が構造的に表現できない)。 */
@@ -132,8 +132,8 @@ export interface LegDrop {
 //   scalpPlanRunner が caller!=='default' のときだけ載せる(既存の呼び出し元のオブジェクトは byte 不変)。
 //   記録専用で、判定にも決済にも一切影響しない。型は撮影側(chart/chartShot.ts)が SSOT。
 // contextOmitted: ★プロンプトから **外した** 文脈ブロックの名前(記録専用)。
-//   scalpPlanRunner が caller!=='default'(生成器)のときだけ載せる=既存の呼び出し元は byte 不変。
-//   生成器では両腕とも紙成績の履歴を外している(母集団の独立性。理由は scalpPlanRunner.ts の
+//   scalpPlanRunner が caller!=='default'(分析用)のときだけ載せる=既存の呼び出し元は byte 不変。
+//   分析用では両腕とも仮想取引の成績の履歴を外している(母集団の独立性。理由は scalpPlanRunner.ts の
 //   GENERATOR_OMITTED_CONTEXT)。この情報が無い記録は「外していない版で取った標本」を意味する。
 // legDrops(v0.9.57): ★**片レッグだけ** 落ちた回も含む、レッグ1本ごとの脱落理由(記録のみ)。
 //   noneLegs(両レッグ落ち=none のときだけ)とは別のフィールドで、意味も形も互いに変えない。
@@ -250,7 +250,7 @@ function pushLegDrop(
 // ★対策の型: 規則の遵守を求めるのをやめ、**逆位置を表現不能にする**。
 //   LLM が出すのは正の数の幅だけ(lcWidthForLimit / lcWidthForStop / range の lcWidth)。
 //   損切り価格は stopLossFromWidth が direction/side から一意に導く=逆側の価格を書く場所が存在しない。
-//   ★parse から後ろ(AiPlan・signal_plans の列・SSE・紙エンジン・トレード側)は今までどおり **価格** を扱う。
+//   ★parse から後ろ(AiPlan・signal_plans の列・SSE・仮想取引エンジン・トレード側)は今までどおり **価格** を扱う。
 //
 // ★効き目の実測(同じスナップショット・各回の settings_json の実効下限/上限で評価):
 //   逆位置171レッグを新実装に通すと **採用49 / 下限(lcFloor)で落ちる112 / 上限で落ちる2 / 幾何・幅0で落ちる8**。
@@ -730,7 +730,7 @@ export function buildScalpQuestion(
   //   ceilingYen には委任時 **実効上限**(安全上限 or 背骨)が入る=保存値はここまで届かない。
   lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
 ): string {
-  // レンジ両面ストラドルの追記(実験・紙で別枠計測)。rangeEnabled=false のときは range を禁止する。
+  // レンジ両面ストラドルの追記(実験・仮想取引で別枠計測)。rangeEnabled=false のときは range を禁止する。
   // ★v0.9.44: 1行に詰め込んでいた説明を複数行の箇条書きに開き、「fade / breakout の2択(組で選ぶ)」に書き直す。
   //   従来は4通り(上下×指値/逆指値)を並べていたため、AI が組を混ぜて「下=買い逆指値」のような
   //   定義上ありえない配置(lower.entry<現在値 と両立しない)を出し、parse で落ちて見送りになっていた。
@@ -912,7 +912,7 @@ function buildScalpSystemPromptBody(
   techLine: string,
   lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
 ): string {
-  // レンジ両面ストラドル(実験・紙で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
+  // レンジ両面ストラドル(実験・仮想取引で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
   // ★v0.9.44: 1行に詰め込んでいたレンジ指示を複数行に開き、「fade / breakout の2択(組で選ぶ)」へ書き直す。
   //   4通り(上下×指値/逆指値)の並列表記だと AI が組を混ぜて「下=買い逆指値」等の定義上ありえない配置を出し、
   //   lower.entry<現在値 と両立せず parse で落ちて見送りになっていた。
@@ -1220,8 +1220,8 @@ export function parseAiConfidence(v: unknown): number | undefined {
 /** 損切り(stopLoss)がエントリーの正しい外側にあるか(幾何・向き検証)。純関数。
  *  買い(long)は損切りがエントリーの「下」、売り(short)は「上」に置く(建玉を保護する向き)。
  *  境界(stopLoss===entry=幅0)は実質ストップにならないので不正(false)。
- *  ★実害バグ対策: 買いなのに損切りが上(逆側)のプランは trade2 のサニティが拒否し実弾ゼロになる。
- *    発生源(parse/enforce)でこの向きを検証し、違反レッグを落とすことで紙エンジンと実弾を一致させる。 */
+ *  ★実害バグ対策: 買いなのに損切りが上(逆側)のプランは trade2 のサニティが拒否し実取引ゼロになる。
+ *    発生源(parse/enforce)でこの向きを検証し、違反レッグを落とすことで仮想取引エンジンと実取引を一致させる。 */
 export function stopSideOk(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
   return side === 'buy' ? stopLoss < entry : stopLoss > entry;
 }
@@ -1645,7 +1645,7 @@ export interface ScalpPlanInput {
   /** 生きたトレンド(勢い)のヒント。runner が barsFor から computeRegime で算出して渡す。
    *  strong のときトレンドに逆行するフェード新規を enforcePlanConstraints が落とす。未指定は veto なし(現行挙動)。 */
   trend?: TrendHint;
-  /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル設定(=現行挙動と byte 一致・実売買A) /
+  /** ★v0.8.2: 設定プロファイル。未指定/'A'=グローバル設定(=現行挙動と byte 一致・実取引A) /
    *  'B'=System B の独立設定(signalB 優先→未設定はグローバルへフォールバック)。各 knob の解決だけが切り替わる。 */
   profile?: SignalProfile;
   /** ★ドテン(保有中の反転評価=held-eval)。渡すとプロンプトに保有中の建玉を注入し「反転が妥当な場面だけ反対 direction を返してよい」
@@ -1656,16 +1656,16 @@ export interface ScalpPlanInput {
    *  未指定(通常)は注入なし=systemPrompt は従来と byte 一致。rangeReevalEnabled=false は engine が渡さないので常に未指定。 */
   armedContext?: { mode: 'range-fade'; ageMs: number; avgMs: number };
   /** ★呼び出し元(LLM プロバイダ・プールの選択キー)。未指定は 'default' = 従来と完全に同じ経路・同じ状態。
-   *  'generator'(分析用の提案生成器)のときだけ generator プールを使い、その 429 は default を止めない。
+   *  'generator'(分析用の分析用)のときだけ generator プールを使い、その 429 は default を止めない。
    *  ★プロンプト・パース・enforce には一切影響しない(どのプールを使うかだけが変わる)。 */
   caller?: LlmCaller;
   /** ★決済仕様の「名前付き変種」。**未指定は従来どおり**(describeExitLogic() を使う=プロンプト byte 不変)。
-   *  指定するとその変種の決済仕様説明を AI に渡す(分析用の提案生成器②が候補仕様で提案させるため)。
+   *  指定するとその変種の決済仕様説明を AI に渡す(分析用の分析用②が候補仕様で提案させるため)。
    *  ★名前だけを受け取り、実数値は非公開側(signalTrade/exit/private.ts)が解決する=数値は外に出ない。
    *  ★プロンプトの決済ブロック **だけ** が変わる。parse/enforce/実際の決済計算には一切影響しない
-   *    (実弾の決済は常に現行仕様の computeExitStop が算出する)。 */
+   *    (実取引の決済は常に現行仕様の computeExitStop が算出する)。 */
   exitVariant?: ExitVariant;
-  /** ★v0.9.75: 質問文の変種。**未指定は 'v1' = 従来と byte 一致**(実弾につながる全経路は不変)。
+  /** ★v0.9.75: 質問文の変種。**未指定は 'v1' = 従来と byte 一致**(実取引につながる全経路は不変)。
    *  'v2' のとき user プロンプト(質問文＋JSON契約)だけが差し替わる。system プロンプト・parse・enforce・
    *  実際の決済計算には一切影響しない。★ExitVariant とは **別の軸** なので、同時に指定してよい。 */
   promptVariant?: PromptVariant;
@@ -2080,7 +2080,7 @@ export const LC_YEN_MAX = 300;
 //   POST /api/scalp-plan は時間外でも到達する。よって **経過時間の上限** も要る。
 //   ※旧記述「trade2 が叩く」は誤り(2026-08-02 に実確認して訂正)。trade2 は monitor のシグナルを
 //     SSE/`/api/current-signal` で追従するだけで /api/scalp-plan は叩かない(コード上のヒットはコメントのみ)。
-//     現在この route を叩くのは手動診断と、これから追加する提案生成器(caller='generator')。
+//     現在この route を叩くのは手動診断と、これから追加する分析用(caller='generator')。
 //
 /** refPrice として許容する価格の最大経過時間[ms]。
  *  根拠: 価格取得間隔 pricePollMs の設定上限が 60,000ms、全滅時のバックオフ PRICE_BACKOFF_MS の最大も
@@ -2225,7 +2225,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★バンドウォーク成立中だけの緩和注記(距離と節目のみ)。非成立/未指定は '' = 従来と byte 一致。
   const bandwalkNote = buildBandwalkNote(input.bandwalk);
   const monitorCtx = buildMonitorContext(now);
-  // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実弾につながる全経路はここを通っても変わらない)。
+  // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実取引につながる全経路はここを通っても変わらない)。
   //   'v2' は user プロンプトの本体(質問文+JSON契約)だけを差し替える。system プロンプト側の規則
   //   (buildScalpSystemPrompt / strategySpec / delegationNote)は **触らない** = 動かす変数を1つに保つ。
   //   ★v2 は自前で JSON 契約を持つので、v1 の scalpJsonInstruction は連結しない(2つ並べると契約が二重になる)。

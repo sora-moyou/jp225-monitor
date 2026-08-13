@@ -2,13 +2,13 @@
 //
 // ■ なぜ要るか
 //   collector は %APPDATA%/jp225-monitor/collector.pid を書くので「居るのか / 居ないのか」を
-//   外から1秒で確かめられる。生成器は **何も残していなかった** ため、
+//   外から1秒で確かめられる。分析用は **何も残していなかった** ため、
 //   「起動していない」のか「待機していただけ」なのかを外から区別する手段がゼロで、
-//   実売買PCの調査が長引いた(共有DBのハートビートは生成器自身が書けるときしか出ない)。
+//   実取引PCの調査が長引いた(共有DBのハートビートは分析用自身が書けるときしか出ない)。
 //
 // ■ ★新しい機構は作らない
 //   collector が既にやっている流儀(pid ファイル + kill(pid,0) の生存判定 + 生きていれば起動しない)を
-//   そのまま部品にして、collector と生成器の **両方が同じ実装を使う**(知識を複製しない)。
+//   そのまま部品にして、collector と分析用の **両方が同じ実装を使う**(知識を複製しない)。
 //   collector/lock.ts はこのモジュールの薄い包み。
 //
 // ■ ★pid の同一性検証(Rust 側と同じ考え方に揃える)
@@ -117,7 +117,7 @@ export function readPidFile(path: string): number | null {
 
 /** ロック取得を試みる。別の生存インスタンスがあれば false。成功時は自分のpidを書く。
  *  @param alive 生存判定。既定は従来どおり kill(pid,0)。
- *    ★pid 再利用まで見るなら `isAliveAsImage` を渡す(生成器はそうしている)。 */
+ *    ★pid 再利用まで見るなら `isAliveAsImage` を渡す(分析用はそうしている)。 */
 export function acquirePidLock(
   fileName: string, pid: number = process.pid, alive: (pid: number) => boolean = isAlive,
 ): boolean {

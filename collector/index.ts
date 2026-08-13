@@ -20,7 +20,7 @@ import {
   writeTickArchiveHeartbeat, formatTickArchiveStatus, TICK_ARCHIVE_HEARTBEAT_MS,
   type TickArchiveExportInfo, type TickArchiveErrorInfo,
 } from '../server/db/tickArchiveHeartbeat.js';
-// ★台帳(提案生成器/影)の同期フォルダへの書き出し。ティックの日次書き出しと同じ置き場所・同じ間隔で、
+// ★台帳(分析用/影)の同期フォルダへの書き出し。ティックの日次書き出しと同じ置き場所・同じ間隔で、
 //   状態も同じ共有DB(jp225.db)の meta に残す。設計は server/db/ledgerExport.ts の冒頭参照。
 import { runLedgerExport, writeLedgerExportStatus, formatLedgerExportStatus, writeLedgerExportStatusFile } from '../server/db/ledgerExport.js';
 import { recordFeedPrices } from './record.js';
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
 
   // v0.7.20(全銘柄 HTTP 化 / no-Yahoo): 起動時 Yahoo backfill を全廃した。全 4 銘柄(NIY=F/YM=F/NQ=F/JPY=X)の
   // bars_1m は公開 HTTP のリアルタイム tick 経路(recordFeedPrices)だけで積む。ウォームアップは収集 DB からの
-  // warmFromDb で賄う(Yahoo の遅延足を混ぜない = 実弾安全 v0.7.9 を全銘柄へ徹底)。
+  // warmFromDb で賄う(Yahoo の遅延足を混ぜない = 実取引安全 v0.7.9 を全銘柄へ徹底)。
   setCooldownMs(resolveCooldownMin() * 60_000);   // match the monitor's configured cooldown (before AlertCollector, which reads it)
   warmFromDb();                                    // freshness-gated seed of the feedBars realtime buffer (reused, tested)
   const alerts = new AlertCollector(db);
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
     // ★共有DB(jp225.db)側の保持方針は **一切変えない**: 4銘柄とも従来どおり3日で消す。
     //   長期保管は別ファイル(ticks_archive.db)の役目で、そちらには prune を置かない。
     //   共有DBを太らせると trade2 の 30分ごとの `VACUUM INTO`(実測 102MB で約1.3秒の同期ブロック)が
-    //   重くなり、実弾のフィード/発注/約定検知を止めてしまう。
+    //   重くなり、実取引のフィード/発注/約定検知を止めてしまう。
     if (Date.now() - lastPrune > 60_000) {
       pruneTicks(db, Date.now() - 3 * 24 * 60 * 60 * 1000);
       lastPrune = Date.now();
@@ -203,7 +203,7 @@ async function main(): Promise<void> {
         lastTickArchiveError = { at: Date.now(), where: 'export', message };
         console.error('[collector] tick export error:', message);
       }
-      // ★台帳(提案生成器・影)も同じ機会に同期フォルダへスナップショットする。
+      // ★台帳(分析用・影)も同じ機会に同期フォルダへスナップショットする。
       //   1年分の標本がこの PC の1ファイルにしか無い状態を作らない(過去に「別PCの書き出しが空」の実事故)。
       //   原本は readOnly で開き、一時ファイル → rename。結末(件数つき)は共有DBの meta に残すので、
       //   trade2 の 30分スナップショット経由で **別PCからでも** 成否が読める。

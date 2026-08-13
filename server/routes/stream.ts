@@ -37,7 +37,7 @@ export function streamHandler(req: Request, res: Response): void {
 
   // トレードシグナルの現在状態を接続直後に一回送る(engine の tick broadcast を取りこぼす新規接続を補う)。
   res.write(`event: signalTrade\ndata: ${JSON.stringify(getSignalTradeState())}\n\n`);
-  // ★v0.8.2: System B(紙専用)の現在状態も接続直後に一回送る(A とは別イベント。currentSignal は含まない)。
+  // ★v0.8.2: System B(仮想取引専用)の現在状態も接続直後に一回送る(A とは別イベント。currentSignal は含まない)。
   res.write(`event: signalTradeB\ndata: ${JSON.stringify(getSignalTradeStateB())}\n\n`);
 
   register(res);

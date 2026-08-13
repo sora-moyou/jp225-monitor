@@ -225,7 +225,7 @@ describe('stale plan veto(A・flat→ARM): 通過済みレッグを武装しな�
   });
 });
 
-describe('stale plan veto(B・紙専用)も同じ規約で適用される', () => {
+describe('stale plan veto(B・仮想取引専用)も同じ規約で適用される', () => {
   it('B でも通過済みレッグは武装しない(単レッグなら ARM しない)', async () => {
     const limitOnly: AiPlan = { direction: 'buy', limitEntry: 37950, stopLossForLimit: 37900, rationale: 'r', refPrice: REF };
     mockRunner.mockResolvedValue({ ok: true, plan: limitOnly });
