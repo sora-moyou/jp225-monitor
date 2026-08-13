@@ -38,21 +38,29 @@ const res = (status: number, body: unknown): Response =>
   ({ ok: status === 200, status, json: async () => body }) as unknown as Response;
 
 describe('planCycleArms — 直列の構成', () => {
-  it('通常のサイクルは ① current → ② candidate-a の2本(この順)', () => {
+  // ★v0.9.75: 候補の腕を **決済仕様('candidate-a')から 質問文('prompt-v2')へ載せ替えた**。
+  //   決済仕様の A/B は実測3セッション(08-10〜08-12)でどの指標も動かなかったので畳んでいる。
+  it('通常のサイクルは ① current → ② prompt-v2 の2本(この順)', () => {
     expect(planCycleArms(1, 5)).toEqual([
-      { arm: 'current', exitVariant: 'current', seq: 0 },
-      { arm: 'candidate-a', exitVariant: 'candidate-a', seq: 1 },
+      { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 },
+      { arm: 'prompt-v2', exitVariant: 'current', promptVariant: 'v2', seq: 1 },
     ]);
   });
 
   it('★5サイクルに1回だけ ①\' 対照が ① と ② の **あいだ** に入る', () => {
     expect(planCycleArms(0, 5)).toEqual([
-      { arm: 'current', exitVariant: 'current', seq: 0 },
-      { arm: 'control', exitVariant: 'current', seq: 1 },
-      { arm: 'candidate-a', exitVariant: 'candidate-a', seq: 2 },
+      { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 },
+      { arm: 'control', exitVariant: 'current', promptVariant: 'v1', seq: 1 },
+      { arm: 'prompt-v2', exitVariant: 'current', promptVariant: 'v2', seq: 2 },
     ]);
-    expect(planCycleArms(5, 5).map(a => a.arm)).toEqual(['current', 'control', 'candidate-a']);
-    for (const i of [1, 2, 3, 4, 6]) expect(planCycleArms(i, 5).map(a => a.arm)).toEqual(['current', 'candidate-a']);
+    expect(planCycleArms(5, 5).map(a => a.arm)).toEqual(['current', 'control', 'prompt-v2']);
+    for (const i of [1, 2, 3, 4, 6]) expect(planCycleArms(i, 5).map(a => a.arm)).toEqual(['current', 'prompt-v2']);
+  });
+
+  it('★①と②の違いは質問文の1点だけ(決済仕様は3本とも同じ)', () => {
+    const arms = planCycleArms(0, 5);
+    expect(new Set(arms.map(a => a.exitVariant))).toEqual(new Set(['current']));
+    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v2']);
   });
 
   it('★対照は ① と **同じ exitVariant** を送る(同じ入力に2回問うのが定義)', () => {
@@ -62,7 +70,7 @@ describe('planCycleArms — 直列の構成', () => {
   });
 
   it('controlEvery=0 で対照なし', () => {
-    expect(planCycleArms(0, 0).map(a => a.arm)).toEqual(['current', 'candidate-a']);
+    expect(planCycleArms(0, 0).map(a => a.arm)).toEqual(['current', 'prompt-v2']);
   });
 });
 
@@ -95,7 +103,7 @@ describe('classifyAttempt — 結末を理由別に分ける', () => {
 });
 
 describe('runArm — ★429-busy だけ 15〜20秒後に1回だけ再試行', () => {
-  const req = { arm: 'current' as const, exitVariant: 'current' as const, seq: 0 };
+  const req = { arm: 'current' as const, exitVariant: 'current' as const, promptVariant: 'v1' as const, seq: 0 };
 
   it('busy → 待って再試行し、成功したら plan として記録・再試行の跡を残す', async () => {
     const calls: number[] = [];
@@ -145,14 +153,15 @@ describe('runArm — ★429-busy だけ 15〜20秒後に1回だけ再試行', ()
     let seenUrl = ''; let seenBody = '';
     await runArm(cfg, deps({
       fetcher: async (url, init) => { seenUrl = String(url); seenBody = String(init?.body ?? ''); return res(200, { ok: true, plan: {} }); },
-    }), { arm: 'candidate-a', exitVariant: 'candidate-a', seq: 1 });
+    }), { arm: 'prompt-v2', exitVariant: 'current', promptVariant: 'v2', seq: 1 });
     expect(seenUrl).toBe('http://mon/api/scalp-plan');
-    expect(JSON.parse(seenBody)).toEqual({ caller: 'generator', exitVariant: 'candidate-a' });
+    // ★送るのは名前だけ(決済の実数値も質問文の本文も載せない)。
+    expect(JSON.parse(seenBody)).toEqual({ caller: 'generator', exitVariant: 'current', promptVariant: 'v2' });
   });
 });
 
 describe('toProposalRow — 提案・見送り理由・撮影の同一性を漏れなく写す', () => {
-  const req = { arm: 'candidate-a' as const, exitVariant: 'candidate-a' as const, seq: 2 };
+  const req = { arm: 'candidate-a' as const, exitVariant: 'candidate-a' as const, promptVariant: 'v1' as const, seq: 2 };
   const outcome = (body: unknown) => ({
     attempt: classifyAttempt(200, body),
     requestedAt: 1_700_000_000_000, respondedAt: 1_700_000_012_000,
@@ -231,8 +240,10 @@ describe('runCycle — 直列に回して腕ごとの行を返す', () => {
         return res(200, { ok: true, plan: { direction: 'none', refPrice: 1 }, exitVariant: b.exitVariant, chartShot: { shotId: 'same-1', ageMs: 0, origin: 'fresh' } });
       },
     }), { epoch: 'g1:x', cycleId: 'c-0', cycleIndex: 0 });
-    expect(order).toEqual(['current', 'current', 'candidate-a']);
-    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'candidate-a']);
+    // ★3本とも決済仕様は 'current'(動かす変数は質問文だけ)。
+    expect(order).toEqual(['current', 'current', 'current']);
+    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'prompt-v2']);
+    expect(rows.map(r => r.promptVariant)).toEqual(['v1', 'v1', 'v2']);
     expect(new Set(rows.map(r => r.cycleId))).toEqual(new Set(['c-0']));
     // ★同じ1枚を見たことが記録から言える
     expect(new Set(rows.map(r => r.shotId))).toEqual(new Set(['same-1']));

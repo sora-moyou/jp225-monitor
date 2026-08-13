@@ -128,7 +128,11 @@ describe('/api/scalp-plan — exitVariant(決済仕様の変種)', () => {
       buildScalpPlanMock.mockResolvedValue({ ok: false, error: 'chart-not-generated' });
       const res = mockRes();
       await scalpPlanHandler(reqOf({ exitVariant: 'candidate-a' }), res);
-      expect(res._json).toEqual({ ok: false, error: 'chart-not-generated', exitVariant: 'candidate-a' });
+      // ★v0.9.75: 軸が2つになったので、応答は **両方の変種名** を明示する
+      //   (片方だけだと台帳から「どの質問文で得た標本か」が読めない)。
+      expect(res._json).toEqual({
+        ok: false, error: 'chart-not-generated', exitVariant: 'candidate-a', promptVariant: 'v1',
+      });
     });
   });
 
@@ -159,5 +163,60 @@ describe('/api/scalp-plan — exitVariant(決済仕様の変種)', () => {
       expect(s).not.toMatch(/key|sk-|api[-_]?key/i);
       expect(s).not.toMatch(/\d{2,}/);   // 数値の羅列(決済ラダー等)が出ていない
     });
+  });
+});
+
+// ─── ★promptVariant(質問文の変種・v0.9.75)────────────────────────────────────
+//
+// exitVariant と **同じ作法** で受理する(名前だけ・未知は400・応答にエコー)。
+// ★否定対照: promptVariant を知らない版の route では、未知フィールドとして無視されるので
+//   「buildScalpPlan へ渡る」「400 で拒否する」「応答に載る」がいずれも赤になる。
+describe('/api/scalp-plan — promptVariant(質問文の変種)', () => {
+  /** buildScalpPlan に渡された promptVariant。 */
+  const promptOfCall = (i: number) =>
+    (buildScalpPlanMock.mock.calls[i]![0] as { promptVariant?: string }).promptVariant;
+
+  beforeEach(() => {
+    buildScalpPlanMock.mockReset().mockResolvedValue(GOOD_PLAN);
+    resetGeneratorGateForTest();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  it('省略 → 渡らず(undefined)、応答も従来どおり(既定経路は byte 不変)', async () => {
+    const res = mockRes();
+    await scalpPlanHandler(reqOf({}), res);
+    expect(res._json).toEqual(GOOD_PLAN);
+    expect(promptOfCall(0)).toBeUndefined();
+  });
+
+  it("promptVariant:'v2' → 質問文の変種が渡り、応答にも両方の軸が載る", async () => {
+    const res = mockRes();
+    await scalpPlanHandler(reqOf({ caller: 'generator', promptVariant: 'v2' }), res);
+    expect(res._status).toBe(200);
+    expect(promptOfCall(0)).toBe('v2');
+    const j = res._json as { exitVariant?: string; promptVariant?: string };
+    expect(j.promptVariant).toBe('v2');
+    expect(j.exitVariant).toBe('current');   // 決済仕様は既定のまま(動かす変数は質問文だけ)
+  });
+
+  it('空文字は「省略」と同じ(400 にしない・渡さない)', async () => {
+    const res = mockRes();
+    await scalpPlanHandler(reqOf({ promptVariant: '' }), res);
+    expect(res._status).toBe(200);
+    expect(promptOfCall(0)).toBeUndefined();
+  });
+
+  it.each(['V2', 'v3', 'v2 ', 2, true])('不正な名前 %o は 400 で拒否し、AI を一切呼ばない', async (bad) => {
+    const res = mockRes();
+    await scalpPlanHandler(reqOf({ caller: 'generator', promptVariant: bad }), res);
+    expect(res._status).toBe(400);
+    expect(buildScalpPlanMock).not.toHaveBeenCalled();
+  });
+
+  it('query でも受理する(body と同じ扱い)', async () => {
+    const res = mockRes();
+    await scalpPlanHandler(reqOf({ caller: 'generator' }, { promptVariant: 'v2' }), res);
+    expect(promptOfCall(0)).toBe('v2');
   });
 });

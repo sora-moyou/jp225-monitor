@@ -33,7 +33,7 @@ const SETTINGS_JSON = {
   providers: [{ name: 'gemini', enabled: true, paused: false, pausedUntil: 0 }],
 };
 
-interface Seen { exitVariant: string; caller: string }
+interface Seen { exitVariant: string; promptVariant: string; caller: string }
 
 /** 偽 monitor。/api/scalp-plan は撮影の同一性つきの固定応答を返す(shotIds を順に消費)。 */
 function fakeMonitor(shotIds: string[], seen: Seen[]): Promise<{ server: Server; url: string }> {
@@ -101,7 +101,8 @@ describe('偽 monitor を立てて実走(実 HTTP + 実 SQLite・外部 LLM は�
     const epoch = computeEpoch(epochInput);
     // ★接頭辞は意図的に literal。方式(epoch の計算)を変えたらここが落ちるのが正しい
     //   (EPOCH_SCHEMA を参照すると、無自覚な方式変更を誰も検知できなくなる)。
-    expect(epoch).toMatch(/^g2:[0-9a-f]{16}$/);
+    // ★v0.9.75 で 'g2' → 'g3'(実験の軸を決済仕様 → 質問文へ載せ替え、腕の構成を epoch の入力に入れた)。
+    expect(epoch).toMatch(/^g3:[0-9a-f]{16}$/);
 
     const dbPath = join(dir, 'generator_proposals.db');
     const db = openGeneratorDb(dbPath);
@@ -126,11 +127,15 @@ describe('偽 monitor を立てて実走(実 HTTP + 実 SQLite・外部 LLM は�
     // サイクル0 = ①①'②(3本)、サイクル1 = ①②(2本)
     expect(countProposals(db)).toBe(5);
     expect(seen.map(s => s.caller)).toEqual(['generator', 'generator', 'generator', 'generator', 'generator']);
-    expect(seen.map(s => s.exitVariant)).toEqual(['current', 'current', 'candidate-a', 'current', 'candidate-a']);
+    // ★v0.9.75: 決済仕様は全腕 'current'。動かす変数は質問文だけ。
+    expect(seen.map(s => s.exitVariant)).toEqual(['current', 'current', 'current', 'current', 'current']);
+    expect(seen.map(s => s.promptVariant)).toEqual(['v1', 'v1', 'v2', 'v1', 'v2']);
 
-    const rows = db.prepare('SELECT arm, seq, status, direction, none_reason, shot_id, cycle_id FROM proposals ORDER BY id')
+    const rows = db.prepare('SELECT arm, seq, status, direction, none_reason, shot_id, cycle_id, prompt_variant FROM proposals ORDER BY id')
       .all() as unknown as Array<Record<string, unknown>>;
-    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'candidate-a', 'current', 'candidate-a']);
+    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'prompt-v2', 'current', 'prompt-v2']);
+    // ★送った質問文が **実DBの列** に落ちている(腕名からの推測ではない)
+    expect(rows.map(r => r.prompt_variant)).toEqual(['v1', 'v1', 'v2', 'v1', 'v2']);
     expect(rows.every(r => r.status === 'plan' && r.direction === 'none' && r.none_reason === 'ai')).toBe(true);
 
     // ★①①'②が同じ1枚を見たことが **記録** から言える

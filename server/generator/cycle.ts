@@ -24,32 +24,58 @@ import {
   CONTROL_ARM, CONTROL_EXIT_VARIANT,
   type GeneratorArm, type ProposalRow, type ProposalStatus,
 } from '../db/generatorStore.js';
+import { DEFAULT_PROMPT_VARIANT, type PromptVariant } from '../llm/promptVariant.js';
 import type { GeneratorConfig } from './config.js';
 import type { Fetcher } from './preflight.js';
 
-/** 候補の腕。★変種の一覧そのものではなく「この実験が回す腕」を明示する。 */
-const CANDIDATE_EXIT_VARIANT: ExitVariant = 'candidate-a';
+/** ★候補の腕(v0.9.75 で載せ替え)。
+ *
+ *  旧: 'candidate-a'(= 決済仕様の候補を教えた腕)。08-10〜08-12 の実測3セッションで
+ *      current と **どの指標も差が出なかった**(両レッグ同幅 88.1% vs 87.9% / LC幅中央値 60 vs 60 /
+ *      エントリー率 70.2% vs 71.4% / 片レッグ落ち 4.1% vs 3.0%)。「決済の説明を変えても入り方は変わらない」
+ *      という答えが出たので、この腕は畳む。
+ *  新: 'prompt-v2'(= 質問文 v2 を投げた腕)。**送る決済仕様は①と同じ 'current'**。違うのは質問文だけ。
+ *      主指標は両レッグ同幅率(実測 87〜92% = 幅を節目から導いていないことの代理指標)。 */
+const CANDIDATE_ARM: GeneratorArm = 'prompt-v2';
+const CANDIDATE_PROMPT_VARIANT: PromptVariant = 'v2';
 
 /** 1サイクルの中の1要求。 */
 export interface ArmRequest {
   arm: GeneratorArm;
-  /** 実際に送る変種。対照は①と同一('current')。 */
+  /** 実際に送る変種。対照も候補も①と同一('current')= 決済仕様はもう動かさない。 */
   exitVariant: ExitVariant;
+  /** ★実際に送る質問文。候補の腕だけ 'v2'、他は 'v1'(=従来の質問文)。 */
+  promptVariant: PromptVariant;
   /** サイクル内の直列順(0 起点)。 */
   seq: number;
 }
 
 /** ★1サイクルの構成(純関数)。
- *  ① 'current' → ①' 対照(controlEvery サイクルに1回) → ② 'candidate-a' の **この順** で直列。 */
+ *  ① 'current'(質問文 v1) → ①' 対照(controlEvery サイクルに1回・①と完全に同じ入力)
+ *  → ② 'prompt-v2'(質問文 v2・決済仕様は①と同じ)の **この順** で直列。
+ *  ★①と②の違いは **質問文だけ**(1変数)。①' は同じ入力へ2回問う LLM のばらつきの基準線。 */
 export function planCycleArms(cycleIndex: number, controlEvery: number): ArmRequest[] {
   const out: ArmRequest[] = [
-    { arm: DEFAULT_EXIT_VARIANT, exitVariant: DEFAULT_EXIT_VARIANT, seq: 0 },
+    { arm: DEFAULT_EXIT_VARIANT, exitVariant: DEFAULT_EXIT_VARIANT, promptVariant: DEFAULT_PROMPT_VARIANT, seq: 0 },
   ];
   if (controlEvery > 0 && cycleIndex % controlEvery === 0) {
-    out.push({ arm: CONTROL_ARM, exitVariant: CONTROL_EXIT_VARIANT, seq: out.length });
+    out.push({
+      arm: CONTROL_ARM, exitVariant: CONTROL_EXIT_VARIANT, promptVariant: DEFAULT_PROMPT_VARIANT, seq: out.length,
+    });
   }
-  out.push({ arm: CANDIDATE_EXIT_VARIANT, exitVariant: CANDIDATE_EXIT_VARIANT, seq: out.length });
+  out.push({
+    arm: CANDIDATE_ARM, exitVariant: DEFAULT_EXIT_VARIANT, promptVariant: CANDIDATE_PROMPT_VARIANT, seq: out.length,
+  });
   return out;
+}
+
+/** ★epoch に食わせる「この実験が回す腕の構成」(純関数・cycleIndex に依らない形)。
+ *  ここを epoch の入力に入れておかないと、腕を載せ替えても期が変わらず、**別の実験の標本が
+ *  同じ期に混ざる**(現に決済変種 → 質問文へ載せ替えた)。epoch.ts の思想どおり「入力が動けば期が動く」。 */
+export function describeArmPlan(): Array<{ arm: string; exitVariant: string; promptVariant: string }> {
+  return planCycleArms(0, 1).map(r => ({
+    arm: r.arm, exitVariant: r.exitVariant, promptVariant: r.promptVariant,
+  }));
 }
 
 /** 1回の要求の結末(記録に落とす前の生の分類)。 */
@@ -102,8 +128,10 @@ async function attemptOnce(cfg: GeneratorConfig, dep: CycleDeps, req: ArmRequest
     const res = await dep.fetcher(`${cfg.monitorUrl}/api/scalp-plan`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      // ★caller と exitVariant だけを送る。決済の実数値はリクエストに載せない(名前だけ)。
-      body: JSON.stringify({ caller: 'generator', exitVariant: req.exitVariant }),
+      // ★caller と2つの変種名だけを送る。決済の実数値も質問文の本文もリクエストに載せない(名前だけ)。
+      body: JSON.stringify({
+        caller: 'generator', exitVariant: req.exitVariant, promptVariant: req.promptVariant,
+      }),
       signal: AbortSignal.timeout(cfg.requestTimeoutMs),
     });
     let json: unknown = null;
@@ -159,15 +187,24 @@ export function toProposalRow(
   const session = classifySession(outcome.requestedAt);
   // ★変種のエコーが送った名前と違えば、実験は測っているつもりのものを測っていない。無音にしない。
   const echoed = str(b?.exitVariant);
-  const mismatch = echoed !== null && echoed !== req.exitVariant
+  const exitMismatch = echoed !== null && echoed !== req.exitVariant
     ? `variant-mismatch: 送信 ${req.exitVariant} / 応答 ${echoed}`
     : null;
-  if (mismatch) console.error(`[generator] ★${mismatch}(この標本は候補仕様を測っていない可能性)`);
+  // ★質問文の変種も同じ作法で突き合わせる。エコーが送った名前と違えば、②は v2 を測っていない
+  //   (= 腕名だけが 'prompt-v2' で中身は v1 という、いちばん気づけない壊れ方)。
+  const echoedPrompt = str(b?.promptVariant);
+  const promptMismatch = echoedPrompt !== null && echoedPrompt !== req.promptVariant
+    ? `prompt-variant-mismatch: 送信 ${req.promptVariant} / 応答 ${echoedPrompt}`
+    : null;
+  const mismatch = exitMismatch ?? promptMismatch;
+  if (mismatch) console.error(`[generator] ★${mismatch}(この標本は候補を測っていない可能性)`);
   return {
     epoch,
     cycleId,
     arm: req.arm,
     exitVariant: req.exitVariant,
+    // ★送った質問文を行そのものに残す(腕名から推測しない)。腕の構成は実験ごとに変わる。
+    promptVariant: req.promptVariant,
     seq: req.seq,
     sessionDate: session?.sessionDate ?? null,
     requestedAt: outcome.requestedAt,

@@ -162,7 +162,10 @@ describe('/api/scalp-plan — 見送り理由(決定台帳)の返却', () => {
     //   contextAt=monitor の時計の読み(決済仕様からは導かれない)/ promptFp=一方向ハッシュ(hex)。
     //   hex の中の数字列がたまたま実数値と一致しても意味は無く、混ぜるとこの検査は
     //   「混ざったか」ではなく偶然を測ることになる。混入の検査は残りの本体に対して従来どおり効く。
-    const { contextAt, promptFp, ...rest } = res._json as Record<string, unknown>;
+    // ★promptVariant('v1'/'v2')は **名前** であって数値ではない。走査から外し、形だけ固定する
+    //   (外さないと名前に含まれる 1 / 2 を「混ざった数値」と読んでしまい、検査が偶然を測り始める)。
+    const { contextAt, promptFp, promptVariant, ...rest } = res._json as Record<string, unknown>;
+    expect(promptVariant).toBe('v1');
     expect(typeof contextAt).toBe('number');
     expect(promptFp === undefined || /^sp1:[0-9a-f]{16}$/.test(String(promptFp))).toBe(true);
     const s = JSON.stringify(rest);

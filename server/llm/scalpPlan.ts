@@ -16,6 +16,7 @@ import type { ChartShotIdentity } from '../chart/chartShot.js';
 import { callWithFallback, isLLMEnabled, isVisionCapableProvider, formatErrForLog, NoFallbackError } from './providers.js';
 import { sanitizeErrorForOutput } from './redact.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
+import { DEFAULT_PROMPT_VARIANT, type PromptVariant } from './promptVariant.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 // ★RECORD-ONLY: 送るプロンプトの一方向指紋だけを作る純関数(本文はこのファイルの外へ出さない)。
 import { promptFingerprint } from './promptFingerprint.js';
@@ -610,6 +611,111 @@ export function lcRangePhrase(floorYen: number, ceilingYen: number, ceil: LcCeil
   return ceil.delegated
     ? `下限${floorYen}円〜${ceil.capLabel}${ceilingYen}円 の範囲で、相場構造(節目/スイングの位置)に応じてあなたが決め`
     : `${floorYen}〜${ceilingYen}円に収め`;
+}
+
+/** ★v2(実験中・実行時には未接続): ユーザー指示で全面的に簡素化した質問文。
+ *
+ *  なぜ作るか(2026-08-11):
+ *    現行 buildScalpQuestion は 5,475文字・★24個・「必ず/厳禁/絶対/無条件/例外なし」15個まで
+ *    肥大した。その大半は **6版にわたる「規則を足す」修正の瘢痕** で、実測ではそのたびに
+ *    失敗が消えず **別の形へ移動** しただけだった(下限55固着 → 中間60固着 / 売りを名指しで直す
+ *    → 買いへ移動 / 式を書かせる → 式は正しく符号だけ誤り)。
+ *    唯一 完全に効いたのは v0.9.70 の「**書けなくする**」(損切りの符号をコードが決める)だけ。
+ *
+ *  よって v2 の設計方針は「禁止を並べない・システムの分担を明示する」:
+ *    - AI が出すのは 方向 / エントリー価格 / **LC幅(正の数)** / 根拠 の4つだけ
+ *    - 向き・距離・幅の範囲は **コードが検証** する(既に enforce/parse が持っている)ので繰り返さない
+ *    - 「あなたが気にしなくてよいこと」を最後に明示し、AI に二重の負担をさせない
+ *
+ *  ★実行時には接続しない(既定は v1 のまま)。オフライン再生ハーネスで v1 と並べて測ってから決める。
+ *  ★ceilYen は **実行時に解決した実効上限** を渡すこと(ハードコード禁止)。設定を変えたら
+ *    プロンプトも追随する = 宣言と実体をずらさない(v0.9.72 の教訓)。
+ *  ★showRange=false のとき、幅の範囲は AI に見せない(案B)。実測で「55〜65 を見せたら中間の60に
+ *    62%集中」が起きているため、範囲の提示そのものが固着源かを切り分けられるようにしてある。
+ *    案A と案B は **この1点しか違わない**(1変数ずつ動かす)。
+ */
+export function buildScalpQuestionV2(opts: {
+  floorYen: number;
+  ceilYen: number;
+  /** false なら幅の範囲を提示しない(案B)。既定 true = ユーザー提案どおりの案A。 */
+  showRange?: boolean;
+  /** ドテン許可時のみ注入(engine が保有中に呼ぶ経路)。 */
+  dotenEnabled?: boolean;
+  /** レンジ(両面)許可時のみ注入。稼働機は現在 false。 */
+  rangeEnabled?: boolean;
+  /** ★計画時に見た現在値。v1 の scalpJsonInstruction と同じく refPrice を返させるために渡す
+   *  (v2 は自前で JSON 契約を持つので、渡さないと台帳の ref_price が候補腕だけ欠測になる)。 */
+  refPrice?: number;
+}): string {
+  const { floorYen, ceilYen, showRange = true, dotenEnabled = false, rangeEnabled = false, refPrice } = opts;
+  const width = showRange
+    ? `**【厳格ルール】幅は ${floorYen}円以上 ${ceilYen}円以下。範囲外は不可。**`
+    : '**幅は、損切りを置く節目までの距離から決めてください。**\n'
+      + '「いくらにするか」ではなく「どこに置くか」を先に決め、その距離を円で答えます。\n'
+      + '狭すぎる幅・広すぎる幅はシステムが自動で除きます(範囲は非公開)。';
+  const doten = dotenEnabled
+    ? '\n### ドテン\n保有中に相場つきが変わったと判断したら、反対方向への転換(ドテン)を提案してよい。\n'
+    : '';
+  const range = rangeEnabled
+    ? '\n### レンジ\n明確な方向性が無く上下に反応帯があると判断したら direction:"range" を選び、\n'
+      + '現在値の上と下に1本ずつ、指値でもブレイク新規でも**自由に**提案してよい。\n'
+      + '上のレッグは現在値より上、下のレッグは現在値より下に置くこと。\n'
+    : '';
+  return [
+    'あなたは日経225先物(ミニ/マイクロ)のスキャルピングを行うトレーダーです。',
+    '上に与えたデータだけを根拠に、いまの戦略を JSON で答えてください。',
+    '',
+    '### 1. 方向',
+    '買い(buy) / 売り(sell) のどちらかを選び、理由を述べてください。',
+    '良い場面が無ければ無理に作らず none で見送って構いません。',
+    '',
+    '### 2. エントリー価格',
+    '現在価格(refPrice)を基準に、次の2つを出してください。',
+    '- limitEntry … 押し目/戻りを待って入る指値',
+    '- stopEntry  … 節目を抜けたら入るブレイク新規',
+    '',
+    '先に約定した方で取引します。片方だけでも構いません。',
+    'それぞれ、その価格にした狙いを述べてください。',
+    '',
+    '**節目ちょうどには置かないこと。** 指値は刺さらず、ブレイク新規はだましに遭います。',
+    '',
+    '### 3. ロスカット幅',
+    'limitEntry と stopEntry のそれぞれについて、損切りまでの幅を**円で**答えてください',
+    '(lcWidthForLimit / lcWidthForStop)。',
+    '',
+    width,
+    doten + range,
+    '### 出力(この JSON だけを返す。前後に文章を付けない)',
+    '',
+    '```json',
+    '{',
+    // ★regime / confidence / refPrice は **記録のための3つ**(v1 の JSON 契約と同じ意味・同じ名前)。
+    //   これが無いと台帳の regime / confidence / ref_price 列が候補の腕だけ空になり、
+    //   「質問文を変えたら見立てが変わったか」を腕どうしで比べられない(母集団が揃わない)。
+    '  "regime": "trend_up" | "trend_down" | "range" | "unclear",   // いまの相場をどう見たか',
+    '  "confidence": number,          // その見立てと計画への確信度(0〜100の整数)',
+    `  "direction": ${rangeEnabled ? '"buy" | "sell" | "none" | "range"' : '"buy" | "sell" | "none"'},`,
+    '  "limitEntry": number,          // 出さないなら省略',
+    '  "lcWidthForLimit": number,     // limitEntry を出すなら必須・正の数',
+    '  "stopEntry": number,           // 出さないなら省略',
+    '  "lcWidthForStop": number,      // stopEntry を出すなら必須・正の数',
+    ...(rangeEnabled ? [
+      '  "range": {                   // direction が range のときだけ。現在値の上と下に1本ずつ',
+      '    "upper": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "lcWidth": number },',
+      '    "lower": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "lcWidth": number }',
+      '  },',
+    ] : []),
+    '  "rationale": "...",            // 1〜3行',
+    `  "refPrice": number             // 計画時に見た現在値${refPrice === undefined ? '(上のデータの現在価格)' : `(${refPrice})`}`,
+    '}',
+    '```',
+    '',
+    '### システムが自動で行うこと(あなたが気にする必要はありません)',
+    '',
+    '- **損切りの向き**(買いは建値の下・売りは上)はシステムが決めます。**あなたが出すのは幅(正の数)だけ**で、向きを選ぶ余地はありません。',
+    '- エントリーの向き(買いなら limitEntry < refPrice < stopEntry)、現在値からの距離、幅の範囲は**システムが検証**します。満たさないものは自動で除かれます。',
+    '- 建玉の管理・注文の発注・決済の執行は、すべてシステムが行います。',
+  ].join('\n');
 }
 
 /** LC 幅の下限/上限を受けてスキャル戦略質問(ユーザー指定・日本語)を生成する。
@@ -1559,6 +1665,10 @@ export interface ScalpPlanInput {
    *  ★プロンプトの決済ブロック **だけ** が変わる。parse/enforce/実際の決済計算には一切影響しない
    *    (実弾の決済は常に現行仕様の computeExitStop が算出する)。 */
   exitVariant?: ExitVariant;
+  /** ★v0.9.75: 質問文の変種。**未指定は 'v1' = 従来と byte 一致**(実弾につながる全経路は不変)。
+   *  'v2' のとき user プロンプト(質問文＋JSON契約)だけが差し替わる。system プロンプト・parse・enforce・
+   *  実際の決済計算には一切影響しない。★ExitVariant とは **別の軸** なので、同時に指定してよい。 */
+  promptVariant?: PromptVariant;
   /** ★v0.9.61: バンドウォークの判定結果(server/bandwalk.ts)。runner が算出して渡す。
    *  成立中のときだけプロンプト末尾に緩和注記(buildBandwalkNote)を足す。
    *  未指定/null(非成立)では systemPrompt は従来と **byte 一致**(緩和は一切起きない)。 */
@@ -2115,7 +2225,14 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★バンドウォーク成立中だけの緩和注記(距離と節目のみ)。非成立/未指定は '' = 従来と byte 一致。
   const bandwalkNote = buildBandwalkNote(input.bandwalk);
   const monitorCtx = buildMonitorContext(now);
-  const scalpQuestion = buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil);
+  // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実弾につながる全経路はここを通っても変わらない)。
+  //   'v2' は user プロンプトの本体(質問文+JSON契約)だけを差し替える。system プロンプト側の規則
+  //   (buildScalpSystemPrompt / strategySpec / delegationNote)は **触らない** = 動かす変数を1つに保つ。
+  //   ★v2 は自前で JSON 契約を持つので、v1 の scalpJsonInstruction は連結しない(2つ並べると契約が二重になる)。
+  const promptVariant = input.promptVariant ?? DEFAULT_PROMPT_VARIANT;
+  const scalpQuestion = promptVariant === 'v2'
+    ? buildScalpQuestionV2({ floorYen, ceilYen: promptCeilingYen, rangeEnabled, refPrice })
+    : buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil);
   const systemPrompt =
     // ★bandwalkNote は strategySpec / delegationNote の **後ろ**(= 距離50円・節目起点を書いている
     //   ブロックより後)に置く。緩和は「直前の指示を上書きする」形なので、読み順で後に来る必要がある。
@@ -2147,7 +2264,11 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     ? input.chartImageDataUrl : null;
   const jsonInstruction = scalpJsonInstruction(refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil);
   const userPromptFor = (withImage: boolean): string =>
-    `${scalpQuestion}\n\n${buildVisionNote(withImage)}${jsonInstruction}`;
+    promptVariant === 'v2'
+      // v2 は質問文の中に JSON 契約を持つ。ここで v1 の jsonInstruction を足すと契約が2つ並び、
+      // 「短くした」はずの質問文が結局 v1 の分量に戻る(=何も測っていないことになる)。
+      ? `${scalpQuestion}\n\n${buildVisionNote(withImage)}`.trimEnd()
+      : `${scalpQuestion}\n\n${buildVisionNote(withImage)}${jsonInstruction}`;
   // ★RECORD-ONLY: 実際に画像を送ったか。**送るつもりだったか ではない**(A/B の群の記録に使う)。
   //   1度も LLM を呼べなかった回(プロバイダ不在)は false のまま=「送っていない」が正しい。
   let imageSent = false;

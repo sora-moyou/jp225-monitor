@@ -23,6 +23,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { resolveAppDataDir } from '../appDataDir.js';
 import { DEFAULT_EXIT_VARIANT, type ExitVariant } from '../signalTrade/exit/index.js';
+import type { PromptVariant } from '../llm/promptVariant.js';
 
 /** ★腕(arm)= 既存の語彙 ExitVariant に、**同じ入力へ2回問う対照** を足しただけのもの。
  *  新しい列挙を作らない(ExitVariant を並行して手書きし直すと、変種が増えたとき片方だけ古くなる)。
@@ -30,7 +31,11 @@ import { DEFAULT_EXIT_VARIANT, type ExitVariant } from '../signalTrade/exit/inde
  *  - 'candidate-a' … ②候補の決済仕様を教えた生成器
  *  - 'control'     … ①' ①と **同じ入力** でもう1回問う対照(LLM のばらつきの基準線)。
  *                    送る exitVariant は 'current' と同一で、腕名だけが違う。 */
-export type GeneratorArm = ExitVariant | 'control';
+/** ★v0.9.75: 実験の軸が「決済仕様」から「質問文」へ移ったので、腕名にもう1つだけ足す。
+ *  - 'prompt-v2' … ②**質問文 v2** を投げた生成器。送る exitVariant は 'current'(①と同じ)で、
+ *                  違うのは user プロンプトだけ。旧 'candidate-a'(決済仕様の候補)は
+ *                  08-10〜08-12 の実測でどの指標も動かなかったため畳んだ。 */
+export type GeneratorArm = ExitVariant | 'control' | 'prompt-v2';
 
 /** 対照の腕。①と同じ exitVariant を送るので、区別は腕名だけが担う。 */
 export const CONTROL_ARM: GeneratorArm = 'control';
@@ -55,6 +60,9 @@ export interface ProposalRow {
   arm: GeneratorArm;
   /** 実際に送った exitVariant。'control' は 'current' を送るので、腕名とは別に残す。 */
   exitVariant: ExitVariant;
+  /** ★実際に送った質問文の変種(v0.9.75)。'prompt-v2' の腕だけ 'v2'、他は 'v1'。
+   *  ★型上は optional(省略= NULL)。NULL = この列を持たない版で記録された(= v1 しか無かった頃)。 */
+  promptVariant?: PromptVariant | null;
   /** サイクル内の直列順(0=①, 1=①' か ②, 2=②)。①②の順序効果を後から検定できるように残す。 */
   seq: number;
   /** 取引日(セッション外は null)。 */
@@ -257,6 +265,10 @@ export function initGeneratorSchema(db: DatabaseSync): void {
   //   既存行は NULL のまま =「この列を持たない版で記録された」。
   if (!cols.includes('lc_audit_json')) db.exec('ALTER TABLE proposals ADD COLUMN lc_audit_json TEXT');
   if (!cols.includes('omission_audit_json')) db.exec('ALTER TABLE proposals ADD COLUMN omission_audit_json TEXT');
+  // ★v0.9.75: **実際に送った質問文の変種**。腕名から推測できるうちは冗長に見えるが、腕の構成は
+  //   実験ごとに変わる(現に決済変種 → 質問文へ載せ替えた)。「何を送ったか」を行そのものに残しておかないと、
+  //   1年後に腕名だけを見て取り違える。既存行は NULL =「この列を持たない版で記録された」= v1 相当。
+  if (!cols.includes('prompt_variant')) db.exec('ALTER TABLE proposals ADD COLUMN prompt_variant TEXT');
 }
 
 /** 台帳 DB を開く(書き込み用)。
@@ -295,8 +307,8 @@ const INSERT_SQL = `
     direction, plan_json, ref_price, regime, confidence,
     none_reason, none_legs_json, leg_drops_json, veto_fired, range_anomaly_json,
     shot_id, shot_age_ms, shot_origin, context_omitted,
-    context_at, prompt_fp, lc_audit_json, omission_audit_json, created_at
-  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)
+    context_at, prompt_fp, lc_audit_json, omission_audit_json, prompt_variant, created_at
+  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?)
 `;
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
@@ -316,7 +328,7 @@ export function insertProposal(db: DatabaseSync, r: ProposalRow): boolean {
     r.noneReason, r.noneLegsJson, r.legDropsJson ?? null, r.vetoFired, r.rangeAnomalyJson,
     r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null,
     num(r.contextAt), r.promptFp ?? null,
-    r.lcAuditJson ?? null, r.omissionAuditJson ?? null, r.createdAt,
+    r.lcAuditJson ?? null, r.omissionAuditJson ?? null, r.promptVariant ?? null, r.createdAt,
   );
   return countProposals(db) > before;
 }

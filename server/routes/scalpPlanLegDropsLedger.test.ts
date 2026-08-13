@@ -117,7 +117,9 @@ describe('/api/scalp-plan — 片レッグ脱落の理由が応答に載る', ()
     await scalpPlanHandler(reqOf({ caller: 'generator' }), res);
     // ★記録専用の出所2列は数値の走査から外し、**形だけ** を固定する(理由は scalpPlanDiagnostics.test.ts と同じ:
     //   contextAt は時計の読み・promptFp は一方向ハッシュで、hex 中の数字列の一致は偶然でしかない)。
-    const { contextAt, promptFp, ...rest } = res._json as Record<string, unknown>;
+    // ★promptVariant は名前('v1')であって数値ではないので走査から外す(理由は scalpPlanDiagnostics.test.ts と同じ)。
+    const { contextAt, promptFp, promptVariant, ...rest } = res._json as Record<string, unknown>;
+    expect(promptVariant).toBe('v1');
     expect(typeof contextAt).toBe('number');
     expect(promptFp === undefined || /^sp1:[0-9a-f]{16}$/.test(String(promptFp))).toBe(true);
     const s = JSON.stringify(rest);
@@ -143,7 +145,7 @@ describe('★応答 → 台帳の列(proposals.leg_drops_json)まで届く', () 
     // ② 生成器の分類 → 台帳の行(cycle.ts の純関数をそのまま使う)。
     const attempt = classifyAttempt(200, res._json);
     expect(attempt.status).toBe('plan');
-    const req: ArmRequest = { arm: 'current', exitVariant: 'current', seq: 0 };
+    const req: ArmRequest = { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 };
     const outcome: ArmOutcome = {
       attempt, requestedAt: 1_700_000_000_000, respondedAt: 1_700_000_001_000,
       retryCount: 0, preRetryReason: null,
@@ -174,7 +176,7 @@ describe('★応答 → 台帳の列(proposals.leg_drops_json)まで届く', () 
     const res = mockRes();
     await scalpPlanHandler(reqOf({ caller: 'generator' }), res);
     const row = toProposalRow('g1:test', 'c-2',
-      { arm: 'current', exitVariant: 'current', seq: 0 },
+      { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 },
       {
         attempt: classifyAttempt(200, res._json), requestedAt: 1, respondedAt: 2,
         retryCount: 0, preRetryReason: null,

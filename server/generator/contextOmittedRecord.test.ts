@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { toProposalRow, type ArmOutcome } from './cycle.js';
 import { openGeneratorDb, insertProposal, initGeneratorSchema } from '../db/generatorStore.js';
 
-const req = { arm: 'candidate-a' as const, exitVariant: 'candidate-a' as const, seq: 1 };
+const req = { arm: 'candidate-a' as const, exitVariant: 'candidate-a' as const, promptVariant: 'v1' as const, seq: 1 };
 
 function outcome(body: Record<string, unknown>): ArmOutcome {
   return {

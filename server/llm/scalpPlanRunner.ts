@@ -17,6 +17,7 @@ import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import type { ExitVariant } from '../signalTrade/exit/index.js';
+import type { PromptVariant } from './promptVariant.js';
 import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 
 // 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
@@ -143,6 +144,9 @@ export interface RunScalpPlanOverrides {
    *  指定するとその変種の決済仕様を AI に教える(実数値は非公開側が解決=数値は HTTP に載らない)。
    *  ★実際の決済(computeExitStop)には一切影響しない=提案の入力が変わるだけ。 */
   exitVariant?: ExitVariant;
+  /** ★質問文の変種(v0.9.75)。未指定は 'v1' = 従来と byte 一致。'v2' は user プロンプトだけを差し替える。
+   *  ★ExitVariant とは別の軸(決済の説明ではなく、質問そのもの)。parse/enforce/実決済には影響しない。 */
+  promptVariant?: PromptVariant;
 }
 
 /** チャートビジョンを無効化する env(既定は「設定に従う」)。SCALP_CHART_VISION=0/false で **強制オフ**。
@@ -306,6 +310,7 @@ async function runScalpPlanWithChartInner(
     armedContext: overrides.armedContext,   // ★レンジ再評価: 未約定レンジのブレイク切替評価は armed-context を注入(通常は未指定=不変)。
     caller,                                 // ★プロバイダ・プールの選択のみに効く(プロンプト/parse/enforce は不変)。
     exitVariant: overrides.exitVariant,      // ★未指定(エンジン/既存 route)は undefined = 決済ブロックは従来どおり。
+    promptVariant: overrides.promptVariant,  // ★未指定(エンジン/既存 route)は undefined = 質問文は v1 のまま。
     // ★バンドウォーク: 成立中のときだけプロンプトの「距離50円 / 節目起点」を緩める(LC は緩めない)。
     //   AI 文脈(ブロックG)に書いたものと **同じ判定結果** を渡す(画面/文脈/プロンプトで食い違わせない)。
     bandwalk: richResult.bandwalk,

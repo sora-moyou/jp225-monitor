@@ -44,12 +44,15 @@ const BOOT_KEYS: Keys = { dayKey: '(boot)', sessionKey: '(boot)' };
 // それ以外で性質が全く違う)なので、時間帯で切られた標本で決済パラメータを比べると
 // **既知の最大の交絡を標本設計に組み込む**ことになる。だから予算は腕ごとに独立させる。
 //
-// ★腕の識別子は **既存の語彙をそのまま使う**(新しい概念を増やさない): 決済仕様の変種名 ExitVariant。
-//   route はリクエストで解決した変種をそのまま渡す(未指定は 'current')。
-type ArmKey = ExitVariant;
+// ★腕の識別子(v0.9.75 で拡張): **実験の軸が2つになった**ので、鍵は「決済変種」ではなく
+//   「決済変種 × 質問文変種」の組(server/llm/promptVariant.ts の generatorArmKey が唯一の作り手)。
+//   質問文の A/B では両腕とも exitVariant='current' を送るため、変種名だけを鍵にすると
+//   **2本の腕が1つの財布を共有** し、上に書いた「先着順で標本が偏る」問題がそのまま戻る。
+//   ★質問文が既定('v1')のときの鍵は従来と同じ文字列(=過去の期の帳簿・テストと繋がる)。
+type ArmKey = string;
 
 /** 腕ごとの消費カウンタ。腕が増えたら自動で増える(初出は 0)。 */
-type ArmUsage = Partial<Record<ArmKey, number>>;
+type ArmUsage = Record<ArmKey, number>;
 
 // ─── ★従属停止は「時限」であって「セッション単位」ではない ────────────────────────
 //

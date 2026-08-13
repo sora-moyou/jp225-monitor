@@ -8,6 +8,7 @@ import {
 } from '../signalTrade/exit/index.js';
 import { exitVariantImplKind } from '../signalTrade/exitVariantImpl.js';
 import { checkGeneratorGate } from '../llm/generatorGate.js';
+import { normalizePromptVariant, generatorArmKey, type PromptVariant } from '../llm/promptVariant.js';
 import { inPollWindow } from '../../core/session.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { sanitizeErrorForOutput } from '../llm/redact.js';
@@ -47,6 +48,10 @@ interface Body {
    *  非公開定義が行う。だからリクエスト・アクセスログ・エラーメッセージに実数値は出ない。
    *  不正な名前は **400**(caller と同じ扱い。黙って現行に倒すと実験が静かに壊れる)。 */
   exitVariant?: unknown;
+  /** ★質問文の「名前付き変種」(v0.9.75)。**省略時は 'v1'**(既存の呼び出し元は byte 不変)。
+   *  ExitVariant とは **別の軸**: あちらは決済の説明、こちらは質問そのもの。
+   *  不正な名前は **400**(黙って v1 に倒すと「v2 で生成した」つもりの標本が v1 になり実験が静かに壊れる)。 */
+  promptVariant?: unknown;
 }
 
 /** body/query から数値を optional に受理する(文字列でも数値化)。非有限は undefined を返し、既定に委ねる。
@@ -139,14 +144,19 @@ function planDiagnostics(r: OkPlanResult, on: boolean): Partial<OkPlanResult> {
  *  分析を持たないビルドでは受理せず 400 で落とす(黙って現行に倒すと、実験のつもりの
  *  要求が実弾と同じプール・同じ予算で走ってしまう=このゲートが守るものが壊れる)。
  *  ★caller 省略/'default' かつ exitVariant 省略 = 既存の全経路。lite でも素通し(挙動不変)。 */
-export function analysisOnlyRequestField(body: unknown, query: unknown): 'caller' | 'exitVariant' | null {
+export function analysisOnlyRequestField(
+  body: unknown, query: unknown,
+): 'caller' | 'exitVariant' | 'promptVariant' | null {
   const b = (body ?? {}) as Body;
   const q = (query ?? {}) as Record<string, unknown>;
   const rawCaller = b.caller ?? q.caller;
   const rawVariant = b.exitVariant ?? q.exitVariant;
+  const rawPrompt = b.promptVariant ?? q.promptVariant;
   const specified = (v: unknown): boolean => v !== undefined && v !== null && v !== '';
   if (specified(rawCaller) && rawCaller !== DEFAULT_CALLER) return 'caller';
   if (specified(rawVariant)) return 'exitVariant';
+  // ★質問文の変種も分析専用の入口。lite で受理すると、公開版が実験用のプロンプトで実弾経路を回す。
+  if (specified(rawPrompt)) return 'promptVariant';
   return null;
 }
 
@@ -198,8 +208,23 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   // exitVariant 省略)だけは応答も従来どおりにする(フィールドを増やさない=byte 一致)。
   // 生成器は caller または exitVariant を必ず指定するので、生成器から見れば **常に** 返る=記録に穴が空かない。
   // ★変種のエコーも見送り理由の付随情報も、この1つの条件で揃って on/off する。
-  const diagnosticsOn = variantSpecified || caller !== DEFAULT_CALLER;
-  const echoVariant = diagnosticsOn ? { exitVariant: variantResult.variant } : {};
+  // ── ★質問文の変種(v0.9.75)。**名前だけ**を受け取る。省略は 'v1' = 従来の質問文。
+  //    ExitVariant と同じ作法で、未知の名前は 400(黙って v1 に倒さない)。
+  const rawPromptVariant = body.promptVariant ?? query.promptVariant;
+  const promptSpecified = rawPromptVariant !== undefined && rawPromptVariant !== null && rawPromptVariant !== '';
+  const promptResult = normalizePromptVariant(rawPromptVariant);
+  if (!promptResult.ok) {
+    res.status(400).json({ ok: false, error: promptResult.error });
+    return;
+  }
+  // ★undefined を渡すことが「従来経路」の意味を持つ(scalpPlan 側が v1 の質問文をそのまま使う)。
+  const promptVariant: PromptVariant | undefined = promptSpecified ? promptResult.variant : undefined;
+
+  const diagnosticsOn = variantSpecified || promptSpecified || caller !== DEFAULT_CALLER;
+  // ★どちらの軸で生成したかを **両方** 返す(片方だけ返すと、台帳から「どの質問文で得た標本か」が読めない)。
+  const echoVariant = diagnosticsOn
+    ? { exitVariant: variantResult.variant, promptVariant: promptResult.variant }
+    : {};
 
   // ── ★変種を要求されたのに **実体が無い** なら 400(未知の変種名と同じ扱い)。
   //    private(非公開実装)が無い環境では変種の説明文が公開フォールバック(数値なし)になり、
@@ -222,7 +247,10 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   //    ★予算は **腕(=決済仕様の変種)ごと** に独立させる。全腕で1本の帳簿だと先着の腕が
   //      取引日の残りを食い切り、標本が Day セッション前半に偏る(=時間帯という既知最大の交絡)。
   if (caller !== DEFAULT_CALLER) {
-    const gate = checkGeneratorGate(Date.now(), variantResult.variant);
+    // ★帳簿の鍵は (決済変種 × 質問文変種)。質問文の A/B では両腕とも exitVariant='current' を送るので、
+    //   変種名だけを鍵にすると2本の腕が1つの財布を共有し、先着の腕が取引日の残りを食い切る。
+    //   ★v1 のときは従来と同じ鍵文字列になる(過去の期の帳簿と繋がる)。
+    const gate = checkGeneratorGate(Date.now(), generatorArmKey(variantResult.variant, promptResult.variant));
     if (!gate.allowed) {
       // 429 = 「今は投げるな」。生成器は reason で busy / budget / default-quota / disabled を区別できる。
       // 見送りは checkGeneratorGate 側で必ず1行ログ+カウンタに記録される(無音にしない)。
@@ -232,7 +260,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   }
 
   try {
-    const result = await runScalpPlanWithChart({ symbol, lcFloorYen, lcCeilingYen, caller, exitVariant });
+    const result = await runScalpPlanWithChart({ symbol, lcFloorYen, lcCeilingYen, caller, exitVariant, promptVariant });
     if (result.ok) {
       // ★見送りの経路を **応答に載せる**(記録専用・判定には一切影響しない)。
       //   これが無いと direction:'none' のとき、外の記録側は「AI が見送った(ai)」「LC上限で落ちた(lc)」

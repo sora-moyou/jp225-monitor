@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { toProposalRow, type ArmOutcome } from './cycle.js';
 import { openGeneratorDb, insertProposal, initGeneratorSchema } from '../db/generatorStore.js';
 
-const req = { arm: 'candidate-a' as const, exitVariant: 'candidate-a' as const, seq: 1 };
+const req = { arm: 'candidate-a' as const, exitVariant: 'candidate-a' as const, promptVariant: 'v1' as const, seq: 1 };
 const LC_AUDIT = [
   { leg: 'limit', entry: 38300, stopLoss: 38355, actualYen: 55, declaredYen: 55, status: 'match', source: 'width' },
   { leg: 'stop', entry: 38200, stopLoss: 38205, actualYen: 5, declaredYen: 55, status: 'mismatch', source: 'width' },

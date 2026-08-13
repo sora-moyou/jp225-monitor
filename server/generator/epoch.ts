@@ -30,6 +30,7 @@
 //   **一方向ハッシュ** で、キーを **出どころ** だけで返す)。
 
 import { createHash } from 'node:crypto';
+import { describeArmPlan } from './cycle.js';
 
 /** epoch の計算方式そのものの版。★計算方式を変えたらここを上げる(過去の期と繋がらなくなるため)。
  *
@@ -42,8 +43,12 @@ import { createHash } from 'node:crypto';
  *    「差は入力によるものか、方式によるものか」を判別できない。
  *
  *    ★方式を変えたら必ずここを上げること。liveRun.test.ts が接頭辞を固定しているので、
- *      無自覚に変えるとテストが落ちる(意図的な変更なら、そこも一緒に直す)。 */
-export const EPOCH_SCHEMA = 'g2';
+ *      無自覚に変えるとテストが落ちる(意図的な変更なら、そこも一緒に直す)。
+ *
+ *  ★2026-08-13 に 'g2' → 'g3'。**実験の軸そのものを載せ替えた**(決済仕様の候補 'candidate-a' →
+ *    質問文の候補 'prompt-v2')。同時に「この実験が回す腕の構成」を epoch の入力に入れた
+ *    (=腕を載せ替えれば期が自動で割れる。入れる前は、腕を替えても期が同じままだった)。 */
+export const EPOCH_SCHEMA = 'g3';
 
 /** ★実験の条件に関係する設定キーの **接頭辞**。ここに当たるキーだけが epoch の入力に入る。
  *  - 'scalp'     … AI エントリーの質問そのものを決める(バイアス / LC 下限・上限・安全上限 /
@@ -135,6 +140,10 @@ export function buildEpochInput(
     settings: freezeSettings(settings),
     exit: { impl: exit.impl, variantImpl: exit.variantImpl, configHash: exit.configHash },
     generator: generatorConfig,
+    // ★この実験が回す腕の構成(どの腕に、どの決済仕様と、どの質問文を送るか)。
+    //   ここに入れておかないと **腕を載せ替えても期が変わらず**、別の実験の標本が同じ期に混ざる。
+    //   実際に v0.9.75 で候補の腕を決済仕様 → 質問文へ載せ替えたときに、この穴が見つかった。
+    arms: describeArmPlan(),
   };
 }
 
