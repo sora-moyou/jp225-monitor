@@ -53,6 +53,10 @@ export default defineConfig({
       'server/**/*.test.ts',
       'web/**/*.test.ts',
       'collector/**/*.test.ts',
+      // ★リリース道具(scripts/)の純関数もテストの対象にする。ここが無いと
+      //   「控えを自動 push してよいか」の判定のような **事故に直結する分岐** が
+      //   テストの外に置かれ、書いても無音で無視される。
+      'scripts/**/*.test.mts',
     ],
     // ★テストが実ユーザーの %APPDATA%/ホームを **一度も見ない** ようにする(各テストファイルの直前に実行)。
     //   詳細は vitest.setup.ts の冒頭。

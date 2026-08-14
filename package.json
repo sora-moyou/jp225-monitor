@@ -32,7 +32,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "private:verify": "node scripts/private-backup.mjs verify",
-    "private:backup": "node scripts/private-backup.mjs backup"
+    "private:backup": "node scripts/private-backup.mjs backup",
+    "private:sync": "node scripts/private-backup.mjs sync"
   },
   "pkg": {
     "scripts": [],

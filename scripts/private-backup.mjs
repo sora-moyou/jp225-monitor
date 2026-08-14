@@ -4,6 +4,12 @@
 //
 //   node scripts/private-backup.mjs verify   … 照合のみ(差異があれば exit 1)
 //   node scripts/private-backup.mjs backup   … バックアップ先を現物に合わせて更新
+//   node scripts/private-backup.mjs sync     … 更新 + jp225-specs へ commit/push まで
+//
+// ★sync が自動で進めるのは **コメントだけの差分** と manifest(ハッシュ記録)に限る。
+//   コードが1行でも変わっていたら **止めて人間に見せる**。自動化の目的は
+//   「用語を直しただけで手が止まる」を無くすことであって、決済の変更を黙って
+//   控えへ流すことではない(判定は scripts/lib/commentOnlyDiff.mjs・テストあり)。
 //
 // ★設計の核: **対象ファイルをこのスクリプトに列挙しない。**
 //   「何が秘密か」は .gitignore の PRIVATE-BACKUP マーカー区間が唯一の定義で、
@@ -22,6 +28,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { classifyBackupDiff } from './lib/commentOnlyDiff.mjs';
 
 /** このリポジトリのバックアップ名前空間(2リポの同名ファイル衝突を防ぐ接頭辞)。 */
 const REPO_KEY = 'monitor';
@@ -36,8 +43,8 @@ const backupRoot = process.env.PRIVATE_BACKUP_DIR
 const manifestPath = join(backupRoot, 'manifest.json');
 
 const mode = (process.argv[2] ?? 'verify').toLowerCase();
-if (mode !== 'verify' && mode !== 'backup') {
-  console.error(`❌ 不明なモード "${mode}"。verify か backup を指定してください。`);
+if (mode !== 'verify' && mode !== 'backup' && mode !== 'sync') {
+  console.error(`❌ 不明なモード "${mode}"。verify / backup / sync を指定してください。`);
   process.exit(2);
 }
 
@@ -141,6 +148,85 @@ function fail(msg) {
 const files = secretFiles();
 const now = new Date().toISOString();
 
+/** 控えリポジトリ(jp225-specs)のルート。 */
+const specsRoot = resolve(backupRoot, '..');
+
+/** 人が手で同期するときのコマンド(案内用・1か所)。 */
+function manualSyncCommand() {
+  return `git -C "${specsRoot}" add private-backup && git -C "${specsRoot}" commit -m "chore(private-backup): sync ${REPO_KEY}" && git -C "${specsRoot}" push`;
+}
+
+function specsGit(args, opts = {}) {
+  return spawnSync('git', ['-C', specsRoot, ...args], { encoding: 'utf-8', ...opts });
+}
+
+/** 控えの差分が「自動で進めてよい」ものだけかを確かめ、そうなら commit + push する。
+ *  ★止める条件は3つ。いずれも **中身は出さない**(件数と種別だけ)。
+ *    ① 控えリポが git でない / 差分の取得に失敗
+ *    ② 新規・削除・改名の控えファイルがある(= 秘密ファイルが増減した重大な変化)
+ *    ③ コメント以外の変更が1行でもある(= 決済の中身が動いた可能性) */
+function syncBackupRepo() {
+  if (!existsSync(join(specsRoot, '.git'))) {
+    console.log('');
+    console.log(`ℹ️  控え先は git リポジトリではありません(${specsRoot})。commit/push は行いません。`);
+    return;
+  }
+  const status = specsGit(['status', '--porcelain', '--', 'private-backup']);
+  if (status.status !== 0) {
+    fail(`控えリポジトリの状態を読めません(git status が失敗)。手動で同期してください:\n     ${manualSyncCommand()}`);
+  }
+  const lines = (status.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean);
+  if (lines.length === 0) {
+    console.log('');
+    console.log('✅ 控えは既に同期済み(コミットすべき変更なし)。');
+    return;
+  }
+  // ② 追加/削除/改名は自動にしない(秘密ファイルの増減は人が見るべき変化)。
+  const structural = lines.filter(l => !l.startsWith('M ') && !l.startsWith(' M') && !l.startsWith('MM'));
+  if (structural.length > 0) {
+    console.error('');
+    console.error(`⛔ 控えに **追加/削除/改名** があります(${structural.length} 件)。自動同期は行いません。`);
+    console.error('   秘密ファイルが増減した可能性があるため、内容を確認してから手で同期してください:');
+    console.error(`     ${manualSyncCommand()}`);
+    process.exit(1);
+  }
+  // ③ 変更が「コメントだけ」か(中身は見せない・件数のみ)。
+  const diff = specsGit(['diff', '--', 'private-backup']);
+  if (diff.status !== 0) {
+    fail(`控えの差分を読めません(git diff が失敗)。手動で同期してください:\n     ${manualSyncCommand()}`);
+  }
+  const cls = classifyBackupDiff(diff.stdout ?? '');
+  console.log('');
+  console.log(`🔎 控えの差分: コメント ${cls.commentChanges} 行 / manifest ${cls.manifestChanges} 行 / **コメント以外 ${cls.codeChanges} 行**`);
+  if (!cls.autoSafe) {
+    console.error('');
+    console.error('⛔ コメント以外の変更が含まれるため、自動同期しません(決済の中身が動いた可能性)。');
+    console.error('   差分を目で確かめてから、手で同期してください:');
+    console.error(`     git -C "${specsRoot}" diff -- private-backup`);
+    console.error(`     ${manualSyncCommand()}`);
+    process.exit(1);
+  }
+  const add = specsGit(['add', 'private-backup']);
+  if (add.status !== 0) fail(`git add に失敗しました。手動で同期してください:\n     ${manualSyncCommand()}`);
+  // ★何を運んだコミットかが1年後に読めるように、件数の内訳をそのまま件名にする。
+  const what = cls.commentChanges > 0
+    ? `コメント ${cls.commentChanges} 行`
+    : `manifest のみ ${cls.manifestChanges} 行`;
+  const msg = `chore(private-backup): sync ${REPO_KEY}(${what})`;
+  const commit = specsGit(['commit', '-m', msg]);
+  if (commit.status !== 0) {
+    fail(`git commit に失敗しました。手動で同期してください:\n     ${manualSyncCommand()}`);
+  }
+  console.log(`✅ 控えを commit しました: ${msg}`);
+  const push = specsGit(['push'], { stdio: 'inherit' });
+  if (push.status !== 0) {
+    // ★push できていない = 控えはまだ安全ではない。無音で進めない。
+    fail('git push に失敗しました(控えはローカルにのみ在ります)。'
+      + `\n   ネットワーク/認証を確認して、次を実行してください:\n     git -C "${specsRoot}" push`);
+  }
+  console.log('✅ 控えを push しました(控えはこれで安全です)。');
+}
+
 console.log(`🔐 private-backup [${mode}] repo=${REPO_KEY}`);
 console.log(`   対象の定義: .gitignore の ${BEGIN_MARK}〜${END_MARK} 区間`);
 console.log(`   バックアップ先: ${backupRoot}`);
@@ -154,7 +240,7 @@ if (files.length === 0) {
 const manifest = readManifest();
 const prevEntries = manifest.repos?.[REPO_KEY]?.files ?? {};
 
-if (mode === 'backup') {
+if (mode === 'backup' || mode === 'sync') {
   mkdirSync(backupRoot, { recursive: true });
   const entries = {};
   let copied = 0;
@@ -178,11 +264,23 @@ if (mode === 'backup') {
     removed += 1;
   }
   manifest.repos = manifest.repos ?? {};
-  manifest.repos[REPO_KEY] = { updatedAt: now, files: entries };
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  // ★中身が1バイトも変わっていないのに updatedAt だけ書き換えない。
+  //   毎回書き換えると sync のたびに「差分ゼロのコミット」が積まれ、控えの履歴から
+  //   「いつ本当に変わったか」が読めなくなる(記録が意味を失う)。
+  const sameAsBefore = copied === 0 && removed === 0
+    && JSON.stringify(prevEntries) === JSON.stringify(entries);
+  if (!sameAsBefore) {
+    manifest.repos[REPO_KEY] = { updatedAt: now, files: entries };
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  }
   console.log(`✅ バックアップ更新: 書込 ${copied} 件 / 削除 ${removed} 件 / 記録 ${files.length} 件`);
-  console.log('   次に jp225-specs で commit + push してください(控えは push されて初めて安全です):');
-  console.log(`     git -C "${backupRoot}/.." add private-backup && git -C "${backupRoot}/.." commit -m "chore(private-backup): sync ${REPO_KEY}" && git -C "${backupRoot}/.." push`);
+  if (mode === 'backup') {
+    console.log('   次に jp225-specs で commit + push してください(控えは push されて初めて安全です):');
+    console.log(`     ${manualSyncCommand()}`);
+    console.log('   ★ `npm run private:sync` なら、コメントだけの差分に限り自動で commit/push します。');
+    process.exit(0);
+  }
+  syncBackupRepo();   // sync モードはこの先へ進む(commit + push)
   process.exit(0);
 }
 

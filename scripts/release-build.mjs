@@ -48,7 +48,13 @@ const password = ''; // 両鍵ともパスフレーズ無し(空)。
 // 起動しうる経路はこの下だけで、そこへ到達するには必ず検査を通る必要がある。
 // private:verify を先頭に置くのは意図的: 1秒で終わるうえ、落ちたときの復旧
 // (バックアップ更新 → jp225-specs へ push)は数分のテストを待たせる意味がない。
+// ★v0.9.79: 照合の前に **同期** を挟む。用語の統一のように「コメントを1行直しただけ」で
+//   ビルドが止まり、人が別リポで commit/push して回るのは手間だけで安全性を上げていない。
+//   sync は **コメントだけの差分に限り** 自動で commit/push し、コード(=決済の中身)が
+//   1行でも動いていたら止めて人間に見せる(scripts/lib/commentOnlyDiff.mjs・テストあり)。
+//   照合(verify)はそのまま残す: 同期が何らかの理由で効かなかったときの最後の門。
 const PREFLIGHT = [
+  { label: '非公開ファイルの控えを同期 (private:sync)', args: ['run', 'private:sync'] },
   { label: '非公開ファイルのバックアップ照合 (private:verify)', args: ['run', 'private:verify'] },
   { label: '型検査 (tsc --noEmit)', args: ['run', 'typecheck'] },
   { label: 'テスト (vitest run)', args: ['run', 'test'] },
