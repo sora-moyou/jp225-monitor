@@ -37,6 +37,20 @@ interface ProviderState {
   lastFailAt: number;
   /** この状態がどのプールのものか。ログの体裁と ★従属規則の発火判定に使う。 */
   pool: PoolKey;
+  // ─── ★「答えが返る前から結果が分かっている拒否」を覚える(2026-08-15) ─────────
+  //
+  // 実測(稼働機ログ 53時間): groq の 413 が **1日 1,100〜1,300回**、kimi の 404 が 30分ごとに永久。
+  // どちらも次に同じことをしても同じ答えが返る。無駄打ちは課金・遅延・ログの雑音を増やし、
+  // **本当の障害を埋もれさせる**。だから「一度突き返された条件」だけを覚えて避ける。
+  // ★覚えるのはプロセス内だけ。設定を保存すると reloadProviders() で状態ごと作り直され、
+  //   学習は白紙に戻る(=直したのに使われない、が起きない)。
+  /** 413 を返したときの要求の大きさ[文字]。これ以上の要求では以後スキップする。null=未観測。
+   *  ★モデル名の表は作らない(腐る)。**観測した事実**だけを持つ。 */
+  oversizeAtChars: number | null;
+  /** 404/権限エラーで「設定が直るまで使えない」と分かった理由。null=健全。 */
+  disabledByConfig: string | null;
+  /** スキップの通知を1回だけ出すための印(ログを毎回出すと雑音になる)。 */
+  skipNotified: boolean;
 }
 
 const PAUSE_LADDER_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3600_000, 8 * 3600_000];
@@ -144,6 +158,10 @@ function buildProvider(config: LLMProvider, pool: PoolKey): ProviderState {
     consecutiveFails: 0,
     lastFailAt: 0,
     pool,
+    // ★学習は毎回まっさらから始める。reloadProviders(設定保存)でここを通る=直せば必ず復帰する。
+    oversizeAtChars: null,
+    disabledByConfig: null,
+    skipNotified: false,
   };
 }
 
@@ -210,6 +228,18 @@ export function getProviderStatus(pool: PoolKey = DEFAULT_CALLER) {
 
 function isAvailable(p: ProviderState): boolean {
   return p.client !== null && Date.now() >= p.circuitOpenUntil;
+}
+
+/** ★学習した事実からこの要求を飛ばす理由(純関数寄り)。null=飛ばさない。
+ *  ・設定が直るまで使えない(404/権限)     … 大きさに関係なく飛ばす
+ *  ・前に同じ大きさで 413 を返した        … **その大きさ以上のときだけ** 飛ばす
+ *    (小さい要求は通り続けるので、プロバイダ自体を締め出さない) */
+function skipReason(p: ProviderState, approxChars?: number): string | null {
+  if (p.disabledByConfig) return p.disabledByConfig;
+  if (p.oversizeAtChars !== null && approxChars !== undefined && approxChars >= p.oversizeAtChars) {
+    return `この大きさの要求(${approxChars}字)は前回 413 で突き返された(${p.oversizeAtChars}字以上)`;
+  }
+  return null;
 }
 
 /** ログ行の接頭辞(**末尾の空白まで含む**)。
@@ -317,7 +347,7 @@ export function firstAvailableVisionProvider(pool: PoolKey = DEFAULT_CALLER): { 
 //
 // ★プールの独立性: p は呼び出し元のプールの状態オブジェクトなので、ここでのポーズは **そのプールにしか効かない**。
 //   分析用が 429 を踏んでも default プールの circuitOpenUntil は 0 のままで、実取引(A)は止まらない。
-function tripCircuit(p: ProviderState, err: unknown): boolean {
+function tripCircuit(p: ProviderState, err: unknown, approxChars?: number): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   // ★応答が使えない(空 / 長さ切れ)= タスク側が型で申告したもの。文字列の分類より **先** に見る:
   //   後ろに置くと、メッセージ中の数値が classifyLLMError の規則に当たって別の分類(=ポーズ)に化ける。
@@ -336,7 +366,14 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
   if (kind === 'oversize') {
     // この要求だけがモデル上限(TPM/コンテキスト)を超過。プロバイダ自体は健全なので
     // ポーズしない(小さい chat/explain は同プロバイダで通り続ける)。より大きいモデルへ流すだけ。
-    console.warn(`${logPrefix(p)}oversize (${formatErrForLog(msg)}) — ポーズせず次(大きいモデル)へフォールバック`);
+    // ★v0.9.79: **突き返された大きさを覚える**。同じ大きさで毎回叩き直すのは、答えが分かっている
+    //   問いを繰り返すだけ(実測 1日 1,100〜1,300回)。以後その大きさ以上はこのプロバイダを飛ばす。
+    if (approxChars !== undefined) {
+      p.oversizeAtChars = p.oversizeAtChars === null ? approxChars : Math.min(p.oversizeAtChars, approxChars);
+      p.skipNotified = false;   // 新しく学んだので、次に飛ばすときは理由を1回出す
+    }
+    const learned = approxChars !== undefined ? `(以後 ${p.oversizeAtChars}字以上は飛ばします)` : '';
+    console.warn(`${logPrefix(p)}oversize (${formatErrForLog(msg)}) — ポーズせず次(大きいモデル)へフォールバック${learned}`);
     return true;
   }
   if (kind === 'badrequest') {
@@ -378,7 +415,12 @@ function tripCircuit(p: ProviderState, err: unknown): boolean {
     //   これで Kimi 404 等の誤設定プロバイダを避けて他プロバイダで継続できる(連鎖全滅を防ぐ)。
     p.lastFailAt = now;
     p.circuitOpenUntil = now + 30 * 60_000;
-    console.warn(`${logPrefix(p)}config error (${formatErrForLog(msg)}) — paused 30min → 次へフォールバック(キー/モデルを確認)`);
+    // ★v0.9.79: 401/403/404 は **時間で治らない**。30分ごとに叩き直しても同じ答えが返るだけで
+    //   (実測 53時間で114回)、本当の障害をログの中で見えにくくする。設定が直る(=設定保存 →
+    //   reloadProviders)まで使わない。★無効化は無音にしない: 理由と直し方をこの行に残す。
+    p.disabledByConfig = `設定不備で停止中(${formatErrForLog(msg)})`;
+    console.warn(`${logPrefix(p)}config error (${formatErrForLog(msg)}) — このプロバイダは`
+      + ' **設定を保存するまで使いません**(キー/モデルを確認してください)');
   } else {
     // 一過性: ladder を進めず短時間だけ休ませる(枠切れと違い恒久化させない)。
     p.lastFailAt = now;
@@ -434,12 +476,30 @@ export async function callWithFallback(
   task: (p: ProviderState) => Promise<string>,
   label: string,
   caller: LlmCaller = DEFAULT_CALLER,
+  // ★この要求のおおよその大きさ[文字]。渡すと「前に同じ大きさで 413 を返したプロバイダ」を
+  //   最初から飛ばす。**省略時は従来どおり**(誰も飛ばさない)= 既存の呼び出しは挙動不変。
+  approxChars?: number,
 ): Promise<string> {
   const enabled = poolOf(caller).filter(p => p.client !== null);
   if (enabled.length === 0) return '(LLM disabled — APIキーが未設定です。右上⚙️から設定してください)';
-  const available = enabled.filter(isAvailable);
+  // ★学習ぶんの除外。**無音にしない**: 除外は1本につき1回だけ理由を残す。
+  const usable = enabled.filter(p => {
+    const why = skipReason(p, approxChars);
+    if (!why) return true;
+    if (!p.skipNotified) {
+      p.skipNotified = true;
+      console.warn(`${logPrefix(p)}スキップ: ${why}(設定を保存すると再判定します)`);
+    }
+    return false;
+  });
+  if (usable.length === 0) {
+    // ★全滅の理由を言い分ける。「429で待てば直る」と「設定を直すまで直らない」は打ち手が違う。
+    const reasons = enabled.map(p => skipReason(p, approxChars)).filter((s): s is string => s !== null);
+    throw new Error(`使えるプロバイダがありません(設定を確認してください): ${reasons.join(' / ')}`);
+  }
+  const available = usable.filter(isAvailable);
   if (available.length === 0) {
-    const next = enabled.map(p => p.circuitOpenUntil).sort((a, b) => a - b)[0]!;
+    const next = usable.map(p => p.circuitOpenUntil).sort((a, b) => a - b)[0]!;
     const waitSec = Math.max(0, Math.round((next - Date.now()) / 1000));
     throw new Error(`429 (all providers paused, retry in ${waitSec}s)`);
   }
@@ -450,7 +510,7 @@ export async function callWithFallback(
       recordSuccess(p);
       return text;
     } catch (err) {
-      const tripped = tripCircuit(p, err);
+      const tripped = tripCircuit(p, err, approxChars);
       if (tripped) {
         console.warn(`[LLM] ${label}: ${p.config.name} failed → trying next`);
         lastErr = err;

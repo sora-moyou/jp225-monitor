@@ -161,7 +161,9 @@ describe('★400 は次のプロバイダへフォールバックする', () => 
       }, 'translate-news');
       const line = warn.mock.calls.map(c => c.map(String).join(' ')).find(l => l.includes('[LLM:kimi]'));
       expect(line).toContain('config error');
-      expect(line).toContain('paused 30min');
+      // ★v0.9.79: 401/403/404 は時間で治らないので、30分ポーズではなく
+    //   **設定を保存するまで使わない**に変えた(実測: 30分ごとに永久 114回の無駄打ち)。
+    expect(line).toContain('設定を保存するまで使いません');
       expect(getProviderStatus().find(p => p.name === 'kimi')!.paused).toBe(true);
       // 次の呼び出しでは候補から外れる(=400 との違いが実際に出ている)
       const calls: string[] = [];

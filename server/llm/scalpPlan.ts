@@ -2327,7 +2327,10 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       // 成功時は整形済み plan JSON 文字列を返す(callWithFallback は string 契約)。戻り値そのものは使わない。
       return JSON.stringify(planResult.plan);
       // ★第3引数(caller)= プロバイダ・プールの選択。未指定は 'default'(既存経路は byte 不変)。
-    }, 'scalp-plan', input.caller ?? DEFAULT_CALLER);
+      // ★v0.9.79: この要求のおおよその大きさ[文字]を渡す。413(TPM超過)を返したプロバイダを
+      //   同じ大きさで叩き直さないため(実測: groq が 1日 1,100〜1,300回すべて 413)。
+      //   画像は文字数に入らないが、判定は「この大きさ以上」なので過小に見積もる方へ倒してよい。
+    }, 'scalp-plan', input.caller ?? DEFAULT_CALLER, systemPrompt.length + userPromptFor(false).length);
     // task が一度も走らなかった場合(callWithFallback がプロバイダ不在の定型文を返す経路)だけ raw を読む。
     // 通常は planResult が入っているので再パースは起きない。
     const parsed: ScalpPlanResult = planResult ?? parseScalpPlan(raw, refPrice);

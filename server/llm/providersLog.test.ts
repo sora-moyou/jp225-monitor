@@ -216,7 +216,9 @@ describe('tripCircuit の実ログ行(console.warn を実測)', () => {
     expect(line).toBeDefined();
     expect(line).not.toContain('sk-proj-abc123DEF456ghi');
     expect(line).toContain('<キー伏字>');
-    expect(line).toContain('paused 30min');
+    // ★v0.9.79: 401/403/404 は時間で治らないので、30分ポーズではなく
+    //   **設定を保存するまで使わない**に変えた(実測: 30分ごとに永久 114回の無駄打ち)。
+    expect(line).toContain('設定を保存するまで使いません');
   });
 
   it('★parse 失敗の warn 行にアプリのデータ(モデルの生出力)が残らない', async () => {
