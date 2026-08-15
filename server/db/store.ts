@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { classifySession } from '../../core/session.js';
+import { BAR_SRC_BASE, BAR_SRC_LIVE, shouldOverwriteBar } from '../../core/barSource.js';
 import { resolveAppDataDir } from '../appDataDir.js';
 
 /** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。
@@ -22,7 +23,12 @@ export function openDb(path: string): DatabaseSync {
 }
 
 export interface Tick { symbol: string; t: number; price: number; }
-export interface Bar1m { symbol: string; session_date: string | null; session: string | null; t: number; o: number; h: number; l: number; c: number; }
+export interface Bar1m {
+  symbol: string; session_date: string | null; session: string | null;
+  t: number; o: number; h: number; l: number; c: number;
+  /** 出所(core/barSource.ts): 'base'=基礎データ / 'live'=リアルタイムフィード / null=出所不明(旧行)。 */
+  src: string | null;
+}
 
 export function initSchema(db: DatabaseSync): void {
   db.exec(`
@@ -255,6 +261,10 @@ export function initSchema(db: DatabaseSync): void {
   if (!cols.includes('session_date')) db.exec('ALTER TABLE bars_1m ADD COLUMN session_date TEXT');
   if (!cols.includes('session')) db.exec('ALTER TABLE bars_1m ADD COLUMN session TEXT');
   if (!cols.includes('volume')) db.exec('ALTER TABLE bars_1m ADD COLUMN volume INTEGER');
+  // ★出所(v0.9.75): 'base'=基礎データ取込 / 'live'=リアルタイムフィード / NULL=出所不明(この列より前の行)。
+  //   同じ (symbol, t) に両方が書きうるのに区別する列が無く、「後に書いた方が勝つ」だけだった。
+  //   規則は core/barSource.ts:shouldOverwriteBar が唯一の定義。既存 DB は全行 NULL のまま=従来の挙動。
+  if (!cols.includes('src')) db.exec('ALTER TABLE bars_1m ADD COLUMN src TEXT');
   // ★ニュースの確度(未確認バッジ)列。news 表を持つ既存 DB へ後付けする(冪等)。
   //   確度は「その時点のプール全体」で決まるので取得のたびに上書きされる=第一報が
   //   30分後に裏取り済みへ変わることを、保存済みの行にも反映させる。
@@ -295,21 +305,27 @@ export function initSchema(db: DatabaseSync): void {
   // 絞る索引はもう不要なため作らない(旧 idx_bars_session は書き込み増だけで読みに使われていなかった)。
 }
 
-// 生 tick を保存しつつ、その分の 1分足 OHLC を upsert する。
+// 生 tick を保存しつつ、その分の 1分足 OHLC を upsert する(=ライブの書き込み経路)。
+// ★tick そのものは常に保存する(ticks はライブの生記録で、基礎データとは別の表)。
+//   1分足だけは「その分が既に基礎データで埋まっているなら塗り替えない」= core/barSource.ts の規則に従う。
 export function recordTick(db: DatabaseSync, symbol: string, t: number, price: number, sessionDate: string, session: string): void {
   if (!Number.isFinite(price) || price <= 0) return;
   db.prepare('INSERT OR IGNORE INTO ticks (symbol, t, price) VALUES (?, ?, ?)').run(symbol, t, price);
   const minute = Math.floor(t / 60_000) * 60_000;
+  const existing = db.prepare('SELECT src FROM bars_1m WHERE symbol = ? AND t = ?')
+    .get(symbol, minute) as { src: string | null } | undefined;
+  // 既存行が無ければ単なる INSERT。あるなら上書き可否は純関数 shouldOverwriteBar が唯一の判定。
+  if (existing && !shouldOverwriteBar(existing.src, BAR_SRC_LIVE)) return;
   db.prepare(`
-    INSERT INTO bars_1m (symbol, session_date, session, t, o, h, l, c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bars_1m (symbol, session_date, session, t, o, h, l, c, src) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(symbol, t) DO UPDATE SET
-      h = max(h, excluded.h), l = min(l, excluded.l), c = excluded.c
-  `).run(symbol, sessionDate, session, minute, price, price, price, price);
+      h = max(h, excluded.h), l = min(l, excluded.l), c = excluded.c, src = excluded.src
+  `).run(symbol, sessionDate, session, minute, price, price, price, price, BAR_SRC_LIVE);
 }
 
 export function getRecentBars(db: DatabaseSync, symbol: string, sinceT: number): Bar1m[] {
   return db.prepare(
-    'SELECT symbol, session_date, session, t, o, h, l, c FROM bars_1m WHERE symbol = ? AND t >= ? ORDER BY t ASC',
+    'SELECT symbol, session_date, session, t, o, h, l, c, src FROM bars_1m WHERE symbol = ? AND t >= ? ORDER BY t ASC',
   ).all(symbol, sinceT) as unknown as Bar1m[];
 }
 
@@ -334,7 +350,10 @@ export function getLatestTick(db: DatabaseSync, symbol: string): Tick | null {
   return row ?? null;
 }
 
-/** 基礎データ取り込み用。(symbol,t) で OHLCV を全上書き upsert（基礎=正）。削除はしない。 */
+/** 基礎データ取り込み用。(symbol,t) で OHLCV を全上書き upsert（基礎=正）。削除はしない。
+ *  ★書いた行には src='base' を刻む。これが「以後ライブで塗り替えない」印になる(core/barSource.ts)。
+ *    この関数は **基礎データ専用**(引数で出所を変えられない)。ライブの書き込みは recordTick /
+ *    collector の backfillBars を使うこと。 */
 export function upsertBar(
   db: DatabaseSync, symbol: string, t: number,
   o: number, h: number, l: number, c: number, volume: number | null,
@@ -342,12 +361,13 @@ export function upsertBar(
 ): void {
   const minute = Math.floor(t / 60_000) * 60_000;
   db.prepare(`
-    INSERT INTO bars_1m (symbol, session_date, session, t, o, h, l, c, volume)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bars_1m (symbol, session_date, session, t, o, h, l, c, volume, src)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(symbol, t) DO UPDATE SET
       o = excluded.o, h = excluded.h, l = excluded.l, c = excluded.c,
-      volume = excluded.volume, session_date = excluded.session_date, session = excluded.session
-  `).run(symbol, sessionDate, session, minute, o, h, l, c, volume);
+      volume = excluded.volume, session_date = excluded.session_date, session = excluded.session,
+      src = excluded.src
+  `).run(symbol, sessionDate, session, minute, o, h, l, c, volume, BAR_SRC_BASE);
 }
 
 // ─── 取引日15:45終値の永続化(daily_closes・v0.8.6) ───

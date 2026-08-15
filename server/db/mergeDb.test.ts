@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
-import { insertAlert, recordTick, getRecentAlerts, getRecentTicks, openDb } from './store.js';
+import { insertAlert, recordTick, getRecentAlerts, getRecentTicks, openDb, upsertBar } from './store.js';
 import { mergeFrom, replaceFrom } from './mergeDb.js';
 
 const tmp: string[] = [];
@@ -41,6 +41,31 @@ describe('mergeFrom', () => {
     const res = mergeFrom(m.db, o.path);
     expect(getRecentTicks(m.db, 'NIY=F', 0).length).toBe(2);
     expect(res.ticks).toBe(1);
+  });
+  it('bars_1m の出所(src)は統合先へそのまま運ばれる(基礎データの印が消えない)', () => {
+    const m = fileDb(); const o = fileDb();
+    upsertBar(o.db, 'NIY=F', 60_000, 100, 110, 90, 105, 7, '2026-06-05', 'Day');   // 基礎データ
+    recordTick(o.db, 'NIY=F', 120_000, 67010, '2026-06-05', 'Day');                // ライブ
+    mergeFrom(m.db, o.path);
+    const rows = m.db.prepare('SELECT t, src FROM bars_1m ORDER BY t').all() as Array<{ t: number; src: string | null }>;
+    expect(rows).toEqual([{ t: 60_000, src: 'base' }, { t: 120_000, src: 'live' }]);
+  });
+  it('src 列を持たない旧版 DB からでも統合できる(共通列だけ移送する)', () => {
+    const m = fileDb();
+    // 旧版の DB を手で作る(bars_1m に src 列が無い)
+    const oldPath = join(tmpdir(), `mtest-old-${Math.random().toString(36).slice(2)}.db`);
+    tmp.push(oldPath);
+    const old = new DatabaseSync(oldPath);
+    old.exec(`CREATE TABLE bars_1m (symbol TEXT NOT NULL, session_date TEXT, session TEXT, t INTEGER NOT NULL,
+      o REAL NOT NULL, h REAL NOT NULL, l REAL NOT NULL, c REAL NOT NULL, PRIMARY KEY (symbol, t));
+      CREATE TABLE ticks (symbol TEXT NOT NULL, t INTEGER NOT NULL, price REAL NOT NULL, PRIMARY KEY (symbol, t));
+      CREATE TABLE alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, triggered_at INTEGER NOT NULL);`);
+    old.prepare('INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
+      .run('NIY=F', '2026-06-05', 'Day', 60_000, 1, 2, 0, 1);
+    old.close();
+    expect(() => mergeFrom(m.db, oldPath)).not.toThrow();
+    const row = m.db.prepare('SELECT t, src FROM bars_1m').get() as { t: number; src: string | null };
+    expect(row).toEqual({ t: 60_000, src: null });   // 出所不明として入る(嘘をつかない)
   });
 });
 

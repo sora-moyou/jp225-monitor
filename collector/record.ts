@@ -3,6 +3,7 @@ import { recordTick } from '../server/db/store.js';
 import type { Price } from '../server/types.js';
 import type { Bar } from '../server/correlation.js';
 import { classifySession } from '../core/session.js';
+import { BAR_SRC_LIVE } from '../core/barSource.js';
 
 /** feed のリアルタイム価格を tick/1分足として DB へ。stale・場外(セッション外)はスキップ。 */
 export function recordFeedPrices(db: DatabaseSync, prices: Price[]): void {
@@ -15,15 +16,17 @@ export function recordFeedPrices(db: DatabaseSync, prices: Price[]): void {
 }
 
 /** Yahoo 分足履歴を欠損のみ埋める。各足を OPEN時刻でセッション分類し、場外足はスキップ。
- *  bars のみ書き込む(ticks は汚さない) — INSERT OR IGNORE で冪等。 */
+ *  bars のみ書き込む(ticks は汚さない) — INSERT OR IGNORE で冪等。
+ *  ★出所は 'live'(外部フィード由来=基礎データではない)。INSERT OR IGNORE なので既存行は種別に
+ *    関わらず一切触らない=基礎データを塗り替えることは原理的に起きない。 */
 export function backfillBars(db: DatabaseSync, symbol: string, bars: Bar[]): void {
   const stmt = db.prepare(
-    'INSERT OR IGNORE INTO bars_1m (symbol, session_date, session, t, o, h, l, c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT OR IGNORE INTO bars_1m (symbol, session_date, session, t, o, h, l, c, src) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   for (const b of bars) {
     if (!(Number.isFinite(b.close) && b.close > 0)) continue;
     const s = classifySession(b.t);
     if (!s) continue;
-    stmt.run(symbol, s.sessionDate, s.session, b.t, b.close, b.close, b.close, b.close);
+    stmt.run(symbol, s.sessionDate, s.session, b.t, b.close, b.close, b.close, b.close, BAR_SRC_LIVE);
   }
 }

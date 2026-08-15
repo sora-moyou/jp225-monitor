@@ -61,7 +61,14 @@ console.log(`backup: ${bak}`);
 
 const db = new DatabaseSync(localPath); // read-write
 const cnt = (t) => db.prepare('SELECT COUNT(*) n FROM ' + t).get().n;
-const cols = (t) => db.prepare('PRAGMA table_info(' + t + ')').all();
+// main と other の **共通列** だけを移送する。片方にしか無い列を SELECT すると "no such column" で
+// マージ全体が落ちる(別PCが別バージョンで列が増減しているのは普通のこと。実際 v0.9.75 で bars_1m に
+// src 列が増えた)。server/db/mergeDb.ts:commonColsOf と同じ考え方。※ATTACH 後にしか呼べない。
+const commonCols = (t, exclude = []) => {
+  const of = (schema) => db.prepare(`PRAGMA ${schema}.table_info(${t})`).all().map((c) => c.name);
+  const o = new Set(of('other'));
+  return of('main').filter((n) => o.has(n) && !exclude.includes(n)).join(', ');
+};
 
 const before = { alerts: cnt('alerts'), bars_1m: cnt('bars_1m'), ticks: cnt('ticks') };
 console.log('BEFORE:', JSON.stringify(before));
@@ -72,13 +79,13 @@ db.exec('BEGIN');
 try {
   // alerts: id 以外の全列を OR IGNORE。UNIQUE 同一性索引(idx_alerts_identity)が重複を弾く。
   // (server/db/mergeDb.ts の mergeFrom と同ロジック。)
-  const aList = cols('alerts').map((c) => c.name).filter((n) => n !== 'id').join(', ');
+  const aList = commonCols('alerts', ['id']);
   const aRes = db.prepare(`INSERT OR IGNORE INTO main.alerts (${aList}) SELECT ${aList} FROM other.alerts`).run();
   console.log(`alerts 追加: ${aRes.changes} 行`);
 
-  // bars_1m / ticks: PK(symbol,t)で OR IGNORE。列名明示(列順差吸収)。
+  // bars_1m / ticks: PK(symbol,t)で OR IGNORE。列名明示(列順差吸収・共通列のみ)。
   for (const t of ['bars_1m', 'ticks']) {
-    const list = cols(t).map((c) => c.name).join(', ');
+    const list = commonCols(t);
     db.prepare(`INSERT OR IGNORE INTO main.${t} (${list}) SELECT ${list} FROM other.${t}`).run();
   }
 

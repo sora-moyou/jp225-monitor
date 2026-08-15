@@ -26,7 +26,7 @@ describe('store', () => {
     const db = memDb();
     recordTick(db, 'NIY=F', 10 * M + 1000, 67000, '2026-06-01', 'Day');
     expect(getRecentTicks(db, 'NIY=F', 0)).toEqual([{ symbol: 'NIY=F', t: 10 * M + 1000, price: 67000 }]);
-    expect(getRecentBars(db, 'NIY=F', 0)).toEqual([{ symbol: 'NIY=F', session_date: '2026-06-01', session: 'Day', t: 10 * M, o: 67000, h: 67000, l: 67000, c: 67000 }]);
+    expect(getRecentBars(db, 'NIY=F', 0)).toEqual([{ symbol: 'NIY=F', session_date: '2026-06-01', session: 'Day', t: 10 * M, o: 67000, h: 67000, l: 67000, c: 67000, src: 'live' }]);
   });
 
   it('recordTick updates the same minute bar h/l/c, keeps o', () => {
@@ -36,7 +36,7 @@ describe('store', () => {
     recordTick(db, 'NIY=F', 10 * M + 40000, 66950, '2026-06-01', 'Day');
     recordTick(db, 'NIY=F', 10 * M + 59000, 67010, '2026-06-01', 'Day');
     expect(getRecentBars(db, 'NIY=F', 0)).toEqual([
-      { symbol: 'NIY=F', session_date: '2026-06-01', session: 'Day', t: 10 * M, o: 67000, h: 67080, l: 66950, c: 67010 },
+      { symbol: 'NIY=F', session_date: '2026-06-01', session: 'Day', t: 10 * M, o: 67000, h: 67080, l: 66950, c: 67010, src: 'live' },
     ]);
   });
 
@@ -172,6 +172,80 @@ describe('upsertBar', () => {
     expect(rows[0]).toEqual({ t: 60000, o: 101, h: 111, l: 91, c: 99, volume: 2086 });
     expect(rows[1].t).toBe(120000);
     db.close();
+  });
+});
+
+// ─── 出所(src)と衝突解決: 「基礎データがあるなら基礎データを優先する」を DB 側で固定する ───
+// 判定規則そのものは core/barSource.ts:shouldOverwriteBar(表は core/barSource.test.ts)。
+// ここでは **SQL の実挙動が同じ表に従っている** ことを実 SQLite で確かめる(規則とSQLの乖離を防ぐ)。
+describe('bars_1m の出所(src)と衝突解決', () => {
+  const srcOf = (db: DatabaseSync, t: number): string | null =>
+    (db.prepare('SELECT src FROM bars_1m WHERE symbol=? AND t=?').get('NIY=F', t) as { src: string | null }).src;
+  const barOf = (db: DatabaseSync, t: number) =>
+    db.prepare('SELECT o,h,l,c,volume,src FROM bars_1m WHERE symbol=? AND t=?').get('NIY=F', t) as any;
+
+  it('列 src が存在する(既存 DB へも冪等 ALTER で後付けされる)', () => {
+    const db = memDb();
+    const cols = (db.prepare('PRAGMA table_info(bars_1m)').all() as Array<{ name: string }>).map(c => c.name);
+    expect(cols).toContain('src');
+    // src 列が無い旧 DB を作って initSchema を再実行しても壊れず、既存行は NULL(出所不明)のまま。
+    const old = new DatabaseSync(':memory:');
+    old.exec(`CREATE TABLE bars_1m (symbol TEXT NOT NULL, session_date TEXT, session TEXT, t INTEGER NOT NULL,
+      o REAL NOT NULL, h REAL NOT NULL, l REAL NOT NULL, c REAL NOT NULL, PRIMARY KEY (symbol, t))`);
+    old.prepare('INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
+      .run('NIY=F', null, null, 60000, 1, 1, 1, 1);
+    initSchema(old);
+    initSchema(old);   // 冪等
+    expect(srcOf(old, 60000)).toBeNull();
+    old.close();
+  });
+
+  it('recordTick は src=live を刻む / upsertBar(基礎データ)は src=base を刻む', () => {
+    const db = memDb();
+    recordTick(db, 'NIY=F', 10 * M, 67000, '2026-06-01', 'Day');
+    upsertBar(db, 'NIY=F', 20 * M, 100, 110, 90, 105, 7, '2026-06-01', 'Day');
+    expect(srcOf(db, 10 * M)).toBe('live');
+    expect(srcOf(db, 20 * M)).toBe('base');
+  });
+
+  it('★既存=base に live が来ても上書きしない(基礎データ優先)', () => {
+    const db = memDb();
+    upsertBar(db, 'NIY=F', 10 * M, 100, 110, 90, 105, 7, '2026-06-01', 'Day');
+    recordTick(db, 'NIY=F', 10 * M + 30_000, 999, '2026-06-01', 'Day');
+    expect(barOf(db, 10 * M)).toEqual({ o: 100, h: 110, l: 90, c: 105, volume: 7, src: 'base' });
+    // tick そのものは残る(ticks はライブの生記録で、基礎データとは別の表)
+    expect(getRecentTicks(db, 'NIY=F', 0).map(t => t.price)).toEqual([999]);
+  });
+
+  it('既存=live に base が来たら上書きする(基礎データが正)', () => {
+    const db = memDb();
+    recordTick(db, 'NIY=F', 10 * M, 67000, '2026-06-01', 'Day');
+    upsertBar(db, 'NIY=F', 10 * M, 100, 110, 90, 105, 7, '2026-06-01', 'Day');
+    expect(barOf(db, 10 * M)).toEqual({ o: 100, h: 110, l: 90, c: 105, volume: 7, src: 'base' });
+  });
+
+  it('既存=NULL(出所不明・既存環境の全行)に live が来たら従来どおり上書きする', () => {
+    const db = memDb();
+    db.prepare('INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
+      .run('NIY=F', '2026-06-01', 'Day', 10 * M, 100, 110, 90, 105);
+    recordTick(db, 'NIY=F', 10 * M + 30_000, 120, '2026-06-01', 'Day');
+    // 従来の合成規則: h=max, l=min, c=最新, o は据え置き
+    expect(barOf(db, 10 * M)).toEqual({ o: 100, h: 120, l: 90, c: 120, volume: null, src: 'live' });
+  });
+
+  it('既存=live に live が来たら従来どおり(h=max/l=min/c=最新)', () => {
+    const db = memDb();
+    recordTick(db, 'NIY=F', 10 * M, 67000, '2026-06-01', 'Day');
+    recordTick(db, 'NIY=F', 10 * M + 20_000, 67080, '2026-06-01', 'Day');
+    recordTick(db, 'NIY=F', 10 * M + 40_000, 66950, '2026-06-01', 'Day');
+    expect(barOf(db, 10 * M)).toEqual({ o: 67000, h: 67080, l: 66950, c: 66950, volume: null, src: 'live' });
+  });
+
+  it('既存=base に base が来たら上書きする(基礎データの再取込は最新版が勝つ)', () => {
+    const db = memDb();
+    upsertBar(db, 'NIY=F', 10 * M, 100, 110, 90, 105, 7, '2026-06-01', 'Day');
+    upsertBar(db, 'NIY=F', 10 * M, 101, 111, 91, 99, 8, '2026-06-01', 'Day');
+    expect(barOf(db, 10 * M)).toEqual({ o: 101, h: 111, l: 91, c: 99, volume: 8, src: 'base' });
   });
 });
 
