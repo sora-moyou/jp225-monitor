@@ -3,6 +3,7 @@ import { INSTRUMENTS } from '../config.js';
 import { bigrams } from '../../core/textBigrams.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
 import { rowKind, summarize } from '../alertHistory.js';
+import { isDirectionalKind } from '../../core/detectionKinds.js';
 import { crashDrawdown } from '../crash.js';
 import { getPrices } from '../cache.js';
 import { buildExplainInput } from './explainInput.js';
@@ -160,6 +161,23 @@ function hhmm(t: number): string {
   return new Date(t).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' });
 }
 
+/** アラート1行「- HH:MM {種別} ▲ {価格}」(純関数)。**この文字列は AI が読む**
+ *  (system prompt の直近アラート要約 / query_alerts ツールの応答)。
+ *  ★方向を持たない種別(squeeze/bulge)は矢印を出さず「- HH:MM {種別} {価格}」で書く。
+ *    alerts.direction は必須列なので方向なし検知にも 'up' が入っているが、それを ▲ として渡すと
+ *    「バンドが収縮した」に上向きの意味を足して **無い方向を AI に主張する** ことになる。
+ *    判定は core/detectionKinds.ts の isDirectionalKind が唯一の真実 — ここに種別名を書かないこと。
+ *  ★方向を持つ種別の出力は従来と1バイトも変えない(direction が up/down のどちらでもない記録で
+ *    矢印が空になり空白が2つ並ぶ挙動も含めて維持する)。 */
+export function formatAlertLine(a: AlertRow): string {
+  const arrow = isDirectionalKind(a.detection_kind)
+    ? (a.direction === 'up' ? '▲' : a.direction === 'down' ? '▼' : '')
+    : null;
+  const price = a.price != null ? Math.round(a.price).toLocaleString('ja-JP') : '-';
+  const head = `- ${hhmm(a.triggered_at)} ${rowKind(a.detection_kind, a.window_seconds)}`;
+  return arrow === null ? `${head} ${price}` : `${head} ${arrow} ${price}`;
+}
+
 /** チャット system prompt に常時注入する monitor データ要約(直近アラート + 本日OHLC)。
  *  DB 不在/データ無しでも例外を投げず、出せるブロックだけ返す(空なら '')。 */
 export function buildMonitorContext(now = Date.now()): string {
@@ -171,11 +189,7 @@ export function buildMonitorContext(now = Date.now()): string {
     try {
       const recent = getRecentAlerts(db, 8).filter(a => now - a.triggered_at <= 60 * 60_000);
       if (recent.length > 0) {
-        const lines = recent.map(a => {
-          const arrow = a.direction === 'up' ? '▲' : a.direction === 'down' ? '▼' : '';
-          const price = a.price != null ? Math.round(a.price).toLocaleString('ja-JP') : '-';
-          return `- ${hhmm(a.triggered_at)} ${rowKind(a.detection_kind, a.window_seconds)} ${arrow} ${price}`;
-        });
+        const lines = recent.map(a => formatAlertLine(a));
         blocks.push(`■ 直近アラート(60分以内):\n${lines.join('\n')}`);
       }
     } catch { /* アラート要約は欠落許容 */ }
@@ -255,11 +269,7 @@ async function handleQueryAlerts(args: { withinMinutes?: number; limit?: number 
     db = openDb(resolveDbPath());
     const rows: AlertRow[] = getRecentAlerts(db, Math.max(limit, 50)).filter(a => now - a.triggered_at <= withinMs);
     if (rows.length === 0) return `直近${Math.round(withinMs / 60_000)}分のアラートなし。`;
-    const list = rows.slice(0, limit).map(a => {
-      const arrow = a.direction === 'up' ? '▲' : a.direction === 'down' ? '▼' : '';
-      const price = a.price != null ? Math.round(a.price).toLocaleString('ja-JP') : '-';
-      return `- ${hhmm(a.triggered_at)} ${rowKind(a.detection_kind, a.window_seconds)} ${arrow} ${price}`;
-    });
+    const list = rows.slice(0, limit).map(a => formatAlertLine(a));
     const stats = summarize(rows).map(s =>
       `- ${s.label}(${s.count}件): 継続${(s.hitRate * 100).toFixed(0)}% 戻り${(s.revertRate * 100).toFixed(0)}% 15分平均${s.avgRet15 >= 0 ? '+' : ''}${s.avgRet15.toFixed(2)}%`);
     return `直近アラート:\n${list.join('\n')}\n\n種別別統計(15分基準):\n${stats.join('\n')}`;

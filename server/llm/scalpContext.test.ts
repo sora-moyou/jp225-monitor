@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildScalpMarketData, buildScalpTradeHistory, parseTradeSettings, type ScalpMarketDataInput } from './scalpContext.js';
+import { buildScalpMarketData, buildScalpTradeHistory, parseTradeSettings, formatScalpAlertLine, type ScalpMarketDataInput } from './scalpContext.js';
+import { rowKind } from '../alertHistory.js';
+import { DETECTION_KINDS, isDirectionalKind } from '../../core/detectionKinds.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 import type { Bar1m, AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.js';
 import type { LevelsResult, Level } from '../levels.js';
@@ -411,5 +413,96 @@ describe('buildScalpMarketData テクニカル指標ブロック(G)', () => {
     });
     expect(s).toContain('バンドウォーク: 上昇バンドウォーク継続中');
     expect(s).toContain('75%');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//  「直近アラートとその後」の方向記号 — 方向を持たない検知に方向を主張していた欠陥
+// ═══════════════════════════════════════════════════════════════════════════════════════
+//
+// ★実害: alerts.direction は必須列なので、方向の概念が無い squeeze/bulge にも 'up' が入る
+//   (server/detect/registry.ts が便宜上そう積む)。この行は scalp-plan の構造化データ(ブロック E)
+//   として **AI が読み、売買方向の根拠にする**。無条件に ▲ を付けていたので「スクイーズ ▲62,490」=
+//   バンド収縮に上向きの意味を足した嘘を渡していた。
+//   ※固定文(見出し「直近アラートとその後(発火後の実リターン):」等)は1文字も変えていない。
+//
+// ★旧実装(git show HEAD:server/llm/scalpContext.ts の 232-240 行)をそのまま写したもの。
+//   方向を持つ種別では新実装がこれと **1バイトも変わらない** ことをこの写しで固定する。
+const legacyScalpAlertLine = (a: AlertRow): string => {
+  const hhmm = (t: number): string =>
+    new Date(t).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' });
+  const R = (n: number): number => Math.round(n);
+  const arrow = a.direction === 'up' ? '▲' : a.direction === 'down' ? '▼' : '';
+  const price = a.price != null ? R(a.price) : '-';
+  const out: string[] = [];
+  if (a.ret5 != null) out.push(`5分${a.ret5 >= 0 ? '+' : ''}${a.ret5.toFixed(2)}%`);
+  if (a.ret15 != null) out.push(`15分${a.ret15 >= 0 ? '+' : ''}${a.ret15.toFixed(2)}%`);
+  if (a.ret30 != null) out.push(`30分${a.ret30 >= 0 ? '+' : ''}${a.ret30.toFixed(2)}%`);
+  const tail = out.length > 0 ? ' → ' + out.join('/') : '';
+  return `${hhmm(a.triggered_at)} ${rowKind(a.detection_kind, a.window_seconds)} ${arrow}${price}${tail}`;
+};
+
+function alertRow(p: Partial<AlertRow> = {}): AlertRow {
+  return {
+    id: 1, symbol: 'NIY=F', triggered_at: NOW - 20 * MIN, direction: 'up',
+    detection_kind: 'break', window_seconds: 60, change_percent: 0, price: 62490,
+    session_date: null, session: null, ret5: 0.12, ret15: 0.2, ret30: null,
+    reference_kind: null, reference_price: null,
+    ...p,
+  };
+}
+
+describe('formatScalpAlertLine(AI が読むアラート行)', () => {
+  it('★不変: 方向を持つ全種別 × up/down で旧実装と byte 一致(他種別は1文字も変わらない)', () => {
+    for (const k of DETECTION_KINDS.filter(isDirectionalKind)) {
+      for (const d of ['up', 'down'] as const) {
+        const r = alertRow({ detection_kind: k, direction: d });
+        expect(formatScalpAlertLine(r), `${k}/${d}`).toBe(legacyScalpAlertLine(r));
+      }
+    }
+    // 代表例を実文字列でも固定(写しが壊れたら共倒れしないように)。
+    expect(formatScalpAlertLine(alertRow({ direction: 'down', price: 67470 })))
+      .toBe('08:40 水準ブレイク ▼67470 → 5分+0.12%/15分+0.20%');
+  });
+
+  it('★不変: ret 全欠落 / 価格 null も旧実装と byte 一致', () => {
+    for (const r of [alertRow({ ret5: null, ret15: null, ret30: null }), alertRow({ price: null })]) {
+      expect(formatScalpAlertLine(r)).toBe(legacyScalpAlertLine(r));
+    }
+  });
+
+  it('★スクイーズ/バルジは矢印を出さない(価格から始まる) — 旧実装とは必ず異なる', () => {
+    const sq = alertRow({ detection_kind: 'squeeze', direction: 'up' });
+    expect(formatScalpAlertLine(sq)).toBe('08:40 スクイーズ 62490 → 5分+0.12%/15分+0.20%');
+    expect(formatScalpAlertLine(sq)).not.toBe(legacyScalpAlertLine(sq));                  // 否定対照
+    expect(legacyScalpAlertLine(sq)).toBe('08:40 スクイーズ ▲62490 → 5分+0.12%/15分+0.20%'); // 直した中身
+    // direction が何であっても方向は出さない。
+    expect(formatScalpAlertLine(alertRow({ detection_kind: 'bulge', direction: 'down' })))
+      .toBe('08:40 バルジ 62490 → 5分+0.12%/15分+0.20%');
+  });
+
+  it('方向を持たない種別の行に方向記号が一切含まれない(網羅チェック)', () => {
+    for (const k of DETECTION_KINDS.filter(k => !isDirectionalKind(k))) {
+      for (const d of ['up', 'down'] as const) {
+        expect(formatScalpAlertLine(alertRow({ detection_kind: k, direction: d })), `${k}/${d}`)
+          .not.toMatch(/[▲▼]/);
+      }
+    }
+  });
+
+  it('組み上がったブロックにも方向記号が漏れない(実際に AI へ渡る文字列で確認)', () => {
+    const s = buildScalpMarketData({
+      bars: [], levels: emptyLevels(), now: NOW, currentPrice: 62490,
+      alerts: [alertRow({ detection_kind: 'squeeze' })],
+    });
+    expect(s).toContain('直近アラートとその後(発火後の実リターン):');   // 固定文は不変
+    expect(s).toContain('スクイーズ 62490');
+    expect(s).not.toContain('▲');
+  });
+
+  it('未知の種別(過去 DB の想定外文字列)は従来どおり方向ありで書く', () => {
+    const r = alertRow({ detection_kind: 'someFutureKind' });
+    expect(formatScalpAlertLine(r)).toBe(legacyScalpAlertLine(r));
+    expect(formatScalpAlertLine(r)).toContain('▲');
   });
 });

@@ -11,6 +11,7 @@ import type { AlertRow, SignalTradeRow, SessionOHLC } from '../db/store.js';
 import type { LevelsResult } from '../levels.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 import { rowKind } from '../alertHistory.js';
+import { isDirectionalKind } from '../../core/detectionKinds.js';
 import { classifySession, minutesFromOpen } from '../../core/session.js';
 import { extractSwingPivots } from '../swingPivots.js';
 import { computeIndicators } from '../indicators.js';
@@ -70,6 +71,27 @@ function computeAtr14(bars: OHLCBar[]): number | null {
   const last = trs.slice(-14);
   if (last.length === 0) return null;
   return last.reduce((a, b) => a + b, 0) / last.length;
+}
+
+/** 「直近アラートとその後」1行「HH:MM {種別} ▲{価格} → 5分+0.10%/…」(純関数)。
+ *  **この文字列は scalp-plan の AI が読む**(ブロック E に差し込まれるデータ行)。
+ *  ★方向を持たない種別(squeeze/bulge)は矢印を出さず「HH:MM {種別} {価格}」で書く。
+ *    alerts.direction は必須列なので方向なし検知にも 'up' が入っているが、それを ▲ として渡すと
+ *    「バンドが収縮した」に上向きの意味を足して **無い方向を AI に主張する** ことになる
+ *    (AI はこの行を根拠に売買方向を決めるので実害が大きい)。判定は core/detectionKinds.ts の
+ *    isDirectionalKind が唯一の真実 — ここに種別名を書かないこと。
+ *  ★方向を持つ種別の出力は従来と1バイトも変えない(矢印は価格に直付け=間に空白を入れない)。 */
+export function formatScalpAlertLine(a: AlertRow): string {
+  const arrow = isDirectionalKind(a.detection_kind)
+    ? (a.direction === 'up' ? '▲' : a.direction === 'down' ? '▼' : '')
+    : '';
+  const price = a.price != null ? R(a.price) : '-';
+  const out: string[] = [];
+  if (a.ret5 != null) out.push(`5分${a.ret5 >= 0 ? '+' : ''}${a.ret5.toFixed(2)}%`);
+  if (a.ret15 != null) out.push(`15分${a.ret15 >= 0 ? '+' : ''}${a.ret15.toFixed(2)}%`);
+  if (a.ret30 != null) out.push(`30分${a.ret30 >= 0 ? '+' : ''}${a.ret30.toFixed(2)}%`);
+  const tail = out.length > 0 ? ' → ' + out.join('/') : '';
+  return `${hhmm(a.triggered_at)} ${rowKind(a.detection_kind, a.window_seconds)} ${arrow}${price}${tail}`;
 }
 
 export interface ScalpMarketDataInput {
@@ -229,16 +251,7 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
   try {
     const recent = (alerts ?? []).slice(0, 5);
     if (recent.length > 0) {
-      const lines = recent.map(a => {
-        const arrow = a.direction === 'up' ? '▲' : a.direction === 'down' ? '▼' : '';
-        const price = a.price != null ? R(a.price) : '-';
-        const out: string[] = [];
-        if (a.ret5 != null) out.push(`5分${a.ret5 >= 0 ? '+' : ''}${a.ret5.toFixed(2)}%`);
-        if (a.ret15 != null) out.push(`15分${a.ret15 >= 0 ? '+' : ''}${a.ret15.toFixed(2)}%`);
-        if (a.ret30 != null) out.push(`30分${a.ret30 >= 0 ? '+' : ''}${a.ret30.toFixed(2)}%`);
-        const tail = out.length > 0 ? ' → ' + out.join('/') : '';
-        return `${hhmm(a.triggered_at)} ${rowKind(a.detection_kind, a.window_seconds)} ${arrow}${price}${tail}`;
-      });
+      const lines = recent.map(a => formatScalpAlertLine(a));
       blocks.push('直近アラートとその後(発火後の実リターン):\n' + lines.join('\n'));
     }
   } catch { /* 省略 */ }
