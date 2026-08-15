@@ -47,7 +47,7 @@ import {
   aggregate5m, buildSqueezeSnapshot, computeIndicators, indicatorProgress, valuesOf,
   type IndicatorSnapshot, type OHLCBar,
 } from '../indicators.js';
-import { SQUEEZE_BW_LOOKBACK } from '../../core/indicatorSpec.js';
+import { SQUEEZE_BW_LOOKBACK, SQUEEZE_BB_PERIOD } from '../../core/indicatorSpec.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -100,13 +100,15 @@ describe('indicatorsLoop — スクイーズ用の足は7日窓で取り直す',
     startIndicatorsLoop();
     const snap = lastIndicators()!;
 
-    // 6時間窓では確定5分足が 125本に届かない(=元の実装が死んでいた理由)。
+    // 6時間窓では確定5分足が 必要本数に届かない(=元の実装が死んでいた理由)。
     const closed6h = aggregate5m(dbBars.filter(b => b.t >= NOW - 6 * HOUR)).slice(0, -1);
-    expect(closed6h.length).toBeLessThan(SQUEEZE_BW_LOOKBACK);
+    // ★必要な確定足 = 参照本数 + (BB本数−1)。BW の先頭 19本は必ず null なので、
+    //   参照本数そのものと比べると「72本あれば足りる」と誤読する。
+    expect(closed6h.length).toBeLessThan(SQUEEZE_BW_LOOKBACK + SQUEEZE_BB_PERIOD - 1);
 
     // 7日窓なら届く。
     const closed7d = aggregate5m(dbBars.filter(b => b.t >= NOW - 7 * DAY)).slice(0, -1);
-    expect(closed7d.length).toBeGreaterThanOrEqual(SQUEEZE_BW_LOOKBACK);
+    expect(closed7d.length).toBeGreaterThanOrEqual(SQUEEZE_BW_LOOKBACK + SQUEEZE_BB_PERIOD - 1);
 
     expect(snap.squeeze!.ready).toBe(true);
     expect(snap.squeeze!.state).toBe('squeeze');   // 振れ幅が単調に縮む系列 = 最後の足が窓内最小

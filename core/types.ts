@@ -247,7 +247,7 @@ export interface IndicatorProgressPayload {
 //   上の bbUpper/bbLower(14本/0.7σ)とは **別系列**。あちらはバンドウォーク判定と AI プロンプトが
 //   共有しているため触らない。こちらはパネル表示(%B / BW / BWhigh・low)と スクイーズ/バルジ 判定用。
 //   prev* は「1本前と比べて増えたか減ったか」(パネルの緑/橙)を出すためだけに持つ。
-//   ready=false(参照本数125本が未充足)の間は state を必ず null にする=本数不足で誤発火させない。
+//   ready=false(参照本数が未充足)の間は state を必ず null にする=本数不足で誤発火させない。
 //   欠落 = 旧世代の配信 → パネルは従来どおりの空表示にフォールバックする。
 export interface SqueezeSnapshotPayload {
   pctB: number | null;

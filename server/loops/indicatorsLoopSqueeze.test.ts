@@ -38,7 +38,7 @@ import {
   aggregate5m, buildSqueezeSnapshot, computeIndicators, indicatorProgress, valuesOf,
   type IndicatorSnapshot, type OHLCBar,
 } from '../indicators.js';
-import { SQUEEZE_BW_LOOKBACK } from '../../core/indicatorSpec.js';
+import { SQUEEZE_BW_LOOKBACK, SQUEEZE_BB_PERIOD } from '../../core/indicatorSpec.js';
 
 const MIN = 60_000;
 const SYMBOL = 'NIY=F';
@@ -137,14 +137,16 @@ describe('indicatorsLoop — スクイーズ用スナップショットの配信
   // 足が足りない間の振る舞い(ここでは供給が3時間ぶんしか無い)。
   //   → ready:false = state(スクイーズ/バルジ)は null。ただし表示に使う値は出す。
   //   ★足が十分にある場合に ready:true / state が出ることは indicatorsLoopSqueezeWindow.test.ts が固定する
-  //     (この loop は7日窓で足を取り直すので、メモリ内ライブ足(最大520本)だけでは 125本に届かない)。
-  it('★確定5分足が 125本に届かない間は ready:false / state:null のまま', () => {
+  //     (この loop は7日窓で足を取り直すので、メモリ内ライブ足(最大520本)だけでは 必要本数に届かない)。
+  it('★確定5分足が 必要本数に届かない間は ready:false / state:null のまま', () => {
     const bars = feedSeries(360, i => 41000 + Math.sin(i / 11) * 120);   // まるまる6時間ぶん
     startIndicatorsLoop();
     const snap = lastIndicators()!;
     const { usedCloses } = splitCloses(bars);
 
-    expect(usedCloses.length).toBeLessThan(SQUEEZE_BW_LOOKBACK);
+    // ★必要な確定足 = 参照本数 + (BB本数−1)。BW の先頭 19本は必ず null なので、
+    //   参照本数そのものと比べると「72本あれば足りる」と誤読する。
+    expect(usedCloses.length).toBeLessThan(SQUEEZE_BW_LOOKBACK + SQUEEZE_BB_PERIOD - 1);
     expect(snap.squeeze!.ready).toBe(false);
     expect(snap.squeeze!.state).toBeNull();
     // ただし表示に使う値は出る(パネルは「蓄積中…」にならない)。

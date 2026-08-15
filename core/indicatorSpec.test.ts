@@ -15,10 +15,10 @@ import {
 //   「**既存σが 0.7 のまま**であること」を固定する。
 
 describe('バンドの定数', () => {
-  it('スクイーズ用は 20本 / 2σ / 参照125本', () => {
+  it('スクイーズ用は 20本 / 2σ / 参照72本', () => {
     expect(SQUEEZE_BB_PERIOD).toBe(20);
     expect(SQUEEZE_BB_SIGMA).toBe(2);
-    expect(SQUEEZE_BW_LOOKBACK).toBe(125);
+    expect(SQUEEZE_BW_LOOKBACK).toBe(72);
   });
 
   it('★既存のバンドウォーク用σは変えない(AI プロンプトが共有している)', () => {
