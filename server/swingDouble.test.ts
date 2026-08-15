@@ -109,17 +109,20 @@ describe('detectSwingDouble', () => {
 //  ★第6章の帯条件(2026-08-16)— 表で固定する
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 //
-// ボトム: ①右谷の %B > 0 ②左谷の %B < 右谷の %B ③左谷の BW ≥ BWhigh × 0.9
+// ボトム: ①右谷の %B > 0 ②左谷の %B < 右谷の %B ③左谷の BW ≥ BWhigh × 0.5
 // トップ: ①右山の %B < 1 ②左山の %B > 右山の %B ③同上
+//   ※③の比率は DOUBLE_BW_PEAK_RATIO(2026-08-16 に 0.9 → 0.5)。**この見出しに数値を手書きしている**ので、
+//     定数を動かしたら必ずここも直すこと(直し忘れると、次に読む人はこの行を仕様と読む)。
 //
 // 境界値を必ず含める: %B が **ちょうど 0 / ちょうど 1**、左右の %B が **同値**、
-// BW が BWhigh の **ちょうど 90%**。ここは「>」か「≥」かで挙動が反転する場所なので、
+// BW が BWhigh の **ちょうど 50%**。ここは「>」か「≥」かで挙動が反転する場所なので、
 // 文章ではなく表で固定しないと後から静かに変わる。
 
 const st = (pctB: number | null, bw: number | null, bwHigh: number | null, bwReady = true): DoubleBandStats =>
   ({ pctB, bw, bwHigh, bwReady });
 
-// ③を満たす左脚(BW 9.0 / BWhigh 10.0 = ちょうど 90%)。①②の検査で③を巻き込まないための土台。
+// ③を満たす左脚(BW 9.0 / BWhigh 10.0 = BWhigh比 90% ≥ 閾値 50%)。①②の検査で③を巻き込まないための土台。
+// ★90% は閾値ではなくこのフィクスチャの実値。閾値を上げても③を満たし続けるよう余裕を持たせてある。
 const wideLeft = (pctB: number | null): DoubleBandStats => st(pctB, 9.0, 10.0);
 
 describe('passesDoubleBandConditions(第6章の帯条件)', () => {
@@ -157,21 +160,24 @@ describe('passesDoubleBandConditions(第6章の帯条件)', () => {
     });
   });
 
-  describe('③左脚の BW がピーク付近(BWhigh の 90%以上)', () => {
-    it('境界: BW が BWhigh の **ちょうど 90%** は通る(≥)', () => {
-      expect(passesDoubleBandConditions('bottom', st(-0.1, 9.0, 10.0), st(0.2, 5, 10))).toBe(true);
+  // ★2026-08-16 に既定を 0.9 → 0.5 へ緩めた(境界の数値もそれに合わせて書き換えている)。
+  //   理由は swingDouble.ts の DOUBLE_BW_PEAK_RATIO の注記を参照(売買を落としアラート専用に確定したため)。
+  describe('③左脚の BW がピーク付近(BWhigh の 50%以上)', () => {
+    it('境界: BW が BWhigh の **ちょうど 50%** は通る(≥)', () => {
+      expect(passesDoubleBandConditions('bottom', st(-0.1, 5.0, 10.0), st(0.2, 5, 10))).toBe(true);
     });
-    it('90% をわずかに下回れば通さない', () => {
-      expect(passesDoubleBandConditions('bottom', st(-0.1, 8.999, 10.0), st(0.2, 5, 10))).toBe(false);
+    it('50% をわずかに下回れば通さない', () => {
+      expect(passesDoubleBandConditions('bottom', st(-0.1, 4.999, 10.0), st(0.2, 5, 10))).toBe(false);
     });
     it('BW が BWhigh を超えている(=そのものがピーク)なら通る', () => {
       expect(passesDoubleBandConditions('bottom', st(-0.1, 10.0, 10.0), st(0.2, 5, 10))).toBe(true);
     });
-    it('比率は引数で動く(0.5 なら半分でも通る)', () => {
-      expect(passesDoubleBandConditions('bottom', st(-0.1, 5.0, 10.0), st(0.2, 5, 10), 0.5)).toBe(true);
-      expect(passesDoubleBandConditions('bottom', st(-0.1, 4.9, 10.0), st(0.2, 5, 10), 0.5)).toBe(false);
+    // ★旧値 0.9 を引数で渡す形にしてある = 既定値が式に焼き込まれていたら、この2行のどちらかが落ちる。
+    it('比率は引数で動く(0.9 を渡せば BWhigh の 50% では通らない)', () => {
+      expect(passesDoubleBandConditions('bottom', st(-0.1, 9.0, 10.0), st(0.2, 5, 10), 0.9)).toBe(true);
+      expect(passesDoubleBandConditions('bottom', st(-0.1, 5.0, 10.0), st(0.2, 5, 10), 0.9)).toBe(false);
     });
-    it('既定の比率は 0.9', () => { expect(DOUBLE_BW_PEAK_RATIO).toBe(0.9); });
+    it('既定の比率は 0.5', () => { expect(DOUBLE_BW_PEAK_RATIO).toBe(0.5); });
   });
 
   describe('欠測は不成立(確かめられないものを通さない)', () => {
