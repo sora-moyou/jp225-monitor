@@ -8,9 +8,10 @@ import { resetConfigCache } from '../configStore.js';
 import { _reset as resetCooldown } from '../alertCooldown.js';
 import {
   createBarDetectState, createLevelDetectState, createDetectorState,
-  runBarDetectors, runLevelDetectors, computeLevelAnalytics,
+  runBarDetectors, runLevelDetectors, computeLevelAnalytics, resampleHL,
   type LevelAnalytics,
 } from './registry.js';
+import { aggregateBars } from '../indicators.js';
 import { INSTRUMENTS } from '../config.js';
 import type { AlertEventPayload } from '../types.js';
 import type { LevelsResult, Level } from '../levels.js';
@@ -186,7 +187,7 @@ describe('runLevelDetectors — double(スイングW)の形成抑制 / breakout 
   let origUserProfile: string | undefined;
   const t0 = 1_700_000_000_000;
   const B = 300_000;                       // 5分足
-  const now = t0 + 200 * 60_000;           // 最終バー(t0+25分)より十分後 → recent(90分)窓は空。
+  const now = t0 + 400 * 5 * 60_000;       // 最終バーより十分後(>90分)→ recent(90分)窓は空。4日窓には入る。
 
   const writeConfig = (obj: Record<string, unknown>): void => {
     mkdirSync(join(cfgDir, '.jp225-monitor'), { recursive: true });
@@ -194,17 +195,22 @@ describe('runLevelDetectors — double(スイングW)の形成抑制 / breakout 
     resetConfigCache();
   };
 
-  // ダブルボトム W: 谷64,000 → ネック(山)65,200 → 谷64,050。finalHigh で forming/breakout を切替。
+  // ダブルボトム W: 谷≈64,000 → ネック(山)65,205 → 谷≈64,075。finalHigh で forming/breakout を切替。
   //   breakout: finalHigh=65,300(現値>ネック+5) / forming: finalHigh=64,650(谷2確定に足りる戻りだが現値≤ネック+5)。
-  function swingBars(finalHigh: number): { t: number; h: number; l: number }[] {
-    return [
-      { t: t0 + 0 * B, h: 64100, l: 64000 },   // 谷1(64,000)
-      { t: t0 + 1 * B, h: 64720, l: 64200 },   // 戻り→谷1確定(reclaim≈522)
-      { t: t0 + 2 * B, h: 65200, l: 64800 },   // ネック(山65,200)
-      { t: t0 + 3 * B, h: 64900, l: 64600 },   // 押し→ネック確定
-      { t: t0 + 4 * B, h: 64300, l: 64050 },   // 谷2(64,050)
-      { t: t0 + 5 * B, h: finalHigh, l: 64200 },   // 戻り→谷2確定 + 現値
-    ];
+  //
+  // ★2026-08-16(第6章): ダブルは幾何だけでなく **5分足20本±2σ の帯**でも判定するようになった。
+  //   帯の判定には確定5分足が SQUEEZE_BW_LOOKBACK + (SQUEEZE_BB_PERIOD−1) = 91本 必要なので、
+  //   6本だけの旧フィクスチャでは(幾何が成立しても)構造的に発火しない。よって助走の静穏 80本を
+  //   前に置き、そこから急落して1つ目の谷を付ける = **BW がピークの足で左谷**という形にする。
+  //   rightLegBars = ネックから右谷までの本数。大きい(=緩やかな下げ)ほど右谷はバンドの内側に入る。
+  function swingBars(finalHigh: number, rightLegBars = 24): { t: number; h: number; l: number }[] {
+    const closes: number[] = [];
+    for (let i = 0; i < 80; i++) closes.push(65000 + ((i % 4) - 1.5) * 20);          // 静穏(BW 収縮)
+    for (let i = 1; i <= 14; i++) closes.push(65000 - (1000 * i) / 14);              // 急落 → 谷1 64,000(BW ピーク)
+    for (let i = 1; i <= 24; i++) closes.push(64000 + (1200 * i) / 24);              // ネック 65,200 へ
+    for (let i = 1; i <= rightLegBars; i++) closes.push(65200 - (1120 * i) / rightLegBars);   // 谷2 64,080 へ
+    closes.push(finalHigh);                                                          // 戻り→谷2確定 + 現値
+    return closes.map((c, i) => ({ t: t0 + i * B, h: c + 5, l: c - 5 }));
   }
   const analyticsFor = (price: number): LevelAnalytics => ({
     result: { current: price, up: [], down: [], swing: null, reversalSatisfied: false, asOf: now } as LevelsResult,
@@ -251,6 +257,17 @@ describe('runLevelDetectors — double(スイングW)の形成抑制 / breakout 
     const calls: AlertEventPayload[] = [];
     runLevelDetectors(db, analyticsFor(64650), now, createLevelDetectState(), e => calls.push(e));
     expect(calls.some(e => e.detectionKind === 'double')).toBe(true);
+  });
+
+  // ★第6章の帯条件が **実際の検知経路(DB→5分足→帯→judge)で効いている** ことの証明。
+  //   幾何(谷/ネック/谷の値と現値)は上の breakout と同一で、違うのは右谷への下げ方だけ:
+  //   8本で一気に落ちると右谷は下限バンドの外(%B<0)になり、条件①で落ちる。
+  //   これが赤くならないなら、帯の値が検知まで届いていない(=定義変更が配線されていない)。
+  it('★右谷がバンドの外なら、幾何が同じでも double を発火しない(帯条件の結線)', () => {
+    seed(swingBars(65300, 8));
+    const calls: AlertEventPayload[] = [];
+    runLevelDetectors(db, analyticsFor(65300), now, createLevelDetectState(), e => calls.push(e));
+    expect(calls.some(e => e.detectionKind === 'double')).toBe(false);
   });
 });
 
@@ -314,5 +331,22 @@ describe('computeLevelAnalytics — tick が無ければ null', () => {
   it('ticks 空の DB では null(「蓄積中」相当)', () => {
     const db = memDb();
     expect(computeLevelAnalytics(db, Date.now(), createLevelDetectState())).toBeNull();
+  });
+});
+
+// ★aggregateBars(終値つき)へ差し替えても、スイングの入力である h/l は resampleHL と同じであること。
+//   double の帯条件を足すために集約関数を替えたので、「幾何は1円も変わらない」という前提を固定する
+//   (ここが崩れると、帯条件とは無関係にダブルの検知位置が動く)。
+describe('resampleHL と aggregateBars は h/l が一致する(集約の差し替えで幾何が動かない)', () => {
+  it('同じ1分足から作った5分足の t/h/l が全て一致', () => {
+    const t0 = 1_700_000_000_000;
+    const bars = Array.from({ length: 137 }, (_, i) => {
+      const c = 64000 + Math.round(Math.sin(i / 5) * 180) + (i % 7) * 11;
+      return { t: t0 + i * 60_000, o: c, h: c + 17, l: c - 23, c };
+    });
+    const a = resampleHL(bars, 5 * 60_000);
+    const b = aggregateBars(bars, 5 * 60_000);
+    expect(a.length).toBe(b.length);
+    expect(a).toEqual(b.map(x => ({ t: x.t, h: x.h, l: x.l })));
   });
 });

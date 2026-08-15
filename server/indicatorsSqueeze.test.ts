@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   bandwidthOf, bandwidthExtremes, squeezeStateOf, computeSqueezeSeries, buildSqueezeSnapshot,
+  buildBarBandLookup,
 } from './indicators.js';
 import { SQUEEZE_BB_PERIOD, SQUEEZE_BW_LOOKBACK } from '../core/indicatorSpec.js';
 
@@ -224,5 +225,70 @@ describe('buildSqueezeSnapshot', () => {
     expect(buildSqueezeSnapshot([], []).t).toBeUndefined();
     // 長さが合っていれば従来どおり付く(検証を入れて機能を殺していないこと)。
     expect(buildSqueezeSnapshot(closes, times).t).toBe(times[times.length - 1]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  ★buildBarBandLookup — 過去の足の帯を「その足の時点まで」で引く(2026-08-16・ダブル再定義)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//
+// ここで守る核心は **未来を見ないこと**。現在時点の帯で過去の谷を判定すると、リプレイ(監査)と
+// 実走で結果が変わり、検知として成立しない。よって「後ろに足を足しても過去の値が動かない」ことを
+// 表ではなく **性質** として固定する。
+
+describe('buildBarBandLookup', () => {
+  const mk = (n: number, f: (i: number) => number): { t: number; c: number }[] =>
+    Array.from({ length: n }, (_, i) => ({ t: 1_700_000_000_000 + i * 300_000, c: f(i) }));
+  const wavy = mk(200, i => 60000 + Math.sin(i / 7) * 120 + (i % 11) * 9);
+
+  it('BW は computeSqueezeSeries と完全に一致する(同じ prefix 定義)', () => {
+    const at = buildBarBandLookup(wavy);
+    const { bw } = computeSqueezeSeries(wavy.map(b => b.c));
+    for (let i = 0; i < wavy.length; i++) {
+      const s = at(wavy[i]!.t, wavy[i]!.c);
+      expect(s).not.toBeNull();
+      if (bw[i] == null) expect(s!.bw).toBeNull();
+      else expect(s!.bw).toBeCloseTo(bw[i]!, 10);
+    }
+  });
+
+  it('%B は **渡した価格**(谷の安値/山の高値)で計算する(終値ではない)', () => {
+    const at = buildBarBandLookup(wavy);
+    const t = wavy[150]!.t;
+    const a = at(t, wavy[150]!.c)!, b = at(t, wavy[150]!.c - 200)!;
+    expect(a.pctB).not.toBeNull();
+    expect(b.pctB!).toBeLessThan(a.pctB!);   // 低い価格ほどバンド内で下 = %B が小さい
+  });
+
+  it('★未来を見ない: 後ろに足を足しても、過去の足の値は1つも動かない', () => {
+    const short = buildBarBandLookup(wavy.slice(0, 120));
+    const long = buildBarBandLookup(wavy);
+    for (let i = 0; i < 120; i++) {
+      const t = wavy[i]!.t, p = wavy[i]!.c;
+      expect(long(t, p)).toEqual(short(t, p));
+    }
+  });
+
+  it('列に無い足は null(=判定できない。黙って通さない)', () => {
+    const at = buildBarBandLookup(wavy);
+    expect(at(1, 60000)).toBeNull();
+    expect(at(wavy[0]!.t + 1, 60000)).toBeNull();   // 5分枠の途中の時刻も列には無い
+  });
+
+  it('BWhigh は「その足までの直近 lookback 本」の最大 / 本数が足りない間は bwReady=false', () => {
+    const at = buildBarBandLookup(wavy);
+    // BW は先頭 SQUEEZE_BB_PERIOD−1 本が null。よって非 null が lookback 本たまるのは
+    // lookback + (SQUEEZE_BB_PERIOD−1) 本目から(0 始まりでは そのインデックス−1)。
+    const need = SQUEEZE_BW_LOOKBACK + SQUEEZE_BB_PERIOD - 1;
+    expect(at(wavy[need - 2]!.t, wavy[need - 2]!.c)!.bwReady).toBe(false);
+    expect(at(wavy[need - 1]!.t, wavy[need - 1]!.c)!.bwReady).toBe(true);
+    // 最大は「その足までの窓」の最大以上(現在足を含む定義)。
+    const s = at(wavy[need + 10]!.t, wavy[need + 10]!.c)!;
+    expect(s.bwHigh!).toBeGreaterThanOrEqual(s.bw!);
+  });
+
+  it('lookback は引数で動く(既定は SQUEEZE_BW_LOOKBACK)', () => {
+    const at10 = buildBarBandLookup(wavy, 10);
+    expect(at10(wavy[SQUEEZE_BB_PERIOD + 8]!.t, 60000)!.bwReady).toBe(true);
   });
 });

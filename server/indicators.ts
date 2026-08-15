@@ -239,6 +239,55 @@ export function buildSqueezeSnapshot(closes: number[], times?: number[]): Squeez
   };
 }
 
+// ─── ★過去の足の帯の値を「その足の時点まで」で引く(2026-08-16・ダブル再定義 第6章) ───────
+//
+// ダブルの新条件は「谷/山の **その足** の %B と Bandwidth」を見る。現在時点の帯で過去の谷を判定すると
+// **未来の情報で過去を判定する**ことになり、検知として成立しない(リプレイと実走が食い違う)。
+// よってここは prefix(その足まで)だけで計算する純関数にする。
+
+/** 過去の1本の足における帯の値。すべて「その足の時点まで」の情報だけで算出する。 */
+export interface BarBandStats {
+  /** 与えた価格(谷なら安値・山なら高値)の %B。幅0/本数不足は null。 */
+  pctB: number | null;
+  /** その足の Bandwidth。 */
+  bw: number | null;
+  /** その足までの直近 lookback 本の BW の最大。 */
+  bwHigh: number | null;
+  /** bwHigh が **参照本数ぶんの実値** で決まっているか(false=本数不足で最大が数本で決まる)。 */
+  bwReady: boolean;
+}
+
+/** 5分足の確定足列(t 昇順)から「足の時刻 t と価格 price」→ その足の時点までの帯の値、を引く関数を作る。
+ *
+ *  ★列に無い t は **null**(=判定できない)を返す。「たぶん大丈夫」で通さないための明示の欠測。
+ *  ★bw 系列は computeSqueezeSeries と同一(各点はその点までの prefix)。窓を切って計算するのは
+ *    O(n²) を避けるためで、bollinger は直近 period 本しか見ないので結果は完全に同じ。 */
+export function buildBarBandLookup(
+  bars: readonly { t: number; c: number }[], lookback: number = SQUEEZE_BW_LOOKBACK,
+): (t: number, price: number) => BarBandStats | null {
+  const n = bars.length;
+  const bw: (number | null)[] = new Array(n);
+  const upper: (number | null)[] = new Array(n);
+  const lower: (number | null)[] = new Array(n);
+  const idx = new Map<number, number>();
+  const closes = bars.map(b => b.c);
+  for (let i = 0; i < n; i++) {
+    const w = closes.slice(Math.max(0, i - SQUEEZE_BB_PERIOD + 1), i + 1);
+    const b = bollinger(w, SQUEEZE_BB_PERIOD, SQUEEZE_BB_SIGMA);
+    upper[i] = b.upper; lower[i] = b.lower;
+    bw[i] = bandwidthOf(b.upper, b.mid, b.lower);
+    idx.set(bars[i]!.t, i);
+  }
+  return (t: number, price: number): BarBandStats | null => {
+    const i = idx.get(t);
+    if (i === undefined) return null;
+    // ★窓だけを切る(prefix 全体を切ると 1本引くたびに O(n) かかり、長期リプレイが実用にならない)。
+    //   bandwidthExtremes は末尾 lookback 本しか見ないので、結果は prefix 全体を渡すのと同じ。
+    const ext = bandwidthExtremes(bw.slice(Math.max(0, i - lookback + 1), i + 1), lookback);
+    return { pctB: pctBOf(price, upper[i]!, lower[i]!), bw: bw[i]!, bwHigh: ext.high, bwReady: ext.ready };
+  };
+}
+
 /** BB 上下限と現値から %B を求める純関数(幅0/未算出は null)。 */
 export function pctBOf(price: number, upper: number | null, lower: number | null): number | null {
   if (upper == null || lower == null || !(upper > lower)) return null;

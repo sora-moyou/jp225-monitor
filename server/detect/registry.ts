@@ -48,7 +48,10 @@ import {
   buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
   createBandwalkFireState, DEFAULT_BANDWALK, type BandwalkFireState,
 } from '../bandwalk.js';
-import { aggregate5m, buildSqueezeSnapshot, type SqueezeSnapshot, type SqueezeState } from '../indicators.js';
+import {
+  aggregate5m, aggregateBars, buildBarBandLookup, buildSqueezeSnapshot,
+  type SqueezeSnapshot, type SqueezeState,
+} from '../indicators.js';
 import { SQUEEZE_BW_LOOKBACK } from '../../core/indicatorSpec.js';
 import { evaluateBarsNiy, createBarDetectState, type BarDetectState, type AlertSink } from '../alertEngine.js';
 import { DEFAULT_PARAMS, type DetectorParams } from '../alertDetector.js';
@@ -502,9 +505,18 @@ export function runLevelDetectors(
     // ダブル天井/大底(double, 長周期): 約60秒に1回。
     if (now - state.lastSwingCheck >= SWING_DOUBLE_CHECK_MS) {
       state.lastSwingCheck = now;
-      const longBars = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS).map(b => ({ t: b.t, h: b.h, l: b.l }));
-      const longBars5 = resampleHL(longBars, SWING_DOUBLE_TF_MS);
-      const sd = detectSwingDouble(extractSwingPivots(longBars5, yenPct(latest.price, SWING_PIVOT_RECLAIM_PCT)), latest.price, DEFAULT_SWING_DOUBLE);
+      // ★終値も持つ(第6章の帯条件に BB が要る)。resampleHL は h/l しか返さず終値を捨てるので
+      //   aggregateBars(=indicators の SSOT)で 5分足へ集約する。h/l の作り方は resampleHL と同一
+      //   なので、スイングピボット(=幾何)は従来と1円も変わらない。
+      const longBars = getRecentBars(db, SYMBOL, now - SWING_LOOKBACK_DAYS * DAY_MS)
+        .map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c }));
+      const longBars5 = aggregateBars(longBars, SWING_DOUBLE_TF_MS);
+      // ★帯の値は「その足の時点まで」で引く(未来を見ない)。列に無い足は null=判定できない→出さない。
+      const bandAt = buildBarBandLookup(longBars5);
+      const sd = detectSwingDouble(
+        extractSwingPivots(longBars5, yenPct(latest.price, SWING_PIVOT_RECLAIM_PCT)), latest.price,
+        piv => bandAt(piv.t, piv.price), DEFAULT_SWING_DOUBLE,
+      );
       if (sd) {
         const neck = Math.round(sd.neck);
         const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');

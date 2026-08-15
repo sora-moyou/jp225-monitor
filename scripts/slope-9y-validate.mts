@@ -117,7 +117,10 @@ function scan(bars: Bar[]): Ev[] {
       for (let j = lo; j <= i; j++) sb.push({ t: bars[j]!.t, h: bars[j]!.h, l: bars[j]!.l });
       const reclaimYen = b.c * RECLAIM_PCT;
       const piv = extractSwingPivots(sb, reclaimYen);
-      const sd = detectSwingDouble(piv, b.c, DEFAULT_SWING_DOUBLE);
+      // ★'unchecked' = 帯条件(2026-08-16 の第6章)を **評価しない** ことの明示。この研究スクリプトは
+      //   1分足でピボットを取っており、帯条件が前提とする 5分足のバンドを持たない。ここを黙って
+      //   素通しにすると「旧定義の9年結果」と「新定義のライブ」を同じものとして読んでしまう。
+      const sd = detectSwingDouble(piv, b.c, 'unchecked', DEFAULT_SWING_DOUBLE);
       if (sd) {
         const dir: 'up' | 'down' = sd.kind === 'bottom' ? 'up' : 'down';
         const key = `${sd.kind}-${Math.round(sd.neck / 5) * 5}-${sd.stage}`;

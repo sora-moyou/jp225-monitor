@@ -31,7 +31,7 @@ import {
   createBandwalkFireState, DEFAULT_BANDWALK,
 } from '../server/bandwalk.js';
 import { createLevelDetectState, squeezeFire, describeSqueeze } from '../server/detect/registry.js';
-import { aggregate5m, buildSqueezeSnapshot, type OHLCBar } from '../server/indicators.js';
+import { aggregate5m, aggregateBars, buildBarBandLookup, buildSqueezeSnapshot, type OHLCBar } from '../server/indicators.js';
 import { SQUEEZE_BW_LOOKBACK } from '../core/indicatorSpec.js';
 import { resolveShockParams, resolveEffectiveScalpBias } from '../server/configStore.js';
 import type { AlertSignal } from '../server/signals/types.js';
@@ -55,7 +55,19 @@ for (let n = 66; n <= ebars.length; n++) {
 }
 
 // ── levelsLoop(実検知関数 + 本番定数 LEVELS_TUNING でリプレイ)──
-const all = db.prepare('SELECT t,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t').all(SYMBOL, start - 90 * 60000) as Array<{ t: number; h: number; l: number; c: number }>;
+// ★o も取る: double の帯条件(第6章)で 5分足の**終値**が要り、集約は aggregateBars(OHLC)を使うため。
+const all = db.prepare('SELECT t,o,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t').all(SYMBOL, start - 90 * 60000) as Array<{ t: number; o: number; h: number; l: number; c: number }>;
+// ★double の帯条件(第6章)用の 5分足バンド。**ループの外で1回だけ**組む:
+//   帯の値は「その足までの prefix」だけで決まるので、後から足を足しても過去の値は動かない
+//   (=本番 registry が毎回4日窓を読み直して得る値と完全に一致する)。窓を別に取るのは、
+//   ループが使う `all`(start−90分)では BW の参照本数(72+19本=7.6時間ぶん)に届かない足が
+//   期間の頭に出てしまうため。ここを別窓にしても pivot/nwave の入力は1本も変わらない。
+const bandBars5 = aggregateBars(
+  db.prepare('SELECT t,o,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t')
+    .all(SYMBOL, start - 6 * 86400000) as OHLCBar[],
+  T.swingDoubleTfMs,
+);
+const bandAt = buildBarBandLookup(bandBars5);
 const lastBreakDir: Record<string, number> = {}, lastEmit: Record<string, number> = {};
 const lastNwaveFire: Record<string, number> = {};   // ★N波動: 方向×round(B) の 30分クールダウン(別 B のみ再発火)。
 let lastPivotT = 0, hlCacheT = 0; let hlCache: { price: number; label: string }[] = [];
@@ -99,7 +111,8 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
     //   毎バー相当で評価する。double はまれ+高コストのため hourly サンプルのまま、nwave は本番同様に毎バー評価する。
     const lb = all.filter(b => b.t >= now - T.swingLookbackDays * 86400000).map(b => ({ t: b.t, h: b.h, l: b.l })); const tf = T.swingDoubleTfMs; const lm = new Map<number, { t: number; h: number; l: number }>(); for (const b of lb) { const k = Math.floor(b.t / tf) * tf; const e = lm.get(k); if (e) { if (b.h > e.h) e.h = b.h; if (b.l < e.l) e.l = b.l; } else lm.set(k, { t: k, h: b.h, l: b.l }); } const lb5 = [...lm.values()].sort((a, b) => a.t - b.t); const piv5 = extractSwingPivots(lb5, yenPct(price, T.swingPivotReclaimPct));
     // ★本番ミラー(40日ライブ): double は形成(forming)を出さず breakout のみ・スコア 1.0(旧 breakout1.5)。
-    if (i % 60 === 0) { const sd = detectSwingDouble(piv5, price, DEFAULT_SWING_DOUBLE); if (sd && sd.stage === 'breakout') sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
+    // ★帯条件(第6章)は本番と同じ純関数・同じ「その足まで」の帯で評価する(未来を見ない)。
+    if (i % 60 === 0) { const sd = detectSwingDouble(piv5, price, p => bandAt(p.t, p.price), DEFAULT_SWING_DOUBLE); if (sd && sd.stage === 'breakout') sig.push({ type: 'double', direction: sd.kind === 'bottom' ? 'up' : 'down', reference: { kind: 'neck', price: sd.neck }, stage: 'confirmed', score: 1.0, triggeredAt: now, text: `${sd.kind} ${sd.stage}` }); }
     // ★本番ミラー(N波動 nwave): 同じ主要スイングから A→B→C を判定。確認済み(B 抜け)なら目標=V値 を直接 bump
     //   (集約は通さない)。方向×round(B) の 30分クールダウンで同一波の連発を抑え、別 B のときだけ再発火。既定 minSwing=300。
     const nwv = detectNWave(piv5, price, 300);
