@@ -31,3 +31,24 @@ export const BB_UPPER_LABEL = `${BB_SIGMA}σ`;
 export const BB_LOWER_LABEL = `-${BB_SIGMA}σ`;
 /** 「±0.7σ」形式のラベル(プロンプト/文脈ブロック用)。 */
 export const BB_BAND_LABEL = `±${BB_SIGMA}σ`;
+
+// ─── ★スクイーズ用バンド(2026-08-15 新設・上のσとは **別系列**) ───────────────
+//
+// ■ なぜ別に持つのか
+//   上の BB_SIGMA(=0.7) は **バンドウォーク判定と AI プロンプトの文言** が共有している。
+//   ここを 2σ に書き換えると、判定の意味とプロンプトの文字列が同時に変わり、
+//   **実走中の質問文 A/B(v1 vs v2)の標本が割れる**(プロンプトが変われば指紋が変わる)。
+//   スクイーズ/バルジは「バンド幅の伸縮」を見る別の道具なので、**別の定数として並べて置く**。
+//
+// ■ 消費側
+//   - server/indicators.ts             … computeSqueezeSeries / bandwidthExtremes
+//   - server/detect/registry.ts        … スクイーズ/バルジの検知
+//   - web/components/indicatorPanel.ts … %B / BW / BWhigh・low の表示
+//   ★上のバンド(14本/0.7σ)の消費側は1つも変えない。
+
+/** スクイーズ用バンドの本数(5分足)。 */
+export const SQUEEZE_BB_PERIOD = 20;
+/** スクイーズ用バンドのσ倍率。 */
+export const SQUEEZE_BB_SIGMA = 2;
+/** Bandwidth の最大/最小を取る参照本数(5分足125本 ≒ 10.4時間・セッションをまたぐ)。 */
+export const SQUEEZE_BW_LOOKBACK = 125;
