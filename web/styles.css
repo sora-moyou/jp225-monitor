@@ -120,6 +120,13 @@ body {
   border-left-color: var(--up);
   background: rgba(63, 185, 80, 0.08);
 }
+/* 方向を持たない検知(スクイーズ/バルジ)。.alert の既定は赤(=下げ)なので、方向クラスを
+   落とすだけでは「下げ色」を主張したことになる。中立(グレー)に上書きする。
+   付与の判定は core/detectionKinds.ts の isDirectionalKind(→ bannerAlertClass)。 */
+.alert.nodir {
+  border-left-color: var(--muted);
+  background: rgba(139, 148, 158, 0.08);
+}
 .alert strong { font-size: 14px; }
 .alert .alert-time {
   color: var(--text);

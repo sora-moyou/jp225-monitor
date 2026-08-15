@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { initSchema, getRecentAlerts, insertAlert, type AlertRow } from './db/store.js';
 import { recordAlert, followupTick, summarize, kindLabel, rowKind, shouldPersistInMonitor,
   pickRecentL2, formatL2Summary } from './alertHistory.js';
-import { DETECTION_KINDS, isTechnicalKind, detectionKindLabel } from '../core/detectionKinds.js';
+import { DETECTION_KINDS, isTechnicalKind, isDirectionalKind, detectionKindLabel } from '../core/detectionKinds.js';
 import type { AlertEventPayload } from './types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -140,6 +140,59 @@ describe('pickRecentL2(AI へ渡す「直近の状況」)', () => {
     const nw = row({ detection_kind: 'nwave', triggered_at: 1000, price: 67455 });
     expect(pickRecentL2([nw], 1000 + 61_000, 60_000)).toBeNull();
     expect(formatL2Summary(nw)).toBe('N波動 67,455 ▲');
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  //  方向を持たない検知(squeeze/bulge)に ▲ を付けていた欠陥
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  //
+  // ★実害: alerts.direction は必須列なので、方向の概念が無い squeeze/bulge にも 'up' が入っている
+  //   (server/detect/registry.ts が便宜上そう積む)。formatL2Summary はそれを無条件に ▲ にしていたので、
+  //   AI へ渡る「直近の状況」に **「スクイーズ 62,490 ▲」** と入っていた。BB幅の収縮に上向きの意味は無く、
+  //   これは無い方向を AI に主張する無言の嘘。的中率の方向内訳も同様に無意味になる。
+  //
+  // ★旧実装(git show HEAD:server/alertHistory.ts の formatL2Summary をそのまま写したもの)。
+  //   方向を持つ種別では新実装がこれと **1バイトも変わらない** ことをこの写しで固定する。
+  const legacyFormatL2Summary = (r: AlertRow): string => {
+    const arrow = r.direction === 'up' ? '▲' : '▼';
+    return `${rowKind(r.detection_kind, r.window_seconds)} ${Math.round(r.price ?? 0).toLocaleString('ja-JP')} ${arrow}`;
+  };
+
+  it('★不変: 方向を持つ全種別 × up/down で旧実装と byte 一致(今回の修正で他種別は1文字も変わらない)', () => {
+    for (const k of DETECTION_KINDS.filter(isDirectionalKind)) {
+      for (const d of ['up', 'down'] as const) {
+        const r = row({ detection_kind: k, direction: d, price: 62_490 });
+        expect(formatL2Summary(r), `${k}/${d}`).toBe(legacyFormatL2Summary(r));
+      }
+    }
+    // 代表例を実文字列でも固定(写しが壊れたら共倒れしないように)。
+    expect(formatL2Summary(row({ detection_kind: 'break', direction: 'down', price: 67_470 })))
+      .toBe('水準ブレイク 67,470 ▼');
+    expect(formatL2Summary(row({ detection_kind: 'bandwalk', direction: 'up', price: 62_490 })))
+      .toBe('バンドウォーク 62,490 ▲');
+  });
+
+  it('★スクイーズ/バルジは矢印を出さない(価格で終わる) — 旧実装とは必ず異なる', () => {
+    const sq = row({ detection_kind: 'squeeze', direction: 'up', price: 62_490 });
+    expect(formatL2Summary(sq)).toBe('スクイーズ 62,490');
+    expect(formatL2Summary(sq)).not.toBe(legacyFormatL2Summary(sq));   // 否定対照: 旧実装は '… ▲'
+    expect(legacyFormatL2Summary(sq)).toBe('スクイーズ 62,490 ▲');     // 直した中身(嘘の現物)
+
+    const bg = row({ detection_kind: 'bulge', direction: 'up', price: 62_490 });
+    expect(formatL2Summary(bg)).toBe('バルジ 62,490');
+    // direction が何であっても方向は出さない(記録に 'down' が混じっても表示は不変)。
+    expect(formatL2Summary(row({ detection_kind: 'bulge', direction: 'down', price: 62_490 })))
+      .toBe('バルジ 62,490');
+  });
+
+  it('方向を持たない種別の要約に方向記号が一切含まれない(表示の網羅チェック)', () => {
+    for (const k of DETECTION_KINDS.filter(k => !isDirectionalKind(k))) {
+      for (const d of ['up', 'down'] as const) {
+        const s = formatL2Summary(row({ detection_kind: k, direction: d, price: 62_490 }));
+        expect(s, `${k}/${d}`).not.toMatch(/[▲▼]/);
+        expect(s.endsWith(' '), `${k}/${d}: 末尾に余分な空白を残さない`).toBe(false);
+      }
+    }
   });
 });
 

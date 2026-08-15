@@ -5,7 +5,7 @@ import { broadcast } from './sse/broker.js';
 import { isCollectorAlive } from './collectorHeartbeat.js';
 import { getCooldownMs } from './alertCooldown.js';
 import { classifySession, isWithinOpenGuard } from '../core/session.js';
-import { detectionKindLabel, isTechnicalKind } from '../core/detectionKinds.js';
+import { detectionKindLabel, isTechnicalKind, isDirectionalKind } from '../core/detectionKinds.js';
 import { resolveOpenGuardBars, resolveHitThreshold } from './configStore.js';
 import type { AlertEventPayload } from './types.js';
 
@@ -97,13 +97,19 @@ export function pickRecentL2(rows: AlertRow[], now: number, withinMs: number): A
   return rows.find(a => isTechnicalKind(a.detection_kind) && now - a.triggered_at <= withinMs) ?? null;
 }
 
-/** L2 行の要約文「{種別} {価格} ▲/▼」(純関数)。 */
+/** L2 行の要約文「{種別} {価格} ▲/▼」(純関数)。
+ *  ★方向を持たない種別(squeeze/bulge)は矢印を出さず「{種別} {価格}」で終える。
+ *    この文字列は AI へ渡る「直近の状況」に入る。alerts.direction は必須列なので方向なし検知も
+ *    'up' が入っているが、それを ▲ として見せると **無い方向を AI に主張する** ことになる
+ *    (「スクイーズ 62,490 ▲」= バンド収縮に上向きの意味は無い)。判定は core/detectionKinds.ts の
+ *    isDirectionalKind が唯一の真実 — ここに種別名を書かないこと。 */
 export function formatL2Summary(r: AlertRow): string {
-  const arrow = r.direction === 'up' ? '▲' : '▼';
-  return `${rowKind(r.detection_kind, r.window_seconds)} ${Math.round(r.price ?? 0).toLocaleString('ja-JP')} ${arrow}`;
+  const arrow = isDirectionalKind(r.detection_kind) ? (r.direction === 'up' ? '▲' : '▼') : null;
+  const head = `${rowKind(r.detection_kind, r.window_seconds)} ${Math.round(r.price ?? 0).toLocaleString('ja-JP')}`;
+  return arrow === null ? head : `${head} ${arrow}`;
 }
 
-/** 直近 withinMs 以内の最新 L2 アラートを「{種別} {価格} ▲/▼」で要約。無ければ null。①の併記用。 */
+/** 直近 withinMs 以内の最新 L2 アラートを「{種別} {価格} ▲/▼」(方向なし種別は矢印なし)で要約。無ければ null。①の併記用。 */
 export function getRecentL2Summary(now: number, withinMs = 30 * 60_000): string | null {
   try {
     if (!db) db = openDb(resolveDbPath());

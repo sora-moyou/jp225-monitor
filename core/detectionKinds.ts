@@ -33,30 +33,44 @@ export interface DetectionKindSpec {
   label: string | null;
   /** LLM プロンプト(server/llm/explain.ts)に載せる種別名。ラベルとは語彙が違うので別項目。 */
   promptLabel: string;
+  /** その検知が **方向(上/下)を持つか**。
+   *  false = 方向の概念が無い検知(BB幅の収縮/拡大など「上下どちらへ出るか」を語らない)。
+   *  ★AlertEventPayload.direction は必須項目なので、方向を持たない種別も便宜上 'up' を積む
+   *    (記録の後方互換のため型は変えない)。この項目は「その 'up' を **方向として表示・解釈してよいか**」
+   *    を決める。false の種別に ▲/▼ や上げ色を付けると、無い方向を主張する無言の嘘になる
+   *    (的中率の方向内訳も無意味になる)。表示側は必ず isDirectionalKind() を通すこと。 */
+  directional: boolean;
 }
 
 /** ★検知種別の唯一の表。ここに無い文字列は検知種別ではない。 */
 export const DETECTION_KIND_SPEC = {
   // ── L1: 価格変化(ニュース AI で原因を説明する) ────────────────────────────
-  slope:     { layer: 'L1', label: null,             promptLabel: 'フラッシュ' },
-  magnitude: { layer: 'L1', label: null,             promptLabel: 'トレンド' },        // 旧仕様(現在は発火しない・履歴互換)
-  shock:     { layer: 'L1', label: '急変',           promptLabel: '急変' },
-  crash:     { layer: 'L1', label: '暴落',           promptLabel: '暴落' },
+  slope:     { layer: 'L1', label: null,             promptLabel: 'フラッシュ',                    directional: true },
+  magnitude: { layer: 'L1', label: null,             promptLabel: 'トレンド',                      directional: true },  // 旧仕様(現在は発火しない・履歴互換)
+  shock:     { layer: 'L1', label: '急変',           promptLabel: '急変',                          directional: true },
+  crash:     { layer: 'L1', label: '暴落',           promptLabel: '暴落',                          directional: true },
   // ── L2: テクニカル状態(固定文・LLM を呼ばない) ───────────────────────────
-  double:    { layer: 'L2', label: 'ダブル天底',     promptLabel: 'ダブル天底' },
-  ma_sr:     { layer: 'L2', label: 'MAサポレジ',     promptLabel: 'MAサポレジ' },
-  level_sr:  { layer: 'L2', label: '水準サポレジ',   promptLabel: '水準サポレジ' },
-  break:     { layer: 'L2', label: '水準ブレイク',   promptLabel: '水準ブレイク' },
-  pivot:     { layer: 'L2', label: 'スイング形成',   promptLabel: 'スイング形成' },
-  trend:     { layer: 'L2', label: 'トレンド転換',   promptLabel: 'トレンド転換' },
-  dailyband: { layer: 'L2', label: '日足バンド',     promptLabel: '日足バンド/MA' },
-  nwave:     { layer: 'L2', label: 'N波動',          promptLabel: 'N波動(値幅観測)' },
-  bandwalk:  { layer: 'L2', label: 'バンドウォーク', promptLabel: 'バンドウォーク(BB沿い推移)' },
+  double:    { layer: 'L2', label: 'ダブル天底',     promptLabel: 'ダブル天底',                    directional: true },
+  ma_sr:     { layer: 'L2', label: 'MAサポレジ',     promptLabel: 'MAサポレジ',                    directional: true },
+  level_sr:  { layer: 'L2', label: '水準サポレジ',   promptLabel: '水準サポレジ',                  directional: true },
+  break:     { layer: 'L2', label: '水準ブレイク',   promptLabel: '水準ブレイク',                  directional: true },
+  pivot:     { layer: 'L2', label: 'スイング形成',   promptLabel: 'スイング形成',                  directional: true },
+  trend:     { layer: 'L2', label: 'トレンド転換',   promptLabel: 'トレンド転換',                  directional: true },
+  dailyband: { layer: 'L2', label: '日足バンド',     promptLabel: '日足バンド/MA',                 directional: true },
+  nwave:     { layer: 'L2', label: 'N波動',          promptLabel: 'N波動(値幅観測)',               directional: true },
+  bandwalk:  { layer: 'L2', label: 'バンドウォーク', promptLabel: 'バンドウォーク(BB沿い推移)',    directional: true },
+  // ★スクイーズ/バルジ(2026-08-15): 5分足20本±2σ の BB幅(Bandwidth)が
+  //   直近 SQUEEZE_BW_LOOKBACK 本(core/indicatorSpec.ts・ユーザーが動かすノブ)の最小/最大に達した足。
+  //   **方向を持たない検知**(収縮/拡大は上下どちらへ出るかを語らない)。AlertEventPayload.direction は
+  //   必須項目なので便宜上 'up' を入れるが、この2種別の direction に意味は無い(的中率の方向内訳は無意味)。
+  //   ★directional:false ＝ 表示(履歴要約・バナー)が その 'up' を方向として使わない。
+  squeeze:   { layer: 'L2', label: 'スクイーズ',     promptLabel: 'BBスクイーズ(バンド収縮)',      directional: false },
+  bulge:     { layer: 'L2', label: 'バルジ',         promptLabel: 'BBバルジ(バンド拡大)',          directional: false },
   // ── L2(後方互換: 過去履歴にのみ現れる旧種別) ────────────────────────────
-  granville: { layer: 'L2', label: 'グランビル',     promptLabel: 'グランビル' },
-  dtb:       { layer: 'L2', label: 'Wトップ/ボトム', promptLabel: 'ダブル天井/大底' },
-  ma:        { layer: 'L2', label: 'MA抜け',         promptLabel: 'MA抜け' },
-  swingdtb:  { layer: 'L2', label: 'ダブル(大)',     promptLabel: 'ダブル天底' },
+  granville: { layer: 'L2', label: 'グランビル',     promptLabel: 'グランビル',                    directional: true },
+  dtb:       { layer: 'L2', label: 'Wトップ/ボトム', promptLabel: 'ダブル天井/大底',               directional: true },
+  ma:        { layer: 'L2', label: 'MA抜け',         promptLabel: 'MA抜け',                        directional: true },
+  swingdtb:  { layer: 'L2', label: 'ダブル(大)',     promptLabel: 'ダブル天底',                    directional: true },
 } as const satisfies Record<string, DetectionKindSpec>;
 
 /** 検知種別。★手書きの union は存在しない — 上の表のキーがそのまま型になる。 */
@@ -85,6 +99,17 @@ export function detectionKindSpec(kind: string | null | undefined): DetectionKin
  *  未知の種別は false(= L1 扱い)。新種別の取りこぼしを黙って握り潰さないため、判定は必ずここを通すこと。 */
 export function isTechnicalKind(kind: string | null | undefined): boolean {
   return detectionKindSpec(kind)?.layer === 'L2';
+}
+
+/** 方向(上/下)を持つ検知か。
+ *  true  = ▲/▼ や上げ/下げ色を出してよい。
+ *  false = 方向の概念が無い(squeeze/bulge)。payload の direction は 'up' 固定だが **意味が無い** ので、
+ *          矢印も方向色も出さない。表示側は層ごとに別集合を作らず必ずこの関数を通すこと。
+ *  ★未知の種別(過去 DB / 古い localStorage の想定外文字列)は true。
+ *    ここを false にすると、表の外の種別が黙って「方向なし表示」に落ち、既存表示が変わってしまう。
+ *    方向を持たないのは「表に directional:false と書いた種別だけ」という明示の契約にする。 */
+export function isDirectionalKind(kind: string | null | undefined): boolean {
+  return detectionKindSpec(kind)?.directional ?? true;
 }
 
 /** 履歴/バナーの種別名。null = 固有名なし(呼び出し側が窓秒などから導出する)。 */

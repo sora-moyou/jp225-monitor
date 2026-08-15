@@ -30,6 +30,9 @@ import {
   buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
   createBandwalkFireState, DEFAULT_BANDWALK,
 } from '../server/bandwalk.js';
+import { createLevelDetectState, squeezeFire, describeSqueeze } from '../server/detect/registry.js';
+import { aggregate5m, buildSqueezeSnapshot, type OHLCBar } from '../server/indicators.js';
+import { SQUEEZE_BW_LOOKBACK } from '../core/indicatorSpec.js';
 import { resolveShockParams, resolveEffectiveScalpBias } from '../server/configStore.js';
 import type { AlertSignal } from '../server/signals/types.js';
 
@@ -158,6 +161,29 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
   for (const b of ['none', 'long', 'short'] as const) {
     if (b === effBias) continue;
     replay(b, `(参考)bandwalk[目線=${biasJa[b]}]`);
+  }
+}
+
+// ── スクイーズ/バルジ(squeeze/bulge): 本番の純関数(buildSqueezeSnapshot + squeezeFire)でリプレイ ──
+// 本番(server/detect/registry.ts)は「5分の枠が変わったら7日窓の1分足を読み直し、形成中の最後の1本を
+// 落として確定足だけで判定」する。ここでは 5分足が1本閉じるたびに同じことをする(= 同じ評価回数)。
+// ★窓は末尾 SQUEEZE_BW_LOOKBACK+40 本に切る: BWhigh/low は末尾 lookback 本の BW、その各 BW は直前20本の
+//   close にしか依存しないので、lookback+19 本より多く与えれば結果は7日ぶん全部与えたのと **完全に同じ**
+//   (O(n²) の再計算だけを避ける)。
+{
+  const sq1m = db.prepare('SELECT t,o,h,l,c FROM bars_1m WHERE symbol=? AND t>=? ORDER BY t')
+    .all(SYMBOL, start - 8 * 86400000) as OHLCBar[];
+  const bars5 = aggregate5m(sq1m);
+  const st = createLevelDetectState();
+  for (let i = 0; i < bars5.length; i++) {
+    const bar = bars5[i]!;
+    const now = bar.t + 5 * 60000;                       // その足が閉じた直後に評価される
+    const win = bars5.slice(0, i + 1).filter(b => b.t >= now - 7 * 86400000).slice(-(SQUEEZE_BW_LOOKBACK + 40));
+    const snap = buildSqueezeSnapshot(win.map(b => b.c), win.map(b => b.t));
+    // ★集計期間の手前も評価する(=状態と30分クールダウンを温める)。数えるのは start 以降だけ:
+    //   温めないと「起動直後の prev=null」で期間先頭に必ず1回鳴る偽の発火が混ざる。
+    const fired = squeezeFire(st, snap, now);
+    if (fired && now >= start) bump(fired, `${hm(now)} ${describeSqueeze(fired, snap, bar.c)}`);
   }
 }
 

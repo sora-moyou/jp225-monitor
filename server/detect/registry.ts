@@ -48,6 +48,8 @@ import {
   buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
   createBandwalkFireState, DEFAULT_BANDWALK, type BandwalkFireState,
 } from '../bandwalk.js';
+import { aggregate5m, buildSqueezeSnapshot, type SqueezeSnapshot, type SqueezeState } from '../indicators.js';
+import { SQUEEZE_BW_LOOKBACK } from '../../core/indicatorSpec.js';
 import { evaluateBarsNiy, createBarDetectState, type BarDetectState, type AlertSink } from '../alertEngine.js';
 import { DEFAULT_PARAMS, type DetectorParams } from '../alertDetector.js';
 import type { InstrumentMeta } from '../types.js';
@@ -80,6 +82,20 @@ const SWING_DOUBLE_CHECK_MS = 60_000;
 // ★バンドウォーク用の1分足の取得窓。indicatorsLoop / scalpContext / scalpPlanRunner と **同じ6時間**に
 //   合わせる(同じ足・同じ算出経路にしないと「アラートは成立・AI文脈は非成立」の食い違いが起きる)。
 const BANDWALK_BARS_WINDOW_MS = 6 * 60 * 60_000;
+// ★スクイーズ/バルジ用の足の窓は **7日**(indicatorsLoop の SQUEEZE_BARS_WINDOW_MS と同じ理由・同じ値)。
+//   判定には確定5分足が SQUEEZE_BW_LOOKBACK + (SQUEEZE_BB_PERIOD−1) 本(BW の先頭欠測ぶん)必要で、
+//   バンドウォークと同じ6時間窓では5分足が最大72本しか作れず ready は永久に false(=判定が死ぬ)。
+//   ★参照本数を下げても窓は7日のまま(6時間窓で作れる最大72本では必要本数に届かない)。
+const SQUEEZE_BARS_WINDOW_MS = 7 * 24 * 60 * 60_000;
+const SQUEEZE_TF_MS = 5 * 60_000;
+// ★7日ぶんの1分足の読み直しは重い。5分足が1本閉じるまで入力は1本も増えない=結果も必ず同じなので、
+//   「5分の枠が変わったとき」だけ読む(実質5分に1回)。SETTLE は直前の1分足が DB/ライブ足に載る猶予。
+const SQUEEZE_SETTLE_MS = 20_000;
+// ★同種別の再発火クールダウン(30分)。実測(NIY=F 5分足 38,624本・193日・参照本数72のとき)では
+//   状態に入る足が 5.9回/日、状態は最長19本(=95分)張り付く。入った足で1回だけ(squeezeEdge)に加えて
+//   これを置かないと、同じ収縮局面で出たり入ったりする度に鳴る(実データの否定対照: 状態の足を
+//   全部鳴らすと 32.0回/日 → エッジ+この30分で 7.3回/日)。★参照本数を動かすと発火数も動く。
+const SQUEEZE_COOLDOWN_MS = 30 * 60_000;
 const NWAVE_CHECK_MS = 60_000;
 const NWAVE_COOLDOWN_MS = 30 * 60_000;
 const SWING_LOOKBACK_DAYS = 4;
@@ -179,6 +195,8 @@ export interface LevelDetectState {
   lastNwaveFire: Map<string, number>;   // ★N波動アラートの方向×round(B) の30分クールダウン(別Bは即再発火・同一Bは30分毎)。
   // ★バンドウォーク: 直近に判定した確定5分足・成立中の向き・方向別クールダウン(server/bandwalk.ts)。
   bandwalk: BandwalkFireState;
+  // ★スクイーズ/バルジ: 直近に読んだ5分枠・判定済みの確定足・直前の状態(下の squeezeFire)。
+  squeeze: SqueezeFireState;
   lastDailyBandEmit: Map<string, number>;
   lastDailyMaEmit: Map<string, number>;
 }
@@ -195,6 +213,7 @@ export function createLevelDetectState(): LevelDetectState {
     lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, pivotSeeded: false, lastSwingCheck: 0,
     lastNwaveFire: new Map(),
     bandwalk: createBandwalkFireState(),
+    squeeze: createSqueezeFireState(),
     lastDailyBandEmit: new Map(), lastDailyMaEmit: new Map(),
   };
 }
@@ -335,6 +354,66 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
   const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels, state.nwaveLevels);
   const computeMs = Date.now() - tCompute;
   return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, nwave: state.nwave, dbMs, computeMs };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  スクイーズ/バルジ(squeeze/bulge)の発火判定 — 純関数(SSOT)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//
+// 状態そのもの(BW <= BWlow / BW >= BWhigh)の定義は server/indicators.ts が SSOT。ここが決めるのは
+// 「その状態を **いつ アラートとして出すか**」だけ:
+//   ①状態に入った足で1回だけ(squeezeEdge)。②同種別は 30分 再発火しない(SQUEEZE_COOLDOWN_MS)。
+//   ③ready が false(参照本数 SQUEEZE_BW_LOOKBACK 本が未充足)の間は絶対に出さない。
+
+/** スクイーズ/バルジの発火状態。slot=直近に7日窓を読んだ5分枠 / lastBarT=判定済みの確定足 / prev=直前の状態。 */
+export interface SqueezeFireState { slot: number; lastBarT: number; prev: SqueezeState }
+export function createSqueezeFireState(): SqueezeFireState { return { slot: 0, lastBarT: 0, prev: null }; }
+
+/** ★状態に **入った足** だけを返す(非 null かつ 直前と違うとき)。それ以外は null。
+ *  ・null → squeeze … 発火(入った)
+ *  ・squeeze → squeeze … 発火しない(同じ状態が続く間は板を埋めない)
+ *  ・squeeze → bulge … 発火する(別の状態に入った)
+ *  ・squeeze → null … 発火しない(状態から **抜けた** ことは通知しない) */
+export function squeezeEdge(prev: SqueezeState, next: SqueezeState): SqueezeState {
+  return next !== null && prev !== next ? next : null;
+}
+
+/** 確定足のスナップショットから「今 鳴らすべきか」を決め、state を更新する(副作用は state のみ)。
+ *  戻り値 = 鳴らす種別('squeeze'|'bulge') / null = 鳴らさない。
+ *
+ *  ★同じ確定足では二度評価しない(snap.t が進んだときだけ)。7日窓の読み直しを間引いても、
+ *    間引きの位相ずれで同じ足を二度評価して二度鳴らすことが無いようにするため。
+ *  ★ready:false の間は状態を **null 扱い** にする(本数不足の窓は最大/最小が数本で決まるので、
+ *    毎朝かならず squeeze か bulge になる=無意味な発火)。snap.state は buildSqueezeSnapshot が
+ *    既に null にしているが、ここでも落とす(発火の入口で ready を見る責任を持たせる)。
+ *  ★クールダウンは既存の state.lastEmit に相乗り(キー 'squeeze:<種別>'。既存キーは
+ *    'up@69120' / 'double@...' 形式なので衝突しない)。 */
+export function squeezeFire(
+  state: LevelDetectState, snap: SqueezeSnapshot, now: number, cooldownMs: number = SQUEEZE_COOLDOWN_MS,
+): SqueezeState {
+  const t = snap.t;
+  if (t == null || !(t > state.squeeze.lastBarT)) return null;   // 新しい確定足が無い
+  state.squeeze.lastBarT = t;
+  const next: SqueezeState = snap.ready ? snap.state : null;
+  const fired = squeezeEdge(state.squeeze.prev, next);
+  // ★prev は発火の可否に関わらず更新する(クールダウンで抑えた回も「状態は移った」)。
+  state.squeeze.prev = next;
+  if (fired === null) return null;
+  const key = `squeeze:${fired}`;
+  if (now - (state.lastEmit.get(key) ?? -Infinity) <= cooldownMs) return null;
+  state.lastEmit.set(key, now);
+  return fired;
+}
+
+/** アラート文(監査ツールと本番で同じ文言を出すための SSOT)。
+ *  ★本数は SQUEEZE_BW_LOOKBACK から組み立てる(定数は動く。文言に数字を焼き付けない)。
+ *  例(参照72本のとき): `スクイーズ — BB幅が72本の最小(BW 0.14 / 高安 0.82/0.14) 69,120円` */
+export function describeSqueeze(kind: 'squeeze' | 'bulge', snap: SqueezeSnapshot, price: number): string {
+  const n = (v: number | null): string => (v == null ? '—' : v.toFixed(2));
+  const name = kind === 'squeeze' ? 'スクイーズ' : 'バルジ';
+  const word = kind === 'squeeze' ? '最小' : '最大';
+  return `${name} — BB幅が${SQUEEZE_BW_LOOKBACK}本の${word}(BW ${n(snap.bw)} / 高安 ${n(snap.bwHigh)}/${n(snap.bwLow)})`
+    + ` ${Math.round(price).toLocaleString('ja-JP')}円`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -531,6 +610,36 @@ export function runLevelDetectors(
     }
   } catch (err) {
     console.warn('[detect] bandwalk detect failed:', err instanceof Error ? err.message : err);
+  }
+  // ── スクイーズ/バルジ(squeeze/bulge): 5分足20本±2σ の BB幅が SQUEEZE_BW_LOOKBACK 本の最小/最大に達した足で1回だけ。
+  //    ・状態の定義は server/indicators.ts(buildSqueezeSnapshot)、発火の可否は上の squeezeFire が SSOT。
+  //    ・足は collectRecentBars(DB ∪ メモリ内ライブ足)= bandwalk と同じ流儀(collector 停止時に無音で死なない)。
+  //    ・**方向を持たない検知**。payload の direction は必須項目なので 'up' を入れるが意味は無い
+  //      (「収縮した/拡大した」は上下どちらへ動くかを語らない)。reference には確定足の終値を入れる。
+  //    ・窓は7日(SQUEEZE_BARS_WINDOW_MS)と重いので、5分の枠が変わったときだけ読む。
+  try {
+    const slot = Math.floor((now - SQUEEZE_SETTLE_MS) / SQUEEZE_TF_MS);
+    if (slot !== state.squeeze.slot) {
+      state.squeeze.slot = slot;
+      const bars5 = aggregate5m(collectRecentBars(db, SYMBOL, now - SQUEEZE_BARS_WINDOW_MS));
+      const closed = bars5.slice(0, -1);   // 最後の1本は形成中なので使わない(確定足のみ)
+      const snap = buildSqueezeSnapshot(closed.map(b => b.c), closed.map(b => b.t));
+      const fired = squeezeFire(state, snap, now);
+      const price = closed.length > 0 ? closed[closed.length - 1]!.c : null;
+      if (fired !== null && price != null) {
+        const note = describeSqueeze(fired, snap, price);
+        console.log(`[detect] ${fired} bw=${snap.bw?.toFixed(2)} high/low=${snap.bwHigh?.toFixed(2)}/${snap.bwLow?.toFixed(2)} @${Math.round(price)}`);
+        sink({
+          symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+          changePercent: 0, windowSeconds: 60, detectionKind: fired, direction: 'up',
+          triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+          level: Math.round(price), note,
+          referenceKind: 'bb', referencePrice: Math.round(price),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[detect] squeeze detect failed:', err instanceof Error ? err.message : err);
   }
   // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
   try {

@@ -1,6 +1,6 @@
 import type { AlertEvent } from '../types.js';
 import { UI } from '../lib/i18n.js';
-import { isTechnicalKind, detectionKindLabel } from '../../core/detectionKinds.js';
+import { isTechnicalKind, detectionKindLabel, isDirectionalKind } from '../../core/detectionKinds.js';
 
 /** バナーの種別タグ文言。種別名は core/detectionKinds.ts が唯一の真実。
  *  固有名を持たない旧 z-score 系(magnitude 等)だけ「トレンド」に落ちる。 */
@@ -14,6 +14,25 @@ export function bannerKindLabel(kind: string | null | undefined): string {
  *  結果として実際に出るのは暴落(crash)と旧仕様(magnitude)だけ。 */
 export function showKindTag(kind: string | null | undefined): boolean {
   return !isTechnicalKind(kind) && kind !== 'shock' && kind !== 'slope';
+}
+
+/** バナー先頭の方向記号。方向を持たない種別(squeeze/bulge)は '' を返す。
+ *  ★payload の direction は必須項目なので方向なし検知にも 'up' が入っている。それを ▲ として出すと
+ *    「バンドが収縮した」に上向きの意味を足してしまう(無い方向の主張)。判定は
+ *    core/detectionKinds.ts の isDirectionalKind が唯一の真実 — ここに種別名を書かないこと。 */
+export function bannerArrow(kind: string | null | undefined, direction: string): string {
+  if (!isDirectionalKind(kind)) return '';
+  return direction === 'up' ? '▲' : '▼';
+}
+
+/** バナー <div> の class 文字列。
+ *  方向を持つ種別 … `alert up|down [tech]`(styles.css の .alert.up = 緑 / 既定 = 赤)。
+ *  方向を持たない種別 … 方向クラスの代わりに `nodir` を付ける。**方向クラスをただ落としてはいけない**:
+ *    .alert の既定色は赤(=下げ)なので、落とすと「下げ色」を主張したことになる。.alert.nodir は
+ *    styles.css で中立色(--muted)に上書きしてある。 */
+export function bannerAlertClass(kind: string | null | undefined, direction: string): string {
+  const dirClass = isDirectionalKind(kind) ? direction : 'nodir';
+  return `alert ${dirClass}${isTechnicalKind(kind) ? ' tech' : ''}`;
 }
 
 export interface BannerItem {
@@ -53,10 +72,10 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
   //   N波動バナーが「[トレンド]」と誤表示され、15分変化率や🔄まで付いていた。
   const k0 = alert.detectionKind;
   const isTechKind = isTechnicalKind(k0);
-  el.className = `alert ${alert.direction}${isTechKind ? ' tech' : ''}`;
+  el.className = bannerAlertClass(k0, alert.direction);
   el.dataset.triggeredAt = String(alert.triggeredAt);   // 並び替え用(時刻順で最新を最上段に)
   const kindLabel = bannerKindLabel(k0);
-  const arrow = alert.direction === 'up' ? '▲' : '▼';
+  const arrow = bannerArrow(k0, alert.direction);
   // 用語重複を避ける: グランビル/ダブルは固定説明文「価格xxxで…」が要点を伝えるので mid(note)を省略。
   // 急変/超短期は note が価格+方向(急上昇/急落)+値幅を伝えるので表示。symbolLabel はタグと重複するため非表示。
   const isTech = isTechKind;
@@ -71,9 +90,12 @@ export function addBanner(container: HTMLElement, alert: AlertEvent): BannerItem
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   });
   const main = document.createElement('div');
+  // 方向記号と note を空要素抜きで連結する。方向を持たない種別は arrow が '' なので、
+  // 素朴な `${arrow} ${mid} ` だと空白だけが残る(方向を持つ種別の出力は従来と1バイトも変わらない)。
+  const head = [arrow, mid].filter(s => s !== '').join(' ');
   main.innerHTML =
     `<span class="alert-time">${time}</span> ` +
-    `${arrow}${mid ? ' ' + mid : ''} ` +
+    `${head === '' ? '' : head + ' '}` +
     // テクニカル(グランビル/ダブル)は説明文「価格xxxで…」で種別が分かるので種別タグも15分も省き1行に。
     `${kindTagShown ? `<span class="kind-tag">[${kindLabel}]</span> ` : ''}` +
     `${isTech ? '' : ctx15 + ' '}` +

@@ -9,7 +9,7 @@ const NOW = Date.UTC(2026, 6, 16, 0, 0, 0);   // 09:00 JST
 const MIN = 60_000;
 
 function bar(t: number, o: number, h: number, l: number, c: number): Bar1m {
-  return { symbol: 'NIY=F', session_date: null, session: null, t, o, h, l, c };
+  return { symbol: 'NIY=F', session_date: null, session: null, t, o, h, l, c, src: null };
 }
 
 function level(price: number, tier: 0 | 1 | 2, score: number, label: string): Level {
