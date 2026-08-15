@@ -87,6 +87,9 @@ body {
 .indicator-panel .ind-rsi-ob { color: #e53935; }   /* 買われすぎ(≥70) */
 .indicator-panel .ind-rsi-os { color: #4caf50; }   /* 売られすぎ(≤30) */
 .indicator-panel .ind-rsi-neutral { color: var(--text); }
+/* 1本前との比較(%B / BW)。増加=緑 / 減少=橙 / 同値はクラスを付けない=既定色(--text)。 */
+.indicator-panel .ind-up { color: #3fb950; }     /* 増加 */
+.indicator-panel .ind-down { color: #d29922; }   /* 減少 */
 .badge {
   padding: 2px 8px;
   border-radius: 4px;

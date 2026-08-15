@@ -1,19 +1,24 @@
 import type { IndicatorSnapshot } from '../types.js';
-import { BB_UPPER_LABEL, BB_LOWER_LABEL } from '../../core/indicatorSpec.js';
 
-// テクニカル指標(RSI/SMA/BB)のコンパクトな読み取り表示。価格ボードの右隣(旧・相関カードの空き枠)に
+// テクニカル指標のコンパクトな読み取り表示。価格ボードの右隣(旧・相関カードの空き枠)に
 // 価格カードと同じ見た目のカードとして置き、SSE 'indicators' で更新する。
-// 表示はユーザー指定の「ヘッダ1行 + データ1行」の4列表(見出し行や %B は出さない):
-//   RSI   0.7σ    14MA    -0.7σ
-//   64.1  72,310  72,010  71,810
-// ★列の並びは「上バンド → 中央(14MA) → 下バンド」= 値の大小と並びが一致する(ユーザー指定)。
-// ★σ の倍率と列名は core/indicatorSpec.ts が唯一の定義(計算側 server/indicators.ts と同じ真実)。
+// 表示は「ヘッダ1行 + データ1行」の4列表(見出し行は出さない):
+//   RSI   %B    BW     BWhigh/low
+//   52    0.83  1.42   2.10/0.61
+// ★2026-08-15: 列を「バンドの価格3本(0.7σ / 14MA / -0.7σ)」から
+//   「バンドの **形**(%B=バンド内の位置 / BW=バンド幅 / その125本の高安)」へ差し替えた。
+//   価格そのものは左隣の価格ボードで読めるので、パネルは価格ボードに無い情報だけを持つ。
+//   値の出どころは snap.squeeze(5分足20本/2σ = 既存の 14本/0.7σ とは **別系列**。
+//   あちらはバンドウォーク判定と AI プロンプトが共有しているので触っていない)。
+// ★%B と BW は **1本前と比較**して 増加=緑(.ind-up)/ 減少=橙(.ind-down)/ 同値=無印。
+//   「今どちらへ動いているか」は数値だけでは読めず、スクイーズ/バルジは変化の向きが本体のため。
 // RSI≥70=買われすぎ / ≤30=売られすぎ は色で示す(既存仕様を維持)。
 // データ未到達(null / 未算出)は「蓄積中…」を出す(検知ではなく表示専用)。
+// squeeze が無い旧世代の配信では %B / BW / BWhigh/low を従来どおりの空表示('—')にする(壊れない)。
 
-/** 整数 + 桁区切り(円価格用)。null は '—'。 */
-function yen(v: number | null): string {
-  return v == null ? '—' : Math.round(v).toLocaleString('en-US');
+/** 小数2桁。null / 非有限は '—'。%B・BW・BWhigh/low の共通書式。 */
+function dec2(v: number | null | undefined): string {
+  return v == null || !Number.isFinite(v) ? '—' : v.toFixed(2);
 }
 
 /** RSI の色分類(overbought/oversold/neutral)。 */
@@ -25,8 +30,23 @@ export function rsiClass(rsi: number | null): 'ind-rsi-ob' | 'ind-rsi-os' | 'ind
 }
 
 const BAR_MINUTES = 5;   // 1本=5分足。残り本数から待ち時間を出す(「あと13本」だけでは何分待ちか分からない)。
-// 列名(ユーザー指定の並び: RSI / 上バンド / 14MA / 下バンド)。σ 表記は core/indicatorSpec.ts が SSOT。
-const COLS = ['RSI', BB_UPPER_LABEL, '14MA', BB_LOWER_LABEL] as const;
+// 列名(並び: RSI / %B / BW / BWhigh・low)。データセルの並びもこの順(片方だけ直すと列名と値がずれる)。
+const COLS = ['RSI', '%B', 'BW', 'BWhigh/low'] as const;
+
+/** 1本前との比較で付ける色クラス。増加=緑 / 減少=橙 / 同値・比較不能=無印(既定色)。
+ *  ★「同値なら無印」は意図的: 変化していないものに色を付けると、目が拾うべき変化が埋もれる。 */
+export function trendClass(cur: number | null | undefined, prev: number | null | undefined): '' | 'ind-up' | 'ind-down' {
+  if (cur == null || prev == null || !Number.isFinite(cur) || !Number.isFinite(prev)) return '';
+  if (cur > prev) return 'ind-up';
+  if (cur < prev) return 'ind-down';
+  return '';
+}
+
+/** BWhigh/low の1セル表記(例 '2.10/0.61')。片方でも欠ければ '—'(片側だけの数字は誤読を招く)。 */
+function highLow(high: number | null | undefined, low: number | null | undefined): string {
+  const h = dec2(high), l = dec2(low);
+  return h === '—' || l === '—' ? '—' : `${h}/${l}`;
+}
 
 /** ヘッダ行の4セル。mark(取引時間外 / OFF)は左端セルの空きに置く=行数を増やさない。 */
 function headerCells(mark = ''): string {
@@ -78,12 +98,16 @@ export function buildIndicatorHtml(snap: IndicatorSnapshot | null): string {
   // 更新が止まっている理由は「印」としてヘッダ行に付ける(値は消さない=引け後にセッション最終値を読める)。
   const mark = snap.progress?.state === 'closed' ? '取引時間外'
     : snap.progress?.state === 'disabled' ? 'OFF' : '';
-  // ★セルの並びは COLS と同じ(RSI / 上バンド / 14MA / 下バンド)。片方だけ入れ替えると列名と値がずれる。
+  // ★セルの並びは COLS と同じ(RSI / %B / BW / BWhigh・low)。片方だけ入れ替えると列名と値がずれる。
+  //   sq が無い(旧世代の配信)ときは %B / BW / BWhigh・low は '—'(色も付けない)= 従来どおりの空表示。
+  const sq = snap.squeeze;
+  const cell = (cls: string, text: string): string =>
+    `<div class="ind-td${cls ? ` ${cls}` : ''}">${text}</div>`;
   const dataCells = [
-    `<div class="ind-td ${rsiClass(snap.rsi)}">${snap.rsi == null ? '—' : snap.rsi.toFixed(1)}</div>`,
-    `<div class="ind-td">${yen(snap.bbUpper)}</div>`,
-    `<div class="ind-td">${yen(snap.sma)}</div>`,
-    `<div class="ind-td">${yen(snap.bbLower)}</div>`,
+    cell(rsiClass(snap.rsi), snap.rsi == null ? '—' : snap.rsi.toFixed(1)),
+    cell(trendClass(sq?.pctB, sq?.prevPctB), dec2(sq?.pctB)),
+    cell(trendClass(sq?.bw, sq?.prevBw), dec2(sq?.bw)),
+    cell('', highLow(sq?.bwHigh, sq?.bwLow)),
   ].join('');
   return grid(headerCells(mark) + dataCells);
 }

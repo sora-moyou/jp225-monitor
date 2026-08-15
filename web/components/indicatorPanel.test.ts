@@ -1,16 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { buildIndicatorHtml, rsiClass } from './indicatorPanel.js';
-import type { IndicatorSnapshot } from '../types.js';
+import { buildIndicatorHtml, rsiClass, trendClass } from './indicatorPanel.js';
+import type { IndicatorSnapshot, SqueezeSnapshotPayload } from '../types.js';
 
-// buildIndicatorHtml / rsiClass は DOM 非依存の純関数。表示整形と RSI 色分類を検証する。
-// 表示仕様(ユーザー指定)は「ヘッダ1行 + データ1行」の4列表:
-//   RSI   0.7σ    14MA    -0.7σ
-//   64.1  72,310  72,010  71,810
-// ★列の並びは「上バンド → 中央(14MA) → 下バンド」= 値の大小と並びが一致する(ユーザー指定・v0.9.61)。
+// buildIndicatorHtml / rsiClass / trendClass は DOM 非依存の純関数。
+// 検査は **実際に描画した HTML 文字列** に対して行う(存在確認だけの grep にしない)。
+// 表示仕様は「ヘッダ1行 + データ1行」の4列表:
+//   RSI   %B    BW     BWhigh/low
+//   62.0  0.83  1.42   2.10/0.61
+// ★2026-08-15: 列を「バンドの価格3本(0.7σ / 14MA / -0.7σ)」から「バンドの形(%B / BW / 125本の高安)」へ
+//   差し替えた。価格そのものは左隣の価格ボードで読めるため、パネルは価格ボードに無い情報だけを持つ。
+// ★%B と BW は1本前と比較して 増加=緑(.ind-up)/ 減少=橙(.ind-down)/ 同値=無印。
+
+/** スクイーズ用スナップショット(5分足20本/2σ)。テストごとに値を差し替える。 */
+function sq(over: Partial<SqueezeSnapshotPayload> = {}): SqueezeSnapshotPayload {
+  return {
+    pctB: 0.83, prevPctB: 0.70, bw: 1.42, prevBw: 1.80,
+    bwHigh: 2.10, bwLow: 0.61, ready: true, state: null, ...over,
+  };
+}
 
 const base: IndicatorSnapshot = {
   rsi: 62, sma: 41230, bbUpper: 41410, bbMid: 41230, bbLower: 41050,
-  price: 41300, pctB: 0.78, series: [],
+  price: 41300, pctB: 0.78, series: [], squeeze: sq(),
 };
 
 /** class 出現数(行/セルの構造を数で確かめる)。 */
@@ -18,31 +29,43 @@ function count(html: string, cls: string): number {
   return (html.match(new RegExp(`class="[^"]*\\b${cls}\\b`, 'g')) ?? []).length;
 }
 
+/** データセルを列ごとに切り出す(セル単位で値と色を検査するため)。 */
+function cells(html: string): string[] {
+  return html.split('class="ind-td').slice(1);
+}
+
 describe('buildIndicatorHtml', () => {
-  it('ヘッダは指定どおり RSI / 0.7σ / 14MA / -0.7σ の4列(この順)', () => {
+  it('ヘッダは RSI / %B / BW / BWhigh/low の4列(この順)', () => {
     const html = buildIndicatorHtml(base);
     expect(count(html, 'ind-th')).toBe(4);
-    for (const c of ['RSI', '0.7σ', '14MA', '-0.7σ']) expect(html).toContain(`>${c}<`);
+    for (const c of ['RSI', '%B', 'BW', 'BWhigh/low']) expect(html).toContain(`>${c}<`);
     // ★並び順そのものを固定する(列名だけ直して値の順を直し忘れる事故を防ぐ)。
     const heads = [...html.matchAll(/class="ind-th"[^>]*>(?:<span class="ind-mark">[^<]*<\/span>)?<span>([^<]+)<\/span>/g)].map(m => m[1]);
-    expect(heads).toEqual(['RSI', '0.7σ', '14MA', '-0.7σ']);
+    expect(heads).toEqual(['RSI', '%B', 'BW', 'BWhigh/low']);
   });
 
-  it('データ行は RSI=小数第1位 / 他3列=桁区切り整数(0.7σ=上限, 14MA=中央, -0.7σ=下限)', () => {
+  it('データ行は RSI=小数1桁 / %B・BW=小数2桁 / 高安=「2.10/0.61」', () => {
     const html = buildIndicatorHtml(base);
     expect(count(html, 'ind-td')).toBe(4);
-    const tds = html.split('class="ind-td').slice(1);
-    expect(tds[0]).toContain('62.0');       // RSI(小数第1位)
-    expect(tds[1]).toContain('41,410');     // 0.7σ(上限)
-    expect(tds[2]).toContain('41,230');     // 14MA(中央)
-    expect(tds[3]).toContain('41,050');     // -0.7σ(下限)
+    const td = cells(html);
+    expect(td[0]).toContain('62.0');        // RSI
+    expect(td[1]).toContain('0.83');        // %B
+    expect(td[2]).toContain('1.42');        // BW
+    expect(td[3]).toContain('2.10/0.61');   // BWhigh/low
     expect(html).not.toContain('蓄積中');
   });
 
-  it('見出し「テクニカル(5分)」と %B / 価格位置は出さない(ユーザー指定の2行のみ)', () => {
+  // 旧列(バンドの価格)は価格ボードと重複していたので出さない。数値も列名も残っていたら赤。
+  it('★旧列(0.7σ / 14MA / -0.7σ と その価格)は出さない', () => {
+    const html = buildIndicatorHtml(base);
+    for (const gone of ['0.7σ', '-0.7σ', '14MA', '41,410', '41,230', '41,050']) {
+      expect(html).not.toContain(gone);
+    }
+  });
+
+  it('見出し「テクニカル(5分)」や価格位置の言葉は出さない(2行のみ)', () => {
     const html = buildIndicatorHtml(base);
     expect(html).not.toContain('テクニカル');
-    expect(html).not.toContain('%B');
     expect(html).not.toContain('上寄り');
     expect(html).not.toContain('中央');
   });
@@ -54,15 +77,74 @@ describe('buildIndicatorHtml', () => {
   });
 
   it('個別に欠けた値は — で埋め、列数(4)は崩さない', () => {
-    const html = buildIndicatorHtml({ ...base, sma: null });
+    const html = buildIndicatorHtml({ ...base, squeeze: sq({ bw: null, bwHigh: null }) });
     expect(count(html, 'ind-td')).toBe(4);
-    expect(html).toContain('—');
+    const td = cells(html);
+    expect(td[2]).toContain('—');    // BW
+    expect(td[3]).toContain('—');    // 片方(high)が欠けたら高安セルごと —(片側だけの数字は誤読を招く)
+    expect(td[3]).not.toContain('0.61');
   });
 
   it('データ未到達(null)は「蓄積中…」', () => {
     expect(buildIndicatorHtml(null)).toContain('蓄積中');
     const empty: IndicatorSnapshot = { ...base, rsi: null, sma: null, bbUpper: null, bbLower: null, bbMid: null, pctB: null };
     expect(buildIndicatorHtml(empty)).toContain('蓄積中');
+  });
+});
+
+// 数値だけでは「今どちらへ動いているか」が読めない。スクイーズ/バルジは変化の向きが本体なので、
+// %B と BW は1本前との比較を色で出す。同値に色を付けると拾うべき変化が埋もれるので無印にする。
+describe('buildIndicatorHtml — %B / BW の 1本前比較(増加=緑 / 減少=橙 / 同値=無印)', () => {
+  const mk = (pctB: number, prevPctB: number, bw: number, prevBw: number) =>
+    cells(buildIndicatorHtml({ ...base, squeeze: sq({ pctB, prevPctB, bw, prevBw }) }));
+
+  it('%B 増加 = ind-up / BW 減少 = ind-down(セル単位で付く)', () => {
+    const td = mk(0.80, 0.70, 1.00, 2.00);
+    expect(td[1]).toContain('ind-up');
+    expect(td[1]).not.toContain('ind-down');
+    expect(td[2]).toContain('ind-down');
+    expect(td[2]).not.toContain('ind-up');
+  });
+
+  it('%B 減少 = ind-down / BW 増加 = ind-up(向きを取り違えていたら赤)', () => {
+    const td = mk(0.60, 0.70, 2.00, 1.00);
+    expect(td[1]).toContain('ind-down');
+    expect(td[2]).toContain('ind-up');
+  });
+
+  it('同値は無印(色を付けない)', () => {
+    const html = buildIndicatorHtml({ ...base, squeeze: sq({ pctB: 0.7, prevPctB: 0.7, bw: 1.0, prevBw: 1.0 }) });
+    expect(html).not.toContain('ind-up');
+    expect(html).not.toContain('ind-down');
+  });
+
+  it('1本前が無い(prev=null)ときは無印(比較不能を色で嘘をつかない)', () => {
+    const html = buildIndicatorHtml({ ...base, squeeze: sq({ prevPctB: null, prevBw: null }) });
+    expect(html).not.toContain('ind-up');
+    expect(html).not.toContain('ind-down');
+  });
+
+  it('高安(BWhigh/low)には色を付けない(参照値であって変化ではない)', () => {
+    const td = mk(0.80, 0.70, 2.00, 1.00);
+    expect(td[3]).not.toContain('ind-up');
+    expect(td[3]).not.toContain('ind-down');
+  });
+});
+
+// squeeze は ADD-ONLY。旧世代のサーバ/未接続からの配信では欠落しうるので、そこで壊れないこと。
+describe('buildIndicatorHtml — squeeze が無い配信へのフォールバック', () => {
+  it('RSI は出し、%B / BW / 高安は — にする(例外にも空白にもしない)', () => {
+    const { squeeze: _drop, ...noSqueeze } = base;
+    const html = buildIndicatorHtml(noSqueeze as IndicatorSnapshot);
+    expect(count(html, 'ind-td')).toBe(4);
+    const td = cells(html);
+    expect(td[0]).toContain('62.0');
+    expect(td[1]).toContain('—');
+    expect(td[2]).toContain('—');
+    expect(td[3]).toContain('—');
+    expect(html).not.toContain('ind-up');
+    expect(html).not.toContain('ind-down');
+    expect(html).not.toContain('蓄積中');
   });
 });
 
@@ -88,20 +170,20 @@ describe('buildIndicatorHtml — 蓄積状況の自己診断表示', () => {
       .toContain('あと13本(約65分)');
   });
 
-  // 引け後に「そのセッションが最終的にどこで終わったか(RSI/BB)」を見るのは実用的な用途なので、
+  // 引け後に「そのセッションが最終的にどこで終わったか」を見るのは実用的な用途なので、
   // 値がある限り数値は消さない。理由(取引時間外/OFF)は印として併記する。
   it('D-1: 値あり + closed は「数値 ＋ 取引時間外の印」(数値を消さない)', () => {
     const html = buildIndicatorHtml({ ...base, progress: { state: 'closed', remaining: 0 } });
     expect(count(html, 'ind-td')).toBe(4);
     expect(html).toContain('62.0');
-    expect(html).toContain('41,410');            // 0.7σ は残る
+    expect(html).toContain('2.10/0.61');         // 高安は残る
     expect(html).toContain('取引時間外');
     expect(html).not.toContain('蓄積中');
   });
 
   it('E-1: 値あり + disabled は「数値 ＋ OFF の印」', () => {
     const html = buildIndicatorHtml({ ...base, progress: { state: 'disabled', remaining: 0 } });
-    expect(html).toContain('41,230');
+    expect(html).toContain('1.42');
     expect(html).toContain('OFF');
     expect(html).not.toContain('蓄積中');
   });
@@ -121,7 +203,7 @@ describe('buildIndicatorHtml — 蓄積状況の自己診断表示', () => {
   it('C: 算出済みは従来どおり数値表示(progress があっても壊れない)', () => {
     const html = buildIndicatorHtml({ ...base, progress: { state: 'ready', remaining: 0 } });
     expect(html).toContain('62.0');
-    expect(html).toContain('41,230');
+    expect(html).toContain('0.83');
     expect(html).not.toContain('蓄積中');
     expect(html).not.toContain('あと');
   });
@@ -186,5 +268,18 @@ describe('rsiClass', () => {
     expect(rsiClass(28)).toBe('ind-rsi-os');
     expect(rsiClass(50)).toBe('ind-rsi-neutral');
     expect(rsiClass(null)).toBe('ind-rsi-neutral');
+  });
+});
+
+describe('trendClass', () => {
+  it('増加=ind-up / 減少=ind-down / 同値=無印', () => {
+    expect(trendClass(1.5, 1.4)).toBe('ind-up');
+    expect(trendClass(1.3, 1.4)).toBe('ind-down');
+    expect(trendClass(1.4, 1.4)).toBe('');
+  });
+  it('比較できない(null / undefined)ときは無印', () => {
+    expect(trendClass(null, 1.4)).toBe('');
+    expect(trendClass(1.4, null)).toBe('');
+    expect(trendClass(undefined, undefined)).toBe('');
   });
 });

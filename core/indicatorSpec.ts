@@ -7,12 +7,13 @@
 //   という無言の食い違いが起きる(検知種別で実際に起きた事故と同じ形 = core/detectionKinds.ts の冒頭注記)。
 //   ゆえに倍率とその表示ラベルはここだけに置き、server / web / llm は必ずここから読む。
 //
-// ★消費側(ここを変えたら影響する箇所):
+// ★消費側(ここを変えたら影響する箇所・2026-08-15 に実態へ合わせて更新):
 //   - server/indicators.ts             … bollinger() の既定倍率 / computeIndicators の算出
-//   - server/bandwalk.ts               … バンドウォーク判定(価格 ≥ +σ / ≤ −σ)
-//   - web/components/indicatorPanel.ts … パネルの列名
-//   - server/llm/scalpContext.ts       … AI へ渡す「テクニカル指標」ブロックのラベル
-//   - server/llm/scalpPlan.ts          … AI へのテクニカル許可文のラベル
+//   - server/bandwalk.ts               … バンドウォーク判定(価格 ≥ +σ / ≤ −σ。σ は indicators 経由)
+//   - server/llm/scalpContext.ts       … AI へ渡す「テクニカル指標」ブロックのラベル(BB_BAND_LABEL)
+//   - server/llm/scalpPlan.ts          … AI へのテクニカル許可文のラベル(BB_BAND_LABEL)
+//   ※パネル(web/components/indicatorPanel.ts)は列名を %B / BW / BWhigh・low に差し替えたため
+//     もうσのラベルを読まない。「消費側」に名前だけ残すと、消えた経路を在るものとして数えてしまう。
 
 /** ボリンジャーバンドの σ 倍率。中央(SMA14)± BB_SIGMA×σ。
  *
@@ -25,10 +26,10 @@
  *    分けてしまうと「画面は 0.7σ・AI には 1.5σ」という食い違いを生むだけなので1本のままにする。 */
 export const BB_SIGMA = 0.7;
 
-/** 上限バンドの表示名(例 '0.7σ')。数値の書式ゆれを防ぐため文字列もここで作る。 */
-export const BB_UPPER_LABEL = `${BB_SIGMA}σ`;
-/** 下限バンドの表示名(例 '-0.7σ')。 */
-export const BB_LOWER_LABEL = `-${BB_SIGMA}σ`;
+// ★BB_UPPER_LABEL / BB_LOWER_LABEL は 2026-08-15 に削除した。
+//   パネルの列名が %B / BW / BWhigh・low に変わり、リポジトリ全体で参照が 0 になったため
+//   (「上限/下限を別々に出す画面」がもう存在しない)。σ の表示は下の BB_BAND_LABEL だけが担う。
+
 /** 「±0.7σ」形式のラベル(プロンプト/文脈ブロック用)。 */
 export const BB_BAND_LABEL = `±${BB_SIGMA}σ`;
 

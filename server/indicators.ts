@@ -135,6 +135,10 @@ export interface IndicatorSnapshot extends IndicatorValues {
   t?: number;                // 参照した最新 close の timestamp(あれば)
   live?: IndicatorValues;    // 形成中足を含む速報値(パネル/連携の補助・loop が付与)
   progress?: IndicatorProgress;   // ADD-ONLY: 蓄積状況(パネルの自己診断表示用・loop が付与)
+  /** ADD-ONLY: スクイーズ用バンド(20本/2σ)の現在値。**既存の 14本/0.7σ 系列とは独立**で、
+   *  上の rsi/sma/bbUpper/... の意味は一切変えない。indicatorsLoop が確定足から付与する。
+   *  欠落 = 旧世代の配信(パネルは従来どおりの空表示にフォールバックする)。 */
+  squeeze?: SqueezeSnapshot;
 }
 
 // ─── ★スクイーズ用バンド(20本/2σ)の純関数(2026-08-15) ─────────────────────
@@ -150,25 +154,36 @@ export function bandwidthOf(upper: number | null, mid: number | null, lower: num
   return ((upper - lower) / mid) * 100;
 }
 
-/** Bandwidth の極値。ready=窓が満杯か(足りない間の極値は数本で決まるので判定に使わない)。 */
+/** Bandwidth の極値。ready=**参照本数ぶんの実値**が揃っているか(足りない間の極値は数本で決まるので判定に使わない)。 */
 export interface BandwidthExtremes { high: number | null; low: number | null; ready: boolean }
 
 /** ★**現在足を含む**直近 lookback 本の最大/最小(null は無視)。
  *  ボリンジャー本人の定義(「Bandwidth が N 期間の最小 = スクイーズ」)に合わせるため、
- *  現在足を除外しない。除外すると「新記録に達した足」が判定できない。 */
+ *  現在足を除外しない。除外すると「新記録に達した足」が判定できない。
+ *
+ *  ★ready は **非 null の BW の本数** で数える(枠の本数ではない)。
+ *    BW は先頭 SQUEEZE_BB_PERIOD-1 本が必ず null なので、枠の本数で数えると
+ *    「125枠のうち中身は 106本」でも ready:true になり、実際には 106本の最小でしか
+ *    判定していないのに「125本の最小」と名乗ることになる(コメントと実装の無言の食い違い)。 */
 export function bandwidthExtremes(bw: readonly (number | null)[], lookback: number): BandwidthExtremes {
   const win = bw.slice(Math.max(0, bw.length - lookback));
   const vals = win.filter((v): v is number => v != null && Number.isFinite(v));
   if (vals.length === 0) return { high: null, low: null, ready: false };
-  return { high: Math.max(...vals), low: Math.min(...vals), ready: win.length >= lookback };
+  return { high: Math.max(...vals), low: Math.min(...vals), ready: vals.length >= lookback };
 }
 
 /** バンド幅の状態。null=どちらでもない。 */
 export type SqueezeState = 'squeeze' | 'bulge' | null;
 
-/** BW <= BWlow = スクイーズ / BW >= BWhigh = バルジ(= 125本の新記録に達した足)。 */
+/** BW <= BWlow = スクイーズ / BW >= BWhigh = バルジ(= 125本の新記録に達した足)。
+ *
+ *  ★high === low(窓内の BW が全部同値)のときは **判定しない**(null)。
+ *    価格フィードが凍って同じ値が並ぶと BW も一定になり、bw <= low が常に成立して
+ *    「永久にスクイーズ」に張り付く。同値の窓には最大も最小も無い(=情報が無い)ので、
+ *    状態を出さないのが正しい。 */
 export function squeezeStateOf(bw: number | null, high: number | null, low: number | null): SqueezeState {
   if (bw == null || high == null || low == null) return null;
+  if (!(high > low)) return null;
   if (bw <= low) return 'squeeze';
   if (bw >= high) return 'bulge';
   return null;
@@ -202,7 +217,9 @@ export interface SqueezeSnapshot {
 
 /** 確定足の close 列(と任意の時刻列)からスナップショットを組む。
  *  ★ready=false の間は state を **必ず null** にする: 窓が数本しか無い序盤は最大/最小が
- *    そのまま現在値になり、毎朝かならずスクイーズかバルジになってしまう(無意味な発火)。 */
+ *    そのまま現在値になり、毎朝かならずスクイーズかバルジになってしまう(無意味な発火)。
+ *  ★times は closes と **同じ長さのときだけ** 使う(computeIndicators と同じ契約)。
+ *    長さが違うものを黙って受けると、別の足の時刻を現在値に貼り付けてしまう。 */
 export function buildSqueezeSnapshot(closes: number[], times?: number[]): SqueezeSnapshot {
   const { bw, pctB } = computeSqueezeSeries(closes);
   const ext = bandwidthExtremes(bw, SQUEEZE_BW_LOOKBACK);
@@ -218,7 +235,7 @@ export function buildSqueezeSnapshot(closes: number[], times?: number[]): Squeez
     bwLow: ext.low,
     ready: ext.ready,
     state,
-    ...(times && times.length ? { t: times[times.length - 1] } : {}),
+    ...(times && times.length === closes.length && closes.length > 0 ? { t: times[times.length - 1] } : {}),
   };
 }
 
