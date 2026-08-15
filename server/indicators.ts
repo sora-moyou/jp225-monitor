@@ -12,7 +12,9 @@
 // 別途「形成中の足を含む速報 close」で live 値も計算できる(computeIndicators を2回呼ぶ)。
 
 import { stdDev } from './alertDetector.js';
-import { BB_SIGMA } from '../core/indicatorSpec.js';
+import {
+  BB_SIGMA, SQUEEZE_BB_PERIOD, SQUEEZE_BB_SIGMA, SQUEEZE_BW_LOOKBACK,
+} from '../core/indicatorSpec.js';
 
 export { BB_SIGMA };
 
@@ -133,6 +135,91 @@ export interface IndicatorSnapshot extends IndicatorValues {
   t?: number;                // 参照した最新 close の timestamp(あれば)
   live?: IndicatorValues;    // 形成中足を含む速報値(パネル/連携の補助・loop が付与)
   progress?: IndicatorProgress;   // ADD-ONLY: 蓄積状況(パネルの自己診断表示用・loop が付与)
+}
+
+// ─── ★スクイーズ用バンド(20本/2σ)の純関数(2026-08-15) ─────────────────────
+//
+// 既存の 14本/0.7σ 系列とは **別物**。あちらはバンドウォーク判定と AI プロンプトが共有しており、
+// 触ると実走中の質問文 A/B の標本が割れる。こちらはパネル表示と スクイーズ/バルジ 判定専用。
+// 定数は core/indicatorSpec.ts の SQUEEZE_* が唯一の定義(ここに数値を書かない)。
+
+/** Bandwidth = (上−下)/中央 ×100。未算出・中央<=0 は null。
+ *  ★幅0(全同値)は **0 を返す**: 「収縮しきっている」は観測値であって欠測ではない。 */
+export function bandwidthOf(upper: number | null, mid: number | null, lower: number | null): number | null {
+  if (upper == null || mid == null || lower == null || !(mid > 0)) return null;
+  return ((upper - lower) / mid) * 100;
+}
+
+/** Bandwidth の極値。ready=窓が満杯か(足りない間の極値は数本で決まるので判定に使わない)。 */
+export interface BandwidthExtremes { high: number | null; low: number | null; ready: boolean }
+
+/** ★**現在足を含む**直近 lookback 本の最大/最小(null は無視)。
+ *  ボリンジャー本人の定義(「Bandwidth が N 期間の最小 = スクイーズ」)に合わせるため、
+ *  現在足を除外しない。除外すると「新記録に達した足」が判定できない。 */
+export function bandwidthExtremes(bw: readonly (number | null)[], lookback: number): BandwidthExtremes {
+  const win = bw.slice(Math.max(0, bw.length - lookback));
+  const vals = win.filter((v): v is number => v != null && Number.isFinite(v));
+  if (vals.length === 0) return { high: null, low: null, ready: false };
+  return { high: Math.max(...vals), low: Math.min(...vals), ready: win.length >= lookback };
+}
+
+/** バンド幅の状態。null=どちらでもない。 */
+export type SqueezeState = 'squeeze' | 'bulge' | null;
+
+/** BW <= BWlow = スクイーズ / BW >= BWhigh = バルジ(= 125本の新記録に達した足)。 */
+export function squeezeStateOf(bw: number | null, high: number | null, low: number | null): SqueezeState {
+  if (bw == null || high == null || low == null) return null;
+  if (bw <= low) return 'squeeze';
+  if (bw >= high) return 'bulge';
+  return null;
+}
+
+/** close 列から BW と %B の系列を作る(各点は「その点までの prefix」で再計算)。 */
+export function computeSqueezeSeries(closes: number[]): { bw: (number | null)[]; pctB: (number | null)[] } {
+  const bw: (number | null)[] = [];
+  const pctB: (number | null)[] = [];
+  for (let i = 0; i < closes.length; i++) {
+    const b = bollinger(closes.slice(0, i + 1), SQUEEZE_BB_PERIOD, SQUEEZE_BB_SIGMA);
+    bw.push(bandwidthOf(b.upper, b.mid, b.lower));
+    pctB.push(pctBOf(closes[i]!, b.upper, b.lower));
+  }
+  return { bw, pctB };
+}
+
+/** パネル/検知が読むスナップショット。prev* は色(増加=緑/減少=橙)の判定に使う。 */
+export interface SqueezeSnapshot {
+  pctB: number | null;
+  prevPctB: number | null;
+  bw: number | null;
+  prevBw: number | null;
+  bwHigh: number | null;
+  bwLow: number | null;
+  /** 参照本数(125)が揃っているか。false の間は state を出さない。 */
+  ready: boolean;
+  state: SqueezeState;
+  t?: number;
+}
+
+/** 確定足の close 列(と任意の時刻列)からスナップショットを組む。
+ *  ★ready=false の間は state を **必ず null** にする: 窓が数本しか無い序盤は最大/最小が
+ *    そのまま現在値になり、毎朝かならずスクイーズかバルジになってしまう(無意味な発火)。 */
+export function buildSqueezeSnapshot(closes: number[], times?: number[]): SqueezeSnapshot {
+  const { bw, pctB } = computeSqueezeSeries(closes);
+  const ext = bandwidthExtremes(bw, SQUEEZE_BW_LOOKBACK);
+  const last = bw.length - 1;
+  const cur = last >= 0 ? bw[last]! ?? null : null;
+  const state = ext.ready ? squeezeStateOf(cur, ext.high, ext.low) : null;
+  return {
+    pctB: last >= 0 ? pctB[last] ?? null : null,
+    prevPctB: last >= 1 ? pctB[last - 1] ?? null : null,
+    bw: cur,
+    prevBw: last >= 1 ? bw[last - 1] ?? null : null,
+    bwHigh: ext.high,
+    bwLow: ext.low,
+    ready: ext.ready,
+    state,
+    ...(times && times.length ? { t: times[times.length - 1] } : {}),
+  };
 }
 
 /** BB 上下限と現値から %B を求める純関数(幅0/未算出は null)。 */
