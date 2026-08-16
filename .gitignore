@@ -33,5 +33,8 @@ scripts/plan-replay/
 # ★PRIVATE-BACKUP の区間外に置くこと(バックアップ照合の対象ではない)。
 .claude/skills/
 
+# 作業の規範(毎セッション読まれる)。個人的な内容なので公開リポには載せない。
+CLAUDE.md
+
 # 作業用の下書き・参考画像(公開リポには載せない)
 newss/
