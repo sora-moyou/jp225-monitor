@@ -30,7 +30,10 @@ import {
   buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
   createBandwalkFireState, DEFAULT_BANDWALK,
 } from '../server/bandwalk.js';
-import { createLevelDetectState, squeezeFire, describeSqueeze } from '../server/detect/registry.js';
+import {
+  createLevelDetectState, squeezeFire, describeSqueeze,
+  makeSqueezeBreakWatch, squeezeBreakFire, squeezeBreakKind, describeSqueezeBreak,
+} from '../server/detect/registry.js';
 import { aggregate5m, aggregateBars, buildBarBandLookup, buildSqueezeSnapshot, type OHLCBar } from '../server/indicators.js';
 import { SQUEEZE_BW_LOOKBACK } from '../core/indicatorSpec.js';
 import { resolveShockParams, resolveEffectiveScalpBias } from '../server/configStore.js';
@@ -188,6 +191,11 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
     .all(SYMBOL, start - 8 * 86400000) as OHLCBar[];
   const bars5 = aggregate5m(sq1m);
   const st = createLevelDetectState();
+  // ★スクイーズ/バルジ **後の抜け**(squeeze_break / bulge_break)も同じ通しで数える。
+  //   本番は現値(ティック)を毎ループ照合するが、監査に残っているのは1分足なので **1分足の高値/安値** を
+  //   その分の到達価格として使う(終値だけだと、分内で水準を外して戻した往復を数え落とす)。
+  //   ★上→下の順で照合するのは本番(squeezeBreakFire)と同じ。方向ごとに1回までなので二度は鳴らない。
+  let mi = 0;
   for (let i = 0; i < bars5.length; i++) {
     const bar = bars5[i]!;
     const now = bar.t + 5 * 60000;                       // その足が閉じた直後に評価される
@@ -196,7 +204,22 @@ for (let i = all.findIndex(b => b.t >= start); i < all.length; i++) {
     // ★集計期間の手前も評価する(=状態と30分クールダウンを温める)。数えるのは start 以降だけ:
     //   温めないと「起動直後の prev=null」で期間先頭に必ず1回鳴る偽の発火が混ざる。
     const fired = squeezeFire(st, snap, now);
-    if (fired && now >= start) bump(fired, `${hm(now)} ${describeSqueeze(fired, snap, bar.c)}`);
+    if (fired) {
+      if (now >= start) bump(fired, `${hm(now)} ${describeSqueeze(fired, snap, bar.c)}`);
+      // 本番と同じ: 鳴った確定足の高安で「その後の抜け」の見張りを張り直す(前の事象は終了)。
+      st.squeeze.watch = makeSqueezeBreakWatch(fired, bar, now);
+    }
+    // この5分枠のあいだの1分足を1本ずつ現値として流す。
+    while (mi < sq1m.length && sq1m[mi]!.t < now) mi++;
+    for (; mi < sq1m.length && sq1m[mi]!.t < now + 5 * 60000; mi++) {
+      const m = sq1m[mi]!;
+      for (const p of [m.h, m.l]) {
+        const brk = squeezeBreakFire(st, p, m.t);
+        if (brk && m.t >= start) {
+          bump(squeezeBreakKind(brk.kind), `${hm(m.t)} ${brk.direction === 'up' ? '▲' : '▼'} ${describeSqueezeBreak(brk.kind, brk.direction, brk.level, p)}`);
+        }
+      }
+    }
   }
 }
 

@@ -66,6 +66,12 @@ export const DETECTION_KIND_SPEC = {
   //   ★directional:false ＝ 表示(履歴要約・バナー)が その 'up' を方向として使わない。
   squeeze:   { layer: 'L2', label: 'スクイーズ',     promptLabel: 'BBスクイーズ(バンド収縮)',      directional: false },
   bulge:     { layer: 'L2', label: 'バルジ',         promptLabel: 'BBバルジ(バンド拡大)',          directional: false },
+  // ★スクイーズ/バルジ **後の抜け**(2026-08-16): 上の squeeze/bulge が鳴った確定5分足の
+  //   高値+緩衝 / 安値−緩衝 を現値が超えた/割った瞬間(発火の規則は server/detect/registry.ts が SSOT)。
+  //   ★こちらは **方向を持つ**(directional:true): 「どちらへ抜けたか」がこの検知の中身そのもの。
+  //   親(squeeze/bulge)は方向なしのまま — 収縮/拡大そのものは向きを語らない、という区別を崩さないこと。
+  squeeze_break: { layer: 'L2', label: 'スクイーズ抜け', promptLabel: 'BBスクイーズ後の抜け',      directional: true },
+  bulge_break:   { layer: 'L2', label: 'バルジ抜け',     promptLabel: 'BBバルジ後の抜け',          directional: true },
   // ── L2(後方互換: 過去履歴にのみ現れる旧種別) ────────────────────────────
   granville: { layer: 'L2', label: 'グランビル',     promptLabel: 'グランビル',                    directional: true },
   dtb:       { layer: 'L2', label: 'Wトップ/ボトム', promptLabel: 'ダブル天井/大底',               directional: true },

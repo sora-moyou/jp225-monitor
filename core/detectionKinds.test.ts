@@ -32,7 +32,7 @@ describe('検知種別 SSOT', () => {
     expect([...DETECTION_KINDS]).toEqual([
       'slope', 'magnitude', 'shock', 'crash',
       'double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dailyband', 'nwave', 'bandwalk',
-      'squeeze', 'bulge',
+      'squeeze', 'bulge', 'squeeze_break', 'bulge_break',
       'granville', 'dtb', 'ma', 'swingdtb',
     ]);
   });
@@ -40,9 +40,12 @@ describe('検知種別 SSOT', () => {
   it('L2(テクニカル)種別の一覧 — バナー固定文/「直近の状況」/LLM の急変文抑止が全てこの集合で決まる', () => {
     expect(DETECTION_KINDS.filter(isTechnicalKind)).toEqual([
       'double', 'ma_sr', 'level_sr', 'break', 'pivot', 'trend', 'dailyband', 'nwave', 'bandwalk',
-      'squeeze', 'bulge',
+      'squeeze', 'bulge', 'squeeze_break', 'bulge_break',
       'granville', 'dtb', 'ma', 'swingdtb',
     ]);
+    // ★2026-08-16 追加(スクイーズ/バルジ **後の抜け**)。親と同じ L2(固定文・LLM を呼ばない)。
+    expect(isTechnicalKind('squeeze_break')).toBe(true);
+    expect(isTechnicalKind('bulge_break')).toBe(true);
     // ★2026-08-15 追加。L2 に居ないとバナーが「[トレンド]」になり、/api/explain が LLM を呼びに行って 400 になる。
     expect(isTechnicalKind('squeeze')).toBe(true);
     expect(isTechnicalKind('bulge')).toBe(true);
@@ -66,6 +69,10 @@ describe('検知種別 SSOT', () => {
     // 'up' が入るが、それを方向として表示・解釈してはいけない。
     expect(isDirectionalKind('squeeze')).toBe(false);
     expect(isDirectionalKind('bulge')).toBe(false);
+    // ★親は方向なし・子(その後の抜け)は方向あり、という区別がこの検知の要点。
+    //   ここが揃ってしまうと「どちらへ抜けたか」という中身が表示から落ちる(または無い方向を主張する)。
+    expect(isDirectionalKind('squeeze_break')).toBe(true);
+    expect(isDirectionalKind('bulge_break')).toBe(true);
   });
 
   it('未知の種別は「方向あり」に落ちる — 表の外の種別が黙って方向なし表示に変わらないため', () => {

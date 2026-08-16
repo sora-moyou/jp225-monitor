@@ -99,6 +99,15 @@ const SQUEEZE_SETTLE_MS = 20_000;
 //   これを置かないと、同じ収縮局面で出たり入ったりする度に鳴る(実データの否定対照: 状態の足を
 //   全部鳴らすと 32.0回/日 → エッジ+この30分で 7.3回/日)。★参照本数を動かすと発火数も動く。
 const SQUEEZE_COOLDOWN_MS = 30 * 60_000;
+// ── スクイーズ/バルジ **後の抜け**(squeeze_break / bulge_break)──────────────────────────
+// ★緩衝5円: 呼値が5円。節目ちょうど(高値そのもの)に置くと、同じ値を1ティック触っただけで鳴る
+//   (既存の検知が「節目ちょうどには置かない」流儀なのと同じ理由)。呼値1つぶん外へずらす。
+const SQUEEZE_BREAK_BUFFER_YEN = 5;
+// ★有効期限60分(ユーザー確定)。根拠: この検知が言いたいのは「収縮/拡大の **直後** に、その足の
+//   レンジをどちらへ外したか」であって、何時間も経ってからの通過ではない。判定足は5分足なので
+//   60分 = その足12本ぶん。これを外すと、水準が一日中生き続けて「ずっと前のスクイーズの高値を
+//   たまたま今超えた」だけの通過が鳴る(否定対照: 期限を外すと発火数が増える)。
+const SQUEEZE_BREAK_EXPIRE_MS = 60 * 60_000;
 const NWAVE_CHECK_MS = 60_000;
 const NWAVE_COOLDOWN_MS = 30 * 60_000;
 const SWING_LOOKBACK_DAYS = 4;
@@ -368,9 +377,26 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
 //   ①状態に入った足で1回だけ(squeezeEdge)。②同種別は 30分 再発火しない(SQUEEZE_COOLDOWN_MS)。
 //   ③ready が false(参照本数 SQUEEZE_BW_LOOKBACK 本が未充足)の間は絶対に出さない。
 
-/** スクイーズ/バルジの発火状態。slot=直近に7日窓を読んだ5分枠 / lastBarT=判定済みの確定足 / prev=直前の状態。 */
-export interface SqueezeFireState { slot: number; lastBarT: number; prev: SqueezeState }
-export function createSqueezeFireState(): SqueezeFireState { return { slot: 0, lastBarT: 0, prev: null }; }
+/** スクイーズ/バルジが鳴った確定5分足の「その後の抜け」を見張る対象。
+ *  ★1つの事象につき **上抜け1回・下抜け1回まで**(往復したら両方鳴る = それが情報)。
+ *  ★新しいスクイーズ/バルジが鳴ったら、この watch ごと差し替える(前の事象は終了)。 */
+export interface SqueezeBreakWatch {
+  /** どちらの事象の後か(アラート文と種別 squeeze_break / bulge_break を決める)。 */
+  kind: 'squeeze' | 'bulge';
+  /** 発火した確定5分足の高値/安値(緩衝を足す前の素の水準。アラート文にはこの値を出す)。 */
+  high: number;
+  low: number;
+  /** 有効期限の起点(= 親アラートを鳴らした時刻)。 */
+  firedAt: number;
+  /** 既に鳴らしたか(方向ごとに1回まで)。 */
+  upDone: boolean;
+  downDone: boolean;
+}
+
+/** スクイーズ/バルジの発火状態。slot=直近に7日窓を読んだ5分枠 / lastBarT=判定済みの確定足 / prev=直前の状態 /
+ *  watch=直近の事象の「その後の抜け」見張り(null=見張り無し)。 */
+export interface SqueezeFireState { slot: number; lastBarT: number; prev: SqueezeState; watch: SqueezeBreakWatch | null }
+export function createSqueezeFireState(): SqueezeFireState { return { slot: 0, lastBarT: 0, prev: null, watch: null }; }
 
 /** ★状態に **入った足** だけを返す(非 null かつ 直前と違うとき)。それ以外は null。
  *  ・null → squeeze … 発火(入った)
@@ -417,6 +443,57 @@ export function describeSqueeze(kind: 'squeeze' | 'bulge', snap: SqueezeSnapshot
   const word = kind === 'squeeze' ? '最小' : '最大';
   return `${name} — BB幅が${SQUEEZE_BW_LOOKBACK}本の${word}(BW ${n(snap.bw)} / 高安 ${n(snap.bwHigh)}/${n(snap.bwLow)})`
     + ` ${Math.round(price).toLocaleString('ja-JP')}円`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  スクイーズ/バルジ **後の抜け**(squeeze_break / bulge_break)— 純関数(SSOT)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//
+// 親(squeeze/bulge)が鳴った確定5分足の高安を水準として覚え、以降のティックで現値と照合するだけ。
+//   ①上抜け = 現値 >  その足の高値 + SQUEEZE_BREAK_BUFFER_YEN
+//   ②下抜け = 現値 <  その足の安値 − SQUEEZE_BREAK_BUFFER_YEN
+//   ③1事象につき 上1回・下1回まで(往復は両方鳴る)。④SQUEEZE_BREAK_EXPIRE_MS を過ぎたら見張りを捨てる。
+//   ⑤新しい親が鳴ったら見張りごと差し替え(前の事象は終了)。
+// ★売買はしない(表示・記録のみ)。エンジン(server/signalTrade/**)はこの種別を一切見ない。
+
+/** 検知種別。親の kind から導出する(対応表の手書きコピーを2箇所に置かない)。 */
+export function squeezeBreakKind(kind: 'squeeze' | 'bulge'): 'squeeze_break' | 'bulge_break' {
+  return kind === 'squeeze' ? 'squeeze_break' : 'bulge_break';
+}
+
+/** 親が鳴った確定足から見張りを作る(新しい事象は常に前の事象を置き換える)。 */
+export function makeSqueezeBreakWatch(
+  kind: 'squeeze' | 'bulge', bar: { h: number; l: number }, firedAt: number,
+): SqueezeBreakWatch {
+  return { kind, high: bar.h, low: bar.l, firedAt, upDone: false, downDone: false };
+}
+
+/** 現値を見張りと照合し、鳴らすべきなら発火情報を返す(state.squeeze.watch を更新する)。
+ *  戻り値 null = 鳴らさない。★上下は同時に成立しない(high >= low かつ緩衝は正)ので1ティック1件。 */
+export function squeezeBreakFire(
+  state: LevelDetectState, price: number, now: number,
+  bufferYen: number = SQUEEZE_BREAK_BUFFER_YEN, expireMs: number = SQUEEZE_BREAK_EXPIRE_MS,
+): { kind: 'squeeze' | 'bulge'; direction: 'up' | 'down'; level: number } | null {
+  const w = state.squeeze.watch;
+  if (!w) return null;
+  // ★期限切れは見張りごと捨てる(以後この事象では二度と鳴らない)。
+  if (now - w.firedAt > expireMs) { state.squeeze.watch = null; return null; }
+  if (!w.upDone && price > w.high + bufferYen) { w.upDone = true; return { kind: w.kind, direction: 'up', level: w.high }; }
+  if (!w.downDone && price < w.low - bufferYen) { w.downDone = true; return { kind: w.kind, direction: 'down', level: w.low }; }
+  return null;
+}
+
+/** アラート文(監査ツールと本番で同じ文言を出すための SSOT)。水準と現値の **両方** を出す。
+ *  例: `スクイーズ後の上抜け — 62,495円(スクイーズ足の高値 62,490 を突破)` */
+export function describeSqueezeBreak(
+  kind: 'squeeze' | 'bulge', direction: 'up' | 'down', level: number, price: number,
+): string {
+  const yen = (v: number): string => Math.round(v).toLocaleString('ja-JP');
+  const name = kind === 'squeeze' ? 'スクイーズ' : 'バルジ';
+  const dirWord = direction === 'up' ? '上抜け' : '下抜け';
+  const hl = direction === 'up' ? '高値' : '安値';
+  const verb = direction === 'up' ? '突破' : '割り込み';
+  return `${name}後の${dirWord} — ${yen(price)}円(${name}足の${hl} ${yen(level)} を${verb})`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
@@ -637,8 +714,11 @@ export function runLevelDetectors(
       const closed = bars5.slice(0, -1);   // 最後の1本は形成中なので使わない(確定足のみ)
       const snap = buildSqueezeSnapshot(closed.map(b => b.c), closed.map(b => b.t));
       const fired = squeezeFire(state, snap, now);
-      const price = closed.length > 0 ? closed[closed.length - 1]!.c : null;
-      if (fired !== null && price != null) {
+      const lastClosed = closed.length > 0 ? closed[closed.length - 1]! : null;
+      const price = lastClosed ? lastClosed.c : null;
+      if (fired !== null && lastClosed != null && price != null) {
+        // ★「その後の抜け」の見張りを、この確定足の高安で張り直す(前の事象はここで終了)。
+        state.squeeze.watch = makeSqueezeBreakWatch(fired, lastClosed, now);
         const note = describeSqueeze(fired, snap, price);
         console.log(`[detect] ${fired} bw=${snap.bw?.toFixed(2)} high/low=${snap.bwHigh?.toFixed(2)}/${snap.bwLow?.toFixed(2)} @${Math.round(price)}`);
         sink({
@@ -652,6 +732,26 @@ export function runLevelDetectors(
     }
   } catch (err) {
     console.warn('[detect] squeeze detect failed:', err instanceof Error ? err.message : err);
+  }
+  // ── スクイーズ/バルジ後の抜け(squeeze_break / bulge_break)──────────────────────────────
+  //    ★上の squeeze ブロックと違って **毎ティック** 評価する(5分の枠を待たない)。抜けは足の確定を
+  //      待つ性質のものではなく、現値がその足の高安 ± 緩衝 を外した瞬間が中身だから。
+  //    ・水準/期限/重複の規則は上の squeezeBreakFire が SSOT。売買はしない(表示・記録のみ)。
+  try {
+    const brk = squeezeBreakFire(state, latest.price, now);
+    if (brk) {
+      const note = describeSqueezeBreak(brk.kind, brk.direction, brk.level, latest.price);
+      console.log(`[detect] ${squeezeBreakKind(brk.kind)} ${brk.direction} level=${Math.round(brk.level)} @${Math.round(latest.price)}`);
+      sink({
+        symbol: SYMBOL, symbolLabel: SYMBOL_LABEL,
+        changePercent: 0, windowSeconds: 60, detectionKind: squeezeBreakKind(brk.kind), direction: brk.direction,
+        triggeredAt: now, change15min: null, pa15min: null, range1h: null, zscore: 0,
+        level: Math.round(brk.level), note,
+        referenceKind: 'level', referencePrice: Math.round(brk.level),
+      });
+    }
+  } catch (err) {
+    console.warn('[detect] squeeze break detect failed:', err instanceof Error ? err.message : err);
   }
   // ── 日足バンド検知(dailyband): MA25 ±1σ/±2σ の5水準で水準抜け/反発を評価し直接 emit(集約は通さない)──
   try {
