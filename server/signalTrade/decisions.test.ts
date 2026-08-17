@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkStaleLegs, MIN_ENTRY_DISTANCE_YEN } from './decisions.js';
+import { checkStaleLegs, planToArmed, MIN_ENTRY_DISTANCE_YEN } from './decisions.js';
 
 describe('★最低距離(ラグ緩衝): live 価格に近すぎるレッグを落とす', () => {
   // 実測: monitor ARM → trade2 発注決定 の中央値 6.7秒。その間に価格が越えると
@@ -38,5 +38,80 @@ describe('★最低距離(ラグ緩衝): live 価格に近すぎるレッグを�
 
   it('定数は 10 円', () => {
     expect(MIN_ENTRY_DISTANCE_YEN).toBe(10);
+  });
+});
+
+describe('★刻み丸め: ARM するエントリー価格は必ず5円刻み', () => {
+  it('刻み外の価格は丸めて武装する(買い)', () => {
+    const plan = {
+      direction: 'buy' as const, rationale: 'x',
+      limitEntry: 68993, stopLossForLimit: 68933,
+      stopEntry: 69101, stopLossForStop: 69041,
+    };
+    const armed = planToArmed(plan, 1);
+    expect(armed!.limitEntry! % 5).toBe(0);
+    expect(armed!.stopEntry! % 5).toBe(0);
+    expect(armed!.limitEntry).toBe(68990);   // 買い指値は切り下げ
+    expect(armed!.stopEntry).toBe(69105);    // 買い逆指値は切り上げ
+  });
+
+  it('刻み外の価格は丸めて武装する(売り)', () => {
+    const plan = {
+      direction: 'sell' as const, rationale: 'x',
+      limitEntry: 69007, stopLossForLimit: 69067,
+      stopEntry: 68899, stopLossForStop: 68959,
+    };
+    const armed = planToArmed(plan, 1);
+    expect(armed!.limitEntry).toBe(69010);   // 売り指値は切り上げ
+    expect(armed!.stopEntry).toBe(68895);    // 売り逆指値は切り下げ
+  });
+
+  // ★★これが最重要のテスト: 丸めても LC 幅が変わらないこと
+  it('★丸めても LC 幅が変わらない(SL は丸めた建値から引き直される)', () => {
+    const plan = {
+      direction: 'buy' as const, rationale: 'x',
+      limitEntry: 68993, stopLossForLimit: 68933,   // 元の幅 = 60
+      stopEntry: 69101, stopLossForStop: 69041,     // 元の幅 = 60
+    };
+    const armed = planToArmed(plan, 1);
+    expect(armed!.limitEntry! - armed!.stopLossForLimit!).toBe(60);
+    expect(armed!.stopEntry! - armed!.stopLossForStop!).toBe(60);
+  });
+
+  it('売りでも LC 幅が変わらない(SL は建値の上に同じ幅で引き直される)', () => {
+    const plan = {
+      direction: 'sell' as const, rationale: 'x',
+      limitEntry: 69007, stopLossForLimit: 69067,   // 元の幅 = 60
+      stopEntry: 68899, stopLossForStop: 68959,     // 元の幅 = 60
+    };
+    const armed = planToArmed(plan, 1);
+    expect(armed!.stopLossForLimit! - armed!.limitEntry!).toBe(60);
+    expect(armed!.stopLossForStop! - armed!.stopEntry!).toBe(60);
+  });
+
+  it('既に刻み上なら値も幅も1円も動かない(否定対照)', () => {
+    const plan = {
+      direction: 'buy' as const, rationale: 'x',
+      limitEntry: 68990, stopLossForLimit: 68930,
+      stopEntry: 69100, stopLossForStop: 69040,
+    };
+    const armed = planToArmed(plan, 1);
+    expect(armed!.limitEntry).toBe(68990);
+    expect(armed!.stopEntry).toBe(69100);
+    expect(armed!.stopLossForLimit).toBe(68930);
+    expect(armed!.stopLossForStop).toBe(69040);
+  });
+
+  it('レンジ脚には丸めを適用しない(今回の範囲外・現在レンジは既定無効)', () => {
+    const plan = {
+      direction: 'range' as const, rationale: 'x',
+      range: {
+        upper: { side: 'buy' as const, type: 'stop' as const, entry: 69101, stopLoss: 69041 },
+        lower: { side: 'sell' as const, type: 'stop' as const, entry: 68899, stopLoss: 68959 },
+      },
+    };
+    const armed = planToArmed(plan, 1);
+    expect(armed!.range!.upper!.entry).toBe(69101);
+    expect(armed!.range!.lower!.entry).toBe(68899);
   });
 });

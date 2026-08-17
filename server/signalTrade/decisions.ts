@@ -8,6 +8,7 @@
 import type { SignalTradeState, SignalSettingsSnapshot } from '../types.js';
 import type { RangeLeg, AiPlan } from '../llm/openai.js';
 import { computeExitStop, type ExitFn } from './exit/index.js';
+import { roundEntryToTick } from './entryTick.js';
 import type { ExitReason } from '../../core/exitReasons.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
@@ -144,6 +145,20 @@ export interface RecordedTrade {
  *  openai.stopSideOk と同一規約。engine の静的 import を軽く保つため、依存を作らずここに小さく持つ。 */
 function stopOnCorrectSide(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
   return side === 'buy' ? stopLoss < entry : stopLoss > entry;
+}
+
+/** プランが持っていた LC 幅(正の数)。損切り **価格** は parse(llm/scalpPlan)で確定済みなので、
+ *  丸め後の建値へ引き直すには、いったん幅へ戻す必要がある。純関数。 */
+function lcWidth(entry: number, stopLoss: number): number {
+  return Math.abs(entry - stopLoss);
+}
+
+/** 幅(正の数)から損切り **価格** を導く。買い: 建値 − 幅(下) / 売り: 建値 + 幅(上)。純関数。
+ *  ★規約は llm/scalpPlan.stopLossFromWidth と同一。stopOnCorrectSide と同じ理由でここに小さく持つ
+ *    (decisions は純粋コア=configStore/LLM/cache を引く scalpPlan を静的 import しない)。
+ *    向きの規約を変えるときは両方を一緒に直すこと。 */
+function stopLossAtEntry(side: 'buy' | 'sell', entry: number, widthYen: number): number {
+  return side === 'buy' ? entry - widthYen : entry + widthYen;
 }
 
 /** 指値(LIMIT)の約定は「節目をちょうどタッチ」ではなく、指値を LIMIT_FILL_MARGIN_YEN 円 “行き過ぎ” て
@@ -718,8 +733,19 @@ export function planToArmed(
     && stopOnCorrectSide(plan.direction, plan.stopEntry as number, plan.stopLossForStop as number);
   if (!hasLimit && !hasStop) return null;
   const a: ArmedBracket = { direction: plan.direction, rationale: plan.rationale, at: now };
-  if (hasLimit) { a.limitEntry = plan.limitEntry; a.stopLossForLimit = plan.stopLossForLimit; }
-  if (hasStop) { a.stopEntry = plan.stopEntry; a.stopLossForStop = plan.stopLossForStop; }
+  // ★刻み丸め(層1・執行): 武装するエントリー価格を N225 の呼値(5円)へ、必ず「約定しにくい側」へ丸める。
+  //   ★順序が本質: **丸めてから** その建値で損切りを引き直す。逆順(SL 先・丸め後)だと LC 幅が刻み分ずれる。
+  //   損切り価格そのものは丸めない(幅から導かれる従属値。刻みに乗せるかは別の判断=今回の範囲外)。
+  if (hasLimit) {
+    const e = roundEntryToTick(plan.limitEntry as number, plan.direction, 'limit');
+    a.limitEntry = e;
+    a.stopLossForLimit = stopLossAtEntry(plan.direction, e, lcWidth(plan.limitEntry as number, plan.stopLossForLimit as number));
+  }
+  if (hasStop) {
+    const e = roundEntryToTick(plan.stopEntry as number, plan.direction, 'stop');
+    a.stopEntry = e;
+    a.stopLossForStop = stopLossAtEntry(plan.direction, e, lcWidth(plan.stopEntry as number, plan.stopLossForStop as number));
+  }
   if (planMeta) a.planMeta = planMeta;
   return a;
 }
