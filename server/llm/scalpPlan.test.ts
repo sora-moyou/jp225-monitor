@@ -2006,6 +2006,63 @@ describe('buildDelegationNote(委任ノート)', () => {
   });
 });
 
+// ─── 変更B(2026-08-18): rangeEnabled=false(range 自体を禁止)のとき、range 専用の規則を
+//   ①無条件で語らない(距離規則)②宛先の無い代名詞にしない(「上の2択」= range 有効時にしか定義されない)。
+describe('★レンジ無効時に死んだ条項を出さない', () => {
+  const specBase = {
+    floor: { mode: 'manual' as const, value: 45 },
+    ceiling: { mode: 'manual' as const, value: 65 },
+    trendVeto: { mode: 'manual' as const, value: 100 },
+    cooldown: { mode: 'manual' as const, value: 90 },
+    bias: { mode: 'manual' as const, value: 'none' as const },
+    range: { mode: 'manual' as const, value: false },
+    hardMax: { enabled: true, value: 150 },
+    exitDesc: '【決済ロジック】…',
+  };
+
+  it('buildScalpQuestion: rangeEnabled=false なら「レンジの距離」が出ない(range 自体を出さない旨のみ)', () => {
+    const q = buildScalpQuestion(45, 65, false);
+    expect(q).not.toContain('レンジの距離');
+    expect(q).toContain('出さないこと');
+  });
+  it('buildScalpQuestion: rangeEnabled=true なら従来どおり出る(否定対照)', () => {
+    const q = buildScalpQuestion(45, 65, true);
+    expect(q).toContain('レンジの距離');
+  });
+
+  it('buildScalpSystemPrompt: rangeEnabled=false なら「レンジの距離」が出ない(range 自体を出さない旨のみ)', () => {
+    const s = buildScalpSystemPrompt(45, 65, false);
+    expect(s).not.toContain('レンジの距離');
+    expect(s).toContain('出さないこと');
+  });
+  it('buildScalpSystemPrompt: rangeEnabled=true なら従来どおり出る(否定対照)', () => {
+    const s = buildScalpSystemPrompt(45, 65, true);
+    expect(s).toContain('レンジの距離');
+  });
+
+  it('buildStrategySpec: range.value=false なら「レンジの距離」が出ない', () => {
+    const s = buildStrategySpec(specBase);
+    expect(s).not.toContain('レンジの距離');
+  });
+  it('buildStrategySpec: range.value=true なら従来どおり出る(否定対照)', () => {
+    const s = buildStrategySpec({ ...specBase, range: { mode: 'manual', value: true } });
+    expect(s).toContain('レンジの距離');
+  });
+
+  it('buildDelegationNote: trendVeto=ai だが rangeEnabled=false なら「上の2択」への言及(宛先の無い代名詞)が出ない', () => {
+    const modes: KnobModes = { lcFloor: 'manual', lcCeiling: 'manual', trendVeto: 'ai', cooldown: 'manual', bias: 'manual', range: 'manual' };
+    const n = buildDelegationNote(modes, { floorYen: 45, ceilingYen: 65, hardMax: { enabled: true, value: 150 }, rangeEnabled: false });
+    expect(n).not.toContain('上の2択');
+    // トレンド委任ノート自体は残る(この行だけが死んだ条項)。
+    expect(n).toContain('トレンド/レンジの見極め');
+  });
+  it('buildDelegationNote: trendVeto=ai かつ rangeEnabled=true(既定)なら従来どおり出る(否定対照)', () => {
+    const modes: KnobModes = { lcFloor: 'manual', lcCeiling: 'manual', trendVeto: 'ai', cooldown: 'manual', bias: 'manual', range: 'manual' };
+    const n = buildDelegationNote(modes, { floorYen: 45, ceilingYen: 65, hardMax: { enabled: true, value: 150 }, rangeEnabled: true });
+    expect(n).toContain('上の2択');
+  });
+});
+
 describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決済ロジック)', () => {
   const base = {
     floor: { mode: 'manual' as const, value: 45 },
@@ -2522,7 +2579,9 @@ describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
     expect(s).toContain('ラチェット');
     expect(s).toContain('【手動=固定・厳守】');
     expect(s).toContain('節目への置き方');
-    expect(s).toContain('レンジの距離');
+    // ★変更B(2026-08-18): range: false(=range 無効)なので、range 専用の距離規則(禁止した機能の規則)は
+    //   出ない(旧仕様=無条件に出ていたのが死んだ条項のバグ)。range 有効時に出ることは別テストで固定する。
+    expect(s).not.toContain('レンジの距離');
   });
 });
 

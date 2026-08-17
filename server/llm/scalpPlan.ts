@@ -1073,11 +1073,14 @@ export function buildVisionNote(hasImage: boolean): string {
  *  ai の knob については上の手動制約文を上書きする旨を明示する(コードの enforce も同時に制約を外す)。 */
 export function buildDelegationNote(
   modes: KnobModes,
-  ctx: { floorYen: number; ceilingYen: number; hardMax: LcHardMax },
+  // ★レンジ無効時に死んだ条項を出さない(2026-08-18): rangeEnabled は省略/true が既定(従来の呼び出しは
+  //   全て挙動不変=byte 一致)。呼び出し側(buildScalpPlan)は実効の resolveEffectiveRangeEnabled を渡す。
+  ctx: { floorYen: number; ceilingYen: number; hardMax: LcHardMax; rangeEnabled?: boolean },
 ): string {
   // ★AI委任は「制約を外すだけ」でなく、その項目が本来担っていた判断ロジック(狙い・基準・なぜ・使うデータ)を
   //   AI に正確に転写する。そうしないと AI は"意味を知らないまま自由になる"だけになる(=判断が盲目化する)。
   //   ※非公開の phase-exit の具体数値は書かない(公開リポ)。転写は定性的に留める。
+  const rangeEnabled = ctx.rangeEnabled ?? true;
   const lines: string[] = [];
   if (modes.lcCeiling === 'ai') {
     // ★v0.9.56: 上の各所は委任時「下限〜実効上限の範囲」として提示済み(保存値は印字されない)ので、
@@ -1111,7 +1114,12 @@ export function buildDelegationNote(
   if (modes.trendVeto === 'ai') {
     lines.push(
       `トレンド/レンジの見極め: 固定の数値閾値は課さない=あなたが判定する。判断ロジック: 直近10〜30分がほぼ横ばいのときだけ「レンジ」とみなす。` +
-      `レンジと判断したときの取り方は上の2択に従うこと(上下の反応帯の幅が広ければ fade=両側指値の組 / 狭い横這いなら breakout=両側ブレイク新規の組。狭いレンジで逆張りしない)。` +
+      // ★レンジ無効時に死んだ条項を出さない(2026-08-18): 「上の2択」は rangeEnabled=true の時だけ質問文/system
+      //   prompt に定義される(fade/breakout の組)。rangeEnabled=false ではこの参照先が無いので出さない
+      //   (参照先の無い代名詞=このプロンプトで繰り返し事故を起こしている形)。
+      (rangeEnabled
+        ? `レンジと判断したときの取り方は上の2択に従うこと(上下の反応帯の幅が広ければ fade=両側指値の組 / 狭い横這いなら breakout=両側ブレイク新規の組。狭いレンジで逆張りしない)。`
+        : '') +
       `直近が一方向に明確に動いていれば「トレンド」であり、それに逆行する新規(順トレンドの高値を売る/安値を買う戻り売買)は出さないこと。` +
       `★根拠: 生きたトレンドをフェードすると負ける(monitorの実データで勝率約2割・9年バックテストでも不利)ことが確認済み。` +
       `上で渡す「直近の勢い(10分/30分の値動き・MA20傾き・直近高安内の位置)」の数値を必ず根拠に使い、regime と confidence を自分で下すこと。` +
@@ -1831,7 +1839,12 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
     `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,
     `- レンジ両面(direction:"range"=現在値の上下に1レッグずつ置く両面ストラドル): ${i.range.value ? '有効' : '無効'}${knobTag(i.range.mode)}`,
-    '- ★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く',
+    // ★レンジ無効時に死んだ条項を出さない(2026-08-18): range 自体を禁止しているのに、range だけの距離規則
+    //   (上下2本/片面の距離)を出すのは、禁止した機能の規則を無条件で語ることになる。i.range.value(実効の
+    //   range 許可)が真のときだけ出す(range OFF では従来この行が無条件に残っていた=死んだ条項)。
+    ...(i.range.value
+      ? ['- ★レンジの距離: 上下2本(upper/lower)を出すときは 上と下の価格差を400円以内にする(幅が広すぎるレンジは出さない)。片方だけのレンジは その1本を現在値から200円以内に置く']
+      : []),
     '■ 決済(この建玉の決済逆指値はこう動く=エントリー計画時に前提とすること)',
     i.exitDesc,
   ].join('\n');
@@ -2239,7 +2252,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const delegationNote = buildDelegationNote(
     { lcFloor: floorD.mode, lcCeiling: ceilingD.mode, trendVeto: trendD.mode,
       cooldown: cooldownD.mode, bias: biasD.mode, range: rangeD.mode },
-    { floorYen, ceilingYen, hardMax },
+    { floorYen, ceilingYen, hardMax, rangeEnabled },
   );
   const biasNote = buildBiasNote(bias);
   // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実取引につながる全経路はここを通っても変わらない)。
