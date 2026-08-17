@@ -738,13 +738,13 @@ export function planToArmed(
   //   損切り価格そのものは丸めない(幅から導かれる従属値。刻みに乗せるかは別の判断=今回の範囲外)。
   if (hasLimit) {
     const e = roundEntryToTick(plan.limitEntry as number, plan.direction, 'limit');
-    a.limitEntry = e;
-    a.stopLossForLimit = stopLossAtEntry(plan.direction, e, lcWidth(plan.limitEntry as number, plan.stopLossForLimit as number));
+    const sl = stopLossAtEntry(plan.direction, e, lcWidth(plan.limitEntry as number, plan.stopLossForLimit as number));
+    if (stopOnCorrectSide(plan.direction, e, sl)) { a.limitEntry = e; a.stopLossForLimit = sl; }
   }
   if (hasStop) {
     const e = roundEntryToTick(plan.stopEntry as number, plan.direction, 'stop');
-    a.stopEntry = e;
-    a.stopLossForStop = stopLossAtEntry(plan.direction, e, lcWidth(plan.stopEntry as number, plan.stopLossForStop as number));
+    const sl = stopLossAtEntry(plan.direction, e, lcWidth(plan.stopEntry as number, plan.stopLossForStop as number));
+    if (stopOnCorrectSide(plan.direction, e, sl)) { a.stopEntry = e; a.stopLossForStop = sl; }
   }
   if (planMeta) a.planMeta = planMeta;
   return a;
@@ -800,6 +800,10 @@ export function sameHeldPosition(st: EngineState, id: HeldIdentity): boolean {
  *  ドテン許可 OFF / in-flight(planning)/ 非 filled / 取引時間外 / 間隔未達 のいずれかなら false。
  *  ★間隔は flat-plan 間隔以上(held は spend が倍化しやすいので長め)を呼び出し側が渡す。 */
 export function shouldRequestHeldEval(a: {
+  //   ★安全網は「実際に武装される値」に掛ける: 上の hasLimit/hasStop が見ているのは **捨てられる元の SL** なので、
+  //     引き直した SL をもう一度 stopOnCorrectSide に通す。満たさないレッグは落とす(=既存の不成立と同じ扱い)。
+  //     構成上は必ず満たす(幅>0・符号は stopLossAtEntry が direction から決める)が、このプロジェクトは
+  //     損切りが逆位置になって実弾が5.5時間停止した事故を出しており、そのとき効かなかったのがこの種の安全網。
   dotenEnabled: boolean; planning: boolean; phase: SignalPhase;
   inWindow: boolean; now: number; lastHeldEvalAt: number; intervalMs: number;
 }): boolean {
@@ -810,10 +814,33 @@ export function shouldRequestHeldEval(a: {
   if (a.now - a.lastHeldEvalAt < a.intervalMs) return false;
   return true;
 }
+  if (a.limitEntry == null && a.stopEntry == null) return null;   // 引き直した SL が両レッグとも向き違反 = 不成立。
 
 /** ★ドテン(反転)の反映(純関数・肝)。filled の保有 P を「現在値で成行決済」し、AI の反対プランを
  *  反対ブラケット(doten:true)として armed に据える。engine は返る recorded を記録し、armed から新 signalId を
  *  1回だけ採番して currentSignal を更新し broadcast する。
+/** ★刻み丸めで、武装するエントリー価格が **計画値から動いたか**(directional のみ・range は丸めないので常に false)。
+ *
+ *  ■ なぜ要るか(実測で再現した事故の形)
+ *    checkSanity はプラン段の生値で通る。丸めは値を「約定しにくい側」へ寄せるので **幅は必ず広がる方向**にしか
+ *    動かない(2レッグで最大 +9円)。その結果、
+ *        plan(68799, 69199) 幅=400 → ok  /  armed(68795, 69200) 幅=405 → 上限400円超
+ *    のように **丸めた後だけ** サニティに落ちるブラケットが作れてしまう。
+ *    ARM 直前の recheckArmedSanity は「脚が落ちた時だけ」走るので、この回は誰も再検証しない=monitor は無言で
+ *    ARM し、byte 同期の trade2 が6秒ごとに拒否し続けて armed-timeout まで約定しない(armGate.ts 冒頭の
+ *    sid=361 と同じ失敗の仕方)。
+ *  ■ だから呼び出し側は「丸めで値が動いた回」も再検証する。無条件に再検証しない理由は engine.ts の既存注記
+ *    (健全なブラケットまで落ちる)のとおりで、その判断とは両立する=通すのは丸めが実際に起きた回だけ。 */
+export function entryRoundedFromPlan(
+  plan: { limitEntry?: number; stopEntry?: number },
+  armed: ArmedBracket,
+): boolean {
+  if (armed.mode === 'range' || armed.range != null) return false;   // range 脚は丸めていない。
+  if (armed.limitEntry != null && plan.limitEntry != null && armed.limitEntry !== plan.limitEntry) return true;
+  if (armed.stopEntry != null && plan.stopEntry != null && armed.stopEntry !== plan.stopEntry) return true;
+  return false;
+}
+
  *  ★monitor 仮想取引は即時約定しない: ここでは反対ブラケットを arm するだけ。反対建玉は以降 detectFill の交差で filled になる
  *   (=trade2 と同じタイミング/価格ソースで約定)。
  *  前提: 呼び出し側が「plan.direction === opposite(保有方向)」と checkSanity 通過を既に確認済み(第一級ガードは engine)。

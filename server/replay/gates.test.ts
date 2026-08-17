@@ -68,10 +68,22 @@ describe('★A と同じ門を、本番の純関数をそのまま呼んで通�
 
   it('脚が落ちていないときは recheckArmedSanity を呼ばない(A と同じ適用条件)', () => {
     for (const s of Object.values(spied)) s.mockClear();
-    const r = applyArmGates(twoLeg, 38_050, T0);
+    const r = applyArmGates(twoLeg, 38_050, T0);   // ★twoLeg のレッグは刻み(5円)上=丸めも起きない
     expect(r.ok).toBe(true);
     expect(spied.checkStaleLegs).toHaveBeenCalledTimes(1);
     expect(spied.recheckArmedSanity).not.toHaveBeenCalled();
+  });
+
+  // ★刻み丸めでエントリーが動いた回は、脚が1本も落ちていなくても再検証する(A と同じ適用条件)。
+  //   丸めは幅を広げる方向にしか動かないので、プラン段で通った幅がここで上限を超えうる。
+  it('丸めでエントリーが動いた回は脚が落ちていなくても recheckArmedSanity を呼ぶ', () => {
+    for (const s of Object.values(spied)) s.mockClear();
+    const offTick: AiPlan = { ...twoLeg, limitEntry: 37_999, stopLossForLimit: 37_899 };
+    const r = applyArmGates(offTick, 38_050, T0);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.armed.limitEntry).toBe(37_995);   // 丸められている(買い指値=切り下げ)
+    expect(spied.checkStaleLegs).toHaveBeenCalledTimes(1);
+    expect(spied.recheckArmedSanity).toHaveBeenCalledTimes(1);
   });
 
   it('通った計画は planToArmed に戻すと同じブラケットになる(影は同じ形を武装する)', () => {

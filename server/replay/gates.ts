@@ -20,7 +20,7 @@
 import type { AiPlan } from '../llm/scalpPlan.js';
 import { checkSanity } from '../signalTrade/sanity.js';
 import { checkRefDrift, recheckArmedSanity, armedToPlan } from '../signalTrade/armGate.js';
-import { planToArmed, checkStaleLegs, type ArmedBracket } from '../signalTrade/decisions.js';
+import { planToArmed, checkStaleLegs, entryRoundedFromPlan, type ArmedBracket } from '../signalTrade/decisions.js';
 import type { ShadowPlan } from '../signalTrade/shadow/sim.js';
 
 /** どの門で落ちたか。★engine.ts が1行ログに出している呼び名(reason=refstale / stale / recheck)に揃える
@@ -43,8 +43,9 @@ export type ArmGateResult =
  *   ② checkRefDrift(plan.refPrice, live)        — checkStaleLegs より **前**(A と同じ)
  *   ③ planToArmed(plan, now, { vetoFired })
  *   ④ checkStaleLegs(armed0, live)              — 全レッグ通過済みなら武装しない
- *   ⑤ recheckArmedSanity(armed, refPrice, live) — ★脚が落ちた時だけ(A と同じ条件。無条件に掛けると
- *                                                  健全なブラケットまで落ちて母集団が A と別物になる)
+ *   ⑤ recheckArmedSanity(armed, refPrice, live) — ★脚が落ちた時 + 刻み丸めでエントリーが動いた時だけ
+ *                                                  (A と同じ条件。無条件に掛けると健全なブラケットまで
+ *                                                   落ちて母集団が A と別物になる)
  * @param live ARM 時点の live 価格。**必ず新鮮値**(A の livePrice() は stale を null にする)を渡すこと。
  *   ここでは null を受けない: null だと②④⑤が素通しになり「門を通した」と言えなくなるため、
  *   価格を復元できなかった提案は **呼び出し側が別の理由で除外** する(server/replay/replay.ts)。
@@ -76,7 +77,9 @@ export function applyArmGates(
     return { ok: false, gate: 'stale', reason: `全レッグが ARM 時価格で通過済み: ${legs}` };
   }
   // ★脚が落ちた時だけ再検証(checkStaleLegs は何も落ちなければ引数と同一参照を返す)= engine と同じ条件。
-  if (armed !== armed0) {
+  //   ★+ 刻み丸めでエントリーが動いた時も再検証する(丸めは幅を広げる方向にしか動かず、幅400円ちょうどの
+  //     ブラケットが405円に化けて上限超になる)。engine.ts の3つの ARM 経路と **同じ条件** に保つ。
+  if (armed !== armed0 || entryRoundedFromPlan(plan, armed)) {
     const recheck = recheckArmedSanity(armed, plan.refPrice, live);
     if (!recheck.ok) return { ok: false, gate: 'recheck', reason: recheck.reason };
   }

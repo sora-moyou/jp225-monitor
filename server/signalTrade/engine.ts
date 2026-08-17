@@ -24,7 +24,7 @@ import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
 import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, type SignalProfile } from '../configStore.js';
 import {
-  advance, toSignalTradeState, computeHold, planToArmed, armedToCurrentSignal,
+  advance, toSignalTradeState, computeHold, planToArmed, entryRoundedFromPlan, armedToCurrentSignal,
   inCooldown, realizedLcFromArmed, checkStaleLegs, ARMED_TIMEOUT_MS,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
@@ -582,7 +582,11 @@ export class SignalEngine {
             //     再検証すると、そのマージンの内側(現値が指値を数円だけ跨いだだけ)の健全なブラケットまで落ちる。
             //     実測でも trade2 の同型の一時的な拒否は6秒後の再送で自然に解消しており(9件/4日)、
             //     解消しない持続的な不整合は「単レッグ化して距離上限を超えた」sid=361 だけだった。
-            if (armed && armed !== armed0) {
+            //   ★もう1つ再検証する回: **刻み丸めでエントリーが動いた回**(entryRoundedFromPlan)。丸めは幅を
+            //     広げる方向にしか動かないので、プラン段で幅400円ちょうどのブラケットが丸め後405円になり
+            //     上限超に化ける(=trade2 が拒否し続ける)。脚は落ちていないのでこの条件が無いと誰も再検証しない。
+            //     上の「無条件に再検証しない」判断とは両立する(通すのは丸めが実際に起きた回だけ)。
+            if (armed && (armed !== armed0 || entryRoundedFromPlan(result.plan, armed))) {
               const recheck = recheckArmedSanity(armed, result.plan.refPrice, live);
               if (!recheck.ok) {
                 this.planSuppressedAnchor = anchorPrice;
@@ -729,8 +733,8 @@ export class SignalEngine {
     const armed = stale.armed;   // 生き残ったレッグだけの反対ブラケット(何も落ちなければ rev.armed と同一参照)。
     // ★作業1(単レッグ化の再検証・ARM 経路②): 脚が落ちた後の形を ARM 時 live 価格で再検証する。
     //   ここまで engine 状態は未変更(reverseToDoten は純関数)なので、落ちればそのまま保有継続=無害。
-    //   ★脚が落ちた時だけ(armed !== rev.armed)。理由は flat 経路の同じ注記を参照。
-    if (armed !== rev.armed) {
+    //   ★脚が落ちた時だけ(armed !== rev.armed)+ 刻み丸めでエントリーが動いた時。理由は flat 経路の同じ注記を参照。
+    if (armed !== rev.armed || entryRoundedFromPlan(plan, armed)) {
       const recheck = recheckArmedSanity(armed, plan.refPrice, live);
       if (!recheck.ok) {
         console.log(`${this.logTag} doten-reject ${recheck.reason} ref=${Math.round(plan.refPrice)} reason=recheck`);
@@ -892,8 +896,8 @@ export class SignalEngine {
     const armed = stale.armed;
     // ★作業1(単レッグ化の再検証・ARM 経路③): 脚が落ちた後の形を ARM 時 live 価格で再検証する。
     //   まだ engine 状態は未変更なので、落ちればそのまま現状維持=無害。
-    //   ★脚が落ちた時だけ(armed !== armed0)。理由は flat 経路の同じ注記を参照。
-    if (armed !== armed0) {
+    //   ★脚が落ちた時だけ(armed !== armed0)+ 刻み丸めでエントリーが動いた時。理由は flat 経路の同じ注記を参照。
+    if (armed !== armed0 || entryRoundedFromPlan(plan, armed)) {
       const recheck = recheckArmedSanity(armed, plan.refPrice, live);
       if (!recheck.ok) {
         console.log(`${this.logTag} reeval-reject ${recheck.reason} ref=${Math.round(plan.refPrice)} reason=recheck`);

@@ -201,6 +201,61 @@ describe('作業1(engine 実経路): 単レッグ化した計画は武装され�
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// 刻み丸め × サニティ再検証(★この2件だけは実データではなく **構成した反例**)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('刻み丸めで幅上限を跨ぐブラケットは武装されない(engine 実経路)', () => {
+  // ★この describe の数値だけは実ログ由来ではない。エントリーの刻み丸めは新機能で、丸めが幅を
+  //   押し上げた実例はまだ稼働ログに存在しないため、**上限ちょうどの境界を構成して**再現する。
+  //   丸めは「約定しにくい側」へしか動かない=幅は広がる方向にしか変わらないので、
+  //   プラン段で幅400円ちょうど(=MAX_BRACKET_WIDTH_YEN)のブラケットは丸め後 405円 になり上限超に化ける。
+  //   脚は1本も落ちないので、従来の「脚が落ちた時だけ再検証」では誰も検査せず、monitor は無言で ARM し
+  //   byte 同期の trade2 が拒否し続ける(sid=361 と同じ失敗の仕方)。
+  const planOffTick: AiPlan = {
+    direction: 'buy', limitEntry: 68799, stopLossForLimit: 68739,
+    stopEntry: 69199, stopLossForStop: 69139, rationale: '押し目買い', refPrice: 69000,
+  };
+  // 否定対照: 同じ幅400円だが最初から刻みに乗っている(丸めが起きない)計画。
+  const planOnTick: AiPlan = {
+    direction: 'buy', limitEntry: 68800, stopLossForLimit: 68740,
+    stopEntry: 69200, stopLossForStop: 69140, rationale: '押し目買い', refPrice: 69000,
+  };
+
+  it('★幅400のプランが丸めで405になったら ARM しない(=trade2 へ出さない)', async () => {
+    // プラン段の checkSanity は通る(400円ちょうど=上限内)ことを先に固定する。
+    expect(checkSanity(planOffTick, planOffTick.refPrice).ok).toBe(true);
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      mockRunner.mockResolvedValue({ ok: true, plan: planOffTick });
+      setLive(69000);   // 両レッグとも未通過(脚は落ちない)=丸めだけが再検証の引き金になる。
+      const eng = newEngineA();
+      await eng.start();
+      eng.feed(69000, NOW);
+      await settle();
+      expect(eng.getPhase()).toBe('flat');
+      expect(eng.getCurrentSignal()).toBeNull();
+    } finally { spy.mockRestore(); }
+    // ★無音にしない: 落とした理由が必ずログに残る。
+    const line = logs.find(l => l.includes('reason=recheck'));
+    expect(line).toBeTruthy();
+    expect(line).toContain('405');
+  });
+
+  it('否定対照: 最初から刻み上の同じ幅400のプランは従来どおり ARM する(過剰抑止しない)', async () => {
+    mockRunner.mockResolvedValue({ ok: true, plan: planOnTick });
+    setLive(69000);
+    const eng = newEngineA();
+    await eng.start();
+    eng.feed(69000, NOW);
+    await settle();
+    expect(eng.getPhase()).toBe('armed');
+    expect(eng.getCurrentSignal()?.limitEntry).toBe(68800);
+    expect(eng.getCurrentSignal()?.stopEntry).toBe(69200);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 // 作業2: refPrice の鮮度上限
 // ─────────────────────────────────────────────────────────────────────
 

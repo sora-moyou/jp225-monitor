@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkStaleLegs, planToArmed, MIN_ENTRY_DISTANCE_YEN } from './decisions.js';
+import { checkStaleLegs, planToArmed, entryRoundedFromPlan, MIN_ENTRY_DISTANCE_YEN } from './decisions.js';
 
 describe('★最低距離(ラグ緩衝): live 価格に近すぎるレッグを落とす', () => {
   // 実測: monitor ARM → trade2 発注決定 の中央値 6.7秒。その間に価格が越えると
@@ -102,6 +102,30 @@ describe('★刻み丸め: ARM するエントリー価格は必ず5円刻み', 
     expect(armed!.stopLossForStop).toBe(69040);
   });
 
+  // ★安全網(修正2): 検証されるのは「実際に武装される SL」であること。
+  //   hasLimit/hasStop が見ているのは丸めで捨てられる元の SL なので、引き直した SL を別途 stopOnCorrectSide に
+  //   通している。構成上は必ず満たす(幅>0)ので、その不変条件が全4象限×全剰余で崩れないことを固定する。
+  it('★武装される SL は必ず建値の正しい外側(4象限×剰余5通り=20ケース)', () => {
+    for (const direction of ['buy', 'sell'] as const) {
+      for (const r of [0, 1, 2, 3, 4]) {
+        const limitEntry = 69000 + r;
+        const stopEntry = 69200 + r;
+        const plan = {
+          direction, rationale: 'x',
+          limitEntry, stopLossForLimit: direction === 'buy' ? limitEntry - 60 : limitEntry + 60,
+          stopEntry, stopLossForStop: direction === 'buy' ? stopEntry - 60 : stopEntry + 60,
+        };
+        const a = planToArmed(plan, 1)!;
+        const legs: Array<[number, number]> = [[a.limitEntry!, a.stopLossForLimit!], [a.stopEntry!, a.stopLossForStop!]];
+        for (const [e, sl] of legs) {
+          expect(e % 5).toBe(0);
+          expect(Math.abs(e - sl)).toBe(60);                          // 幅は不変
+          expect(direction === 'buy' ? sl < e : sl > e).toBe(true);    // 向きは正しい外側
+        }
+      }
+    }
+  });
+
   it('レンジ脚には丸めを適用しない(今回の範囲外・現在レンジは既定無効)', () => {
     const plan = {
       direction: 'range' as const, rationale: 'x',
@@ -113,5 +137,47 @@ describe('★刻み丸め: ARM するエントリー価格は必ず5円刻み', 
     const armed = planToArmed(plan, 1);
     expect(armed!.range!.upper!.entry).toBe(69101);
     expect(armed!.range!.lower!.entry).toBe(68899);
+  });
+});
+
+describe('★entryRoundedFromPlan: 丸めで武装値が動いた回だけ true(サニティ再検証の適用条件)', () => {
+  // 丸めは「約定しにくい側」へしか動かないので幅は広がる方向にしか変わらない。
+  // 幅400円ちょうど(=checkSanity の上限)のブラケットは丸め後405円になり上限超に化ける。
+  const offTick = {
+    direction: 'buy' as const, rationale: 'x',
+    limitEntry: 68799, stopLossForLimit: 68739,
+    stopEntry: 69199, stopLossForStop: 69139,
+  };
+
+  it('丸めで動いた回は true(幅400 → 405 の実例)', () => {
+    const a = planToArmed(offTick, 1)!;
+    expect(a.limitEntry).toBe(68795);
+    expect(a.stopEntry).toBe(69200);
+    expect(a.stopEntry! - a.limitEntry!).toBe(405);   // ★プラン段の400から広がっている
+    expect(entryRoundedFromPlan(offTick, a)).toBe(true);
+  });
+
+  it('既に刻み上なら false(否定対照=再検証を増やさない)', () => {
+    const onTick = { ...offTick, limitEntry: 68800, stopLossForLimit: 68740, stopEntry: 69200, stopLossForStop: 69140 };
+    const a = planToArmed(onTick, 1)!;
+    expect(a.stopEntry! - a.limitEntry!).toBe(400);
+    expect(entryRoundedFromPlan(onTick, a)).toBe(false);
+  });
+
+  it('落ちたレッグは判定に影響しない(残ったレッグだけを見る)', () => {
+    const a = planToArmed(offTick, 1)!;
+    const singleLeg = { ...a, stopEntry: undefined, stopLossForStop: undefined };
+    expect(entryRoundedFromPlan(offTick, singleLeg)).toBe(true);        // 残った指値が動いている
+    const onTickLimit = { ...a, limitEntry: 68799, stopEntry: undefined, stopLossForStop: undefined };
+    expect(entryRoundedFromPlan(offTick, onTickLimit)).toBe(false);
+  });
+
+  it('レンジは常に false(丸めていない)', () => {
+    const plan = {
+      direction: 'range' as const, rationale: 'x',
+      range: { upper: { side: 'buy' as const, type: 'stop' as const, entry: 69101, stopLoss: 69041 } },
+    };
+    const a = planToArmed(plan, 1)!;
+    expect(entryRoundedFromPlan({}, a)).toBe(false);
   });
 });
