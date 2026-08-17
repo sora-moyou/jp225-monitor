@@ -813,6 +813,7 @@ describe('checkStaleLegs(通過済みレッグを武装しない・境界値)', 
     // ★「武装のまま」の基準点は距離ちょうど10円(MIN_ENTRY_DISTANCE_YEN)。それ未満は tooClose で落ちる。
     const limitOnlyBuy: ArmedBracket = { direction: 'buy', limitEntry: 61900, stopLossForLimit: 61850, rationale: 'r', at: 0 };
     expect(checkStaleLegs(limitOnlyBuy, 61910).armed).toBe(limitOnlyBuy);
+    expect(checkStaleLegs(limitOnlyBuy, 61905).armed).toBeNull();   // 近すぎ(tooClose・距離5<10・まだ未約定)
     expect(checkStaleLegs(limitOnlyBuy, 61895).armed).toBeNull();   // 約定(filled)
     const stopOnlyBuy: ArmedBracket = { direction: 'buy', stopEntry: 62000, stopLossForStop: 61950, rationale: 'r', at: 0 };
     expect(checkStaleLegs(stopOnlyBuy, 61990).armed).toBe(stopOnlyBuy);
@@ -968,9 +969,11 @@ describe('checkStaleLegs 不変条件の再証明(境界グリッド + fuzz)', (
     mkRange(UP_LIM, undefined), mkRange(undefined, LO_STP),  // 片面 range
     mkRange(NO_TYPE, LO_LIM),                                // type 欠落
   ];
-  const OFFSETS = [-6, -5, -4, -1, 0, 1, 4, 5, 6];           // ★境界(±0/±4/±5/±6)を必ず踏む
+  // ★境界(±0/±1/±4/±5/±6/±9/±10/±11)を必ず踏む。0/5=約定マージン境界(逆指値タッチ/指値5円行き過ぎ)、
+  //   9/10/11=最低距離 MIN_ENTRY_DISTANCE_YEN(=10)境界。2026-08-17 でこちらが支配的境界になった(上のコメント参照)。
+  const OFFSETS = [-11, -10, -9, -6, -5, -4, -1, 0, 1, 4, 5, 6, 9, 10, 11];
 
-  it('境界グリッド(各レッグ ±0/±4/±5/±6 + 1円刻み全掃引)で I1/I2/I3・引数不変を満たす', () => {
+  it('境界グリッド(各レッグ ±0/±4/±5/±6/±9/±10/±11 + 1円刻み全掃引)で I1/I2/I3・引数不変を満たす', () => {
     const violations: string[] = [];
     let cases = 0;
     for (const a of BRACKETS) {
@@ -1014,11 +1017,12 @@ describe('checkStaleLegs 不変条件の再証明(境界グリッド + fuzz)', (
         const legs = pick(['both', 'upper', 'lower'] as const);
         a = mkRange(legs === 'lower' ? undefined : upper, legs === 'upper' ? undefined : lower);
       }
-      // live は 6割を「いずれかのレッグの境界近傍(±6)」に寄せる(境界の踏破率を上げる)。
+      // live は 6割を「いずれかのレッグの境界近傍(OFFSETS)」に寄せる(境界の踏破率を上げる)。
+      //   ★上の境界グリッドと同じ OFFSETS を使う(=支配的境界±9/±10/±11 を fuzz 側でも取りこぼさない)。
       const entries = presentLegs(a).map(n => (n === 'limit' ? a.limitEntry : n === 'stop' ? a.stopEntry
         : n === 'upper' ? a.range?.upper?.entry : a.range?.lower?.entry) as number);
       const live = rnd() < 0.6
-        ? pick(entries) + pick([-6, -5, -4, -1, 0, 1, 4, 5, 6] as const)
+        ? pick(entries) + pick(OFFSETS)
         : tick(base - 250 + rnd() * 500);
       violations.push(...check(a, live));
       if (violations.length > 0) break;   // 最初の反例で止める(全件列挙は不要)

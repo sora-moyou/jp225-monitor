@@ -248,7 +248,9 @@ export interface StaleLegReport {
   name: 'limit' | 'stop' | 'upper' | 'lower';
   entry: number;
   stale: boolean;   // true = ARM 時点の live 価格で既に約定条件を満たす(=武装したら即約定する)
-  /** なぜ落ちたか。filled=live が既に通過 / tooClose=最低距離未満。落ちていないレッグには付かない。 */
+  /** なぜ落ちたか(directional のみ)。filled=live が既に通過 / tooClose=最低距離未満。
+   *  落ちていないレッグには付かない。★range 経路(upper/lower)は最低距離の対象外(directional 限定の判定)
+   *  なので、range で落ちても reason は付かない。「落ちた⇒reason がある」と決め打たないこと。 */
   reason?: 'filled' | 'tooClose';
 }
 
@@ -799,11 +801,15 @@ export function planToArmed(
     const e = roundEntryToTick(plan.limitEntry as number, plan.direction, 'limit');
     const sl = stopLossAtEntry(plan.direction, e, lcWidth(plan.limitEntry as number, plan.stopLossForLimit as number));
     if (stopOnCorrectSide(plan.direction, e, sl)) { a.limitEntry = e; a.stopLossForLimit = sl; }
+    // ★構成上は到達不能(幅>0・符号は stopLossAtEntry が direction から決めるので必ず満たす)。
+    //   もし到達したらそれ自体がコードのバグの証拠なので、無言で落とさずログに残す。
+    else console.log(`[signalTrade] planToArmed 安全網発火(構成上到達不能・要調査) leg=limit dir=${plan.direction} entry=${e} sl=${sl}`);
   }
   if (hasStop) {
     const e = roundEntryToTick(plan.stopEntry as number, plan.direction, 'stop');
     const sl = stopLossAtEntry(plan.direction, e, lcWidth(plan.stopEntry as number, plan.stopLossForStop as number));
     if (stopOnCorrectSide(plan.direction, e, sl)) { a.stopEntry = e; a.stopLossForStop = sl; }
+    else console.log(`[signalTrade] planToArmed 安全網発火(構成上到達不能・要調査) leg=stop dir=${plan.direction} entry=${e} sl=${sl}`);
   }
   if (a.limitEntry == null && a.stopEntry == null) return null;   // 引き直した SL が両レッグとも向き違反 = 不成立。
   if (planMeta) a.planMeta = planMeta;

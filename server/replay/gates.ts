@@ -28,7 +28,7 @@ import type { ShadowPlan } from '../signalTrade/shadow/sim.js';
 export type ArmGateName =
   | 'sanity'          // checkSanity(計画時価格 refPrice 基準・trade2 と byte 同期の検査)
   | 'refstale'        // checkRefDrift(refPrice と ARM 時 live の乖離)
-  | 'stale'           // checkStaleLegs(全レッグが「もう通過した価格」)
+  | 'stale'           // checkStaleLegs(全レッグが「もう通過した価格」または「近すぎ(最低距離未満)」)
   | 'recheck'         // recheckArmedSanity(単レッグ化した後の再検証)
   | 'not-armable'     // planToArmed が null(向きガード等)
   | 'not-directional';// レンジ提案(影はラチェットを測るものなので対象外)
@@ -73,8 +73,14 @@ export function applyArmGates(
   const stale = checkStaleLegs(armed0, live);
   const armed = stale.armed;
   if (!armed) {
-    const legs = stale.legs.map(l => `${l.name}${l.stale ? '(通過済み)' : ''}`).join(' ');
-    return { ok: false, gate: 'stale', reason: `全レッグが ARM 時価格で通過済み: ${legs}` };
+    // ★engine.ts の logStaleLegs と同じ理由の出し分け(reason='tooClose'→近すぎ / それ以外→通過済み)。
+    //   ここも「もう通過した価格」だけを指すログだと、最低距離で落ちたレッグを誤って通過済みと記録する。
+    const legLabel = (l: { stale: boolean; reason?: 'filled' | 'tooClose' }): string => {
+      if (!l.stale) return '';
+      return l.reason === 'tooClose' ? '(近すぎ)' : '(通過済み)';
+    };
+    const legs = stale.legs.map(l => `${l.name}${legLabel(l)}`).join(' ');
+    return { ok: false, gate: 'stale', reason: `全レッグが ARM 時価格で通過済みまたは近すぎ: ${legs}` };
   }
   // ★脚が落ちた時だけ再検証(checkStaleLegs は何も落ちなければ引数と同一参照を返す)= engine と同じ条件。
   //   ★+ 刻み丸めでエントリーが動いた時も再検証する(丸めは幅を広げる方向にしか動かず、幅400円ちょうどの

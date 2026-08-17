@@ -297,10 +297,18 @@ export class SignalEngine {
   /** テスト用: ゲートに渡る live 価格(新鮮値のみ・stale/欠落は null)を覗く。 */
   _peekLivePrice(): number | null { return this.livePrice(); }
 
-  /** ★通過済み(stale)レッグを1行ログする(記録専用)。tag で経路を区別する(plan-stale / doten-stale / reeval-stale)。
-   *  例) `[signalTrade] plan-stale dir=sell ref=61905 live=61920 limit=61905(通過済み) stop=62000` */
+  /** ★通過済み(stale)/近すぎ(tooClose)レッグを1行ログする(記録専用)。tag で経路を区別する
+   *  (plan-stale / doten-stale / reeval-stale)。
+   *  ★reason で理由を出し分ける(reason='tooClose'→近すぎ / それ以外(filled・reason 欠落の旧データ/range 経路)
+   *    →従来どおり通過済み)。ここを出し分けないと最低距離で落ちたレッグも「通過済み」と誤って読める
+   *    (ログが嘘をつく=このプロジェクトが繰り返し事故った形)。
+   *  例) `[signalTrade] plan-stale dir=sell ref=61905 live=61920 limit=61905(通過済み) stop=62000(近すぎ)` */
   private logStaleLegs(tag: string, dir: string, refPrice: number, live: number | null, legs: StaleLegReport[]): void {
-    const s = legs.map(l => `${l.name}=${Math.round(l.entry)}${l.stale ? '(通過済み)' : ''}`).join(' ');
+    const legLabel = (l: StaleLegReport): string => {
+      if (!l.stale) return '';
+      return l.reason === 'tooClose' ? '(近すぎ)' : '(通過済み)';
+    };
+    const s = legs.map(l => `${l.name}=${Math.round(l.entry)}${legLabel(l)}`).join(' ');
     console.log(`${this.logTag} ${tag} dir=${dir} ref=${Math.round(refPrice)} `
       + `live=${live != null && Number.isFinite(live) ? Math.round(live) : '-'} ${s}`);
   }

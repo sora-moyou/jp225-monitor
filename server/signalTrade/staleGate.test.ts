@@ -421,3 +421,66 @@ describe('stale plan veto(レンジ再評価の差替え先)', () => {
     });
   });
 });
+
+// ★修正1: plan-stale ログが「落ちた理由」を出し分けることの実証(記録専用・採否は変えない)。
+//   従来は reason を見ず l.stale だけで '(通過済み)' 一択だったため、最低距離(tooClose)で落ちたレッグも
+//   「通過済み」と誤って読めた(ログが嘘をつく)。ここでは実際にエンジンを動かし、serverlog に出る
+//   1行そのものを検査する(logStaleLegs を直接呼ばず、正規の経路を通す)。
+describe('plan-stale ログ: (近すぎ)/(通過済み) の出し分け(★修正1)', () => {
+  const buyOco: AiPlan = {
+    direction: 'buy', limitEntry: 37950, stopEntry: 38100,
+    stopLossForLimit: 37900, stopLossForStop: 38050, rationale: 'r', refPrice: REF,
+  };
+  let logs: string[];
+  beforeEach(() => {
+    logs = [];
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(' ')); });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('最低距離未満(まだ未約定・reason=tooClose)は plan-stale ログに (近すぎ) と出る((通過済み)ではない)', async () => {
+    mockRunner.mockResolvedValue({ ok: true, plan: buyOco });
+    setLive(37959);   // 指値37950から距離9(未約定=filled ではない・最低距離10未満=tooClose)
+    const eng = newEngineA();
+    await eng.start();
+    eng.feed(REF, NOW);
+    await settle();
+    const line = logs.find(l => l.includes('plan-stale'));
+    expect(line).toBeDefined();
+    expect(line).toContain('limit=37950(近すぎ)');
+    expect(line).not.toContain('limit=37950(通過済み)');
+  });
+
+  it('約定済み(reason=filled)は plan-stale ログに (通過済み) と出る((近すぎ)ではない)', async () => {
+    mockRunner.mockResolvedValue({ ok: true, plan: buyOco });
+    setLive(37945);   // 指値37950を5円行き過ぎ=約定(filled)
+    const eng = newEngineA();
+    await eng.start();
+    eng.feed(REF, NOW);
+    await settle();
+    const line = logs.find(l => l.includes('plan-stale'));
+    expect(line).toBeDefined();
+    expect(line).toContain('limit=37950(通過済み)');
+    expect(line).not.toContain('limit=37950(近すぎ)');
+  });
+
+  it('★否定対照: reason 欠落(range 経路)は従来どおり (通過済み) へ縮退する(後方互換)', async () => {
+    const rangePlan: AiPlan = {
+      direction: 'range', rationale: 'r', refPrice: REF, range: {
+        upper: { side: 'sell', type: 'limit', entry: 38100, stopLoss: 38150 },
+        lower: { side: 'buy', type: 'limit', entry: 37950, stopLoss: 37850 },
+      },
+    };
+    mockRunner.mockResolvedValue({ ok: true, plan: rangePlan });
+    setLive(38105);   // 上レッグ通過(range 経路= checkStaleLegs は reason を付けない)
+    const eng = newEngineA();
+    await eng.start();
+    eng.feed(REF, NOW);
+    await settle();
+    const line = logs.find(l => l.includes('plan-stale'));
+    expect(line).toBeDefined();
+    // ★reason が無くても '(近すぎ)' には化けない=縮退先は必ず '(通過済み)'。
+    expect(line).toContain('upper=38100(通過済み)');
+    expect(line).not.toContain('(近すぎ)');
+  });
+});
