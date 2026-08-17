@@ -38,3 +38,6 @@ CLAUDE.md
 
 # 作業用の下書き・参考画像(公開リポには載せない)
 newss/
+
+# SDD の作業台帳(ローカル限定・git に入れない)
+.superpowers/sdd/
