@@ -10,6 +10,13 @@ import type { RangeLeg, AiPlan } from '../llm/openai.js';
 import { computeExitStop, type ExitFn } from './exit/index.js';
 import { roundEntryToTick } from './entryTick.js';
 import type { ExitReason } from '../../core/exitReasons.js';
+// ★損切りの向きの規約(買い=建値の下 / 売り=建値の上・同値=不正)は core/stopGeometry.ts が **唯一の権威**。
+//   従来この2つはここに手書きで複製されていた(stopOnCorrectSide / stopLossAtEntry)。複製していた理由は
+//   「decisions は純粋コアなので configStore/LLM/cache を引く scalpPlan を静的 import したくない」だったが、
+//   core/stopGeometry は **依存ゼロの葉** なのでその理由は import でも満たされる(=複製を持つ理由が消えた)。
+//   ★呼び名は別名で維持する=呼び出し側(下の armFromPlan の最終ガード等)は1文字も変わらない。
+//   ★役割は不変: 不正な向きの損切りを仮想取引エンジンが arm/約定しないための最終ガード(trade2 サニティと一致させる)。
+import { stopSideOk as stopOnCorrectSide, stopLossFromWidth as stopLossAtEntry } from '../../core/stopGeometry.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
 
@@ -139,26 +146,10 @@ export interface RecordedTrade {
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
 
-/** 損切りがエントリーの正しい外側(買い=下 / 売り=上)にあるか。境界(等値=幅0)は不正。純関数。
- *  ★実害バグ対策の最終ガード: 買いなのに損切りが上(逆側)のような不正プランを仮想取引エンジンが arm/約定しないようにする
- *    (発生源は llm/openai の parse/enforce で落とすが、engine 単独でも同じ向き規約を保証する=trade2 サニティと一致)。
- *  openai.stopSideOk と同一規約。engine の静的 import を軽く保つため、依存を作らずここに小さく持つ。 */
-function stopOnCorrectSide(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
-  return side === 'buy' ? stopLoss < entry : stopLoss > entry;
-}
-
 /** プランが持っていた LC 幅(正の数)。損切り **価格** は parse(llm/scalpPlan)で確定済みなので、
  *  丸め後の建値へ引き直すには、いったん幅へ戻す必要がある。純関数。 */
 function lcWidth(entry: number, stopLoss: number): number {
   return Math.abs(entry - stopLoss);
-}
-
-/** 幅(正の数)から損切り **価格** を導く。買い: 建値 − 幅(下) / 売り: 建値 + 幅(上)。純関数。
- *  ★規約は llm/scalpPlan.stopLossFromWidth と同一。stopOnCorrectSide と同じ理由でここに小さく持つ
- *    (decisions は純粋コア=configStore/LLM/cache を引く scalpPlan を静的 import しない)。
- *    向きの規約を変えるときは両方を一緒に直すこと。 */
-function stopLossAtEntry(side: 'buy' | 'sell', entry: number, widthYen: number): number {
-  return side === 'buy' ? entry - widthYen : entry + widthYen;
 }
 
 /** 指値(LIMIT)の約定は「節目をちょうどタッチ」ではなく、指値を LIMIT_FILL_MARGIN_YEN 円 “行き過ぎ” て

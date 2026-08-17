@@ -57,6 +57,14 @@
 //   ★向きの判定には direction(buy/sell)が要る。呼び出し側が渡さなければ 'sideUnknownDirection' と
 //     **明示して残す**(推測で埋めない)。
 
+// ★唯一の外部依存: 損切りの向きの規約(買い=建値の下・売り=上・同値=不正)。core/stopGeometry.ts が **唯一の権威**。
+//   従来ここは同じ式を手書きで複製していた(declaredSideOk)。理由は「scalpPlan.ts がこのモジュールを import して
+//   いるので逆向きに import すると循環する」だったが、core/stopGeometry は **依存ゼロの葉** なので循環しない
+//   (このファイルが純関数群であることも変わらない)。
+// ★当てる数は違う(ここは根拠文が **申告した** 建値/損切り・RECORD-ONLY で判定には一切使わない)が、
+//   当てる **規約は同一**。別の規約で測ると「文章では間違え続けているか」を実出力と同じ物差しで比べられない。
+import { stopSideOk as declaredSideOk } from '../../core/stopGeometry.js';
+
 /** 突き合わせの対象になるレッグ名(scalpPlan.ts の LegDrop.name と同じ語彙)。 */
 export type LcLegName = 'limit' | 'stop' | 'upper' | 'lower';
 
@@ -306,13 +314,6 @@ function equationFor(d: LcDeclarations, leg: LcLegName): LcDeclaredEquation | nu
 function sideClaimFor(d: LcDeclarations, leg: LcLegName): LcSideClaim | null {
   if (leg !== 'limit' && leg !== 'stop') return null;
   return d.sideClaims.find(x => x.leg === leg) ?? null;
-}
-
-/** 損切りが建値の正しい側にあるか(買い=下・売り=上)。同値(幅0)は正しくない。
- *  ★scalpPlan.ts の stopSideOk と同じ規約。import しないのは scalpPlan がこのモジュールを import しており
- *   循環になるため(このファイルは依存ゼロの純関数群として保つ)。 */
-function declaredSideOk(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
-  return side === 'buy' ? stopLoss < entry : stopLoss > entry;
 }
 
 /** レッグ群(AI が出した生の entry/stopLoss)と根拠文を突き合わせる(純関数・RECORD-ONLY)。

@@ -10,6 +10,9 @@ import { describeExitLogic, describeExitLogicVariant, loadExitImpl, type ExitVar
 //   遅延ロードしている設計を壊さないため(engine は result.rangeAnomaly を読むだけ=静的 import 不要)。
 import { describeRangeAnomaly, type RangeAnomaly } from '../signalTrade/rangeShape.js';
 import { BB_BAND_LABEL } from '../../core/indicatorSpec.js';
+// ★損切りの向きの規約は core/stopGeometry.ts が唯一の権威(依存ゼロの葉)。ここでは複製せず import する。
+//   従来ここから export されていた2関数は、外部の import 面を変えないよう そのまま再輸出する(下)。
+import { stopLossFromWidth, stopSideOk } from '../../core/stopGeometry.js';
 import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 // 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
 import type { ChartShotIdentity } from '../chart/chartShot.js';
@@ -325,10 +328,9 @@ export function resolveLcWidth(args: {
 }
 
 /** 幅(正の数)から損切り **価格** を導く唯一の場所。符号はここでしか決まらない(純関数)。
- *  買い: エントリー − 幅(下) / 売り: エントリー + 幅(上)。 */
-export function stopLossFromWidth(side: 'buy' | 'sell', entry: number, widthYen: number): number {
-  return side === 'buy' ? entry - widthYen : entry + widthYen;
-}
+ *  買い: エントリー − 幅(下) / 売り: エントリー + 幅(上)。
+ *  ★実体は core/stopGeometry.ts(損切りの向きの規約の唯一の権威)。ここは従来の import 面を保つ再輸出。 */
+export { stopLossFromWidth };
 
 /** LLM 出力に「そのレッグの損切り指定が **在ったか**」(新旧どちらの形でも)。
  *  ★数値であることだけを見る(旧実装の `num()` と同じ受理範囲=対の不整合の判定を変えない)。
@@ -1256,10 +1258,9 @@ export function parseAiConfidence(v: unknown): number | undefined {
  *  買い(long)は損切りがエントリーの「下」、売り(short)は「上」に置く(建玉を保護する向き)。
  *  境界(stopLoss===entry=幅0)は実質ストップにならないので不正(false)。
  *  ★実害バグ対策: 買いなのに損切りが上(逆側)のプランは trade2 のサニティが拒否し実取引ゼロになる。
- *    発生源(parse/enforce)でこの向きを検証し、違反レッグを落とすことで仮想取引エンジンと実取引を一致させる。 */
-export function stopSideOk(side: 'buy' | 'sell', entry: number, stopLoss: number): boolean {
-  return side === 'buy' ? stopLoss < entry : stopLoss > entry;
-}
+ *    発生源(parse/enforce)でこの向きを検証し、違反レッグを落とすことで仮想取引エンジンと実取引を一致させる。
+ *  ★実体は core/stopGeometry.ts(損切りの向きの規約の唯一の権威)。ここは従来の import 面を保つ再輸出。 */
+export { stopSideOk };
 
 /** エントリーが refPrice の正しい側にあるか(幾何・純関数)。
  *  limit(指値=押し目/戻り): buy は現在値より下・sell は現在値より上。
