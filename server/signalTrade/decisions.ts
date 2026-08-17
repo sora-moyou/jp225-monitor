@@ -603,6 +603,66 @@ export interface ArmedTimeoutView {
   lastBias?: 'buy' | 'sell' | 'range' | null;
 }
 
+/** ★待機理由(なぜいまシグナルを出していないか)の表示材料。engine が持っている抑止ゲートを SSE へ載せる。
+ *  語彙は既存に揃える(closed=画面の他所と同じ「取引時間外」/ cooldown=engine ログ「決済後の再ARM抑止」/
+ *  level=engine ログ「plan-rearm 節目クロス」)。新しい言い回しは作らない。
+ *  ・closed ……… 取引時間外(inPollWindow が false)。**maybeRequestPlan が最初に return する条件**。
+ *  ・cooldown … 決済後のクールダウン。untilMs=**解除時刻**(絶対時刻)。
+ *    ★なぜ絶対時刻か: 表示ラベル「10:30までクールダウン」が tick ごとに揺れないため。
+ *      (broadcast の dedupe を守るため、ではない。dedupe は toSignalTradeState が必ず `updatedAt: now` を
+ *       入れるので **実測で1度も効いていない**: 1秒違いの2回で JSON 同値=false。以前ここに書いていた
+ *       「残り秒だと dedupe をすり抜ける」は測らずに書いた誤りだった)
+ *  ・level ……… 見送り(none)後の「節目クロス待ち」。
+ *  それ以外(通常の間隔待ち等)は理由を作らない=フィールドごと出さない。 */
+export type WaitReasonView =
+  | { kind: 'closed' }
+  | { kind: 'cooldown'; untilMs: number }
+  | { kind: 'level' };
+
+/** 待機理由を決める純関数。★engine の maybeRequestPlan と **同じ材料・同じ順序** で読む
+ *  (画面に出す理由と、実際に再計画を止めている理由をずらさない)。maybeRequestPlan の early return を
+ *  上から順に写したもの:
+ *    ① planning / phase!=='flat' … 待機ではない(計画要求が既に走っている or 武装/保有中)→ 理由なし
+ *    ② !inPollWindow ………………… 取引時間外(ここで止まる。以降のゲートは見てもいない)
+ *    ③ cooldown ……………………… 決済後のクールダウン(manual のときだけ効く)
+ *    ④ planSuppressedAnchor ……… 見送り後の抑止。ただし **節目クロス済み(levelRearmReady)** と
+ *       **安全弁経過(safetyValveElapsed)** のときは maybeRequestPlan が先へ進む=抑止していないので理由にしない。
+ *       ★さらに **価格が読めていない(priceKnown=false)** ときも level を主張しない(下の注記)。
+ *       maybeRequestPlan は tick からしか呼ばれず price は常に実数だが、getState() は価格未取得でも呼ばれる。
+ *  ★アンカーの消去とログ出力は maybeRequestPlan の副作用のまま(ここは読むだけ・純関数)。 */
+export function computeWaitReason(input: {
+  phase: SignalPhase;
+  /** 計画要求が飛行中(maybeRequestPlan の1つめの early return)。 */
+  planning: boolean;
+  /** 取引時間帯か(core/session.ts の inPollWindow の結果)。 */
+  inPollWindow: boolean;
+  /** manual クールダウンの解除時刻。AI 委任(ゲート無効)や未決済は null。 */
+  cooldownUntilMs: number | null;
+  /** 見送り後の抑止アンカー(null=抑止していない)。 */
+  planSuppressedAnchor: number | null;
+  /** ★現在値が読めているか。false のとき shouldRearmOnLevel は **評価できていない**。 */
+  priceKnown: boolean;
+  /** そのアンカーに対し価格が節目を跨いだか(shouldRearmOnLevel)。true なら次に再武装するので理由にしない。 */
+  levelRearmReady: boolean;
+  /** 安全弁(SUPPRESS_SAFETY_MS 経過)。true なら抑止中でも1本要求へ進むので理由にしない。 */
+  safetyValveElapsed: boolean;
+  now: number;
+}): WaitReasonView | null {
+  const { phase, planning, inPollWindow, cooldownUntilMs, planSuppressedAnchor, priceKnown, levelRearmReady, safetyValveElapsed, now } = input;
+  if (planning || phase !== 'flat') return null;
+  if (!inPollWindow) return { kind: 'closed' };
+  if (cooldownUntilMs != null && Number.isFinite(cooldownUntilMs) && cooldownUntilMs > now) {
+    return { kind: 'cooldown', untilMs: cooldownUntilMs };
+  }
+  // ★priceKnown が false のときは level を主張しない(理由なし=従来の「シグナル待機」に戻す)。
+  //   価格が無ければ shouldRearmOnLevel を **評価できていない** ので、「節目クロスを待っている」は
+  //   確かめていないことの断定になる。実際に止めているのは価格が来ていないこと。
+  //   ★フィード断用の新しい種別は作らない: 接続状態は別の表示(フィード接続状態 / SSE ハートビート)が
+  //     既に担当しており、ここに二重に持つと同じ事実を指す語彙が2つに割れる。黙って理由を落とすだけでよい。
+  if (planSuppressedAnchor != null && priceKnown && !levelRearmReady && !safetyValveElapsed) return { kind: 'level' };
+  return null;
+}
+
 /** エンジン状態 + 現在値 + now から SSE state を組み立てる純関数。
  *  signal(現在シグナル・trade2 追従用)は在れば付与する。既存フィールドは不変=パネル表示互換。
  *  ★lastExitedSignalId(RECORD/ADD-ONLY): 直近に決済(filled→flat)したシグナルの signalId。
@@ -611,6 +671,7 @@ export function toSignalTradeState(
   st: EngineState, price: number | null, now: number, signal?: CurrentSignal | null,
   lastExitedSignalId?: number,
   armedTimeout?: ArmedTimeoutView | null,
+  waitReason?: WaitReasonView | null,
 ): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
@@ -688,6 +749,9 @@ export function toSignalTradeState(
     }
     if (armedTimeout.lastBias) s.armedTimeout.bias = armedTimeout.lastBias;
   }
+  // ★待機理由(ADD-ONLY): 理由が在るときだけ露出する。無いときは **フィールドごと出さない**
+  //   = 既存 JSON は1バイトも変わらない(旧クライアント互換を保つ)。
+  if (waitReason) s.waitReason = waitReason;
   return s;
 }
 
@@ -736,6 +800,10 @@ export function planToArmed(
   // ★刻み丸め(層1・執行): 武装するエントリー価格を N225 の呼値(5円)へ、必ず「約定しにくい側」へ丸める。
   //   ★順序が本質: **丸めてから** その建値で損切りを引き直す。逆順(SL 先・丸め後)だと LC 幅が刻み分ずれる。
   //   損切り価格そのものは丸めない(幅から導かれる従属値。刻みに乗せるかは別の判断=今回の範囲外)。
+  //   ★安全網は「実際に武装される値」に掛ける: 上の hasLimit/hasStop が見ているのは **捨てられる元の SL** なので、
+  //     引き直した SL をもう一度 stopOnCorrectSide に通す。満たさないレッグは落とす(=既存の不成立と同じ扱い)。
+  //     構成上は必ず満たす(幅>0・符号は stopLossAtEntry が direction から決める)が、このプロジェクトは
+  //     損切りが逆位置になって実弾が5.5時間停止した事故を出しており、そのとき効かなかったのがこの種の安全網。
   if (hasLimit) {
     const e = roundEntryToTick(plan.limitEntry as number, plan.direction, 'limit');
     const sl = stopLossAtEntry(plan.direction, e, lcWidth(plan.limitEntry as number, plan.stopLossForLimit as number));
@@ -746,8 +814,31 @@ export function planToArmed(
     const sl = stopLossAtEntry(plan.direction, e, lcWidth(plan.stopEntry as number, plan.stopLossForStop as number));
     if (stopOnCorrectSide(plan.direction, e, sl)) { a.stopEntry = e; a.stopLossForStop = sl; }
   }
+  if (a.limitEntry == null && a.stopEntry == null) return null;   // 引き直した SL が両レッグとも向き違反 = 不成立。
   if (planMeta) a.planMeta = planMeta;
   return a;
+}
+
+/** ★刻み丸めで、武装するエントリー価格が **計画値から動いたか**(directional のみ・range は丸めないので常に false)。
+ *
+ *  ■ なぜ要るか(実測で再現した事故の形)
+ *    checkSanity はプラン段の生値で通る。丸めは値を「約定しにくい側」へ寄せるので **幅は必ず広がる方向**にしか
+ *    動かない(2レッグで最大 +9円)。その結果、
+ *        plan(68799, 69199) 幅=400 → ok  /  armed(68795, 69200) 幅=405 → 上限400円超
+ *    のように **丸めた後だけ** サニティに落ちるブラケットが作れてしまう。
+ *    ARM 直前の recheckArmedSanity は「脚が落ちた時だけ」走るので、この回は誰も再検証しない=monitor は無言で
+ *    ARM し、byte 同期の trade2 が6秒ごとに拒否し続けて armed-timeout まで約定しない(armGate.ts 冒頭の
+ *    sid=361 と同じ失敗の仕方)。
+ *  ■ だから呼び出し側は「丸めで値が動いた回」も再検証する。無条件に再検証しない理由は engine.ts の既存注記
+ *    (健全なブラケットまで落ちる)のとおりで、その判断とは両立する=通すのは丸めが実際に起きた回だけ。 */
+export function entryRoundedFromPlan(
+  plan: { limitEntry?: number; stopEntry?: number },
+  armed: ArmedBracket,
+): boolean {
+  if (armed.mode === 'range' || armed.range != null) return false;   // range 脚は丸めていない。
+  if (armed.limitEntry != null && plan.limitEntry != null && armed.limitEntry !== plan.limitEntry) return true;
+  if (armed.stopEntry != null && plan.stopEntry != null && armed.stopEntry !== plan.stopEntry) return true;
+  return false;
 }
 
 /** regime/confidence/vetoFired から PlanMeta を組み立てる(全欠落は undefined=記録しない)。純関数。 */
@@ -800,10 +891,6 @@ export function sameHeldPosition(st: EngineState, id: HeldIdentity): boolean {
  *  ドテン許可 OFF / in-flight(planning)/ 非 filled / 取引時間外 / 間隔未達 のいずれかなら false。
  *  ★間隔は flat-plan 間隔以上(held は spend が倍化しやすいので長め)を呼び出し側が渡す。 */
 export function shouldRequestHeldEval(a: {
-  //   ★安全網は「実際に武装される値」に掛ける: 上の hasLimit/hasStop が見ているのは **捨てられる元の SL** なので、
-  //     引き直した SL をもう一度 stopOnCorrectSide に通す。満たさないレッグは落とす(=既存の不成立と同じ扱い)。
-  //     構成上は必ず満たす(幅>0・符号は stopLossAtEntry が direction から決める)が、このプロジェクトは
-  //     損切りが逆位置になって実弾が5.5時間停止した事故を出しており、そのとき効かなかったのがこの種の安全網。
   dotenEnabled: boolean; planning: boolean; phase: SignalPhase;
   inWindow: boolean; now: number; lastHeldEvalAt: number; intervalMs: number;
 }): boolean {
@@ -814,33 +901,10 @@ export function shouldRequestHeldEval(a: {
   if (a.now - a.lastHeldEvalAt < a.intervalMs) return false;
   return true;
 }
-  if (a.limitEntry == null && a.stopEntry == null) return null;   // 引き直した SL が両レッグとも向き違反 = 不成立。
 
 /** ★ドテン(反転)の反映(純関数・肝)。filled の保有 P を「現在値で成行決済」し、AI の反対プランを
  *  反対ブラケット(doten:true)として armed に据える。engine は返る recorded を記録し、armed から新 signalId を
  *  1回だけ採番して currentSignal を更新し broadcast する。
-/** ★刻み丸めで、武装するエントリー価格が **計画値から動いたか**(directional のみ・range は丸めないので常に false)。
- *
- *  ■ なぜ要るか(実測で再現した事故の形)
- *    checkSanity はプラン段の生値で通る。丸めは値を「約定しにくい側」へ寄せるので **幅は必ず広がる方向**にしか
- *    動かない(2レッグで最大 +9円)。その結果、
- *        plan(68799, 69199) 幅=400 → ok  /  armed(68795, 69200) 幅=405 → 上限400円超
- *    のように **丸めた後だけ** サニティに落ちるブラケットが作れてしまう。
- *    ARM 直前の recheckArmedSanity は「脚が落ちた時だけ」走るので、この回は誰も再検証しない=monitor は無言で
- *    ARM し、byte 同期の trade2 が6秒ごとに拒否し続けて armed-timeout まで約定しない(armGate.ts 冒頭の
- *    sid=361 と同じ失敗の仕方)。
- *  ■ だから呼び出し側は「丸めで値が動いた回」も再検証する。無条件に再検証しない理由は engine.ts の既存注記
- *    (健全なブラケットまで落ちる)のとおりで、その判断とは両立する=通すのは丸めが実際に起きた回だけ。 */
-export function entryRoundedFromPlan(
-  plan: { limitEntry?: number; stopEntry?: number },
-  armed: ArmedBracket,
-): boolean {
-  if (armed.mode === 'range' || armed.range != null) return false;   // range 脚は丸めていない。
-  if (armed.limitEntry != null && plan.limitEntry != null && armed.limitEntry !== plan.limitEntry) return true;
-  if (armed.stopEntry != null && plan.stopEntry != null && armed.stopEntry !== plan.stopEntry) return true;
-  return false;
-}
-
  *  ★monitor 仮想取引は即時約定しない: ここでは反対ブラケットを arm するだけ。反対建玉は以降 detectFill の交差で filled になる
  *   (=trade2 と同じタイミング/価格ソースで約定)。
  *  前提: 呼び出し側が「plan.direction === opposite(保有方向)」と checkSanity 通過を既に確認済み(第一級ガードは engine)。

@@ -34,10 +34,20 @@ import type { Fetcher } from './preflight.js';
  *      current と **どの指標も差が出なかった**(両レッグ同幅 88.1% vs 87.9% / LC幅中央値 60 vs 60 /
  *      エントリー率 70.2% vs 71.4% / 片レッグ落ち 4.1% vs 3.0%)。「決済の説明を変えても入り方は変わらない」
  *      という答えが出たので、この腕は畳む。
- *  新: 'prompt-v2'(= 質問文 v2 を投げた腕)。**送る決済仕様は①と同じ 'current'**。違うのは質問文だけ。
- *      主指標は両レッグ同幅率(実測 87〜92% = 幅を節目から導いていないことの代理指標)。 */
-const CANDIDATE_ARM: GeneratorArm = 'prompt-v2';
-const CANDIDATE_PROMPT_VARIANT: PromptVariant = 'v2';
+ *  旧2: 'prompt-v2'(= 質問文 v2 を投げた腕)。質問文を **全面的に** 書き換えた系統で、
+ *      「距離の記述が無い」ことの効果を見たくても **1変数の対照になっていない**(他も全部違う)。
+ *
+ *  ★現(2026-08-17): 'prompt-v1d'(= 質問文 v1d を投げた腕)。**送る決済仕様は①と同じ 'current'**。
+ *      v1d は v1 から **「指値・ブレイク新規を現在値から最低50円離す」の記述だけ** を外したもの。
+ *      設計書(docs/superpowers/specs/2026-08-17-signal-constraints-design.md)§8 の移行順序の1番目
+ *      =「層1(執行)を直す」の第一手。
+ *      理由(実測): この規則は 89.8% の断面で「節目の5〜10円内側」と両立せず、2,222レッグの
+ *      **72.0% が距離を破り**、LC下限を破ったレッグは **0件**(= 例外なく距離のほうが捨てられていた)。
+ *      主指標: 現在値からの距離の分布 / LC幅の **相異なる値の種類数**(平均では下限＋一定への移行を
+ *      見逃す)/ 両レッグ同幅率(実測 87〜92%)/ none 率。
+ *  ★v2 の腕は畳む(候補の枠は1つ=1サイクルの LLM 呼び出し回数を増やさない=課金を動かさない)。 */
+const CANDIDATE_ARM: GeneratorArm = 'prompt-v1d';
+const CANDIDATE_PROMPT_VARIANT: PromptVariant = 'v1d';
 
 /** 1サイクルの中の1要求。 */
 export interface ArmRequest {
@@ -52,7 +62,7 @@ export interface ArmRequest {
 
 /** ★1サイクルの構成(純関数)。
  *  ① 'current'(質問文 v1) → ①' 対照(controlEvery サイクルに1回・①と完全に同じ入力)
- *  → ② 'prompt-v2'(質問文 v2・決済仕様は①と同じ)の **この順** で直列。
+ *  → ② 'prompt-v1d'(質問文 v1d・決済仕様は①と同じ)の **この順** で直列。
  *  ★①と②の違いは **質問文だけ**(1変数)。①' は同じ入力へ2回問う LLM のばらつきの基準線。 */
 export function planCycleArms(cycleIndex: number, controlEvery: number): ArmRequest[] {
   const out: ArmRequest[] = [
@@ -191,7 +201,7 @@ export function toProposalRow(
     ? `variant-mismatch: 送信 ${req.exitVariant} / 応答 ${echoed}`
     : null;
   // ★質問文の変種も同じ作法で突き合わせる。エコーが送った名前と違えば、②は v2 を測っていない
-  //   (= 腕名だけが 'prompt-v2' で中身は v1 という、いちばん気づけない壊れ方)。
+  //   (= 腕名だけが候補で中身は v1 という、いちばん気づけない壊れ方)。
   const echoedPrompt = str(b?.promptVariant);
   const promptMismatch = echoedPrompt !== null && echoedPrompt !== req.promptVariant
     ? `prompt-variant-mismatch: 送信 ${req.promptVariant} / 応答 ${echoedPrompt}`

@@ -341,9 +341,12 @@ function hasLcField(width: unknown, legacyStopLoss: unknown): boolean {
  *  記録の失敗で計画(取引の判断)を止めない。握りつぶすが、握りつぶした事実は必ず1行ログに残す。
  *  1件も突き合わせられなければ undefined(空配列は載せない=「観測できた」と「0件」を混ぜない)。
  *  ★v0.9.70: 各レッグの「幅の出所」と「符号を訂正したか」を同じ行に載せる(列は増やさない)。 */
+/** ★v0.9.83: 各レッグの `side` も渡す。渡さないと rationaleLc は根拠文の損切りの **向き** を判定できず
+ *  'sideUnknownDirection' としか記録できない(推測で埋めない規律)。directional は plan の direction、
+ *  range は脚ごとの side(上部=売り/下部=買い)。 */
 function lcAuditFor(
   rationale: string,
-  legs: ReadonlyArray<{ leg: LcLegName; entry?: number | null; stopLoss?: number | null; widthSource?: LcWidthSource; signCorrected?: boolean }>,
+  legs: ReadonlyArray<{ leg: LcLegName; entry?: number | null; stopLoss?: number | null; side?: 'buy' | 'sell' | null; widthSource?: LcWidthSource; signCorrected?: boolean }>,
 ): readonly LcAuditRow[] | undefined {
   try {
     const rows: LcAuditRow[] = auditLcDeclarations(rationale, legs);
@@ -729,6 +732,11 @@ export function buildScalpQuestion(
   // ★v0.9.56: 上限が AI委任のときだけ提示の形を変える(既定=手動=従来と byte 一致)。
   //   ceilingYen には委任時 **実効上限**(安全上限 or 背骨)が入る=保存値はここまで届かない。
   lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
+  // ★v1d(2026-08-17): 「現在値から最低50円離す」という **最低距離の記述だけ** を落とす。
+  //   **既定 false = v1 と byte 一致**(実取引につながる経路は1ミリも動かない)。
+  //   ★落とすのは最低距離だけ。距離の **上限**(片レッグ200円/両レッグ幅400円)はこのフラグでも残る
+  //     (同時に2つ動かすと、出力が変わったとき どちらの効果か言えなくなる=1コミット1変数)。
+  omitMinDistance = false,
 ): string {
   // レンジ両面ストラドルの追記(実験・仮想取引で別枠計測)。rangeEnabled=false のときは range を禁止する。
   // ★v0.9.44: 1行に詰め込んでいた説明を複数行の箇条書きに開き、「fade / breakout の2択(組で選ぶ)」に書き直す。
@@ -759,7 +767,11 @@ export function buildScalpQuestion(
     'あなたが考える現在のスキャル戦略を教えてください。\n' +
     '①最初に買い/売りのどちらかを判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい)\n' +
     '②指値(limitEntry)とブレイク新規(stopEntry)の両方の新規注文を作り、先に約定した方で取引します' +
-    '(指値とブレイク新規は、現在値からそれぞれ少なくとも50円以上離すこと。この最低距離は buy/sell のみで、range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)\n' +
+    // ★v1d: この括弧まるごとが「最低距離」の記述(本則+range への非適用の但し書き)。
+    //   但し書きは本則が消えれば宛先を失う(存在しない規則の例外の説明になる)ので、一緒に落とす。
+    (omitMinDistance
+      ? '\n'
+      : '(指値とブレイク新規は、現在値からそれぞれ少なくとも50円以上離すこと。この最低距離は buy/sell のみで、range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)\n') +
     // ★最優先=無条件の不等式。節目の話より前に単独行で置く(節目基準を主語にしない)。
     '\n★【最優先: 価格の向き(無条件・例外なし)】現在値(refPrice)に対して、次の不等式を必ず満たすこと。\n' +
     '  売り: stopEntry < refPrice < limitEntry\n' +
@@ -1018,19 +1030,34 @@ export function buildArmedNote(ctx?: { mode: 'range-fade'; ageMs: number; avgMs:
  *  ★損切り(LC)の下限・上限・安全上限、および 価格/損切りの向きの不等式は **一切緩めない**
  *   (この注記の中でもそれを明記して、AI が「全部自由になった」と読まないようにする)。
  *  理由: バンドウォーク中は価格がバンドに沿って動き続けるため、節目まで引きつけた 50円以上離れた指値は
- *  置いていかれて約定しない。ユーザー指定「節目にこだわらず近くの逆指値や指値も可」。 */
-export function buildBandwalkNote(bw?: Bandwalk | null): string {
+ *  置いていかれて約定しない。ユーザー指定「節目にこだわらず近くの逆指値や指値も可」。
+ *
+ *  ★v1d(2026-08-17・omitMinDistance): ①は「最低距離は課さない」という **免除** である。
+ *   本則(質問文・strategySpec の最低距離)が消える変種では、免除だけが残ると
+ *   **存在しない規則の例外** を説明することになる(設計書 原則5「存在しない機構を AI に説明しない」)。
+ *   よって ① を落とし、残る②を①に繰り上げ、「2点」→「1点」も整合させる。
+ *   ★助詞も直す: 「要求 **も** 課さない」の「も」は 消えた前項(最低距離の免除)を指す語なので、
+ *     単独で残すと **参照先を失った表現** になる。v1d 側だけ「は」にする(v1 は1バイトも変えない)。
+ *   ★消えるのは最低距離に関する文と、その「も」だけ。免除の中身(節目起点)と、
+ *     緩めないもの(LC幅・向き・距離の上限)の列挙は1バイトも変えない。 */
+export function buildBandwalkNote(bw?: Bandwalk | null, omitMinDistance = false): string {
   if (!bw) return '';
   const dirJa = bw.direction === 'up' ? '上昇(買い方向)' : '下降(売り方向)';
+  const relaxCount = omitMinDistance ? '1点' : '2点';
   return `\n\n【バンドウォーク成立中(${dirJa})】${describeBandwalk(bw)}\n`
-    + 'この局面に限り、上に書いた次の2点だけを緩めてよい:\n'
-    + '  ①指値・ブレイク新規を現在値から最低50円離す、という最低距離は課さない(現在値のすぐ近く=数円〜数十円 に置いてよい)。\n'
-    + '  ②エントリーを節目(サポート/レジスタンス)から導く要求も課さない(近くに節目が無くてもよい。'
+    + `この局面に限り、上に書いた次の${relaxCount}だけを緩めてよい:\n`
+    + (omitMinDistance
+      ? ''
+      : '  ①指値・ブレイク新規を現在値から最低50円離す、という最低距離は課さない(現在値のすぐ近く=数円〜数十円 に置いてよい)。\n')
+    + (omitMinDistance
+      // ★v1d: 単独の項なので「も」は使わない(前項が存在しない)。
+      ? '  ①エントリーを節目(サポート/レジスタンス)から導く要求は課さない(近くに節目が無くてもよい。'
+      : '  ②エントリーを節目(サポート/レジスタンス)から導く要求も課さない(近くに節目が無くてもよい。')
     + `バンドウォークの向き(${bw.direction === 'up' ? '買い' : '売り'})に沿って、押し目/戻りの浅い指値(limitEntry) や `
     + '直近高安をすぐ抜けるブレイク新規(stopEntry) を、現在値の近くに置いてよい)。\n'
     // ★v0.9.70: 【最優先: 損切りの向き】は「損切りは幅だけを出す」契約に置き換わったので、参照先の名前を直す
     //   (存在しないブロック名を参照させない=緩和の対象が曖昧にならないようにする)。
-    + '  ★緩むのはこの2点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約、'
+    + `  ★緩むのはこの${relaxCount}のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約、`
     + '距離の上限(片レッグ200円以内/両レッグ幅400円以内)は **一切変わらない**(そのまま厳守すること)。\n'
     + '  ★バンドウォークは「価格の急変が起きるまで続く」と見なしてよいが、逆方向に強く反転したと判断したら'
     + ' 無理にこの向きへ入らず direction:"none" で見送ること。';
@@ -1388,8 +1415,8 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     //   レンジ脚は根拠文の見出し(指値/ブレイク新規)で区別できないので、多くは undeclared(=読めなかった)になる。
     //   それでよい: 「一致」と「未申告」を混ぜないことが要件で、読めないものを読めたことにはしない。
     const rangeLcAudit = lcAuditFor(rationale, [
-      { leg: 'upper', entry: upper0?.entry, stopLoss: upper0?.stopLoss, widthSource: upperParse.ok ? upperParse.source : undefined, signCorrected: upperParse.ok ? upperParse.signCorrected : undefined },
-      { leg: 'lower', entry: lower0?.entry, stopLoss: lower0?.stopLoss, widthSource: lowerParse.ok ? lowerParse.source : undefined, signCorrected: lowerParse.ok ? lowerParse.signCorrected : undefined },
+      { leg: 'upper', entry: upper0?.entry, stopLoss: upper0?.stopLoss, side: upperSide0, widthSource: upperParse.ok ? upperParse.source : undefined, signCorrected: upperParse.ok ? upperParse.signCorrected : undefined },
+      { leg: 'lower', entry: lower0?.entry, stopLoss: lower0?.stopLoss, side: lowerSide0, widthSource: lowerParse.ok ? lowerParse.source : undefined, signCorrected: lowerParse.ok ? lowerParse.signCorrected : undefined },
     ]);
     if (!upper && !lower) {
       // 両脚とも落ちた見送り(none)は rationale を据え置く(enforce の両脚落ちと同じ既存挙動)。
@@ -1481,8 +1508,8 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   ★AI の **生の値**(この検証で落ちるレッグも、後段 enforce で lcFloor 落ちするレッグも含む)に対して行う。
   //   採否・価格・legDrops には一切影響しない(この配列を読む側は台帳だけ)。
   const lcAudit = lcAuditFor(rationale, [
-    { leg: 'limit', entry: limitEntry, stopLoss: stopLossForLimit, widthSource: limitLc.source, signCorrected: limitLc.signCorrected },
-    { leg: 'stop', entry: stopEntry, stopLoss: stopLossForStop, widthSource: stopLc.source, signCorrected: stopLc.signCorrected },
+    { leg: 'limit', entry: limitEntry, stopLoss: stopLossForLimit, side: dir, widthSource: limitLc.source, signCorrected: limitLc.signCorrected },
+    { leg: 'stop', entry: stopEntry, stopLoss: stopLossForStop, side: dir, widthSource: stopLc.source, signCorrected: stopLc.signCorrected },
   ]);
   if (!limitLegOk && !stopLegOk) {
     return {
@@ -1712,6 +1739,9 @@ export interface StrategySpecInput {
   range: { mode: KnobSource; value: boolean };
   hardMax: LcHardMax;
   exitDesc: string;   // describeExitLogic()(private 在れば実数値つき)
+  /** ★v1d(2026-08-17): 「最低距離(現在値から50円)」の箇条書きを **1行だけ** 落とす。
+   *  未指定/false = 従来と byte 一致。距離の上限(400/200)の行はこのフラグでも残る。 */
+  omitMinDistance?: boolean;
 }
 function knobTag(mode: KnobSource): string {
   return mode === 'ai' ? '【AI委任=あなたが決めてよい】' : '【手動=固定・厳守】';
@@ -1755,7 +1785,11 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     // ★v0.9.56 ②③: +5円 が何に加わるのか / 導出の順序(節目 → ストップ位置 → 幅)。A(委任)・B(手動)で完全に同一。
     `- 損切りの緩衝: ${LC_BUFFER_NOTE}`,
     `- ${LC_DERIVATION_ORDER}`,
-    '- 指値/ブレイク新規は現在値からそれぞれ最低 50円 離す(この最低距離は buy/sell のみ。range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)',
+    // ★v1d(2026-08-17): この1行が「最低距離」の3箇所目。落とすときは **行ごと** 消す
+    //   (空文字を残すと join('\n') が空行を作り、距離以外の見た目も変わってしまう=1変数でなくなる)。
+    ...(i.omitMinDistance
+      ? []
+      : ['- 指値/ブレイク新規は現在値からそれぞれ最低 50円 離す(この最低距離は buy/sell のみ。range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)']),
     // ★v0.9.44: 語彙は system prompt / question と統一する(stopEntry=ブレイク新規 / stopLossFor*=損切り)。
     //   ただし spec は「設定値＋委任タグ」が役割なので、規則の全文は重複させず不等式(最重要)だけを置く
     //   (用語の区別・ブレイク新規の置き場所・出力前の自己検算は system prompt と question に完全な形で入る)。
@@ -2201,6 +2235,16 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     { floorYen, ceilingYen, hardMax },
   );
   const biasNote = buildBiasNote(bias);
+  // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実取引につながる全経路はここを通っても変わらない)。
+  //   'v2' は user プロンプトの本体(質問文+JSON契約)だけを差し替える。system プロンプト側の規則
+  //   (buildScalpSystemPrompt / strategySpec / delegationNote)は **触らない** = 動かす変数を1つに保つ。
+  //   ★v2 は自前で JSON 契約を持つので、v1 の scalpJsonInstruction は連結しない(2つ並べると契約が二重になる)。
+  //   ★'v1d'(2026-08-17) は v1 から **「現在値から最低50円離す」の記述だけ** を落とす(設計書 §5 層1の第一手)。
+  //     この規則はプロンプト中の3箇所(質問文② / strategySpec / バンドウォーク注記の免除文①)に載っているので、
+  //     v2 と違い **system プロンプト側も** 動かす。それでも動かす変数は1つ(=同じ1つの規則の全掲載)。
+  //     ★ゆえに変種の解決は strategySpec / bandwalkNote を組む **前** に置く必要がある。
+  const promptVariant = input.promptVariant ?? DEFAULT_PROMPT_VARIANT;
+  const omitMinDistance = promptVariant === 'v1d';
   // ★v0.7.58: 戦略ロジックを定数込みで完全に AI へ渡す(エントリー全定数＋各項目の委任状態＋決済ロジックの実数値)。
   //   「何を委任するか」は設定(各 directive の mode)に従い【】で明示。決済数値は describeExitLogic()=private 実行時注入。
   const strategySpec = buildStrategySpec({
@@ -2214,6 +2258,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // ★決済仕様: 変種 **未指定なら従来の describeExitLogic() をそのまま**(この経路は byte 不変)。
     //   指定時だけ名前 → 非公開定義から説明文を解決する(数値はプロセス内に留まる)。
     exitDesc: input.exitVariant === undefined ? describeExitLogic() : describeExitLogicVariant(input.exitVariant),
+    omitMinDistance,
   });
   // ★AIテクニカル許可(RSI/BB をエントリーの"タイミング"判断に使ってよい)。既定 ON。OFF では system prompt は従来と byte 一致。
   //   ※決済(手仕舞い)は既定の決済ロジックが担当する=AI に決済判断は委ねない。
@@ -2223,16 +2268,12 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★レンジ再評価(未約定→ブレイク): armedContext が渡された時だけ注入する。未指定(通常)では '' = 従来と byte 一致。
   const armedNote = buildArmedNote(input.armedContext);
   // ★バンドウォーク成立中だけの緩和注記(距離と節目のみ)。非成立/未指定は '' = 従来と byte 一致。
-  const bandwalkNote = buildBandwalkNote(input.bandwalk);
+  //   ★v1d: ①の免除文(「最低距離は課さない」)は 本則が消えると宛先を失うので、同じフラグで整合させる。
+  const bandwalkNote = buildBandwalkNote(input.bandwalk, omitMinDistance);
   const monitorCtx = buildMonitorContext(now);
-  // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実取引につながる全経路はここを通っても変わらない)。
-  //   'v2' は user プロンプトの本体(質問文+JSON契約)だけを差し替える。system プロンプト側の規則
-  //   (buildScalpSystemPrompt / strategySpec / delegationNote)は **触らない** = 動かす変数を1つに保つ。
-  //   ★v2 は自前で JSON 契約を持つので、v1 の scalpJsonInstruction は連結しない(2つ並べると契約が二重になる)。
-  const promptVariant = input.promptVariant ?? DEFAULT_PROMPT_VARIANT;
   const scalpQuestion = promptVariant === 'v2'
     ? buildScalpQuestionV2({ floorYen, ceilYen: promptCeilingYen, rangeEnabled, refPrice })
-    : buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil);
+    : buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil, omitMinDistance);
   const systemPrompt =
     // ★bandwalkNote は strategySpec / delegationNote の **後ろ**(= 距離50円・節目起点を書いている
     //   ブロックより後)に置く。緩和は「直前の指示を上書きする」形なので、読み順で後に来る必要がある。

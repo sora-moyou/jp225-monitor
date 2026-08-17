@@ -56,6 +56,41 @@ describe('書式①(幅の申告): 「LC=55円」形', () => {
     expect(d.unassigned).toEqual([]);
   });
 
+  // ─── ★2026-08-17 に塞いだ2つの穴(ユーザー判断で着手) ───
+  it('★穴①: 幅を括弧で囲んだ「LC幅は(55)円」も読む(従来は undeclared に落ちていた)', () => {
+    expect(parseLcDeclarations('指値レッグ LC幅は(55)円').limit).toEqual([55]);
+    expect(parseLcDeclarations('指値レッグ (68870)と(68625)の引き算 → LC幅は(55)円。').limit).toEqual([55]);
+    // 助詞なしの従来形は今までどおり(回帰なし)。
+    expect(parseLcDeclarations('指値 LC幅(55)').limit).toEqual([55]);
+  });
+
+  it('★穴①の偽陽性ガードは括弧の中でも生きている: 「LC幅は(65400)円」から 654 を拾わない', () => {
+    const d = parseLcDeclarations('指値レッグ LC幅は(65400)円');
+    expect(d.limit).toEqual([]);
+    expect(d.unassigned).toEqual([]);
+  });
+
+  it('★穴②: 全角「ＬＣ＝５５円」/「ＬＣ幅は６０円」も読む', () => {
+    expect(parseLcDeclarations('指値レッグ ＬＣ＝５５円').limit).toEqual([55]);
+    expect(parseLcDeclarations('ブレイク新規レッグ ＬＣ幅は６０円').stop).toEqual([60]);
+  });
+
+  it('★全角でも偽陽性ガードは効く(「ＬＣ＝６５４００」から 654 を拾わない)', () => {
+    expect(parseLcDeclarations('指値レッグ ＬＣ＝６５４００').limit).toEqual([]);
+  });
+
+  it('★全角を半角へ写しても見出しの割り当てはずれない(写しは長さ不変)', () => {
+    // 全角が見出しより前に在っても、その後ろの申告は正しいレッグへ付く。
+    const d = parseLcDeclarations('ＬＣ＝１０円 を基準に、指値レッグ LC=55円、ブレイク新規レッグ LC=95円。');
+    expect(d.unassigned).toEqual([10]);
+    expect(d.limit).toEqual([55]);
+    expect(d.stop).toEqual([95]);
+  });
+
+  it('「LC幅55円」(助詞なし・括弧なし)は従来どおり読まない=件数を動かさない', () => {
+    expect(parseLcDeclarations('指値レッグ LC幅55円').limit).toEqual([]);
+  });
+
   it('見出しより前に出た申告はどのレッグにも割り当てない(unassigned)', () => {
     const d = parseLcDeclarations('LC=55円 を基本として、指値レッグを置く');
     expect(d.unassigned).toEqual([55]);
@@ -150,6 +185,72 @@ describe('突き合わせ(auditLcDeclarations)', () => {
     expect(sole[0]).toMatchObject({ declaredYen: 60, status: 'match', source: 'sole' });
     const ambiguous = auditLcDeclarations('指値レッグ LC=55円、ブレイク新規レッグ LC=95円。', [{ leg: 'lower', entry: 65600, stopLoss: 65545 }]);
     expect(ambiguous[0]).toMatchObject({ declaredYen: null, status: 'undeclared' });
+  });
+});
+
+// ─── ★v0.9.83: 「幅は正しく符号だけ逆」を見逃さない(向きの突き合わせ・RECORD-ONLY) ─────────
+//
+//  ■ なぜ要るか(実測 2026-08-17・generator_proposals 複製)
+//    従来 auditLcDeclarations は **幅しか** 比べていなかったので、根拠文が損切りを建値の逆側に書いていても
+//    幅さえ合っていれば status:'match' と記録していた。式が読めた4,450レッグ中 右辺が逆側=1,654(37.2%)、
+//    うち幅は正しく符号だけ逆=1,211(27.2%)。★実際に執行される計画が逆側だったのは 0件(壊れているのは根拠文だけ)。
+//  ■ 設計(混ぜない)
+//    status(match/mismatch/undeclared)の意味は1バイトも変えない。向きは declaredSide に **別立て** で置く。
+//    値の語彙も status と重ならない語(sideOk/sideReversed/sideUnknownDirection)にして、
+//    台帳の LIKE 検索が衝突しないようにしてある。
+describe('向きの突き合わせ(declaredSide)', () => {
+  // ★実データそのもの(pid=17372, buy)。実際の計画は stopEntry=68780 / stopLoss=68720(建値の下=正しい)。
+  //   根拠文は 68840(建値の上=逆側)。従来の記録は {actualYen:60, declaredYen:60, status:'match'} で、
+  //   根拠文が逆を向いていることが台帳から読めなかった。
+  it('★実データ(pid=17372): 幅は一致(match)のまま、向きだけ sideReversed が立つ', () => {
+    const rows = auditLcDeclarations(
+      'ブレイク新規レッグ (68780)と(68840)の引き算 → LC幅は60円。',
+      [{ leg: 'stop', entry: 68780, stopLoss: 68720, side: 'buy' }],
+    );
+    expect(rows[0]).toMatchObject({
+      actualYen: 60, declaredYen: 60, status: 'match',            // ← 幅の判定は不変
+      declaredSide: 'sideReversed', declaredSideEntry: 68780, declaredSideStop: 68840,
+      declaredSideFrom: 'subtraction',
+    });
+  });
+
+  it('向きが合っていれば sideOk(買い=損切りは下・売り=上)', () => {
+    const buy = auditLcDeclarations('指値レッグ 68725と68665の引き算 → LC幅は60円。',
+      [{ leg: 'limit', entry: 68725, stopLoss: 68665, side: 'buy' }]);
+    expect(buy[0]).toMatchObject({ status: 'match', declaredSide: 'sideOk' });
+    const sell = auditLcDeclarations('指値レッグ 68725と68785の引き算 → LC幅は60円。',
+      [{ leg: 'limit', entry: 68725, stopLoss: 68785, side: 'sell' }]);
+    expect(sell[0]).toMatchObject({ status: 'match', declaredSide: 'sideOk' });
+  });
+
+  it('書式②(式)からも向きを読む', () => {
+    const rows = auditLcDeclarations('ブレイク新規レッグ 65540 + 55 = 65595',
+      [{ leg: 'stop', entry: 65540, stopLoss: 65485, side: 'buy' }]);
+    expect(rows[0]).toMatchObject({ declaredSide: 'sideReversed', declaredSideFrom: 'equation', declaredSideStop: 65595 });
+  });
+
+  it('★書式①(幅だけの申告)からは向きを判定しない=キー自体を置かない(「読めない」を「一致」にしない)', () => {
+    const rows = auditLcDeclarations('ブレイク新規レッグ LC=55円', [{ leg: 'stop', entry: 65540, stopLoss: 65595, side: 'sell' }]);
+    expect(rows[0]).toMatchObject({ status: 'match' });
+    expect(rows[0]).not.toHaveProperty('declaredSide');
+  });
+
+  it('★direction が渡らなければ推測しない: sideUnknownDirection と明示して残す', () => {
+    const rows = auditLcDeclarations('指値レッグ 68725と68665の引き算 → LC幅は60円。',
+      [{ leg: 'limit', entry: 68725, stopLoss: 68665 }]);
+    expect(rows[0]).toMatchObject({ declaredSide: 'sideUnknownDirection', declaredSideEntry: 68725, declaredSideStop: 68665 });
+  });
+
+  it('★レンジ脚(upper/lower)は見出しで区別できないので向きは判定しない', () => {
+    const rows = auditLcDeclarations('両面に置く。65600と65540の引き算 → LC幅は60円。',
+      [{ leg: 'upper', entry: 65600, stopLoss: 65660, side: 'sell' }]);
+    expect(rows[0]).not.toHaveProperty('declaredSide');
+  });
+
+  it('★向きは status を1バイトも動かさない(逆側でも幅が違えば mismatch のまま)', () => {
+    const rows = auditLcDeclarations('ブレイク新規レッグ (68780)と(68840)の引き算 → LC幅は60円。',
+      [{ leg: 'stop', entry: 68780, stopLoss: 68775, side: 'buy' }]);
+    expect(rows[0]).toMatchObject({ status: 'mismatch', declaredYen: 60, actualYen: 5, declaredSide: 'sideReversed' });
   });
 });
 

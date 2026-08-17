@@ -24,24 +24,54 @@ import type { ScalpPlanResult } from '../llm/scalpPlan.js';
 import type { SignalPlanInsert } from '../db/store.js';
 import type { ArmWaitDecision } from './armWait.js';
 
-/** rationale(AI の判断理由)の上限文字数。
+/** rationale(AI の判断理由)の上限文字数 = **暴走止めの安全弁**であって、整形の道具ではない。
  *
- *  ★この値の根拠(実測 + 容量見積もり):
- *   - 実データ(signals_kabu.db・832件)の rationale は 中央値93文字 / p90 172 / p99 232 / 最長306文字、
- *     UTF-8 では 平均283バイト / 最長746バイト。240文字で切ると影響を受けるのは全体の 0.8%(7/832)だけで、
- *     平均の行サイズはほぼ変わらない(=上限は「裾を止める」ためのもの)。
- *   - 240 は engine が plan-suppress ログで既に使っている上限と同じ。台帳はそのログを置き換えるものなので、
- *     **ログより少ない情報しか残らない** 状態を作らない。
- *   - 容量: 1行あたり ≒ 750バイト(固定列110 + settings_json 約300 + leg_drops 約50 + rationale 約283)。
- *     実測の計画サイクル数(A≒90/日・B≒90/日)× 年間245営業日 ≒ 44,000行/年 ≒ **33MB/年**。
- *     計画間隔3分・取引20時間/日で理論上限まで走った場合(800行/日)でも ≒ 196,000行/年 ≒ 146MB/年。 */
-export const PLAN_RATIONALE_MAX_CHARS = 240;
+ *  ■ なぜ 240 をやめたか(2026-08-17・実測)
+ *   根拠文は表示の飾りではなく **シグナルの正しさの一部**(なぜその向きか・なぜその価格か・LC の検算)。
+ *   記録側で削ると、後から「その計画が正しかったか」を検証する材料そのものが欠ける。
+ *   旧 240 文字は実測で次の状態だった(generator_proposals_kabu.db・plan_json の rationale 12,043件・
+ *   2026-08-03〜08-17):
+ *     - 中央値 76 / p90 163 / p99 224 / **最長 319** 文字。240 超は 61件(0.51%)。
+ *       (buy/sell かつ prompt-v2 を除く母集団では 2,722件中 2件 = 0.1%)
+ *     - v0.9.70 以前は 1.7%(3,466件中59件)が 240 を超えていた。
+ *   つまり **いまは効いていないが、理由文が長くなった瞬間に効き始める** 罠だった。
+ *   ★2026-08-17 時点では、根拠文を複数行にする変更は入っていない(いったん撤回した)。
+ *   上限を上げておく理由は「将来そうするから」ではなく、**記録は削らないという原則**そのもの。
+ *   理由が長くなった回を無言で削るのは、④の材料を失うことに直結する。
+ *
+ *  ■ なぜ「無制限」でなく 2000 にしたか
+ *   上限を外すと、LLM が壊れた出力(同じ文の反復・プロンプトの丸写し)を返した回に台帳が無制限に膨らむ。
+ *   実測の最長が 319 文字なので **2000 は桁で余裕がある**(実測の 6 倍)= 正常な根拠文には事実上効かず、
+ *   異常出力だけを止める。容量: 2000文字が仮に毎行入っても UTF-8 で約 6KB/行 だが、
+ *   実測平均(約 250バイト)で年 44,000行 ≒ 33MB/年 のまま変わらない(裾が伸びても上限で頭打ち)。
+ *   ★切られた回を後から見分けられるよう、切ったときだけ末尾に省略記号を付ける(下記)。 */
+export const PLAN_RATIONALE_MAX_CHARS = 2000;
 
-/** 根拠文を1行に均して上限文字数で切る(engine のログと同じ整形)。空/未指定は null。 */
+/** 切り詰めが起きたときだけ末尾に付く印(=「この行は削られている」と台帳から読めるようにする)。 */
+export const PLAN_RATIONALE_TRUNCATED_MARK = '…[切詰]';
+
+/** 根拠文を **改行を保ったまま** 正規化する。空/未指定は null。
+ *
+ *  ★改行を潰さない: `\s+ → ' '` の1行化は、根拠文が複数行になった回に構造を壊す
+ *    (実害があったのはこちら。上限より先に外すべき部分)。AI が改行を使うかは版によって変わるので、
+ *    「いまは1行だから潰してよい」とはしない=記録側は受け取った形を保つ。
+ *  ★残す正規化は「意味を壊さないもの」だけ:
+ *    - CRLF/CR → LF(DB に混在した改行コードを入れない)
+ *    - 各行の行末の空白を落とす
+ *    - 3行以上の連続空行 → 空行1つに圧縮(段落の区切りは残す)
+ *    - 全体の前後の空白を落とす
+ *  ★上限(max)は安全弁。超えたときだけ切り、切ったことが分かるよう印を付ける。 */
 export function trimRationale(s: string | null | undefined, max = PLAN_RATIONALE_MAX_CHARS): string | null {
   if (typeof s !== 'string') return null;
-  const one = s.replace(/\s+/g, ' ').trim();
-  return one ? one.slice(0, max) : null;
+  const normalized = s
+    .replace(/\r\n?/g, '\n')
+    .split('\n').map(line => line.replace(/[ \t　]+$/, '')).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!normalized) return null;
+  if (normalized.length <= max) return normalized;
+  // 印のぶんも含めて max に収める(列の想定長を超えない)。
+  return normalized.slice(0, Math.max(0, max - PLAN_RATIONALE_TRUNCATED_MARK.length)) + PLAN_RATIONALE_TRUNCATED_MARK;
 }
 
 export interface SignalPlanRecordInput {

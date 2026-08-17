@@ -7,7 +7,9 @@
 //   このファイルは import に失敗して赤くなる。
 
 import { describe, it, expect } from 'vitest';
-import { buildSignalPlanInsert, trimRationale, PLAN_RATIONALE_MAX_CHARS } from './planLedger.js';
+import {
+  buildSignalPlanInsert, trimRationale, PLAN_RATIONALE_MAX_CHARS, PLAN_RATIONALE_TRUNCATED_MARK,
+} from './planLedger.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 
 const SETTINGS: SignalSettingsSnapshot = {
@@ -35,7 +37,8 @@ describe('buildSignalPlanInsert', () => {
       t: 1000, system: 'B',
       direction: 'none', noneReason: 'trend', vetoFired: true,
       refPrice: 38250, regime: 'unclear', confidence: 30,
-      rationale: '方向感が 無い',
+      // ★契約の変更: 前後の空白は落とすが **改行は保つ**(旧実装は '方向感が 無い' に潰していた)。
+      rationale: '方向感が\n無い',
       settingsJson: JSON.stringify(SETTINGS),
     });
     // 見送りは采番しない。
@@ -93,14 +96,49 @@ describe('buildSignalPlanInsert', () => {
     expect(row.settingsJson).toBe(JSON.stringify(SETTINGS));
   });
 
-  it('rationale は上限文字数で切る(裾だけを止める)', () => {
-    const long = 'あ'.repeat(PLAN_RATIONALE_MAX_CHARS + 50);
+  // ★契約の変更(2026-08-17): 旧テストは「240文字ちょうどに切られる」ことを固定していた。
+  //   根拠文は **シグナルの正しさの一部** なので記録側で削らない方針に変えた(planLedger.ts の注記)。
+  //   実測(generator_proposals_kabu.db・12,043件)の最長は 319 文字で、新上限 2000 は事実上効かない。
+  it('★rationale は改行を保ったまま記録する(3行構成が保存時に壊れない)', () => {
+    const three = '①上昇トレンド継続と判断。\n②直近安値 38,120 の直上を指値。\n LC検算: 38,140 − 38,090 = 50円  ';
     const row = buildSignalPlanInsert({
-      t: 5000, system: 'A', result: { ok: true, plan: { direction: 'none', rationale: long, refPrice: 1 } },
+      t: 5000, system: 'A', result: { ok: true, plan: { direction: 'buy', rationale: three, refPrice: 1 } },
     });
-    expect(row.rationale!.length).toBe(PLAN_RATIONALE_MAX_CHARS);
+    // 行が3本のまま残る(旧実装は \s+ → ' ' で1行に潰していた)。
+    expect(row.rationale!.split('\n')).toEqual([
+      '①上昇トレンド継続と判断。',
+      '②直近安値 38,120 の直上を指値。',
+      ' LC検算: 38,140 − 38,090 = 50円',   // 行末の空白だけ落ちる(行頭の字下げは残す)
+    ]);
+  });
+
+  it('★意味を壊さない正規化だけ残す(CRLF→LF・行末空白・3行以上の空行の圧縮・前後trim)', () => {
+    expect(trimRationale('a\r\nb')).toBe('a\nb');
+    expect(trimRationale('a\r b')).toBe('a\n b');
+    expect(trimRationale('a\n\n\n\nb')).toBe('a\n\nb');   // 段落の区切り(空行1つ)は残す
+    expect(trimRationale('  \n a \n  ')).toBe('a');
     expect(trimRationale('   ')).toBeNull();
     expect(trimRationale(undefined)).toBeNull();
+    expect(trimRationale(null)).toBeNull();
+  });
+
+  it('★実測の最長(319文字)より長い普通の根拠文は1文字も失われない', () => {
+    const long = 'あ'.repeat(400);
+    const row = buildSignalPlanInsert({
+      t: 5100, system: 'A', result: { ok: true, plan: { direction: 'none', rationale: long, refPrice: 1 } },
+    });
+    expect(row.rationale).toBe(long);
+    expect(row.rationale!.length).toBe(400);
+  });
+
+  it('★上限は暴走止めの安全弁: 超えた回だけ切り、切ったことが台帳から読める', () => {
+    const runaway = 'あ'.repeat(PLAN_RATIONALE_MAX_CHARS + 500);
+    const out = trimRationale(runaway)!;
+    expect(out.length).toBe(PLAN_RATIONALE_MAX_CHARS);          // 印を含めて上限に収まる
+    expect(out.endsWith(PLAN_RATIONALE_TRUNCATED_MARK)).toBe(true);
+    // ちょうど上限の長さなら印は付かない(=切っていない)。
+    const exact = 'あ'.repeat(PLAN_RATIONALE_MAX_CHARS);
+    expect(trimRationale(exact)).toBe(exact);
   });
 });
 

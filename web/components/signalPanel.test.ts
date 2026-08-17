@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSignalView, buildPositionView, splitRationaleLines, type SignalTradeState } from './signalPanel.js';
+import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, type SignalTradeState } from './signalPanel.js';
 
 // ─── シグナル枠(buildSignalView): 現在シグナル(s.signal)を常時描く=保有中も消えない ───
 describe('buildSignalView(シグナル枠)', () => {
@@ -206,5 +206,87 @@ describe('buildPositionView(保有枠)', () => {
     expect(buildPositionView(s, NOW).main).toBe('✔ 決済 65,500（+105）');
     // 40秒超で消える
     expect(buildPositionView(s, NOW + 41_000).main).toBe('保有なし');
+  });
+});
+
+// ─── ★画面から LC幅の検算だけを落とす(生成側のプロンプトは不変) ───
+//   実測 2026-08-17 の画面には、根拠文が「LC幅の引き算」だけ2文並んでいて
+//   「なぜ買い目線か / なぜこの価格か」が1文も無かった。検算は符号の保持に効いている
+//   (式を外すと stopSide 落ちが 10→30件)ので **プロンプトからは外さず、表示だけ落とす**。
+//   落とす純関数の境界は core/rationaleDisplay.test.ts が固定する。ここは配線の確認。
+describe('buildSignalView: rationale から LC検算を落とす', () => {
+  // ★ユーザーが実際に貼った文字列。
+  const REAL_LC = '指値レッグ 68725 と 68665 の引き算 → LC幅は60円。ブレイク新規レッグ 68780 と 68840 の引き算 → LC幅は60円。';
+
+  it('理由の本文が在れば、LC検算の文だけ消えて本文が残る', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665, at: 1, rationale: `68700の節目を上抜けて押し目待ち。${REAL_LC}` },
+    };
+    expect(buildSignalView(s).rationale).toBe('68700の節目を上抜けて押し目待ち。');
+  });
+
+  it('★検算しか無い(=全部落ちる)ときは「（理由の記載なし）」を出す(無言で空にしない)', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665, at: 1, rationale: REAL_LC },
+    };
+    // 元文字列を戻す設計にはしない(実測でほとんどの回が検算だけ=画面が何も変わらなくなる)。
+    // 空にもしない(AI が書かなかったのか剥がし過ぎたのか区別できない=無音の失敗になる)。
+    expect(buildSignalView(s).rationale).toBe('（理由の記載なし）');
+  });
+
+  it('★コード側が足す注記(※…/（逆指値は不採用: …）)は残る', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665, at: 1,
+        rationale: `押し目買い。${REAL_LC}\n※上部(売り指値)は不採用: 損切り幅が設定の下限より狭い`,
+      },
+    };
+    expect(splitRationaleLines(buildSignalView(s).rationale))
+      .toEqual(['押し目買い。', '※上部(売り指値)は不採用: 損切り幅が設定の下限より狭い']);
+  });
+});
+
+// ─── ★待機理由(なぜ待機なのか)をかっこで出す ───
+describe('buildWaitMain: 待機理由(waitReason)', () => {
+  // 2026-08-17 10:30 JST = 2026-08-17T01:30:00Z
+  const UNTIL = Date.UTC(2026, 7, 17, 1, 30, 0);
+
+  it('クールダウンは解除時刻(JST HH:MM)を出す', () => {
+    expect(buildWaitMain(null, { kind: 'cooldown', untilMs: UNTIL })).toBe('シグナル待機（10:30までクールダウン）');
+  });
+
+  it('節目クロス待ち', () => {
+    expect(buildWaitMain(null, { kind: 'level' })).toBe('シグナル待機（節目クロス待ち）');
+  });
+
+  // ★取引時間外。語彙は画面の他所(価格ボード/指標パネル/API状態)と同じ「取引時間外」を使う=新語を作らない。
+  //   引け後にアプリを開いたとき、engine が実際に止めている理由はこれ(以前は「節目クロス待ち」と嘘が出ていた)。
+  it('取引時間外', () => {
+    expect(buildWaitMain(null, { kind: 'closed' })).toBe('シグナル待機（取引時間外）');
+    expect(buildWaitMain({ count: 3, streak: 1, lastAt: 1, waitMin: 15, bias: 'sell' }, { kind: 'closed' }))
+      .toBe('シグナル待機（取引時間外 / 連続失効 15分1回 / 現在売り目線）');
+  });
+
+  it('★既存の連続失効表示は壊さない(両方あるときは併記)', () => {
+    // 理由なし=従来と1バイトも同じ
+    expect(buildWaitMain({ count: 27, streak: 2, lastAt: 1, waitMin: 15, bias: 'buy' }))
+      .toBe('シグナル待機（連続失効 15分2回 / 現在買い目線）');
+    expect(buildWaitMain({ count: 27, streak: 2, lastAt: 1, waitMin: 15, bias: 'buy' }, { kind: 'cooldown', untilMs: UNTIL }))
+      .toBe('シグナル待機（10:30までクールダウン / 連続失効 15分2回 / 現在買い目線）');
+  });
+
+  it('理由も失効も無ければ従来どおり「シグナル待機」', () => {
+    expect(buildWaitMain(null, null)).toBe('シグナル待機');
+    expect(buildWaitMain(undefined, undefined)).toBe('シグナル待機');
+    // 解除時刻が壊れている場合はその部分ごと出さない(空括弧を作らない)
+    expect(buildWaitMain(null, { kind: 'cooldown', untilMs: Number.NaN })).toBe('シグナル待機');
+  });
+
+  it('buildSignalView(シグナル無し)から waitReason が配線されている', () => {
+    expect(buildSignalView({ phase: 'flat', updatedAt: 0, waitReason: { kind: 'cooldown', untilMs: UNTIL } }).main)
+      .toBe('シグナル待機（10:30までクールダウン）');
   });
 });

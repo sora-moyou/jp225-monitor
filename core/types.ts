@@ -213,6 +213,16 @@ export interface SignalTradeState {
   //     bias=直前に失効したブラケットの向き(パネルの「買い目線/売り目線/レンジ」と同じ語彙)。
   //     不明なら欠落させる(空括弧や「不明」を出さない)。
   armedTimeout?: { count: number; streak: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' };
+  // ★待機理由(ADD-ONLY): 「シグナル待機」の **なぜ** を画面に出すための材料。
+  //   engine が持っていた抑止ゲート(取引時間外 / 決済後のクールダウン / 見送り後の節目クロス待ち)は、
+  //   これまで console ログにしか出ておらず、画面からは「ただ待っている」ようにしか見えなかった。
+  //   ・closed ……… 取引時間外(inPollWindow が false)。maybeRequestPlan が最初に return する条件。
+  //   ・cooldown … untilMs=解除時刻(絶対時刻)。
+  //     ★絶対時刻にした理由は「10:30までクールダウン」というラベルを tick ごとに揺らさないため。
+  //       (broadcast の dedupe のためではない。dedupe は下の updatedAt が毎回変わるので **実測で効いていない**)
+  //   ・level ……… 見送り(none)後の節目クロス待ち(engine ログの「plan-rearm 節目クロス」と同じもの)。
+  //   理由が無いとき(通常の間隔待ち等)は **フィールドごと欠落**=既存 SSE JSON 不変。
+  waitReason?: { kind: 'closed' } | { kind: 'cooldown'; untilMs: number } | { kind: 'level' };
   updatedAt: number;
 }
 

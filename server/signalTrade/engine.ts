@@ -29,10 +29,10 @@ import {
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
   AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_FACTOR, REEVAL_CAP_MS,
-  armedWaitMsOf,
+  armedWaitMsOf, computeWaitReason,
   type SignalPhase, type EngineState, type CurrentSignal, type SignalHold, type RecordedTrade,
   type OpenPosition, type HeldIdentity, type ArmedBracket, type ArmedIdentity, type StaleLegReport,
-  type ArmedTimeoutView,
+  type ArmedTimeoutView, type WaitReasonView,
 } from './decisions.js';
 import {
   computeArmWait, describeArmWait, entryLegsOf, nearestEntryDistance, sigma1mFromBars,
@@ -323,10 +323,56 @@ export class SignalEngine {
 
   stop(): void { this.running = false; }
 
+  /** ★待機理由(画面の「シグナル待機（…）」の中身)。maybeRequestPlan の抑止ゲートと **同じ材料・同じ順序**
+   *  を読む(ここで別の判定を書くと、画面の理由と実際に抑止している理由がずれる)。
+   *
+   *  ■ ★取引時間外を最初に見る理由(実測 2026-08-17 の不具合)
+   *    maybeRequestPlan は `!inPollWindow(now)` で **クールダウンより前に** return する。ところが
+   *    planSuppressedAnchor をセッション境界で消す経路が無いので、引け後・週末はアンカーが据え置かれたまま
+   *    「節目クロス待ち」が出続けていた(stream.ts が接続時に state を返すので、引け後にアプリを開くと必ず出る)。
+   *    実際に止めているのは **取引時間外であること** なので、そう出す。
+   *  ■ 語彙(新しい言い回しを作らない)
+   *    「取引時間外」は画面の他所(価格ボード/指標パネル/API状態)が既に使っている語で、
+   *    core/session.ts の isMarketOpen のコメントにも同じ語がある。理由を出さない案(=従来の「シグナル待機」に
+   *    戻す)も採れるが、それだと「なぜ待機か」が分からないまま=この作業の目的に反するので出す方を採った。
+   *  ■ 節目クロス済み / 安全弁
+   *    どちらも maybeRequestPlan は「先へ進む」= 抑止していないので理由にしない。maybeRequestPlan と
+   *    同じ材料(getLevelsSnapshot / lastPlanAt)をここでも読む。副作用(アンカー消去・ログ)は持たせない。
+   *  ■ ★価格が読めていないとき(フィード断・起動直後)
+   *    「節目クロス待ち」とは言わない。shouldRearmOnLevel を評価できていないのに待っていると断定することに
+   *    なるため。過去に **フィードが再接続せず bot が盲目化して0取引** になった事故があり、その最中に
+   *    もっともらしい嘘が画面に出るのが最悪の形。理由を出さない(=「シグナル待機」に戻す)だけにする。
+   *    ★フィード断の新種別は作らない(接続状態は別の表示が担当済み=語彙を割らない)。 */
+  private currentWaitReason(now: number, price: number | null): WaitReasonView | null {
+    const cd = resolveScalpCooldownDirective(this.cfg.profile);
+    const until = cd.mode === 'manual' && cd.value > 0 && this.lastSignalExitAt != null
+      ? this.lastSignalExitAt + cd.value * 1000
+      : null;
+    const anchor = this.planSuppressedAnchor;
+    // ★価格が読めているか。maybeRequestPlan は tick からしか呼ばれない(price は常に実数)が、
+    //   getState() は価格未取得(フィード断・起動直後)でも呼ばれる。読めていなければ節目の判定はできない。
+    const priceKnown = price != null && Number.isFinite(price);
+    const levelRearmReady = anchor !== null && priceKnown
+      ? shouldRearmOnLevel(anchor, price!, getLevelsSnapshot())
+      : false;
+    return computeWaitReason({
+      phase: this.state.phase,
+      planning: this.planning,
+      inPollWindow: inPollWindow(now),
+      cooldownUntilMs: until,
+      planSuppressedAnchor: anchor,
+      priceKnown,
+      levelRearmReady,
+      safetyValveElapsed: now - this.lastPlanAt >= SUPPRESS_SAFETY_MS,
+      now,
+    });
+  }
+
   /** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
   getState(now = Date.now()): SignalTradeState {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-    return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts);
+    return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts,
+      this.currentWaitReason(now, price));
   }
 
   /** 現在シグナル(trade2 追従用)。A のみ。B は常に null(=露出しない)。 */
@@ -926,7 +972,8 @@ export class SignalEngine {
   // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
-    const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts);
+    const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts,
+      this.currentWaitReason(now, price));
     const json = JSON.stringify(s);
     if (json !== this.lastBroadcastJson) {
       this.lastBroadcastJson = json;

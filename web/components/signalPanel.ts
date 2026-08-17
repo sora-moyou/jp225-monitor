@@ -1,4 +1,7 @@
 import { beep } from './soundPlayer.js';
+// ★画面に出す直前にだけ LC幅の検算を落とす(生成側のプロンプトは1文字も変えない=符号の保持に効いているため)。
+//   落とす/落とさないの境界と、語彙の出所(server/llm/rationaleLc.ts)は core/rationaleDisplay.ts の冒頭に書いてある。
+import { stripLcArithmetic } from '../../core/rationaleDisplay.js';
 
 // ─── SSE state 契約 (backend→frontend の唯一のIF) ───────────────────────
 // server 側 broadcast({ type: 'signalTrade', payload: SignalTradeState }) を購読する。
@@ -61,6 +64,10 @@ export interface SignalTradeState {
   //   waitMin= 直前に失効したブラケットで **実際に使われた** 待ち時間[分](距離とボラで可変なので固定文字列にしない)。
   //   bias   = 直前に失効したブラケットの向き(=いまどっち向きで待っているか)。不明なら欠落。
   armedTimeout?: { count: number; streak?: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' };
+  // ★待機理由(なぜいまシグナルが無いのか)。server(engine)の抑止ゲートをそのまま載せたもの。
+  //   closed=取引時間外 / cooldown=決済後のクールダウン(untilMs=解除時刻の絶対時刻) / level=見送り後の節目クロス待ち。
+  //   理由が無いとき(通常の間隔待ち等)はフィールドごと欠落する=従来と同じ「シグナル待機」表示。
+  waitReason?: { kind: 'closed' } | { kind: 'cooldown'; untilMs: number } | { kind: 'level' };
   updatedAt: number;
 }
 
@@ -117,24 +124,59 @@ const BIAS_JA: Record<'buy' | 'sell' | 'range', string> = { buy: '買い目線',
  *      - 「15分」は **そのとき実際に使われた待ち時間**(waitMin)。距離とボラで可変なので固定文字列にしない。
  *        waitMin が無い(古い server / 材料欠落)ときは分数を出さず「連続失効 2回」に縮退する。
  *      - 目線(bias)が無い/不明なら、その部分ごと出さない(空括弧や「不明」を作らない)。
- *  ★累計(count)は表示しない。累計は「無音の失敗を数える」ための別指標として state に残る。 */
+ *  ★累計(count)は表示しない。累計は「無音の失敗を数える」ための別指標として state に残る。
+ *  ・待機理由(waitReason)…… server(engine)が実際に再計画を抑止しているゲートを併記する。
+ *      「シグナル待機（取引時間外）」/「シグナル待機（10:30までクールダウン）」/「シグナル待機（節目クロス待ち）」。
+ *      連続失効と両方あるときは併記=「シグナル待機（10:30までクールダウン / 連続失効 15分2回 / 現在買い目線）」。
+ *      理由が無い(通常の間隔待ち等)ときはフィールドごと欠落し、従来の表示に戻る。 */
 export function buildWaitMain(
   at?: { count: number; streak?: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' } | null,
+  waitReason?: SignalTradeState['waitReason'] | null,
 ): string {
+  const parts: string[] = [];
+  // ★待機理由(server の抑止ゲート)を先頭に置く。ユーザーが最初に知りたいのは「なぜ止まっているか」。
+  const reason = waitReasonLabel(waitReason);
+  if (reason) parts.push(reason);
   const n = at?.streak ?? 0;
-  if (!(n > 0)) return 'シグナル待機';
-  const w = at?.waitMin;
-  const wLabel = typeof w === 'number' && Number.isFinite(w) && w > 0 ? `${Math.round(w)}分` : '';
-  const parts: string[] = [`連続失効 ${wLabel}${n}回`];
-  const bias = at?.bias ? BIAS_JA[at.bias] : undefined;
-  if (bias) parts.push(`現在${bias}`);
+  if (n > 0) {
+    const w = at?.waitMin;
+    const wLabel = typeof w === 'number' && Number.isFinite(w) && w > 0 ? `${Math.round(w)}分` : '';
+    parts.push(`連続失効 ${wLabel}${n}回`);
+    const bias = at?.bias ? BIAS_JA[at.bias] : undefined;
+    if (bias) parts.push(`現在${bias}`);
+  }
+  if (parts.length === 0) return 'シグナル待機';
   return `シグナル待機（${parts.join(' / ')}）`;
+}
+
+/** 純関数: 時刻[ms] を JST の HH:MM にする(表示は常に日本時間=取引時間の語彙に揃える)。 */
+export function fmtJstHm(ms: number): string {
+  return new Date(ms).toLocaleTimeString('ja-JP', {
+    timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+/** 純関数: 待機理由の表示文。語彙は既存に揃える(新しい言い回しを作らない)。
+ *  ・closed ……「取引時間外」= 価格ボード/指標パネル/API状態が既に使っている語をそのまま使う。
+ *  ・cooldown …「(engine) cooldown 決済後の再ARM抑止」→ 解除時刻を添えて「HH:MMまでクールダウン」。
+ *  ・level ………「(engine) plan-rearm 節目クロス」→「節目クロス待ち」。
+ *  理由が無い/解除時刻が読めないときは空文字(=その部分ごと出さない。空括弧や「不明」を作らない)。 */
+export function waitReasonLabel(r?: SignalTradeState['waitReason'] | null): string {
+  if (!r) return '';
+  if (r.kind === 'closed') return '取引時間外';
+  if (r.kind === 'cooldown') {
+    const until = r.untilMs;
+    if (typeof until !== 'number' || !Number.isFinite(until)) return '';
+    return `${fmtJstHm(until)}までクールダウン`;
+  }
+  if (r.kind === 'level') return '節目クロス待ち';
+  return '';
 }
 
 /** 純関数: シグナル枠の表示モデル。現在シグナル(s.signal)を優先し、無ければ armed の entry、
  *  それも無ければ「シグナル待機」。★保有(filled)でも s.signal がある限りシグナルを描き続ける。 */
 export function buildSignalView(s: SignalTradeState | null): PanelView {
-  const waitMain = (): string => buildWaitMain(s?.armedTimeout);
+  const waitMain = (): string => buildWaitMain(s?.armedTimeout, s?.waitReason);
   const sig: SignalCurrent | undefined = s?.signal ?? (s?.entry ? { ...s.entry } : undefined);
   if (!sig) return { cls: 'flat', main: waitMain(), rationale: '' };
 
@@ -154,7 +196,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
     if (sig.range.upper) parts.push(legStr(sig.range.upper, '上'));
     if (sig.range.lower) parts.push(legStr(sig.range.lower, '下'));
     if (parts.length === 0) return { cls: 'flat', main: waitMain(), rationale: '' };
-    return { cls: 'armed', bias: 'レンジ', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: sig.rationale ?? '' };
+    return { cls: 'armed', bias: 'レンジ', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: stripLcArithmetic(sig.rationale) };
   }
 
   const lcTag = (lc?: number): string => (lc != null ? ` (LC ${fmtPrice(lc)})` : '');
@@ -165,7 +207,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   // ★ドテン(反転)シグナルは目線行に明示(通常の決済→別の新規と区別できるように)。
   const dirBias = sig.direction === 'buy' ? '買い目線' : '売り目線';
   const bias = sig.doten ? `🔃 ドテン(反転)・${dirBias}` : dirBias;
-  return { cls: 'armed', bias, main: `🎯 シグナル：${legs.join(' / ')}`, rationale: sig.rationale ?? '' };
+  return { cls: 'armed', bias, main: `🎯 シグナル：${legs.join(' / ')}`, rationale: stripLcArithmetic(sig.rationale) };
 }
 
 /** 純関数: 保有枠の表示モデル。保有中は建値+含み、直近決済は一時表示、それ以外は「保有なし」。

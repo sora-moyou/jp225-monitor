@@ -137,7 +137,10 @@ export function initSchema(db: DatabaseSync): void {
       stop_loss_for_stop REAL,
       leg_drops_json TEXT,          -- レッグ1本ごとの脱落理由(LegDrop[] の JSON)。1本も落ちなければ NULL。
       settings_json TEXT,           -- そのサイクルの実効設定(signal_trades.meta の settings と同じ組み立て)
-      rationale TEXT,               -- AI の判断理由(上限 PLAN_RATIONALE_MAX_CHARS 文字で切る)
+      rationale TEXT,               -- AI の判断理由。★改行を含む原文をそのまま入れる(1行化しない)。
+                                    --   上限 PLAN_RATIONALE_MAX_CHARS(=2000)は暴走出力を止める安全弁で、
+                                    --   実測の最長 319 文字に対し桁で余裕があり通常は効かない。
+                                    --   切られた行は末尾が '…[切詰]' になる(planLedger.trimRationale)。
       error TEXT,                   -- 計画が得られなかった回の理由(chart-not-generated 等)。取れた回は NULL。
       -- ★凍結再生の突合(RECORD-ONLY): 下の ALTER と同じ2列。新規DBはここで、既存DBは ALTER で入る。
       context_at INTEGER,           -- 文脈を組み立てた時刻(epoch ms)。t(記録時刻)とは別物。
