@@ -6,7 +6,7 @@ import {
   detectFill, detectRangeFill, unrealizedPt, detectExit, realizedPnl, equitySeries,
   advance, ARMED_TIMEOUT_MS, toSignalTradeState, planToArmed, restingStopOf, armedToCurrentSignal,
   rangeTpTrigger, RANGE_TP_OFFSET_YEN, LIMIT_FILL_MARGIN_YEN, SLIPPAGE_YEN, STOP_SLIPPAGE_YEN,
-  computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed, checkStaleLegs,
+  computeHold, inCooldown, buildPlanMeta, realizedLcFromArmed, checkStaleLegs, MIN_ENTRY_DISTANCE_YEN,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
   REEVAL_FACTOR, AVG_FILL_SAMPLES, MIN_SAMPLES, DEFAULT_AVG_FILL_MS, REEVAL_CAP_MS,
@@ -653,6 +653,10 @@ describe('detectFill: 単方向は仕様不変(網羅コーパス)', () => {
 //   plan.refPrice(チャート撮影時の価格)には妥当でも ARM 時点の live 価格では既にエントリーを通過している
 //   計画が届く。それを武装すると次tickで即約定し、現実には執行できない取引が紙の成績に混ざる。
 //   判定は detectFill / detectRangeFill の再利用=約定条件と完全に同一規約(指値=5円行き過ぎ / 逆指値=タッチ)。
+// ★2026-08-17: directional(limit/stop)には「最低距離(ラグ緩衝) MIN_ENTRY_DISTANCE_YEN=10円」も
+//   OR で乗る(層1・decisions.ts)。10円 > 指値マージン5円・逆指値タッチ0円 なので、directional の
+//   境界テストは「約定境界(5円/0円)」ではなく「最低距離境界(10円)」が支配的になる。range(upper/lower)
+//   は対象外(設計どおり・レンジ側のテストは変更なし)。以下の境界値テストはこの支配関係に合わせて更新した。
 describe('checkStaleLegs(通過済みレッグを武装しない・境界値)', () => {
   // buy: 指値61900(下・LC61850)/ 逆指値62000(上・LC61950)。
   const buyOco = (): ArmedBracket => ({
@@ -680,52 +684,86 @@ describe('checkStaleLegs(通過済みレッグを武装しない・境界値)', 
     }
   });
 
-  it('buy 指値(61900): あと1円(61896)は武装・ちょうど(61895)は落とす・1円超過(61894)も落とす', () => {
-    expect(checkStaleLegs(buyOco(), 61896).legs).toEqual([
+  it('buy 指値(61900): 10円超は武装・10円未満は未約定でも最低距離で落ちる(reason=tooClose)・5円行き過ぎ以降は約定(reason=filled)', () => {
+    // ちょうど10円(61910)は武装のまま(境界は含む・MIN_ENTRY_DISTANCE_YEN=10)。
+    expect(checkStaleLegs(buyOco(), 61910).legs).toEqual([
       { name: 'limit', entry: 61900, stale: false }, { name: 'stop', entry: 62000, stale: false },
     ]);
+    // 10円未満(61901〜61909)は約定(5円行き過ぎ=61895以下)にはまだ届かないが、最低距離未満なので落ちる。
+    for (const live of [61909, 61901]) {
+      const r = checkStaleLegs(buyOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 61900, stale: true, reason: 'tooClose' }, { name: 'stop', entry: 62000, stale: false },
+      ]);
+      expect(r.armed).toMatchObject({ direction: 'buy', stopEntry: 62000, stopLossForStop: 61950 });
+      expect(r.armed?.limitEntry).toBeUndefined();          // 通過済み/近すぎの指値レッグだけ落ちる
+      expect(r.armed?.stopLossForLimit).toBeUndefined();
+    }
+    // 5円行き過ぎ(61895)以下は約定。最低距離とも重なるが、reason は filled が優先。
     for (const live of [61895, 61894]) {
       const r = checkStaleLegs(buyOco(), live);
       expect(r.legs).toEqual([
-        { name: 'limit', entry: 61900, stale: true }, { name: 'stop', entry: 62000, stale: false },
+        { name: 'limit', entry: 61900, stale: true, reason: 'filled' }, { name: 'stop', entry: 62000, stale: false },
       ]);
-      expect(r.armed).toMatchObject({ direction: 'buy', stopEntry: 62000, stopLossForStop: 61950 });
-      expect(r.armed?.limitEntry).toBeUndefined();          // 通過済みの指値レッグだけ落ちる
-      expect(r.armed?.stopLossForLimit).toBeUndefined();
+      expect(r.armed?.limitEntry).toBeUndefined();
     }
   });
 
-  it('buy 逆指値(62000): あと1円(61999)は武装・タッチ(62000)は落とす・1円超過(62001)も落とす', () => {
-    expect(checkStaleLegs(buyOco(), 61999).armed).toEqual(buyOco());
-    for (const live of [62000, 62001]) {
+  it('buy 逆指値(62000): 10円超は武装・10円未満はタッチ前でも最低距離で落ちる(reason=tooClose)・タッチ以降は約定(reason=filled)', () => {
+    expect(checkStaleLegs(buyOco(), 61990).armed).toEqual(buyOco());   // ちょうど10円は武装(境界は含む)
+    for (const live of [61999, 61991]) {
       const r = checkStaleLegs(buyOco(), live);
       expect(r.legs).toEqual([
-        { name: 'limit', entry: 61900, stale: false }, { name: 'stop', entry: 62000, stale: true },
+        { name: 'limit', entry: 61900, stale: false }, { name: 'stop', entry: 62000, stale: true, reason: 'tooClose' },
       ]);
       expect(r.armed).toMatchObject({ direction: 'buy', limitEntry: 61900, stopLossForLimit: 61850 });
       expect(r.armed?.stopEntry).toBeUndefined();
       expect(r.armed?.stopLossForStop).toBeUndefined();
     }
+    for (const live of [62000, 62001]) {
+      const r = checkStaleLegs(buyOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 61900, stale: false }, { name: 'stop', entry: 62000, stale: true, reason: 'filled' },
+      ]);
+      expect(r.armed?.stopEntry).toBeUndefined();
+      expect(r.armed?.stopLossForStop).toBeUndefined();
+    }
   });
 
-  it('sell 指値(62000): あと1円(62004)は武装・ちょうど(62005)は落とす・1円超過(62006)も落とす', () => {
-    expect(checkStaleLegs(sellOco(), 62004).armed).toEqual(sellOco());
+  it('sell 指値(62000): 10円超は武装・10円未満は未約定でも最低距離で落ちる(reason=tooClose)・5円行き過ぎ以降は約定(reason=filled)', () => {
+    expect(checkStaleLegs(sellOco(), 61990).armed).toEqual(sellOco());   // ちょうど10円は武装(境界は含む)
+    for (const live of [61991, 62004]) {
+      const r = checkStaleLegs(sellOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 62000, stale: true, reason: 'tooClose' }, { name: 'stop', entry: 61900, stale: false },
+      ]);
+      expect(r.armed?.limitEntry).toBeUndefined();
+      expect(r.armed).toMatchObject({ stopEntry: 61900, stopLossForStop: 61850 });
+    }
     for (const live of [62005, 62006]) {
       const r = checkStaleLegs(sellOco(), live);
       expect(r.legs).toEqual([
-        { name: 'limit', entry: 62000, stale: true }, { name: 'stop', entry: 61900, stale: false },
+        { name: 'limit', entry: 62000, stale: true, reason: 'filled' }, { name: 'stop', entry: 61900, stale: false },
       ]);
       expect(r.armed?.limitEntry).toBeUndefined();
       expect(r.armed).toMatchObject({ stopEntry: 61900, stopLossForStop: 61850 });
     }
   });
 
-  it('sell 逆指値(61900): あと1円(61901)は武装・タッチ(61900)は落とす・1円超過(61899)も落とす', () => {
-    expect(checkStaleLegs(sellOco(), 61901).armed).toEqual(sellOco());
+  it('sell 逆指値(61900): 10円超は武装・10円未満はタッチ前でも最低距離で落ちる(reason=tooClose)・タッチ以降は約定(reason=filled)', () => {
+    expect(checkStaleLegs(sellOco(), 61910).armed).toEqual(sellOco());   // ちょうど10円は武装(境界は含む)
+    for (const live of [61909, 61901]) {
+      const r = checkStaleLegs(sellOco(), live);
+      expect(r.legs).toEqual([
+        { name: 'limit', entry: 62000, stale: false }, { name: 'stop', entry: 61900, stale: true, reason: 'tooClose' },
+      ]);
+      expect(r.armed?.stopEntry).toBeUndefined();
+      expect(r.armed).toMatchObject({ limitEntry: 62000, stopLossForLimit: 62050 });
+    }
     for (const live of [61900, 61899]) {
       const r = checkStaleLegs(sellOco(), live);
       expect(r.legs).toEqual([
-        { name: 'limit', entry: 62000, stale: false }, { name: 'stop', entry: 61900, stale: true },
+        { name: 'limit', entry: 62000, stale: false }, { name: 'stop', entry: 61900, stale: true, reason: 'filled' },
       ]);
       expect(r.armed?.stopEntry).toBeUndefined();
       expect(r.armed).toMatchObject({ limitEntry: 62000, stopLossForLimit: 62050 });
@@ -771,20 +809,21 @@ describe('checkStaleLegs(通過済みレッグを武装しない・境界値)', 
     }
   });
 
-  it('片レッグしか無いブラケットが通過済み → armed=null(=ARM しない=見送り)', () => {
+  it('片レッグしか無いブラケットが通過済み(filled) または近すぎ(tooClose) → armed=null(=ARM しない=見送り)', () => {
+    // ★「武装のまま」の基準点は距離ちょうど10円(MIN_ENTRY_DISTANCE_YEN)。それ未満は tooClose で落ちる。
     const limitOnlyBuy: ArmedBracket = { direction: 'buy', limitEntry: 61900, stopLossForLimit: 61850, rationale: 'r', at: 0 };
-    expect(checkStaleLegs(limitOnlyBuy, 61896).armed).toBe(limitOnlyBuy);
-    expect(checkStaleLegs(limitOnlyBuy, 61895).armed).toBeNull();
+    expect(checkStaleLegs(limitOnlyBuy, 61910).armed).toBe(limitOnlyBuy);
+    expect(checkStaleLegs(limitOnlyBuy, 61895).armed).toBeNull();   // 約定(filled)
     const stopOnlyBuy: ArmedBracket = { direction: 'buy', stopEntry: 62000, stopLossForStop: 61950, rationale: 'r', at: 0 };
-    expect(checkStaleLegs(stopOnlyBuy, 61999).armed).toBe(stopOnlyBuy);
+    expect(checkStaleLegs(stopOnlyBuy, 61990).armed).toBe(stopOnlyBuy);
     expect(checkStaleLegs(stopOnlyBuy, 62000).armed).toBeNull();
     const limitOnlySell: ArmedBracket = { direction: 'sell', limitEntry: 62000, stopLossForLimit: 62050, rationale: 'r', at: 0 };
-    expect(checkStaleLegs(limitOnlySell, 62004).armed).toBe(limitOnlySell);
+    expect(checkStaleLegs(limitOnlySell, 61990).armed).toBe(limitOnlySell);
     expect(checkStaleLegs(limitOnlySell, 62005).armed).toBeNull();
     const stopOnlySell: ArmedBracket = { direction: 'sell', stopEntry: 61900, stopLossForStop: 61850, rationale: 'r', at: 0 };
-    expect(checkStaleLegs(stopOnlySell, 61901).armed).toBe(stopOnlySell);
+    expect(checkStaleLegs(stopOnlySell, 61910).armed).toBe(stopOnlySell);
     expect(checkStaleLegs(stopOnlySell, 61900).armed).toBeNull();
-    // 片面 range(下レッグのみ)も同様。
+    // 片面 range(下レッグのみ)は最低距離の対象外(range 分岐は据え置き・従来どおり)。
     const lowerOnly: ArmedBracket = { direction: 'buy', rationale: 'r', at: 0, mode: 'range', range: { lower: FADE_LO } };
     expect(checkStaleLegs(lowerOnly, 61896).armed).toBe(lowerOnly);
     expect(checkStaleLegs(lowerOnly, 61895).armed).toBeNull();
@@ -820,26 +859,35 @@ describe('checkStaleLegs(通過済みレッグを武装しない・境界値)', 
     expect(checkStaleLegs(a, 62005).armed).toBeNull();
   });
 
-  it('約定判定(detectFill/detectRangeFill)と 1円刻みで完全一致する(規約の二重定義が無いことの検査)', () => {
+  it('約定判定(detectFill/detectRangeFill) + directional のみの最低距離 と 1円刻みで完全一致する(規約の二重定義が無いことの検査)', () => {
     const cases: ArmedBracket[] = [buyOco(), sellOco(), range(FADE_UP, FADE_LO), range(BREAK_UP, BREAK_LO)];
     for (const a of cases) {
+      const isRange = a.mode === 'range';
       for (let live = 61850; live <= 62050; live += 1) {
-        const isRange = a.mode === 'range';
         const filled = isRange ? detectRangeFill(a, live) != null : detectFill(a, live) != null;
+        // ★2026-08-17: directional は最低距離(MIN_ENTRY_DISTANCE_YEN)も OR で乗る(range は対象外)。
+        const tooClose = !isRange && (
+          (a.limitEntry != null && Math.abs(a.limitEntry - live) < MIN_ENTRY_DISTANCE_YEN) ||
+          (a.stopEntry != null && Math.abs(a.stopEntry - live) < MIN_ENTRY_DISTANCE_YEN)
+        );
         const r = checkStaleLegs(a, live);
-        // 「どれか1レッグでも即約定する」=「stale レッグが在る」と同値(=同じ規約を共有している)。
-        expect({ live, any: r.legs.some(l => l.stale) }).toEqual({ live, any: filled });
+        // 「どれか1レッグでも即約定する、または(directionalのみ)近すぎる」=「stale レッグが在る」と同値。
+        expect({ live, any: r.legs.some(l => l.stale) }).toEqual({ live, any: filled || tooClose });
       }
     }
   });
 });
 
-// ★不変条件の再証明(境界グリッド + fuzz)。stale plan veto が満たすべき性質を、約定判定(detectFill /
-//   detectRangeFill)を唯一の基準として全数検査する:
-//     I1 ゲート後のブラケットは live で即約定しない(=通過済みレッグが残らない)
-//     I2 誤抑止=0(live で約定しないレッグは絶対に落とさない)
-//     I3 抑止漏れ=0(live で約定するレッグは必ず落とす)
-//     + 引数(ArmedBracket)を破壊しない / legs[] の stale フラグが約定判定と一致する
+// ★不変条件の再証明(境界グリッド + fuzz)。stale plan veto が満たすべき性質を、
+//   「約定判定(detectFill/detectRangeFill)」+「directional のみの最低距離(MIN_ENTRY_DISTANCE_YEN)」を
+//   唯一の基準として全数検査する。
+//   ★2026-08-17: 最低距離をレッグ単位で追加したため、I2/I3 の基準を「即約定するか」から
+//     「落ちるべきか(=約定 or directional は最低距離未満)」に更新した(wouldDrop)。range(upper/lower)
+//     は最低距離の対象外のままなので、そちらは従来どおり fills のみで判定する。
+//     I1 ゲート後のブラケットは live で即約定しない(=通過済みレッグが残らない・fills のみで判定=不変)
+//     I2 誤抑止=0(落ちるべきでないレッグは絶対に落とさない)
+//     I3 抑止漏れ=0(落ちるべきレッグは必ず落とす)
+//     + 引数(ArmedBracket)を破壊しない / legs[] の stale フラグが「落ちるべきか」の判定と一致する
 //   ★レッグ単独の約定可否で判定するので「同tick両成立は指値優先」という detectFill の規約に依存しない
 //     (=レッグごとの独立判定であることも同時に検査している)。
 describe('checkStaleLegs 不変条件の再証明(境界グリッド + fuzz)', () => {
@@ -868,6 +916,14 @@ describe('checkStaleLegs 不変条件の再証明(境界グリッド + fuzz)', (
     if (leg === 'limit') return { ...a, stopEntry: undefined, stopLossForStop: undefined };
     return { ...a, limitEntry: undefined, stopLossForLimit: undefined };
   };
+  /** そのレッグが落ちるべきか= 約定 or (directional のみ)最低距離未満。range(upper/lower)は最低距離の
+   *  対象外なので fills のみで判定する(設計どおり・range 分岐は変更していない)。 */
+  const wouldDrop = (a: ArmedBracket, leg: LegName, live: number): boolean => {
+    if (fills(single(a, leg), live)) return true;
+    if (leg === 'limit' && a.limitEntry != null) return Math.abs(a.limitEntry - live) < MIN_ENTRY_DISTANCE_YEN;
+    if (leg === 'stop' && a.stopEntry != null) return Math.abs(a.stopEntry - live) < MIN_ENTRY_DISTANCE_YEN;
+    return false;
+  };
   /** 1ケース検査して違反文言を返す(空配列=不変条件を満たす)。expect は最後に1回だけ叩く(高速化)。 */
   const check = (a: ArmedBracket, live: number): string[] => {
     const snapshot = JSON.stringify(a);
@@ -877,16 +933,16 @@ describe('checkStaleLegs 不変条件の再証明(境界グリッド + fuzz)', (
     const names = presentLegs(a);
     const kept = r.armed ? presentLegs(r.armed) : [];
     for (const n of names) {
-      const would = fills(single(a, n), live);
+      const would = wouldDrop(a, n, live);
       const rep = r.legs.find(l => l.name === n);
       if (!rep) v.push(`legs[] に ${n} が無い`);
-      else if (rep.stale !== would) v.push(`stale フラグ不一致 ${n}(報告=${rep.stale} 約定判定=${would})`);
-      if (would && kept.includes(n)) v.push(`I3 抑止漏れ: 即約定する ${n} が残った`);
-      if (!would && !kept.includes(n)) v.push(`I2 誤抑止: 未到達の ${n} を落とした`);
+      else if (rep.stale !== would) v.push(`stale フラグ不一致 ${n}(報告=${rep.stale} 判定=${would})`);
+      if (would && kept.includes(n)) v.push(`I3 抑止漏れ: 落ちるべき ${n} が残った`);
+      if (!would && !kept.includes(n)) v.push(`I2 誤抑止: 落ちるべきでない ${n} を落とした`);
     }
     if (r.legs.length !== names.length) v.push(`legs[] 件数不一致(${r.legs.length}≠${names.length})`);
     if (r.armed && fills(r.armed, live)) v.push('I1 違反: ゲート後のブラケットが live で即約定する');
-    if (!r.armed && !names.every(n => fills(single(a, n), live))) v.push('null 化したが未到達レッグが在った');
+    if (!r.armed && !names.every(n => wouldDrop(a, n, live))) v.push('null 化したが落ちるべきでないレッグが在った');
     return v.map(x => `${x} @live=${live} bracket=${snapshot}`);
   };
   const mkDir = (dir: 'buy' | 'sell', limit?: number, stop?: number): ArmedBracket => {

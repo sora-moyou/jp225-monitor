@@ -132,8 +132,12 @@ describe('stale plan veto(A・flat→ARM): 通過済みレッグを武装しな�
     expect(sig.limitEntry).toBe(37950);
   });
 
-  it('あと1円(37946 / 38099)では従来どおり両レッグ ARM(境界)', async () => {
-    for (const live of [37946, 38099]) {
+  // ★2026-08-17: 最低距離(ラグ緩衝) MIN_ENTRY_DISTANCE_YEN=10円 が層1(decisions.ts)に乗ったため、
+  //   「あと1円」は約定していなくても近すぎて落ちる(reason=tooClose)。境界はちょうど10円になった。
+  it('ちょうど10円(37960 / 38090)は武装のまま(境界は含む)・10円未満(37959 / 38091)は最低距離で片方だけ落ちる', async () => {
+    // 指値側の境界: entry=37950。37960=距離10(武装)/ 37959=距離9(limit だけ落ちる)。stop(38100)側は
+    //   常に100円超離れているので影響を受けない。
+    for (const [live, keepLimit] of [[37960, true], [37959, false]] as const) {
       mockRunner.mockReset();
       mockRunner.mockResolvedValue({ ok: true, plan: buyOco });
       setLive(live);
@@ -142,7 +146,21 @@ describe('stale plan veto(A・flat→ARM): 通過済みレッグを武装しな�
       eng.feed(REF, NOW);
       await settle();
       const sig = eng.getCurrentSignal()!;
-      expect({ live, limit: sig.limitEntry, stop: sig.stopEntry }).toEqual({ live, limit: 37950, stop: 38100 });
+      expect({ live, limit: sig.limitEntry, stop: sig.stopEntry })
+        .toEqual({ live, limit: keepLimit ? 37950 : undefined, stop: 38100 });
+    }
+    // 逆指値側の境界: entry=38100。38090=距離10(武装)/ 38091=距離9(stop だけ落ちる)。
+    for (const [live, keepStop] of [[38090, true], [38091, false]] as const) {
+      mockRunner.mockReset();
+      mockRunner.mockResolvedValue({ ok: true, plan: buyOco });
+      setLive(live);
+      const eng = newEngineA();
+      await eng.start();
+      eng.feed(REF, NOW);
+      await settle();
+      const sig = eng.getCurrentSignal()!;
+      expect({ live, limit: sig.limitEntry, stop: sig.stopEntry })
+        .toEqual({ live, limit: 37950, stop: keepStop ? 38100 : undefined });
     }
   });
 

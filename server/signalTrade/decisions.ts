@@ -156,6 +156,20 @@ export const LIMIT_FILL_MARGIN_YEN = 5;
  *  ★**逆指値(stop)には適用しない**(→ STOP_SLIPPAGE_YEN)。 */
 export const SLIPPAGE_YEN = 5;
 
+/** ★層1(執行): エントリーが live 価格に近すぎて、発注が届くまでに越えてしまう距離[円]。
+ *  これ **未満** のレッグは落とす(ちょうどは通す)。
+ *
+ *  ■ 実測(2026-08-17)
+ *   monitor ARM → trade2 発注決定 のラグは 中央値 6.7秒 / p90 9.2秒 / p99 19.8秒。
+ *   そのうち 82% は trade2 の内部処理(受信そのものは中央値 22ms)。
+ *   旧「50円」はプロンプトに3箇所書かれていたがコードの強制はゼロで、実測 72% のレッグが違反していた。
+ *   50円は「節目の5〜10円内側」と 89.8% の断面で両立せず、AI は例外なく距離のほうを捨てていた。
+ *  ■ なぜ 10 か
+ *   trade2 に発注拒否の処理があり(第2レッグ拒否→第1レッグ取消→FLAT)、失敗は機会損失の方向に倒れる。
+ *   現在の配置の 94.8% が 10円以上なので、正常な計画はほぼ落ちない。
+ *  ★この値はラグに比例する。trade2 の内部処理 5.5秒が縮めば、この値も下げられる。 */
+export const MIN_ENTRY_DISTANCE_YEN = 10;
+
 /** **逆指値(stop)がトリガして成行転換したとき**の不利方向スリッページ[円]= **0**(=逆指値価格ちょうどで約定)。
  *  新規(open)・決済(close)とも同じ。trade2 matchingEngine.tryFill の stop 分岐と同一規約。
  *
@@ -228,6 +242,8 @@ export interface StaleLegReport {
   name: 'limit' | 'stop' | 'upper' | 'lower';
   entry: number;
   stale: boolean;   // true = ARM 時点の live 価格で既に約定条件を満たす(=武装したら即約定する)
+  /** なぜ落ちたか。filled=live が既に通過 / tooClose=最低距離未満。落ちていないレッグには付かない。 */
+  reason?: 'filled' | 'tooClose';
 }
 
 /** ★「もう通過した価格」のレッグを武装しない純関数(stale plan veto)。
@@ -273,18 +289,24 @@ export function checkStaleLegs(
     return { armed: next, legs };
   }
   // 単方向(directional): レッグ単独のブラケットを組んで detectFill に問う(指値=5円行き過ぎ / 逆指値=タッチ)。
+  // ★最低距離(層1): live に近すぎるレッグは、発注が届くまでに越える=成立しないので落とす。
+  const tooClose = (entry: number): boolean => Math.abs(entry - price) < MIN_ENTRY_DISTANCE_YEN;
   const hasLimit = a.limitEntry != null && a.stopLossForLimit != null;
   const hasStop = a.stopEntry != null && a.stopLossForStop != null;
   let keepLimit = hasLimit;
   let keepStop = hasStop;
   if (hasLimit) {
-    const stale = detectFill({ ...a, stopEntry: undefined, stopLossForStop: undefined }, price) != null;
-    legs.push({ name: 'limit', entry: a.limitEntry as number, stale });
+    const filled = detectFill({ ...a, stopEntry: undefined, stopLossForStop: undefined }, price) != null;
+    const close = tooClose(a.limitEntry as number);
+    const stale = filled || close;
+    legs.push({ name: 'limit', entry: a.limitEntry as number, stale, ...(stale ? { reason: filled ? 'filled' as const : 'tooClose' as const } : {}) });
     if (stale) keepLimit = false;
   }
   if (hasStop) {
-    const stale = detectFill({ ...a, limitEntry: undefined, stopLossForLimit: undefined }, price) != null;
-    legs.push({ name: 'stop', entry: a.stopEntry as number, stale });
+    const filled = detectFill({ ...a, limitEntry: undefined, stopLossForLimit: undefined }, price) != null;
+    const close = tooClose(a.stopEntry as number);
+    const stale = filled || close;
+    legs.push({ name: 'stop', entry: a.stopEntry as number, stale, ...(stale ? { reason: filled ? 'filled' as const : 'tooClose' as const } : {}) });
     if (stale) keepStop = false;
   }
   if (!keepLimit && !keepStop) return { armed: null, legs };
