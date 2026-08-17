@@ -1725,6 +1725,49 @@ describe('scalp プロンプト trendVeto 文言', () => {
   });
 });
 
+// ─── 変更A(2026-08-18): トレンドveto が委任(=数値veto無効)のとき、「コード側の自動見送り」という
+//   存在しない安全網の説明をAIに告げない。実測: veto_fired は全12,043プランで0(一度も発火していない)。
+describe('★存在しない安全網を告げない(委任時)', () => {
+  it('トレンドveto が委任(閾値0)のとき、質問文に「自動見送り」が出ない', () => {
+    // buildScalpPlan は trendVeto directive が ai のとき trendVetoYen=0 を渡す(既存実装・scalpPlan.ts:2228)。
+    const q = buildScalpQuestion(45, 65, true, 0);
+    const s = buildScalpSystemPrompt(45, 65, true, 0);
+    expect(q).not.toContain('自動見送り');
+    expect(s).not.toContain('自動見送り');
+  });
+  it('手動(閾値>0)のときは従来どおり出る(否定対照)', () => {
+    const q = buildScalpQuestion(45, 65, true, 100);
+    const s = buildScalpSystemPrompt(45, 65, true, 100);
+    expect(q).toContain('自動見送り');
+    expect(s).toContain('自動見送り');
+  });
+
+  const trendVetoSpecBase = {
+    floor: { mode: 'manual' as const, value: 45 },
+    ceiling: { mode: 'manual' as const, value: 65 },
+    trendVeto: { mode: 'manual' as const, value: 100 },
+    cooldown: { mode: 'manual' as const, value: 90 },
+    bias: { mode: 'manual' as const, value: 'none' as const },
+    range: { mode: 'manual' as const, value: true },
+    hardMax: { enabled: true, value: 150 },
+    exitDesc: '【決済ロジック】…',
+  };
+  it('buildStrategySpec: トレンドveto が委任(mode=ai)のとき「自動見送り」が出ない', () => {
+    const s = buildStrategySpec({ ...trendVetoSpecBase, trendVeto: { mode: 'ai', value: 100 } });
+    expect(s).not.toContain('自動見送り');
+    expect(s).toContain('【AI委任=あなたが決めてよい】');   // 委任タグ自体は残る(表示は別の役割)
+  });
+  it('buildStrategySpec: 手動(mode=manual・値>0)のときは従来どおり出る(否定対照)', () => {
+    const s = buildStrategySpec(trendVetoSpecBase);
+    expect(s).toContain('自動見送り');
+    expect(s).toContain('【手動=固定・厳守】');
+  });
+  it('buildStrategySpec: 手動だが値=0のときも出さない(閾値0=veto無効という理由は共通)', () => {
+    const s = buildStrategySpec({ ...trendVetoSpecBase, trendVeto: { mode: 'manual', value: 0 } });
+    expect(s).not.toContain('自動見送り');
+  });
+});
+
 describe('scalp プロンプト range トグル(rangeEnabled)', () => {
   it('rangeEnabled=true(既定)でプロンプト/JSON に range 指示が入る', () => {
     expect(buildScalpQuestion()).toContain('range');

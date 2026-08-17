@@ -1820,7 +1820,14 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     `- トレンド判定: 10分・30分・MA20傾き の合議(10分で±${i.trendVeto.value}円以上 / 30分で±${i.trendVeto.value * 2}円以上)でトレンド`
       + `=それに逆行するフェード新規(順トレンドの高値売り/安値買いの戻り売買)は禁止。`
       + `10分と長い時間軸が逆向きなら どちらとも断定せず見送り(direction:"none")を基本にする。`
-      + `※自動見送り(veto)は直近10分の±${i.trendVeto.value}円だけで判定する=長い時間軸のトレンドに逆行しないのはあなたの判断による${knobTag(i.trendVeto.mode)}`,
+      // ★存在しない安全網を委任時に告げない(2026-08-18): 「コード側の自動見送り」は手動(mode==='manual')かつ
+      //   閾値>0のときだけ実在する(委任時はこの数値veto自体が無効=閾値0。実測: veto_fired は全プランで0)。
+      //   委任または値0のときは、この1文を出さない(手動に戻せば従来どおりの文言に戻る)。
+      //   knobTag は文の有無に関わらず常に出す(委任状態の表示は別の役割=既存テスト固定)。
+      + (i.trendVeto.mode === 'manual' && i.trendVeto.value > 0
+        ? `※自動見送り(veto)は直近10分の±${i.trendVeto.value}円だけで判定する=長い時間軸のトレンドに逆行しないのはあなたの判断による`
+        : '')
+      + knobTag(i.trendVeto.mode),
     `- クールダウン: 決済後 ${i.cooldown.value}秒 は再エントリー抑止${knobTag(i.cooldown.mode)}`,
     `- バイアス: ${biasLabel}${knobTag(i.bias.mode)}`,
     `- レンジ両面(direction:"range"=現在値の上下に1レッグずつ置く両面ストラドル): ${i.range.value ? '有効' : '無効'}${knobTag(i.range.mode)}`,
