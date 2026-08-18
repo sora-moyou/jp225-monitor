@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, withStrategyLabel, buildRationaleView, type SignalTradeState } from './signalPanel.js';
+import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, withStrategyLabel, buildRationaleView, buildLevelBasis, basisTail, type SignalTradeState } from './signalPanel.js';
 import { stripLcArithmetic } from '../../core/rationaleDisplay.js';
 
 // ─── シグナル枠(buildSignalView): 現在シグナル(s.signal)を常時描く=保有中も消えない ───
@@ -373,10 +373,15 @@ describe('buildSignalView: 相場の読み(strategy / strategyWhy)', () => {
     expect(buildSignalView(sig({ rationale: LC_ONLY, strategy: '寄り天狙い' })).bias).toBe('買い目線・寄り天狙い');
   });
 
-  it('ドテンの目線行の書式を壊さない(既存の `・` の後ろに足すだけ)', () => {
+  it('ドテンの目線行の書式を壊さない(既存の `・` の後ろに足すだけ・★ただし語の重複は作らない)', () => {
+    // ★v0.9.87 で修正: v0.9.86 はここで「🔃 ドテン(反転)・買い目線・ドテン」と **ドテンを2回** 出していた。
+    //   目線行に既に現れている語は足さない(下の「別ラベルなら足す」で、足す側の挙動は残っていることを固定)。
     const v = buildSignalView(sig({ rationale: LC_ONLY, doten: true, strategy: 'ドテン', strategyWhy: '上昇転換で保有の売りを畳む' }));
-    expect(v.bias).toBe('🔃 ドテン(反転)・買い目線・ドテン');
+    expect(v.bias).toBe('🔃 ドテン(反転)・買い目線');
     expect(v.rationale).toBe('上昇転換で保有の売りを畳む');
+    // ドテンでも「ドテン」以外のラベルは従来どおり後ろに足す。
+    expect(buildSignalView(sig({ rationale: LC_ONLY, doten: true, strategy: 'ブレイク順張り' })).bias)
+      .toBe('🔃 ドテン(反転)・買い目線・ブレイク順張り');
     // ラベルが無いドテンは従来どおり。
     expect(buildSignalView(sig({ rationale: LC_ONLY, doten: true })).bias).toBe('🔃 ドテン(反転)・買い目線');
   });
@@ -439,5 +444,172 @@ describe('withStrategyLabel / buildRationaleView', () => {
     expect(buildRationaleView('LC幅は60円。', '押し目を取る')).toBe('押し目を取る');
     expect(buildRationaleView(undefined, '押し目を取る')).toBe('押し目を取る');
     expect(buildRationaleView('', '押し目を取る')).toBe('押し目を取る');
+  });
+});
+
+// ─── ★v0.9.87: 「なぜこの価格なのか」= どの節目に基づいて置いたか ──────────────
+//
+// ■ 何を守るテストか
+//   この仕組みの価格は必ず節目から導かれる契約(指値=節目の内側 / ブレイク新規=節目の外側)なので、
+//   **どの節目を使ったか** が「なぜこの価格か」の答えになる。AI は節目の価格を数値で申告するだけで、
+//   内側/外側と距離は **画面側が計算する**(AI に書かせない=嘘の表示を作らない)。
+//   ★4象限すべてを固定する。取り違えると「25円内側」と書きながら実は外側、という嘘の画面になる。
+//
+// ★否定対照: 節目の申告が無い回は PanelView に basis を **付けない**=従来と byte 一致(下で JSON 比較)。
+describe('★buildLevelBasis / basisTail(節目の行・4象限)', () => {
+  it('買い・指値: 節目(支持)の上に置く=内側', () => {
+    // 数直線: 68,700(節目) ── 68,725(指値) ── 現在値 →
+    expect(basisTail('buy', 'limit', 68725, 68700)).toBe('の 25円内側');
+  });
+  it('買い・逆指値(ブレイク新規): 節目(抵抗)の上に置く=外側', () => {
+    // 数直線: ← 現在値 ── 68,775(節目) ── 68,780(逆指値)
+    expect(basisTail('buy', 'stop', 68780, 68775)).toBe('の 5円外側');
+  });
+  it('売り・指値: 節目(抵抗)の下に置く=内側', () => {
+    // 数直線: ← 現在値 ── 68,775(指値) ── 68,800(節目)
+    expect(basisTail('sell', 'limit', 68775, 68800)).toBe('の 25円内側');
+  });
+  it('売り・逆指値(ブレイク新規): 節目(支持)の下に置く=外側', () => {
+    // 数直線: 68,695(逆指値) ── 68,700(節目) ── 現在値 →
+    expect(basisTail('sell', 'stop', 68695, 68700)).toBe('の 5円外側');
+  });
+
+  // ★反対側に置いた回(契約違反)も **そのまま正直に** 出す。丸めて「内側」と言わない。
+  it('契約と逆の側に置いた回は逆の語になる(4象限の裏)', () => {
+    expect(basisTail('buy', 'limit', 68690, 68700)).toBe('の 10円外側');   // 支持を割った位置の指値
+    expect(basisTail('buy', 'stop', 68770, 68775)).toBe('の 5円内側');     // 抵抗の手前の逆指値
+    expect(basisTail('sell', 'limit', 68810, 68800)).toBe('の 10円外側');
+    expect(basisTail('sell', 'stop', 68705, 68700)).toBe('の 5円内側');
+  });
+
+  it('節目そのものに置いた回は「ちょうど」(内も外も無いので向きを作らない)', () => {
+    expect(basisTail('buy', 'limit', 68700, 68700)).toBe('ちょうど');
+    expect(basisTail('sell', 'stop', 68700, 68700)).toBe('ちょうど');
+    expect(buildLevelBasis('buy', { limitEntry: 68700, limitLevel: 68700 })).toBe('指値 ← 68,700 ちょうど');
+  });
+
+  it('両脚そろえば1行に並ぶ(依頼どおりの書式)', () => {
+    expect(buildLevelBasis('buy', {
+      limitEntry: 68725, limitLevel: 68700, stopEntry: 68780, stopLevel: 68775,
+    })).toBe('指値 ← 68,700 の 25円内側 ／ 逆指値 ← 68,775 の 5円外側');
+  });
+
+  it('★節目が申告されていない脚は出さない(「不明」と書かない)', () => {
+    // 逆指値レッグは在るが節目の申告が無い → 指値の分だけ出す。
+    expect(buildLevelBasis('buy', { limitEntry: 68725, limitLevel: 68700, stopEntry: 68780 }))
+      .toBe('指値 ← 68,700 の 25円内側');
+    // 節目は申告されたがその脚が落ちている(entry が無い) → 孤立した節目は出さない。
+    expect(buildLevelBasis('buy', { limitEntry: 68725, limitLevel: 68700, stopLevel: 68775 }))
+      .toBe('指値 ← 68,700 の 25円内側');
+    expect(buildLevelBasis('sell', { stopEntry: 68695, stopLevel: 68700 }))
+      .toBe('逆指値 ← 68,700 の 5円外側');
+  });
+
+  it('両方とも申告が無ければ空文字(=行ごと出さない)', () => {
+    expect(buildLevelBasis('buy', { limitEntry: 68725, stopEntry: 68780 })).toBe('');
+    expect(buildLevelBasis('buy', {})).toBe('');
+  });
+
+  it('壊れた値(NaN/Infinity)でも行を作らない(嘘の距離を出さない)', () => {
+    expect(buildLevelBasis('buy', { limitEntry: 68725, limitLevel: NaN })).toBe('');
+    expect(buildLevelBasis('buy', { limitEntry: 68725, limitLevel: Infinity })).toBe('');
+    expect(buildLevelBasis('buy', { limitEntry: NaN, limitLevel: 68700 })).toBe('');
+  });
+});
+
+describe('★buildSignalView: 節目の行を画面へ出す', () => {
+  const SIG = {
+    phase: 'armed' as const, updatedAt: 0,
+    signal: {
+      direction: 'buy' as const,
+      limitEntry: 68725, stopLossForLimit: 68665,
+      stopEntry: 68780, stopLossForStop: 68720,
+      rationale: '上昇トレンド中、押し目を拾う', at: 10,
+    },
+  };
+
+  it('両脚に節目があれば理由の最後の行として出る(依頼の完成形)', () => {
+    const v = buildSignalView({
+      ...SIG,
+      signal: { ...SIG.signal, strategy: 'トレンド押し目・戻り', limitLevel: 68700, stopLevel: 68775 },
+    });
+    expect(v.bias).toBe('買い目線・トレンド押し目・戻り');
+    expect(v.main).toBe('🎯 シグナル：買い 68,725 指値 (LC 68,665) / 買い 68,780 逆指値 (LC 68,720)');
+    expect(v.basis).toBe('指値 ← 68,700 の 25円内側 ／ 逆指値 ← 68,775 の 5円外側');
+  });
+
+  it('売りでも同じ経路で出る', () => {
+    const v = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'sell', limitEntry: 68775, stopLossForLimit: 68835,
+        stopEntry: 68695, stopLossForStop: 68755,
+        rationale: '戻り売り', at: 10, limitLevel: 68800, stopLevel: 68700,
+      },
+    });
+    expect(v.basis).toBe('指値 ← 68,800 の 25円内側 ／ 逆指値 ← 68,700 の 5円外側');
+  });
+
+  it('片脚だけならその脚だけ出る', () => {
+    const v = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665, rationale: '押し目', at: 10, limitLevel: 68700 },
+    });
+    expect(v.basis).toBe('指値 ← 68,700 の 25円内側');
+  });
+
+  it('★否定対照: 節目の申告が無い回は PanelView が従来と byte 一致(basis キーも生えない)', () => {
+    const before = buildSignalView(SIG);
+    expect(Object.prototype.hasOwnProperty.call(before, 'basis')).toBe(false);
+    expect(JSON.stringify(before)).toBe(JSON.stringify({
+      cls: 'armed',
+      bias: '買い目線',
+      main: '🎯 シグナル：買い 68,725 指値 (LC 68,665) / 買い 68,780 逆指値 (LC 68,720)',
+      rationale: '上昇トレンド中、押し目を拾う',
+    }));
+    // 落ちた脚の節目だけが申告されていても、行は生えない(孤立した節目を見せない)。
+    const onlyDropped = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: { direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665, rationale: '押し目', at: 10, stopLevel: 68775 },
+    });
+    expect(onlyDropped.basis).toBeUndefined();
+  });
+
+  it('レンジ両面は対象外(上下2レッグへの対応づけが無いので憶測で結びつけない)', () => {
+    const v = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'buy', at: 10, rationale: 'レンジ', mode: 'range',
+        limitLevel: 68700, stopLevel: 68775,
+        range: {
+          upper: { side: 'sell', type: 'limit', entry: 68900, stopLoss: 68960 },
+          lower: { side: 'buy', type: 'limit', entry: 68700, stopLoss: 68640 },
+        },
+      },
+    });
+    expect(v.basis).toBeUndefined();
+  });
+});
+
+describe('★ドテンの重複表示(直前のコミットのバグ)', () => {
+  const doten = (strategy?: string): string | undefined => buildSignalView({
+    phase: 'armed', updatedAt: 0,
+    signal: { direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665, rationale: '反転', at: 10, doten: true, strategy },
+  }).bias;
+
+  it('ラベルが「ドテン」でも目線行に2回出さない', () => {
+    // ★以前は「🔃 ドテン(反転)・買い目線・ドテン」になっていた。
+    expect(doten('ドテン')).toBe('🔃 ドテン(反転)・買い目線');
+  });
+
+  it('別のラベルなら従来どおり添える(ドテンの書式は壊さない)', () => {
+    expect(doten('ブレイク順張り')).toBe('🔃 ドテン(反転)・買い目線・ブレイク順張り');
+    expect(doten()).toBe('🔃 ドテン(反転)・買い目線');
+  });
+
+  it('withStrategyLabel 単体: 既に現れている語は足さない/現れていない語は足す', () => {
+    expect(withStrategyLabel('🔃 ドテン(反転)・買い目線', 'ドテン')).toBe('🔃 ドテン(反転)・買い目線');
+    expect(withStrategyLabel('買い目線', 'ドテン')).toBe('買い目線・ドテン');
+    expect(withStrategyLabel('買い目線', 'トレンド押し目・戻り')).toBe('買い目線・トレンド押し目・戻り');
   });
 });

@@ -52,6 +52,12 @@ export interface ArmedBracket {
   //   欠落(旧版の計画 / AI が書かなかった回)では **フィールドごと付けない**=従来と byte 一致。
   strategy?: string;
   strategyWhy?: string;
+  // ★v0.9.87(表示専用・ADD-ONLY): その価格の根拠にした節目(AiPlan.limitLevel / stopLevel)。
+  //   ★エントリー価格は刻み丸め(roundEntryToTick)で動くが、節目は **AI の申告のまま** 運ぶ。
+  //     画面が出す距離は「実際に武装した価格 − 節目」= 画面のメイン行に出ている価格と辻褄が合う。
+  //   ★採否・価格・脚落ち・約定・決済には一切使わない(strategy と同じ「持ち回るだけ」の扱い)。
+  limitLevel?: number;
+  stopLevel?: number;
   // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。約定→決済→meta/SSE へ持ち回る。
   settings?: SignalSettingsSnapshot;
   // ★ドテン(反転): このブラケットが保有中の反転評価で armed された「反対方向の反転建て」であることを示す。
@@ -83,6 +89,9 @@ export interface CurrentSignal {
   // ★v0.9.86(表示専用・ADD-ONLY): その計画の「相場の読み」(ArmedBracket から引き継ぐ)。SSE 経由で画面に出す。
   strategy?: string;
   strategyWhy?: string;
+  // ★v0.9.87(表示専用・ADD-ONLY): その価格の根拠にした節目(ArmedBracket から引き継ぐ)。
+  limitLevel?: number;
+  stopLevel?: number;
   // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
   mode?: 'range';
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -708,6 +717,9 @@ export function toSignalTradeState(
     //   片方だけに載せると経路によって画面からラベルが消える。欠落時は付与しない=既存 JSON 不変。
     if (a.strategy !== undefined) s.entry.strategy = a.strategy;
     if (a.strategyWhy !== undefined) s.entry.strategyWhy = a.strategyWhy;
+    // ★v0.9.87: 価格の根拠にした節目も entry に載せる(signal が無い経路でも節目の行が出るように)。
+    if (a.limitLevel !== undefined) s.entry.limitLevel = a.limitLevel;
+    if (a.stopLevel !== undefined) s.entry.stopLevel = a.stopLevel;
   }
   if (st.phase === 'filled' && st.position) {
     const p = st.position;
@@ -740,6 +752,9 @@ export function toSignalTradeState(
     //   ラベルは一覧外の生値でも丸めずそのまま載せる(台帳 signal_plans.strategy と同じ規約)。
     if (signal.strategy !== undefined) s.signal.strategy = signal.strategy;
     if (signal.strategyWhy !== undefined) s.signal.strategyWhy = signal.strategyWhy;
+    // ★v0.9.87: 「その価格の根拠にした節目」を露出(在るときだけ)。**画面が内側/外側と距離を計算して描く**。
+    if (signal.limitLevel !== undefined) s.signal.limitLevel = signal.limitLevel;
+    if (signal.stopLevel !== undefined) s.signal.stopLevel = signal.stopLevel;
     // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
     if (signal.settings) s.signal.settings = signal.settings;
     // ★ドテン(反転)フラグ(ADD-ONLY): 実 doten の時だけ付与。非 doten の JSON は不変=dedupe/OFF byte 一致。
@@ -780,6 +795,8 @@ export function planToArmed(
     regime?: PlanMeta['regime']; confidence?: number;
     // ★v0.9.86(表示専用): その計画の「相場の読み」。載っていれば armed へそのまま引き継ぐ(丸めない)。
     strategy?: string; strategyWhy?: string;
+    // ★v0.9.87(表示専用): その価格の根拠にした節目。同じく載っていればそのまま引き継ぐ。
+    limitLevel?: number; stopLevel?: number;
   },
   now: number,
   extra?: { vetoFired?: boolean },
@@ -791,6 +808,11 @@ export function planToArmed(
   const carryStrategy = (a: ArmedBracket): ArmedBracket => {
     if (plan.strategy !== undefined) a.strategy = plan.strategy;
     if (plan.strategyWhy !== undefined) a.strategyWhy = plan.strategyWhy;
+    // ★v0.9.87: 価格の根拠にした節目も同じ経路で運ぶ(有限な数だけ・在るときだけ付ける)。
+    //   ★非有限を弾くのはここではなく **形の防衛** として: parse は既に弾いているが、
+    //     planToArmed は純関数として直接も呼ばれる(テスト/影シミュ)ので、NaN が画面まで抜けない場所を作る。
+    if (plan.limitLevel !== undefined && Number.isFinite(plan.limitLevel)) a.limitLevel = plan.limitLevel;
+    if (plan.stopLevel !== undefined && Number.isFinite(plan.stopLevel)) a.stopLevel = plan.stopLevel;
     return a;
   };
   // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
@@ -893,6 +915,9 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
   // ★v0.9.86: 「相場の読み」を引き継ぐ(在るときだけ=欠落なら従来と byte 一致)。
   if (a.strategy !== undefined) s.strategy = a.strategy;
   if (a.strategyWhy !== undefined) s.strategyWhy = a.strategyWhy;
+  // ★v0.9.87: 価格の根拠にした節目を引き継ぐ(同上)。
+  if (a.limitLevel !== undefined) s.limitLevel = a.limitLevel;
+  if (a.stopLevel !== undefined) s.stopLevel = a.stopLevel;
   // ★v0.7.56: 実効設定スナップショットを引き継ぐ(在るときだけ)。
   if (a.settings) s.settings = a.settings;
   // ★ドテン(反転)フラグを引き継ぐ(在るときだけ=add-only)。

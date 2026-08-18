@@ -150,7 +150,10 @@ export function initSchema(db: DatabaseSync): void {
       provider_model TEXT,
       -- ★v0.9.84(RECORD-ONLY): その計画の **狙い**(相場の読み)。下の ALTER と同じ2列。
       strategy TEXT,
-      strategy_why TEXT
+      strategy_why TEXT,
+      -- ★v0.9.87(RECORD-ONLY): その価格の **根拠にした節目**。下の ALTER と同じ2列。
+      limit_level REAL,
+      stop_level REAL
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -225,6 +228,21 @@ export function initSchema(db: DatabaseSync): void {
   //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行 / AI が書かなかった回)。
   if (!spCols.includes('strategy')) db.exec('ALTER TABLE signal_plans ADD COLUMN strategy TEXT');
   if (!spCols.includes('strategy_why')) db.exec('ALTER TABLE signal_plans ADD COLUMN strategy_why TEXT');
+  // ★v0.9.87(RECORD-ONLY): その価格の **根拠にした節目**(指値用 / ブレイク新規用)。
+  //
+  //   ■ なぜ要るか(記録の目的は「表示の裏取り」)
+  //     この仕組みの価格は必ず節目から導かれる契約(指値=節目の内側 / ブレイク新規=節目の外側)なので、
+  //     「どの節目を使ったか」が **なぜこの価格なのか** の答えそのものになる。画面にも出すが、
+  //     台帳に要るのは別の理由: **本当に節目から導いたのかを後から検証できるようにするため**。
+  //     limit_entry / stop_entry と同じ行に並ぶので、|entry − level| を数えれば
+  //     「5〜10円内側」の契約が守られているか / そもそも節目でない値を書いていないかが測れる。
+  //   ■ 値の意味
+  //     AI が申告した節目の価格そのもの(丸めもクランプもしない。有限で正の数だけを受け付ける)。
+  //     内側/外側と距離は **コードが計算する** ので台帳には入れない(導けるものを二重に持たない)。
+  //   ■ 記録専用。採否・価格・脚落ち・決済には一切使わない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版の旧行 / AI が書かなかった回)。
+  if (!spCols.includes('limit_level')) db.exec('ALTER TABLE signal_plans ADD COLUMN limit_level REAL');
+  if (!spCols.includes('stop_level')) db.exec('ALTER TABLE signal_plans ADD COLUMN stop_level REAL');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -1058,6 +1076,10 @@ export interface SignalPlanRow {
   strategy: string | null;
   /** ★なぜその読みにしたか(AI の自由文)。同上。 */
   strategy_why: string | null;
+  /** ★指値の価格の根拠にした節目(申告値そのもの)。旧行/AI が書かなかった回は NULL。 */
+  limit_level: number | null;
+  /** ★ブレイク新規の価格の根拠にした節目(同上)。 */
+  stop_level: number | null;
 }
 
 export interface SignalPlanInsert {
@@ -1101,6 +1123,10 @@ export interface SignalPlanInsert {
   strategy?: string | null;
   /** ★RECORD-ONLY: なぜその読みにしたか。同上。 */
   strategyWhy?: string | null;
+  /** ★RECORD-ONLY: 指値の価格の根拠にした節目。申告が無かった回は未指定=NULL。 */
+  limitLevel?: number | null;
+  /** ★RECORD-ONLY: ブレイク新規の価格の根拠にした節目。同上。 */
+  stopLevel?: number | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1117,8 +1143,8 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       leg_drops_json, settings_json, rationale, error,
       arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason,
       context_at, prompt_fp, lc_audit_json, omission_audit_json,
-      provider, provider_model, strategy, strategy_why
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      provider, provider_model, strategy, strategy_why, limit_level, stop_level
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1132,6 +1158,8 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     p.omissionAuditJson ?? null,
     p.provider ?? null, p.providerModel ?? null,
     p.strategy ?? null, p.strategyWhy ?? null,
+    // ★節目は数値列。非有限は NULL(壊れた値を入れて後の |entry − level| 集計を汚さない)。
+    finiteOrNull(p.limitLevel), finiteOrNull(p.stopLevel),
   );
 }
 

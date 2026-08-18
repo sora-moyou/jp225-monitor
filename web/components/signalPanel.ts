@@ -29,6 +29,12 @@ export interface SignalCurrent {
   //   どちらも AI 生成文字列 = **必ず textContent で描く**。欠落した回は従来どおりの表示に縮退する。
   strategy?: string;
   strategyWhy?: string;
+  // ★v0.9.87: **なぜこの価格なのか** の答え=その価格の根拠にした節目(server SignalTradeState.signal と同じ)。
+  //   ・limitLevel … 指値の根拠にした節目の価格
+  //   ・stopLevel  … ブレイク新規(逆指値)の根拠にした節目の価格
+  //   ★内側/外側と距離は **ここで計算する**(AI には書かせない)。節目の生値だけを受け取る。
+  limitLevel?: number;
+  stopLevel?: number;
   at?: number;
   mode?: 'range';
   range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
@@ -48,6 +54,8 @@ export interface SignalTradeState {
     rationale?: string;
     strategy?: string;      // ★v0.9.86: signal と同じ「相場の読み」(entry 経路でもラベルを落とさない)。
     strategyWhy?: string;
+    limitLevel?: number;    // ★v0.9.87: signal と同じ「価格の根拠にした節目」(entry 経路でも落とさない)。
+    stopLevel?: number;
     at: number;
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
@@ -120,6 +128,10 @@ export interface PanelView {
   bias?: string;     // 目線行 (買い目線/売り目線/レンジ)。シグナルがある時だけ。メイン行と同サイズ・同色・左詰め。
   main: string;      // メイン行 (安全な固定文言のみ・価格/数値)
   rationale: string; // AI生成文字列 (呼び出し側で textContent 描画)
+  // ★v0.9.87: 節目の行(「指値 ← 68,700 の 25円内側 ／ 逆指値 ← 68,775 の 5円外側」)。
+  //   **コードが計算した文字列**(AI 生成文ではない)。理由の行の最後の1行として描く。
+  //   申告が1つも無い回は undefined = 行ごと出さない(= 従来の表示と byte 一致)。
+  basis?: string;
 }
 
 // 目線ラベル。**新しい語彙を作らない**: 既存の目線行(buildSignalView の bias)と同じ言い回しを使う。
@@ -185,9 +197,76 @@ export function waitReasonLabel(r?: SignalTradeState['waitReason'] | null): stri
  *  ・ラベルが無い/空白だけ のときは **目線行を1バイトも変えない**(空の `・` を絶対に作らない)。
  *  ・★一覧(SCALP_STRATEGY_LABELS)外の生値も **そのまま出す**(台帳と同じ規約=丸めると
  *    「用意した語が現実と合っていない」という一番知りたい事実が画面からも消える)。 */
+/*  ★v0.9.87(重複の修正): ラベルが目線行に **既に現れている** ときは足さない。
+ *    実害: ドテンのラベル(`ドテン`)が来ると「🔃 ドテン(反転)・買い目線・ドテン」と2回出ていた。
+ *    判定は部分一致(`includes`)にする。`・` で割った完全一致では「🔃 ドテン(反転)」と「ドテン」が
+ *    別物になり、この事故をちょうど取り逃がすため(=直したい形が直らない)。
+ *    副作用として「レンジ目線 + レンジ」のような包含関係でも足さないが、それも重複なので望ましい。 */
 export function withStrategyLabel(bias: string, strategy?: string): string {
   const label = (strategy ?? '').trim();
-  return label ? `${bias}・${label}` : bias;
+  if (!label) return bias;
+  if (bias.includes(label)) return bias;   // ★既に出ている語を二度書かない。
+  return `${bias}・${label}`;
+}
+
+/** 節目の行の区切り(2脚あるとき)。★既存の語彙に無い記号なので、ここでだけ定義する。 */
+const BASIS_SEP = ' ／ ';
+
+/** 純関数: そのエントリー価格が節目の「内側」か「外側」か、と距離[円]。★AI には書かせない=ここで計算する。
+ *
+ *  ■ 定義(★4象限すべてを数直線で確かめたもの。取り違えると画面が嘘をつく)
+ *    「内側」= 節目から見て **現在値の側**(まだ節目に届いていない) / 「外側」= 節目を越えた側。
+ *    指値(押し目/戻り)は現在値の手前に置くので、節目の内側に置くのが契約。
+ *    ブレイク新規(逆指値)は節目を抜けたら乗るので、節目の外側に置くのが契約。
+ *
+ *      買い・指値      : 節目(支持)は下。現在値は上。 entry > level  → 内側
+ *          … 68,700(節目) ── 68,725(指値) ── 現在値 →
+ *      買い・逆指値    : 節目(抵抗)は上。現在値は下。 entry > level  → 外側
+ *          … ← 現在値 ── 68,775(節目) ── 68,780(逆指値) …
+ *      売り・指値      : 節目(抵抗)は上。現在値は下。 entry < level  → 内側
+ *          … ← 現在値 ── 68,775(指値) ── 68,800(節目) …
+ *      売り・逆指値    : 節目(支持)は下。現在値は上。 entry < level  → 外側
+ *          … 68,695(逆指値) ── 68,700(節目) ── 現在値 →
+ *
+ *    ⇒ 「向きの先へ出ているか」(buy なら entry>level / sell なら entry<level)を beyond とすると、
+ *       指値は beyond=内側・ブレイク新規は beyond=外側 で、**脚の種類で反転するだけ**。
+ *  ■ 距離が(丸めて)0 のときは内も外も無いので「ちょうど」と書く(嘘の向きを作らない)。
+ *    価格は5円刻みなので、実際に起きるのは「節目そのものに置いた」回だけ。 */
+export function basisTail(
+  direction: 'buy' | 'sell', kind: 'limit' | 'stop', entry: number, level: number,
+): string {
+  const d = Math.round(Math.abs(entry - level));
+  if (d === 0) return 'ちょうど';
+  const beyond = direction === 'buy' ? entry > level : entry < level;
+  const word = beyond === (kind === 'limit') ? '内側' : '外側';
+  return `の ${fmtPrice(d)}円${word}`;
+}
+
+/** 純関数: 「なぜこの価格なのか」の行を組み立てる(★依頼の本体)。
+ *
+ *    指値 ← 68,700 の 25円内側 ／ 逆指値 ← 68,775 の 5円外側
+ *
+ *  ・この仕組みの価格は必ず節目から導かれる契約(指値=節目の内側 / ブレイク新規=節目の外側)なので、
+ *    **どの節目を使ったか** が「なぜこの価格か」の答えになる。節目は AI が数値で申告し(limitLevel/stopLevel)、
+ *    内側/外側と距離は **ここで計算する**(AI の文章にはしない=検算に押し出されない・嘘を書けない)。
+ *  ・節目の申告が無い脚は **その脚を出さない**(「不明」とは書かない)。
+ *  ・両方とも無ければ空文字を返す=呼び出し側は行ごと出さない(従来の表示と byte 一致)。
+ *  ・エントリー価格が無い脚も出さない(落ちた脚の節目だけを孤立して見せない)。
+ *  ・レンジ両面(mode='range')は対象外: 節目のフィールドは指値/ブレイク新規の2脚に対応しており、
+ *    上下2レッグへの対応づけが無いため、憶測で結びつけない。 */
+export function buildLevelBasis(
+  direction: 'buy' | 'sell',
+  legs: { limitEntry?: number; limitLevel?: number; stopEntry?: number; stopLevel?: number },
+): string {
+  const parts: string[] = [];
+  const push = (name: '指値' | '逆指値', kind: 'limit' | 'stop', entry?: number, level?: number): void => {
+    if (entry == null || level == null) return;
+    if (!Number.isFinite(entry) || !Number.isFinite(level)) return;
+    parts.push(`${name} ← ${fmtPrice(level)} ${basisTail(direction, kind, entry, level)}`);
+  };
+  push('指値', 'limit', legs.limitEntry, legs.limitLevel);
+  push('逆指値', 'stop', legs.stopEntry, legs.stopLevel);
+  return parts.join(BASIS_SEP);
 }
 
 /** 純関数: 理由の行を組み立てる(strategyWhy + LC検算を落とした rationale)。
@@ -255,14 +334,23 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   // ★ドテン(反転)シグナルは目線行に明示(通常の決済→別の新規と区別できるように)。
   const dirBias = sig.direction === 'buy' ? '買い目線' : '売り目線';
   const bias = sig.doten ? `🔃 ドテン(反転)・${dirBias}` : dirBias;
-  return {
+  // ★v0.9.87: 節目の行。**表示に出ている価格**(丸め後の武装値)と AI の申告節目から距離を出すので、
+  //   画面の中で辻褄が合う(メイン行の 68,725 と「68,700 の 25円内側」が同じ値を指す)。
+  const basis = buildLevelBasis(sig.direction, {
+    limitEntry: sig.limitEntry, limitLevel: sig.limitLevel,
+    stopEntry: sig.stopEntry, stopLevel: sig.stopLevel,
+  });
+  const view: PanelView = {
     cls: 'armed',
-    // ★ドテン表示の書式は壊さない: ラベルは既存の目線行の **後ろ** に同じ `・` で足すだけ
-    //   (「🔃 ドテン(反転)・買い目線・ドテン」の形になる)。
+    // ★ドテン表示の書式は壊さない: ラベルは既存の目線行の **後ろ** に同じ `・` で足すだけ。
+    //   ただし既に出ている語は足さない(ドテンで「ドテン」が2回出ていた重複を withStrategyLabel が潰す)。
     bias: withStrategyLabel(bias, sig.strategy),
     main: `🎯 シグナル：${legs.join(' / ')}`,
     rationale: buildRationaleView(sig.rationale, sig.strategyWhy),
   };
+  // ★申告が1つも無ければ **フィールドごと付けない** = 従来の PanelView と byte 一致(否定対照)。
+  if (basis) view.basis = basis;
+  return view;
 }
 
 /** 純関数: 保有枠の表示モデル。保有中は建値+含み、直近決済は一時表示、それ以外は「保有なし」。
@@ -309,6 +397,9 @@ function paintPanel(el: HTMLElement, view: PanelView, extraCls = ''): void {
   // ★理由文は行ごとに別要素で描く。コード側が足す脚 drop 注記(`※上部(売り指値)は不採用: …`)は
   //   `\n` 区切りなので、1要素に入れると改行が潰れて本文と繋がり読めなくなる(片面になった理由が伝わらない)。
   const lines = splitRationaleLines(view.rationale);
+  // ★v0.9.87: 節目の行は理由の **最後の行** として同じ枠に描く(専用のスタイルを増やさない)。
+  //   これはコードが計算した文字列だが、描き方は他の行と同じ textContent(作法を分岐させない)。
+  if (view.basis) lines.push(view.basis);
   if (lines.length) {
     const r = document.createElement('div');
     r.className = 'signal-rationale';

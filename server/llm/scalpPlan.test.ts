@@ -5,7 +5,7 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, clampRequestedLcFloor, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
-  parseAiStrategy, parseAiStrategyWhy, isKnownScalpStrategy, scalpStrategyContract,
+  parseAiStrategy, parseAiStrategyWhy, isKnownScalpStrategy, scalpStrategyContract, parseAiLevelPrice,
   SCALP_STRATEGY_LABELS, SCALP_STRATEGY_OTHER,
   lcLegExceeds, lcLegBelowFloor, lcEffectiveCeiling, buildDelegationNote, buildStrategySpec, buildLegNote,
   pickNoneReason, enforceRangeEnabled,
@@ -3313,5 +3313,95 @@ describe('v0.9.84: 戦略ラベル(strategy / strategyWhy)= 記録専用', () =>
     expect(c).not.toMatch(/[0-9０-９]{2,}/);
     // 残ってよい1桁は「1つだけ/1行/2本」= 個数の語だけ。円/pt などの単位が付いた量は書かない。
     expect(c).not.toMatch(/[0-9０-９]\s*(円|pt|ティック|%)/);
+  });
+});
+
+// ─── ★v0.9.87: 「なぜこの価格なのか」= どの節目に基づいて置いたか(limitLevel / stopLevel) ───
+//
+// ■ なぜ数値のフィールドなのか(★文章にしない理由が本体)
+//   根拠文(rationale)は実測で LC検算に埋め尽くされる(根拠文76字のうち検算76字・理由0字)。
+//   文章の枠を増やしても既存の指示に押し出されるので、**数値のフィールド** で受け取る。
+//   数値は他の指示と枠を奪い合わない。内側/外側と距離は画面側が計算する(AI には書かせない)。
+// ■ プロンプトの追加は最小限(★規則を増やさない)
+//   節目への置き方は既に決まっているので、新しい規則ではなく「**使った節目の価格を書け**」だけを求める。
+describe('v0.9.87: 価格の根拠にした節目(limitLevel / stopLevel)= 記録+表示', () => {
+  const base = {
+    direction: 'buy', limitEntry: 38200, stopEntry: 38350,
+    lcWidthForLimit: 55, lcWidthForStop: 55,
+    rationale: '押し目。指値レッグ: 38200-38145=55円。ブレイク新規レッグ: 38350-38295=55円。', refPrice: REF,
+  };
+
+  it('JSON 契約に2つの数値フィールドが在る(名前と役割だけ)', () => {
+    const j = scalpJsonInstruction(REF, 55, 65, true, LC_CEIL_MANUAL);
+    expect(j).toContain('"limitLevel": number');
+    expect(j).toContain('"stopLevel": number');
+    // 「使った節目の価格を書け」だけ=置き方の規則を **もう一度** 書かない。
+    expect(j).toContain('指値を置くときに使った節目の価格');
+    expect(j).toContain('ブレイク新規を置くときに使った節目の価格');
+  });
+
+  it('★新しい規則を足していない(内側/外側・距離の数値をここで印字しない)', () => {
+    const j = scalpJsonInstruction(REF, 55, 65, true, LC_CEIL_MANUAL);
+    // 節目フィールドの2行だけを取り出して、そこに規則(内側/外側/円)が持ち込まれていないことを見る。
+    const lines = j.split('\n').filter(l => l.includes('limitLevel') || l.includes('stopLevel'));
+    expect(lines).toHaveLength(2);
+    for (const l of lines) {
+      expect(l).not.toContain('内側');
+      expect(l).not.toContain('外側');
+      expect(l).not.toMatch(/[0-9０-９]\s*円/);
+    }
+  });
+
+  it('★契約文の嘘を直した(画面にも出ることを書く。注文に使わないのは事実なので残す)', () => {
+    const c = scalpStrategyContract();
+    expect(c).toContain('画面に表示され');
+    expect(c).toContain('注文の採否・価格・損切り幅には使わない');
+    // 以前の文言(「返すための記録である」で終わり=表示に触れない)は残っていない。
+    expect(c).not.toContain('返すための記録である。');
+  });
+
+  it('正常: 申告された節目がそのまま plan に載る', () => {
+    const r = parseScalpPlan(JSON.stringify({ ...base, limitLevel: 38175, stopLevel: 38345 }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.limitLevel).toBe(38175);
+    expect(r.plan.stopLevel).toBe(38345);
+  });
+
+  it('★欠落・不正・非数値でも計画は落ちない(strategy と同じ後方互換)', () => {
+    const cases: unknown[] = [undefined, null, 'S1', '38175', {}, [], NaN, Infinity, 0, -5];
+    for (const v of cases) {
+      const r = parseScalpPlan(JSON.stringify({ ...base, limitLevel: v, stopLevel: v }), REF);
+      expect(r.ok, `limitLevel=${JSON.stringify(v)} で計画が落ちた`).toBe(true);
+      if (!r.ok) continue;
+      expect(r.plan.limitLevel).toBeUndefined();
+      expect('limitLevel' in r.plan).toBe(false);
+      // ★採否・価格・脚は1バイトも動かない。
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopEntry).toBe(38350);
+      expect(r.plan.stopLossForLimit).toBe(38145);
+      expect(r.plan.stopLossForStop).toBe(38295);
+    }
+  });
+
+  it('parseAiLevelPrice 単体: 有限で正の数だけを通し、丸めない', () => {
+    expect(parseAiLevelPrice(38175)).toBe(38175);
+    expect(parseAiLevelPrice(38175.5)).toBe(38175.5);   // 丸めない(節目でない値を書いた証拠を消さない)
+    expect(parseAiLevelPrice('38175')).toBeUndefined();
+    expect(parseAiLevelPrice(NaN)).toBeUndefined();
+    expect(parseAiLevelPrice(Infinity)).toBeUndefined();
+    expect(parseAiLevelPrice(0)).toBeUndefined();
+    expect(parseAiLevelPrice(-1)).toBeUndefined();
+    expect(parseAiLevelPrice(undefined)).toBeUndefined();
+  });
+
+  it('★否定対照: 申告が無い応答の plan は従来と byte 一致(フィールドが生えない)', () => {
+    const bare = parseScalpPlan(JSON.stringify(base), REF);
+    const withL = parseScalpPlan(JSON.stringify({ ...base, limitLevel: 38175, stopLevel: 38345 }), REF);
+    expect(bare.ok && withL.ok).toBe(true);
+    if (!bare.ok || !withL.ok) return;
+    expect(JSON.stringify(bare.plan).includes('Level')).toBe(false);
+    const { limitLevel, stopLevel, ...rest } = withL.plan;
+    expect(JSON.stringify(rest)).toBe(JSON.stringify(bare.plan));
   });
 });

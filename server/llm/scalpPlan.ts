@@ -79,6 +79,15 @@ export interface AiPlan {
   //     ラベル一覧は今後増える前提なので、凍らせず生値だけを残す方が後から数え直せる。
   strategy?: string;         // 相場の読みのラベル(候補=SCALP_STRATEGY_LABELS。一覧外の生値もそのまま入る)。
   strategyWhy?: string;      // なぜその読みにしたか(1行・日本語)。
+  // ★v0.9.87(記録+表示・ゲートには使わない): **なぜこの価格なのか** の答え。
+  //   この仕組みの価格は必ず節目から導かれる契約(指値=節目の内側 / ブレイク新規=節目の外側)なので、
+  //   「どの節目を使ったか」が価格の理由そのものになる。★文章ではなく **数値** で受け取る:
+  //   根拠文(rationale)は実測で LC検算に埋め尽くされ(根拠文76字のうち検算76字・理由0字)、
+  //   文章の枠を増やしても押し出される。数値フィールドなら他の指示と枠を奪い合わない。
+  //   ★内側/外側と距離は **コードが計算する**(AI には書かせない=嘘の表示を作らない)。
+  //   欠落・不正・非数値でも計画は落とさない(strategy と同じ後方互換)。
+  limitLevel?: number;       // 指値の根拠にした節目の価格。
+  stopLevel?: number;        // ブレイク新規の根拠にした節目の価格。
   // direction==='range' の時のみ。upper.entry>refPrice>lower.entry。enforce/parse で片レッグに
   // 落ちることがある(その場合 upper か lower が undefined=実質片面)。
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -1261,8 +1270,11 @@ export function scalpStrategyContract(): string {
     + `  ★どの語にも当てはまらないと感じたら「${SCALP_STRATEGY_OTHER}」と書き、`
     + 'strategyWhy に **何を狙ったのか** を必ず書くこと(無理に近い語へ寄せない)。\n'
     + '  ★strategyWhy には、なぜその読みにしたのかを1行で書く(根拠文 rationale とは別に、必ず書く)。\n'
-    + '  ★この2つは、あとで「どの読みが当たり、どの読みが外れたか」を集計してあなたに返すための記録である。'
-    + '注文の採否・価格・損切り幅には使わない。\n';
+    // ★v0.9.87: 事実に合わせて直す。v0.9.86 で strategy / strategyWhy を画面(シグナル枠)に描くようにしたので、
+    //   「あとで返すための記録である」だけでは **嘘** になる(読み手はいま画面でこれを読んでいる)。
+    //   注文に使わないのは事実なのでそのまま残す。
+    + '  ★この2つは、そのままトレーダーの画面に表示され、かつ、あとで「どの読みが当たり、どの読みが外れたか」を'
+    + '集計してあなたに返すための記録になる。注文の採否・価格・損切り幅には使わない。\n';
 }
 
 // LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
@@ -1311,6 +1323,11 @@ export function scalpJsonInstruction(
     // ★v0.9.70: 損切りは **幅** だけ。価格のフィールドは無い(向きはシステムが direction から付ける)。
     `  "lcWidthForLimit": number,   // 指値約定時の損切りの幅(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
     `  "lcWidthForStop": number,    // ブレイク新規約定時の損切りの幅(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
+    // ★v0.9.87: 「なぜこの価格なのか」を数値で残す。**新しい規則は足さない**(節目への置き方は既に上で
+    //   決まっている)。ここで求めるのは「その規則で **実際に使った節目の価格**」だけ。
+    //   文章の枠を増やさないのが要点(根拠文は実測で LC検算に埋め尽くされ、増やしても押し出される)。
+    `  "limitLevel": number,        // 指値を置くときに使った節目の価格(その節目の値そのもの)。指値レッグを出さない/none の時は省略\n` +
+    `  "stopLevel": number,         // ブレイク新規を置くときに使った節目の価格(同上)。ブレイク新規レッグを出さない/none の時は省略\n` +
     rangeShape +
     // ★v0.9.64: 幅の申告 → 代入の式の申告(置換)。フィールド直下の注記は最も強く効くので、
     //   ここでも「式の答え=出力する数値」を要求する。併せて「省略」の定義(キーを書かない)を1句だけ添える。
@@ -1401,6 +1418,16 @@ export function parseAiStrategy(v: unknown): string | undefined {
 /** 「なぜその読みにしたか」を寛容にパース(空/非文字列は undefined)。記録のみ=後方互換。 */
 export function parseAiStrategyWhy(v: unknown): string | undefined {
   return parseAiRecordText(v);
+}
+
+/** ★v0.9.87: 「その価格の根拠にした節目」を寛容にパースする(記録+表示・ゲートには使わない)。
+ *  受け付けるのは **有限で正の数** だけ。非数値/NaN/Infinity/0以下(および数字の文字列)は undefined。
+ *  ★丸めない・クランプしない: 生値のまま残す(丸めると「AI が節目でない価格を書いた」という
+ *    いちばん知りたい事実が消える)。妥当性(本当に節目か)は台帳で後から検証する。
+ *  ★欠落・不正でも計画は落とさない(parseAiStrategy と同じ後方互換の扱い)。 */
+export function parseAiLevelPrice(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return undefined;
+  return v;
 }
 
 /** 損切り(stopLoss)がエントリーの正しい外側にあるか(幾何・向き検証)。純関数。
@@ -1520,11 +1547,16 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   計画は落とさず undefined にして先へ進む(採否・価格・脚落ち・noneReason は1バイトも変わらない)。
   const strategy = parseAiStrategy(o.strategy);
   const strategyWhy = parseAiStrategyWhy(o.strategyWhy);
+  // ★v0.9.87(記録+表示): 価格の根拠にした節目。strategy と **同じ形**=欠落・不正でも計画は落とさない。
+  const limitLevel = parseAiLevelPrice(o.limitLevel);
+  const stopLevel = parseAiLevelPrice(o.stopLevel);
   const withMeta = (p: AiPlan): AiPlan => {
     if (regime !== undefined) p.regime = regime;
     if (confidence !== undefined) p.confidence = confidence;
     if (strategy !== undefined) p.strategy = strategy;
     if (strategyWhy !== undefined) p.strategyWhy = strategyWhy;
+    if (limitLevel !== undefined) p.limitLevel = limitLevel;
+    if (stopLevel !== undefined) p.stopLevel = stopLevel;
     return p;
   };
   // ★見送り(direction:"none"): 価格は不要。rationale + refPrice のみで ok:true の正当な「見送り」応答。
@@ -2587,6 +2619,11 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // ★戦略ラベル(記録のみ)も同じ理由で再付与する(enforce/none 化で新規オブジェクトになり落ちるため)。
     if (parsed.plan.strategy !== undefined) finalPlan.strategy = parsed.plan.strategy;
     if (parsed.plan.strategyWhy !== undefined) finalPlan.strategyWhy = parsed.plan.strategyWhy;
+    // ★v0.9.87: 価格の根拠にした節目も同じ理由で再付与する(enforce/none 化で新規オブジェクトになるため)。
+    //   ★レッグが落ちた回も落とさずそのまま残す: 表示側は「エントリーと節目が両方在る脚」だけを描くので
+    //     画面には出ず、台帳には「AI はこの節目から導いたと言ったが、そのレッグは落ちた」が残る。
+    if (parsed.plan.limitLevel !== undefined) finalPlan.limitLevel = parsed.plan.limitLevel;
+    if (parsed.plan.stopLevel !== undefined) finalPlan.stopLevel = parsed.plan.stopLevel;
     // ★v0.9.59(表示専用): **enforce 段で落ちたレッグ**の理由も根拠文へ足す。
     //   parse 段の注記(buildLegNote)は AI 応答の幾何しか説明できず、実データで最多の脱落理由
     //   (損切り幅が設定の下限より狭い=lcFloor / 上限より広い=lc)は画面に何の説明も残らなかった。

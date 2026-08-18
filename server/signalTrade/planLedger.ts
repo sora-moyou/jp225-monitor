@@ -144,6 +144,13 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   //     こちらに二重の整形を持ち込むと「台帳の値」と「plan の値」がずれる(突合できなくなる)。
   if (plan.strategy !== undefined) row.strategy = plan.strategy;
   if (plan.strategyWhy !== undefined) row.strategyWhy = plan.strategyWhy;
+  // ★v0.9.87(RECORD-ONLY): **その価格の根拠にした節目**。画面にも出すが、記録がここに要る理由は別:
+  //   「本当に節目から導いたのか」を後から検証できるようにするため。limit_entry / stop_entry と
+  //   同じ行に並ぶので、|entry − level| を SQL で数えれば「5〜10円内側」の契約が守られているか、
+  //   そもそも節目でない値を書いていないかが、画面を見ていなくても測れる。
+  //   書かれなかった回は列ごと NULL=「申告なし」が形から読める(0 を捏造しない)。
+  if (plan.limitLevel !== undefined) row.limitLevel = plan.limitLevel;
+  if (plan.stopLevel !== undefined) row.stopLevel = plan.stopLevel;
   if (result.vetoFired !== undefined) row.vetoFired = result.vetoFired;
   if (result.noneReason !== undefined) row.noneReason = result.noneReason;
   if (plan.limitEntry !== undefined) row.limitEntry = plan.limitEntry;

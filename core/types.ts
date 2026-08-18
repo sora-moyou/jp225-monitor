@@ -162,6 +162,9 @@ export interface SignalTradeState {
     //   両方に載せておかないと経路によって画面からラベルが消える。欠落時は付与しない=既存 JSON 不変。
     strategy?: string;
     strategyWhy?: string;
+    // ★v0.9.87(ADD-ONLY): signal と同じ「その価格の根拠にした節目」。欠落時は付与しない=既存 JSON 不変。
+    limitLevel?: number;
+    stopLevel?: number;
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   };
@@ -183,6 +186,13 @@ export interface SignalTradeState {
     //   AI が書かなかった回は **フィールドごと欠落**=既存 SSE JSON 不変(dedupe / 旧クライアント互換)。
     strategy?: string;
     strategyWhy?: string;
+    // ★v0.9.87(ADD-ONLY・表示用): **なぜこの価格なのか** の答え=その価格の根拠にした節目の価格。
+    //   この仕組みの価格は必ず節目から導かれる契約(指値=節目の内側 / ブレイク新規=節目の外側)なので、
+    //   「どの節目を使ったか」が価格の理由そのものになる。
+    //   ★内側/外側と距離は画面側が **計算して** 出す(AI の文章ではない)。ここは節目の生値だけを運ぶ。
+    //   AI が書かなかった回は **フィールドごと欠落**=既存 SSE JSON 不変(dedupe / 旧クライアント互換)。
+    limitLevel?: number;
+    stopLevel?: number;
     at: number;
     // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
     mode?: 'range';

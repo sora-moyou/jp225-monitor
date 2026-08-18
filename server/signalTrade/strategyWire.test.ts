@@ -125,3 +125,67 @@ describe('toSignalTradeState: SSE payload に載る(★これが無いと画面�
     expect(s.signal?.doten).toBe(true);
   });
 });
+
+// ─── ★v0.9.87: 「その価格の根拠にした節目」(limitLevel / stopLevel)を画面まで運ぶ配線 ────
+//   経路は strategy と同一: AiPlan → planToArmed → armedToCurrentSignal → toSignalTradeState → signalPanel。
+//   ★内側/外側と距離は画面側の純関数が計算する(ここで運ぶのは節目の生値だけ)。
+//   ★記録+表示専用: 採否・価格・脚落ちには1バイトも影響しない(下の否定対照で価格の同一性を固定)。
+const LIMIT_LEVEL = 68700;
+const STOP_LEVEL = 68775;
+
+describe('★節目(limitLevel / stopLevel)を画面まで運ぶ', () => {
+  it('planToArmed → armedToCurrentSignal → SSE の全段で残る', () => {
+    const a = planToArmed({ ...BUY_PLAN, limitLevel: LIMIT_LEVEL, stopLevel: STOP_LEVEL }, 1000)!;
+    expect(a.limitLevel).toBe(LIMIT_LEVEL);
+    expect(a.stopLevel).toBe(STOP_LEVEL);
+    const sig = armedToCurrentSignal(a, 7);
+    expect(sig.limitLevel).toBe(LIMIT_LEVEL);
+    expect(sig.stopLevel).toBe(STOP_LEVEL);
+    const json = JSON.parse(JSON.stringify(toSignalTradeState({ phase: 'armed', armed: a }, 68750, 2000, sig)));
+    expect(json.signal.limitLevel).toBe(LIMIT_LEVEL);
+    expect(json.signal.stopLevel).toBe(STOP_LEVEL);
+    // entry 経路(signal を持たない後方互換の描画)でも落ちない。
+    expect(json.entry.limitLevel).toBe(LIMIT_LEVEL);
+    expect(json.entry.stopLevel).toBe(STOP_LEVEL);
+  });
+
+  it('片方だけの申告も片方だけ運ぶ(欠けた側はフィールドごと付けない)', () => {
+    const a = planToArmed({ ...BUY_PLAN, limitLevel: LIMIT_LEVEL }, 1000)!;
+    expect(a.limitLevel).toBe(LIMIT_LEVEL);
+    expect('stopLevel' in a).toBe(false);
+    expect('stopLevel' in armedToCurrentSignal(a, 7)).toBe(false);
+  });
+
+  it('★壊れた値(NaN/Infinity)は運ばない(画面に嘘の距離を出させない)', () => {
+    const a = planToArmed({ ...BUY_PLAN, limitLevel: NaN, stopLevel: Infinity }, 1000)!;
+    expect('limitLevel' in a).toBe(false);
+    expect('stopLevel' in a).toBe(false);
+  });
+
+  it('★否定対照: 申告が無ければ armed も SSE JSON も従来と byte 一致(価格も1円も動かない)', () => {
+    const bare = planToArmed(BUY_PLAN, 1000)!;
+    const withL = planToArmed({ ...BUY_PLAN, limitLevel: LIMIT_LEVEL, stopLevel: STOP_LEVEL }, 1000)!;
+    expect('limitLevel' in bare).toBe(false);
+    expect('stopLevel' in bare).toBe(false);
+    expect(withL.limitEntry).toBe(bare.limitEntry);
+    expect(withL.stopEntry).toBe(bare.stopEntry);
+    expect(withL.stopLossForLimit).toBe(bare.stopLossForLimit);
+    expect(withL.stopLossForStop).toBe(bare.stopLossForStop);
+    const json = JSON.stringify(toSignalTradeState(
+      { phase: 'armed', armed: bare }, 68750, 2000, armedToCurrentSignal(bare, 7),
+    ));
+    expect(json.includes('Level')).toBe(false);
+  });
+
+  it('ドテン(反転)経路でも節目が運ばれる', () => {
+    const held: EngineState = {
+      phase: 'filled',
+      position: { direction: 'sell', entryPrice: 68900, qty: 1, initialStop: 68960, peakProfit: 0, rationale: '戻り売り', at: 500 },
+    };
+    const plan: AiPlan = { ...BUY_PLAN, refPrice: 68750, limitLevel: LIMIT_LEVEL, stopLevel: STOP_LEVEL };
+    const rev = reverseToDoten(held, plan, 68750, 2000)!;
+    expect(rev.armed.limitLevel).toBe(LIMIT_LEVEL);
+    const s = toSignalTradeState(rev.next, 68750, 2000, armedToCurrentSignal(rev.armed, 8));
+    expect(s.signal?.stopLevel).toBe(STOP_LEVEL);
+  });
+});
