@@ -18,7 +18,10 @@ import { join } from 'node:path';
 //
 // ★signal_trades.meta(本線の決済台帳)には **流れない**。あちらは PlanMeta
 //   (server/signalTrade/decisions.ts の regime / confidence / vetoFired の3つだけ)を経由するため、
-//   AiPlan に足しただけでは載らない。今回は載せない(記録専用の範囲を広げない)=下のテストで明示する。
+//   AiPlan に足しただけでは載らない。★そこには足さない: PlanMeta は armed→position→decisions と
+//   決済経路を貫いて持ち回る型で、触ると記録専用の範囲を超える。
+//   代わりに **signal_plans.strategy / strategy_why**(server/db/signalPlanStrategy.test.ts)に置き、
+//   pnl を持つ signal_trades とは (system, signal_id) で結合して戦略別の成績を作る。
 
 import { parseScalpPlan } from '../llm/scalpPlan.js';
 import { buildPlanMeta } from '../signalTrade/decisions.js';
@@ -103,7 +106,8 @@ describe('戦略ラベル: 生応答 → AiPlan → HTTP → proposals.plan_json
   });
 
   it('★signal_trades.meta には流れない(PlanMeta 経由=regime/confidence/vetoFired の3つだけ)', () => {
-    // 今回は足さない(要件どおり報告のみ)。将来足すなら PlanMeta と persist.ts の両方を通す必要がある。
+    // ★ここには足さない(決済経路を貫く型なので記録専用の範囲を超える)。狙いは signal_plans 側に置き、
+    //   pnl を持つ signal_trades とは (system, signal_id) で結合する(signalPlanStrategy.test.ts が実証)。
     const meta = buildPlanMeta('trend_up', 70, false);
     expect(Object.keys(meta ?? {}).sort()).toEqual(['confidence', 'regime', 'vetoFired']);
     expect(meta).not.toHaveProperty('strategy');

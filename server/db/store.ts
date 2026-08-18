@@ -147,7 +147,10 @@ export function initSchema(db: DatabaseSync): void {
       prompt_fp TEXT,               -- 送った system+user プロンプトの一方向指紋。★本文は決して入れない。
       -- ★v0.9.70(RECORD-ONLY): **実際に答えた** LLM プロバイダとモデル。下の ALTER と同じ2列。
       provider TEXT,
-      provider_model TEXT
+      provider_model TEXT,
+      -- ★v0.9.84(RECORD-ONLY): その計画の **狙い**(相場の読み)。下の ALTER と同じ2列。
+      strategy TEXT,
+      strategy_why TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -201,6 +204,27 @@ export function initSchema(db: DatabaseSync): void {
   //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
   if (!spCols.includes('provider')) db.exec('ALTER TABLE signal_plans ADD COLUMN provider TEXT');
   if (!spCols.includes('provider_model')) db.exec('ALTER TABLE signal_plans ADD COLUMN provider_model TEXT');
+  // ★v0.9.84(RECORD-ONLY): その計画の **狙い**(相場の読み)と、その読みにした理由。
+  //
+  //   ■ なぜ本線の台帳に要るか(ここが無いと目的が達成できない)
+  //     このプロジェクトの本体は ④AI が理由と共に提示 →⑤結果を正確に記録 →⑥それを AI に返す のループ。
+  //     ⑥を作る buildScalpTradeHistory(server/llm/scalpContext.ts)が読むのは **signal_trades だけ** で、
+  //     そこには pnl はあっても狙いが無い。分析用の台帳(generator の proposals.plan_json)には狙いが
+  //     入るが、あちらに pnl は無い。つまり **この2列が無いと「押し目 12件 勝率33%」は1行も作れない**
+  //     (プロンプトのコストだけ払って目的が達成されない状態になる)。
+  //     signal_plans は signal_id を持ち signal_trades.signal_id と結合できるので、ここに置けば成立する。
+  //   ■ 結合の作法(★ signal_id 単独では結合キーにならない)
+  //     A と B は **別々のカウンタ**(signal_meta の system キー)で采番するので番号が重なる。
+  //     必ず (system, signal_id) の対で結合すること。signal_trades.system は A のとき NULL がありうる
+  //     後方互換規約なので、結合側で COALESCE(system,'A') に正規化する。
+  //   ■ 値の意味
+  //     strategy … AI が選んだラベル(候補は SCALP_STRATEGY_LABELS)。**一覧外の生値もそのまま入る**
+  //                (「その他」に丸めない=用意したラベルが現実と合っていないことを台帳に残すため)。
+  //     strategy_why … なぜその読みにしたか(AI の自由文)。
+  //   ■ 記録専用。採否・価格・決済には一切使わない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行 / AI が書かなかった回)。
+  if (!spCols.includes('strategy')) db.exec('ALTER TABLE signal_plans ADD COLUMN strategy TEXT');
+  if (!spCols.includes('strategy_why')) db.exec('ALTER TABLE signal_plans ADD COLUMN strategy_why TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -1030,6 +1054,10 @@ export interface SignalPlanRow {
   provider: string | null;
   /** ★実際に答えたチャットモデル名。同上。 */
   provider_model: string | null;
+  /** ★その計画の狙い(相場の読みのラベル)。一覧外の生値もそのまま入る。旧行/AI が書かなかった回は NULL。 */
+  strategy: string | null;
+  /** ★なぜその読みにしたか(AI の自由文)。同上。 */
+  strategy_why: string | null;
 }
 
 export interface SignalPlanInsert {
@@ -1069,6 +1097,10 @@ export interface SignalPlanInsert {
   provider?: string | null;
   /** ★RECORD-ONLY: 実際に答えたチャットモデル名。同上。 */
   providerModel?: string | null;
+  /** ★RECORD-ONLY: その計画の狙い(相場の読みのラベル)。AI が書かなかった/読めなかった回は未指定=NULL。 */
+  strategy?: string | null;
+  /** ★RECORD-ONLY: なぜその読みにしたか。同上。 */
+  strategyWhy?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1085,8 +1117,8 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       leg_drops_json, settings_json, rationale, error,
       arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason,
       context_at, prompt_fp, lc_audit_json, omission_audit_json,
-      provider, provider_model
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      provider, provider_model, strategy, strategy_why
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1099,6 +1131,7 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     finiteOrNull(p.contextAt), p.promptFp ?? null, p.lcAuditJson ?? null,
     p.omissionAuditJson ?? null,
     p.provider ?? null, p.providerModel ?? null,
+    p.strategy ?? null, p.strategyWhy ?? null,
   );
 }
 

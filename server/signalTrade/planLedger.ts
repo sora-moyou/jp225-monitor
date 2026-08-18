@@ -136,6 +136,14 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   row.rationale = trimRationale(plan.rationale);
   if (plan.regime !== undefined) row.regime = plan.regime;
   if (plan.confidence !== undefined) row.confidence = plan.confidence;
+  // ★v0.9.84(RECORD-ONLY): その計画の狙い(相場の読み)。**⑥がここを読んで初めて成立する**:
+  //   pnl を持つのは signal_trades だけ、狙いを持つのはこの表だけなので、
+  //   (system, signal_id) で結合して「押し目 12件 勝率33%」を作る。どちらか片方が欠けると作れない。
+  //   ★一覧外のラベルもそのまま入れる(丸めない)。書かれなかった回は列ごと NULL=「欠測」が形から読める。
+  //   ★rationale と違い trim/上限は掛けない: parse 段(parseAiStrategy)で既に trim 済みで、
+  //     こちらに二重の整形を持ち込むと「台帳の値」と「plan の値」がずれる(突合できなくなる)。
+  if (plan.strategy !== undefined) row.strategy = plan.strategy;
+  if (plan.strategyWhy !== undefined) row.strategyWhy = plan.strategyWhy;
   if (result.vetoFired !== undefined) row.vetoFired = result.vetoFired;
   if (result.noneReason !== undefined) row.noneReason = result.noneReason;
   if (plan.limitEntry !== undefined) row.limitEntry = plan.limitEntry;

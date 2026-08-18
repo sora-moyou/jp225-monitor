@@ -3281,6 +3281,32 @@ describe('v0.9.84: 戦略ラベル(strategy / strategyWhy)= 記録専用', () =>
     expect(c).toContain('脚の機械的な種類から strategy を決めることはできない');
   });
 
+  it('★ラベル①の語釈と同じ語を、毎回必ず現れる脚の説明に使わない(語の共有=アンカー)', () => {
+    const c = scalpStrategyContract();
+    // 「引きつけて入る」はラベル「トレンド押し目・戻り」の語釈にだけ現れる語。
+    // 脚の説明(毎回必ず現れる)に同じ語を使うと、そのラベルへ寄る。
+    expect(countOf(c, '引きつけて入る')).toBe(1);
+    expect(c).toContain('「指値の脚(limitEntry)」と「ブレイク新規の脚(stopEntry)」');
+  });
+
+  it('★「常に2本で組まれる」とは書かない(片レッグを許す既存の規則と矛盾させない)', () => {
+    const c = scalpStrategyContract();
+    expect(c).not.toContain('常に');
+    expect(c).not.toContain('2本で組まれる');
+    expect(c).toContain('2本で組みうる');
+    // 同じプロンプトの本文(system prompt)は片方だけを明示的に許している
+    // = 契約文がそれと矛盾していないことを一緒に固定する(★以前は「常に2本」と書いて矛盾していた)。
+    expect(SCALP_SYSTEM_PROMPT).toContain('片方だけ(指値のみ/ブレイク新規のみ)でもよい');
+  });
+
+  it('★契約文は user プロンプトの最末尾に置かない(最強の recency 位置を記録専用が占めない)', () => {
+    const j = scalpJsonInstruction(38250, 55, 65, true, LC_CEIL_MANUAL);
+    // 従来どおり最後の1文は refPrice の指示のまま。
+    expect(j.trimEnd().endsWith('refPrice は 38250 を使うこと。数値はすべて円単位の実数(引用符なし)。')).toBe(true);
+    // 契約文はその手前にある。
+    expect(j.indexOf('【この計画の読み')).toBeLessThan(j.indexOf('refPrice は 38250 を使うこと'));
+  });
+
   it('★量を印字しない(LC 幅・距離のアンカーを増やさない)', () => {
     const c = scalpStrategyContract();
     // 2桁以上の数(55/65/50/200/400 など、これまで実測で固着を起こしてきた種類の数)を1つも持ち込まない。
