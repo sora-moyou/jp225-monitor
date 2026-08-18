@@ -38,8 +38,13 @@ import type { PromptVariant } from '../llm/promptVariant.js';
 /** ★2026-08-17: 候補の枠を 'prompt-v2' → 'prompt-v1d' へ載せ替えた(設計書 §8 移行の順序 1番目=層1)。
  *  - 'prompt-v1d' … ②**質問文 v1d**(= v1 から「現在値から最低50円離す」の記述だけを外したもの)を
  *                   投げた分析用。送る exitVariant は 'current'(①と同じ)で、v1 との差分は距離の記述だけ。
- *  ★旧 'prompt-v2' は **語彙から消さない**: 台帳(proposals)に過去の行が残っており、消すと読めなくなる。 */
-export type GeneratorArm = ExitVariant | 'control' | 'prompt-v2' | 'prompt-v1d';
+ *                   209件の実測で主指標が悪化し不採用(2026-08-18に腕から降ろした)。 */
+/** ★2026-08-18: 候補の枠を 'prompt-v1d' → 'prompt-v1e' へ載せ替えた。
+ *  - 'prompt-v1e' … ②**質問文 v1e**(= v1 から「距離の上限(片レッグ200円/両レッグ幅400円)」の記述だけを
+ *                   外したもの)を投げた分析用。送る exitVariant は 'current'(①と同じ)。
+ *  ★旧 'prompt-v2' / 'prompt-v1d' は **語彙から消さない**: 台帳(proposals)に過去の行が残っており、
+ *    消すと読めなくなる。 */
+export type GeneratorArm = ExitVariant | 'control' | 'prompt-v2' | 'prompt-v1d' | 'prompt-v1e';
 
 /** 対照の腕。①と同じ exitVariant を送るので、区別は腕名だけが担う。 */
 export const CONTROL_ARM: GeneratorArm = 'control';
@@ -64,7 +69,8 @@ export interface ProposalRow {
   arm: GeneratorArm;
   /** 実際に送った exitVariant。'control' は 'current' を送るので、腕名とは別に残す。 */
   exitVariant: ExitVariant;
-  /** ★実際に送った質問文の変種(v0.9.75)。候補の腕だけ v1 以外('prompt-v2'→'v2' / 'prompt-v1d'→'v1d')、他は 'v1'。
+  /** ★実際に送った質問文の変種(v0.9.75)。候補の腕だけ v1 以外
+   *  ('prompt-v2'→'v2' / 'prompt-v1d'→'v1d' / 'prompt-v1e'→'v1e')、他は 'v1'。
    *  ★型上は optional(省略= NULL)。NULL = この列を持たない版で記録された(= v1 しか無かった頃)。 */
   promptVariant?: PromptVariant | null;
   /** サイクル内の直列順(0=①, 1=①' か ②, 2=②)。①②の順序効果を後から検定できるように残す。 */

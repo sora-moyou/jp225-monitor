@@ -160,9 +160,13 @@ describe('v1d — 最低距離は3箇所すべてから同時に消える', () =
   });
 });
 
-describe('v1d — 変種の受け口と腕の接続', () => {
-  it('normalizePromptVariant が v1d を受理し、未知は 400 用エラー', () => {
-    expect(PROMPT_VARIANTS).toEqual(['v1', 'v2', 'v1d']);
+describe('v1d — 変種の受け口(腕からは降りたが、変種としては生きている)', () => {
+  // ★2026-08-18: 209件の実測で主指標が悪化(不採用)し、候補腕は 'prompt-v1e' へ載せ替えた
+  //   (server/generator/cycle.ts)。過去の台帳(proposals に残る prompt-v1d 行)を読めるように、
+  //   'v1d' は PROMPT_VARIANTS の語彙・normalizePromptVariant・omitMinDistance フラグとしては残す。
+  //   腕接続のテスト(planCycleArms が v1e を送ること)は scalpQuestionV1e.test.ts へ移した。
+  it('normalizePromptVariant が v1d を受理し、未知は 400 用エラー(v1e も語彙に追加済み)', () => {
+    expect(PROMPT_VARIANTS).toEqual(['v1', 'v2', 'v1d', 'v1e']);
     expect(normalizePromptVariant('v1d')).toEqual({ ok: true, variant: 'v1d' });
     expect(normalizePromptVariant('v1c').ok).toBe(false);
   });
@@ -172,12 +176,12 @@ describe('v1d — 変種の受け口と腕の接続', () => {
     expect(generatorArmKey('current', 'v1d')).not.toBe(generatorArmKey('current', 'v1'));
   });
 
-  it('★生成器の候補腕だけが v1d を送る(①①\'は v1)', () => {
+  it('★生成器の候補腕はもう v1d を送らない(v1e に載せ替え済み・v1d は選べるが使われていない)', () => {
     const arms = planCycleArms(0, 1);
-    expect(arms.map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1d']);
-    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1d']);
-    // 決済仕様は3本とも同じ = 動かす変数は質問文だけ。
-    expect(new Set(arms.map(a => a.exitVariant))).toEqual(new Set(['current']));
+    expect(arms.some(a => a.promptVariant === 'v1d'), 'v1d を送る腕が復活している').toBe(false);
+    expect(arms.map(a => a.arm)).not.toContain('prompt-v1d');
+    // それでも buildScalpQuestion 等は omitMinDistance:true で v1d の質問文を組める(過去台帳の再現用)。
+    expect(buildScalpQuestion(55, 159, true, 100, undefined, true)).not.toBe(buildScalpQuestion(55, 159));
   });
 
   it('★候補の枠は1つのまま(LLM 呼び出し回数=課金を増やしていない)', () => {

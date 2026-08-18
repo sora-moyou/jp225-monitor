@@ -738,7 +738,12 @@ export function buildScalpQuestion(
   //   **既定 false = v1 と byte 一致**(実取引につながる経路は1ミリも動かない)。
   //   ★落とすのは最低距離だけ。距離の **上限**(片レッグ200円/両レッグ幅400円)はこのフラグでも残る
   //     (同時に2つ動かすと、出力が変わったとき どちらの効果か言えなくなる=1コミット1変数)。
+  //   ★v1d は実測で悪化(不採用)につき候補腕からは降りたが、変種としては生かす(過去台帳・テスト用)。
   omitMinDistance = false,
+  // ★v1e(2026-08-18): 「指値・ブレイク新規の距離の**上限**(片レッグ200円/両レッグ幅400円)」の記述だけを落とす。
+  //   **既定 false = v1 と byte 一致**。★落とすのは上限だけ。最低距離50円はこのフラグでも残る
+  //     (v1d の実測で「最低距離は効いている(消すと悪化)」と決着済みのため=同時に2つ動かさない)。
+  omitMaxDistance = false,
 ): string {
   // レンジ両面ストラドルの追記(実験・仮想取引で別枠計測)。rangeEnabled=false のときは range を禁止する。
   // ★v0.9.44: 1行に詰め込んでいた説明を複数行の箇条書きに開き、「fade / breakout の2択(組で選ぶ)」に書き直す。
@@ -821,10 +826,15 @@ export function buildScalpQuestion(
     //   質問文(user)側は「向き」の規則に集中させ、節目の強弱の解説は system prompt 1箇所に集約する。
     // ★v0.9.60(圧縮): 距離ルールの1行目は ★最優先 の不等式をこの同じメッセージ内で3度目に書き写していたので、
     //   参照に置き換えた(数値の上限だけを残す)。
-    '\n★【指値・ブレイク新規の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置き(上の不等式のとおり)、' +
-    '指値とブレイク新規の価格差[両者の幅]は400円以内にする=幅が広すぎる両面は出さない。' +
-    '片方だけ[指値のみ/ブレイク新規のみ]を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める' +
-    '[200円超離れた片レッグは出さない=約定不能・古い価格になりやすいため]。\n' +
+    // ★v1e(2026-08-18・omitMaxDistance): この段落まるごとが「距離の上限」の記述。落とすと段落自体が消え、
+    //   前後の空行(paragraph 区切り)は1つに畳まれる(v1d と違い、この段落は独立した1文なので
+    //   途中に空文字列を挟む必要が無い=そのまま '' にするだけで済む)。
+    (omitMaxDistance
+      ? ''
+      : '\n★【指値・ブレイク新規の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置き(上の不等式のとおり)、' +
+        '指値とブレイク新規の価格差[両者の幅]は400円以内にする=幅が広すぎる両面は出さない。' +
+        '片方だけ[指値のみ/ブレイク新規のみ]を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める' +
+        '[200円超離れた片レッグは出さない=約定不能・古い価格になりやすいため]。\n') +
     // ★v0.9.56 ②: 「ストップ幅に5円加える」は下限に足す指示だと読まれていた(AI が『本来のストップ幅=下限55』と解釈し 60 を出した)。
     //   +5円 が何に加わるのかを明示する。
     // ★v0.9.60(削除): ここに在った「損切りは必ずエントリーの外側に置く…内側/反対側には置かないこと」の散文は、
@@ -909,12 +919,15 @@ export function buildScalpSystemPrompt(
   aiTechnicalEnabled = false,   // ★true でテクニカル指標(RSI/BB)許可の1行を追記。false(既定)は byte 一致=従来不変。
   // ★v0.9.56: 上限が AI委任のときだけ提示の形を変える(既定=手動=従来と byte 一致)。
   lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
+  // ★v1e(2026-08-18): 「指値・ブレイク新規の距離の上限(片レッグ200円/両レッグ幅400円)」の箇条書きを落とす。
+  //   **既定 false = v1 と byte 一致**。buildScalpQuestion の同名フラグと対で使う(1つの規則を同時に消す)。
+  omitMaxDistance = false,
 ): string {
   // ★テクニカル許可(RSI/BB)。ON のときだけ追記=OFF(既定)では byte 単位で従来の system prompt と一致。
   const techLine = aiTechnicalEnabled
     ? `\n- ★【テクニカル指標(RSI/BB)の活用が許可されています】渡す「テクニカル指標(5分足・RSI14/SMA14/BB${BB_BAND_LABEL})」を、エントリーの"タイミング"判断に使ってよい(例: RSI が売られすぎ[≤30]からの反転や BB 下限からの反発で押し目買い指値、RSI 買われすぎ[≥70]や BB 上限での戻り売り指値など)。ただしテクニカルだけで逆張りせず、上のトレンド判断(生きたトレンドはフェードしない)と節目/勢いを優先すること。※決済(手仕舞い)は既定のロジックが担当するので、テクニカルを根拠に手仕舞いを指示することはしない。`
     : '';
-  return buildScalpSystemPromptBody(floorYen, ceilingYen, rangeEnabled, trendVetoYen, techLine, lcCeil);
+  return buildScalpSystemPromptBody(floorYen, ceilingYen, rangeEnabled, trendVetoYen, techLine, lcCeil, omitMaxDistance);
 }
 
 /** system prompt 本体(techLine を末尾に差し込む)。buildScalpSystemPrompt から呼ぶ内部関数。 */
@@ -925,6 +938,7 @@ function buildScalpSystemPromptBody(
   trendVetoYen: number,
   techLine: string,
   lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
+  omitMaxDistance = false,
 ): string {
   // レンジ両面ストラドル(実験・仮想取引で別枠計測)の指示行。rangeEnabled=false は range を明示禁止する。
   // ★v0.9.44: 1行に詰め込んでいたレンジ指示を複数行に開き、「fade / breakout の2択(組で選ぶ)」へ書き直す。
@@ -977,8 +991,7 @@ function buildScalpSystemPromptBody(
   ★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと(売りなら 指値=現在値より上のレジスタンス / ブレイク新規=現在値より下のサポート、買いは対称)。選び直しても適切な節目が無いときに限り、そのレッグを省く。
   range の各レッグ(limit=逆張り指値 / stop=抜け追随のブレイク新規)も同じ置き方にする。
 - ★【逆張り(指値)の節目選び】反発を狙う指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足の節目)にのみ置く。最も近い(隣接の)節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先のより強い節目まで引きつけて置くこと。近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク新規(stopEntry)を優先する。★この「一段先まで引きつける」考え方は損切りの節目選びにも同じく適用する(下の【導出の順序】)。
-- ★【指値・ブレイク新規の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置き(上の不等式のとおり)、指値とブレイク新規の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること(200円を超えて離れた片レッグは出さない=約定不能・古い価格になりやすいため)。
-- それぞれの約定時の損切りの **幅**(lcWidthForLimit / lcWidthForStop・正の数)を出す(損切りの価格は出力しない=システムが向きを付けて計算する)。${LC_BUFFER_NOTE}指値レッグは limitEntry+lcWidthForLimit、ブレイク新規レッグは stopEntry+lcWidthForStop を対で出す(片方だけは不可)。
+${omitMaxDistance ? '' : '- ★【指値・ブレイク新規の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置き(上の不等式のとおり)、指値とブレイク新規の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること(200円を超えて離れた片レッグは出さない=約定不能・古い価格になりやすいため)。\n'}- それぞれの約定時の損切りの **幅**(lcWidthForLimit / lcWidthForStop・正の数)を出す(損切りの価格は出力しない=システムが向きを付けて計算する)。${LC_BUFFER_NOTE}指値レッグは limitEntry+lcWidthForLimit、ブレイク新規レッグは stopEntry+lcWidthForStop を対で出す(片方だけは不可)。
 - ${LC_DERIVATION_ORDER}
 - この建玉は、利が乗ると段階的に利益を確定し損切りを引き上げる決済方式を使う。ゆえに初期の損切り(LC)幅は${lcRangePhrase(floorYen, ceilingYen, lcCeil)}、1回の損切りが積み上げた利益を飛ばさない(コツコツドカンを避ける)ようにする。${ceilingYen}円を超える損切りは出さない。
 - ★この LC 幅(下限・上限)は 指値レッグ・ブレイク新規レッグ それぞれ独立に 満たすこと。収まらないレッグは まず損切りの節目を選び直す(下限未満=一段外側 / 上限超=一段内側)。
@@ -1749,8 +1762,13 @@ export interface StrategySpecInput {
   hardMax: LcHardMax;
   exitDesc: string;   // describeExitLogic()(private 在れば実数値つき)
   /** ★v1d(2026-08-17): 「最低距離(現在値から50円)」の箇条書きを **1行だけ** 落とす。
-   *  未指定/false = 従来と byte 一致。距離の上限(400/200)の行はこのフラグでも残る。 */
+   *  未指定/false = 従来と byte 一致。距離の上限(400/200)の行はこのフラグでも残る。
+   *  ★v1d は実測で悪化(不採用)につき候補腕からは降りたが、フラグ自体は残す(過去台帳・テスト用)。 */
   omitMinDistance?: boolean;
+  /** ★v1e(2026-08-18): 「指値・ブレイク新規の距離の**上限**(片レッグ200円/両レッグ幅400円)」の箇条書きを
+   *  **1行だけ** 落とす。未指定/false = 従来と byte 一致。最低距離50円の行はこのフラグでも残る
+   *  (v1d の実測で「最低距離は消すと悪化=効いている」と決着済みのため=同時に2つ動かさない)。 */
+  omitMaxDistance?: boolean;
 }
 function knobTag(mode: KnobSource): string {
   return mode === 'ai' ? '【AI委任=あなたが決めてよい】' : '【手動=固定・厳守】';
@@ -1821,7 +1839,11 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     //   spec 自身のコメントが宣言しているとおり、規則の全文は system/question が持ち、spec は設定値＋委任タグを担う。
     // ★v0.9.61(圧縮): 距離ルールの不等式の再掲(直上の『最優先: 価格の向き』と同文)と括弧内の理由づけを外し、
     //   spec には数値の上限(400/200)と条件語(片方だけ・間)だけを残す。
-    '- ★指値・ブレイク新規の距離(必須): 両方を出すときは現在値が2つの価格の間に入るように置き、指値とブレイク新規の価格差は400円以内。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める',
+    // ★v1e(2026-08-18): この1行が「距離の上限」の3箇所目。落とすときは **行ごと** 消す
+    //   (omitMinDistance と同じ作法。空文字を残すと join('\n') が空行を作る)。
+    ...(i.omitMaxDistance
+      ? []
+      : ['- ★指値・ブレイク新規の距離(必須): 両方を出すときは現在値が2つの価格の間に入るように置き、指値とブレイク新規の価格差は400円以内。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を向き通りに置いた上で現在値から200円以内に収める']),
     // ★v0.9.64: 逆向き(省略と述べたら価格を出さない)を1文だけ足す。規則の全文は system prompt / question が持つ。
     '- ★rationale(説明文)は実際に出力したレッグだけ説明すること(両方向): 出していないレッグを「置いた」と書かない。「省略する」と述べたレッグは その対のフィールドを JSON に書かない=省略とはフィールドを出さないこと',
     // ★v0.9.61(圧縮): 合議の3条件の書き下しは system prompt / question の【レジーム/勢い】に同内容がある。
@@ -2260,12 +2282,17 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   //   'v2' は user プロンプトの本体(質問文+JSON契約)だけを差し替える。system プロンプト側の規則
   //   (buildScalpSystemPrompt / strategySpec / delegationNote)は **触らない** = 動かす変数を1つに保つ。
   //   ★v2 は自前で JSON 契約を持つので、v1 の scalpJsonInstruction は連結しない(2つ並べると契約が二重になる)。
-  //   ★'v1d'(2026-08-17) は v1 から **「現在値から最低50円離す」の記述だけ** を落とす(設計書 §5 層1の第一手)。
-  //     この規則はプロンプト中の3箇所(質問文② / strategySpec / バンドウォーク注記の免除文①)に載っているので、
+  //   ★'v1d'(2026-08-17〜08-18) は v1 から **「現在値から最低50円離す」の記述だけ** を落とす候補だった
+  //     (設計書 §5 層1の第一手)。209件の実測で **主指標が悪化**(両レッグ同幅率 76.4%→84.7%)し不採用
+  //     になったため候補腕からは降りたが、フラグ自体(omitMinDistance)は過去台帳を読むために残す。
+  //   ★'v1e'(2026-08-18) は v1 から **「距離の上限(片レッグ200円/両レッグ幅400円)」の記述だけ** を落とす。
+  //     この規則はプロンプト中の3箇所(質問文② / system prompt / strategySpec)に載っているので、
   //     v2 と違い **system プロンプト側も** 動かす。それでも動かす変数は1つ(=同じ1つの規則の全掲載)。
+  //     最低距離50円(omitMinDistance)はこの変種でも残る(同時に2つは動かさない)。
   //     ★ゆえに変種の解決は strategySpec / bandwalkNote を組む **前** に置く必要がある。
   const promptVariant = input.promptVariant ?? DEFAULT_PROMPT_VARIANT;
   const omitMinDistance = promptVariant === 'v1d';
+  const omitMaxDistance = promptVariant === 'v1e';
   // ★v0.7.58: 戦略ロジックを定数込みで完全に AI へ渡す(エントリー全定数＋各項目の委任状態＋決済ロジックの実数値)。
   //   「何を委任するか」は設定(各 directive の mode)に従い【】で明示。決済数値は describeExitLogic()=private 実行時注入。
   const strategySpec = buildStrategySpec({
@@ -2280,6 +2307,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   指定時だけ名前 → 非公開定義から説明文を解決する(数値はプロセス内に留まる)。
     exitDesc: input.exitVariant === undefined ? describeExitLogic() : describeExitLogicVariant(input.exitVariant),
     omitMinDistance,
+    omitMaxDistance,
   });
   // ★AIテクニカル許可(RSI/BB をエントリーの"タイミング"判断に使ってよい)。既定 ON。OFF では system prompt は従来と byte 一致。
   //   ※決済(手仕舞い)は既定の決済ロジックが担当する=AI に決済判断は委ねない。
@@ -2294,11 +2322,11 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = promptVariant === 'v2'
     ? buildScalpQuestionV2({ floorYen, ceilYen: promptCeilingYen, rangeEnabled, refPrice })
-    : buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil, omitMinDistance);
+    : buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil, omitMinDistance, omitMaxDistance);
   const systemPrompt =
     // ★bandwalkNote は strategySpec / delegationNote の **後ろ**(= 距離50円・節目起点を書いている
     //   ブロックより後)に置く。緩和は「直前の指示を上書きする」形なので、読み順で後に来る必要がある。
-    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil)}${biasNote}${strategySpec}${delegationNote}${bandwalkNote}${heldNote}${armedNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil, omitMaxDistance)}${biasNote}${strategySpec}${delegationNote}${bandwalkNote}${heldNote}${armedNote}\n\n` +
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +

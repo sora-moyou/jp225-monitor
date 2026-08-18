@@ -41,10 +41,12 @@ describe('planCycleArms — 直列の構成', () => {
   // ★v0.9.75: 候補の腕を **決済仕様('candidate-a')から 質問文へ載せ替えた**。
   //   決済仕様の A/B は実測3セッション(08-10〜08-12)でどの指標も動かなかったので畳んでいる。
   // ★2026-08-17: 質問文の候補を 'prompt-v2' → 'prompt-v1d'(= v1 マイナス最低距離)へ載せ替えた。
-  it('通常のサイクルは ① current → ② prompt-v1d の2本(この順)', () => {
+  //   209件の実測で主指標が悪化し不採用。
+  // ★2026-08-18: 'prompt-v1d' → 'prompt-v1e'(= v1 マイナス距離の上限)へ載せ替えた。
+  it('通常のサイクルは ① current → ② prompt-v1e の2本(この順)', () => {
     expect(planCycleArms(1, 5)).toEqual([
       { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 },
-      { arm: 'prompt-v1d', exitVariant: 'current', promptVariant: 'v1d', seq: 1 },
+      { arm: 'prompt-v1e', exitVariant: 'current', promptVariant: 'v1e', seq: 1 },
     ]);
   });
 
@@ -52,16 +54,16 @@ describe('planCycleArms — 直列の構成', () => {
     expect(planCycleArms(0, 5)).toEqual([
       { arm: 'current', exitVariant: 'current', promptVariant: 'v1', seq: 0 },
       { arm: 'control', exitVariant: 'current', promptVariant: 'v1', seq: 1 },
-      { arm: 'prompt-v1d', exitVariant: 'current', promptVariant: 'v1d', seq: 2 },
+      { arm: 'prompt-v1e', exitVariant: 'current', promptVariant: 'v1e', seq: 2 },
     ]);
-    expect(planCycleArms(5, 5).map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1d']);
-    for (const i of [1, 2, 3, 4, 6]) expect(planCycleArms(i, 5).map(a => a.arm)).toEqual(['current', 'prompt-v1d']);
+    expect(planCycleArms(5, 5).map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1e']);
+    for (const i of [1, 2, 3, 4, 6]) expect(planCycleArms(i, 5).map(a => a.arm)).toEqual(['current', 'prompt-v1e']);
   });
 
   it('★①と②の違いは質問文の1点だけ(決済仕様は3本とも同じ)', () => {
     const arms = planCycleArms(0, 5);
     expect(new Set(arms.map(a => a.exitVariant))).toEqual(new Set(['current']));
-    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1d']);
+    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1e']);
   });
 
   it('★対照は ① と **同じ exitVariant** を送る(同じ入力に2回問うのが定義)', () => {
@@ -71,7 +73,7 @@ describe('planCycleArms — 直列の構成', () => {
   });
 
   it('controlEvery=0 で対照なし', () => {
-    expect(planCycleArms(0, 0).map(a => a.arm)).toEqual(['current', 'prompt-v1d']);
+    expect(planCycleArms(0, 0).map(a => a.arm)).toEqual(['current', 'prompt-v1e']);
   });
 });
 
@@ -243,8 +245,8 @@ describe('runCycle — 直列に回して腕ごとの行を返す', () => {
     }), { epoch: 'g1:x', cycleId: 'c-0', cycleIndex: 0 });
     // ★3本とも決済仕様は 'current'(動かす変数は質問文だけ)。
     expect(order).toEqual(['current', 'current', 'current']);
-    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'prompt-v1d']);
-    expect(rows.map(r => r.promptVariant)).toEqual(['v1', 'v1', 'v1d']);
+    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'prompt-v1e']);
+    expect(rows.map(r => r.promptVariant)).toEqual(['v1', 'v1', 'v1e']);
     expect(new Set(rows.map(r => r.cycleId))).toEqual(new Set(['c-0']));
     // ★同じ1枚を見たことが記録から言える
     expect(new Set(rows.map(r => r.shotId))).toEqual(new Set(['same-1']));
