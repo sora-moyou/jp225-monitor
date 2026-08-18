@@ -158,6 +158,10 @@ export interface SignalTradeState {
     initialStop?: number;                              // 後方互換: 単一正規化値(指値優先)
     stopLossForLimit?: number; stopLossForStop?: number; // レッグ別 初期LC(指値/逆指値それぞれ)
     rationale?: string; at: number;
+    // ★v0.9.86(ADD-ONLY): signal と同じ「相場の読み」。パネルは signal を優先し、無い時だけ entry を描くので
+    //   両方に載せておかないと経路によって画面からラベルが消える。欠落時は付与しない=既存 JSON 不変。
+    strategy?: string;
+    strategyWhy?: string;
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   };
@@ -173,6 +177,12 @@ export interface SignalTradeState {
     limitEntry?: number; stopEntry?: number;
     stopLossForLimit?: number; stopLossForStop?: number;
     rationale?: string;   // ★保有中もシグナル枠に理由を表示するため(現在シグナルの根拠)。
+    // ★v0.9.86(ADD-ONLY・表示用): その計画の「相場の読み」(strategy=ラベル / strategyWhy=なぜその読みか)。
+    //   台帳(signal_plans)には v0.9.85 から入っていたが SSE に載っていなかった=画面には出しようがなかった。
+    //   ★一覧(SCALP_STRATEGY_LABELS)外の生値もそのまま載せる(台帳と同じ規約=丸めない)。
+    //   AI が書かなかった回は **フィールドごと欠落**=既存 SSE JSON 不変(dedupe / 旧クライアント互換)。
+    strategy?: string;
+    strategyWhy?: string;
     at: number;
     // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
     mode?: 'range';

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, type SignalTradeState } from './signalPanel.js';
+import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, withStrategyLabel, buildRationaleView, type SignalTradeState } from './signalPanel.js';
+import { stripLcArithmetic } from '../../core/rationaleDisplay.js';
 
 // ─── シグナル枠(buildSignalView): 現在シグナル(s.signal)を常時描く=保有中も消えない ───
 describe('buildSignalView(シグナル枠)', () => {
@@ -288,5 +289,155 @@ describe('buildWaitMain: 待機理由(waitReason)', () => {
   it('buildSignalView(シグナル無し)から waitReason が配線されている', () => {
     expect(buildSignalView({ phase: 'flat', updatedAt: 0, waitReason: { kind: 'cooldown', untilMs: UNTIL } }).main)
       .toBe('シグナル待機（10:30までクールダウン）');
+  });
+});
+
+// ─── ★v0.9.86: AI の「相場の読み」(strategy / strategyWhy)を画面へ配線する ───
+//   v0.9.85 で AI に読みを出させ台帳(signal_plans)に記録したが、**SSE にも画面にも1行も配線していなかった**。
+//   ここは AiPlan → ArmedBracket → CurrentSignal → SSE → パネル の最後の1段(表示)を固定する。
+//   ★欠落(旧版のシグナル / AI が書かなかった回)では **従来の表示に byte 一致で縮退** すること。
+describe('buildSignalView: 相場の読み(strategy / strategyWhy)', () => {
+  const LC_ONLY = '指値レッグ 68725 と 68665 の引き算 → LC幅は60円。ブレイク新規レッグ 68780 と 68840 の引き算 → LC幅は60円。';
+  const sig = (extra: Partial<NonNullable<SignalTradeState['signal']>>): SignalTradeState => ({
+    phase: 'armed', updatedAt: 0,
+    signal: {
+      direction: 'buy', limitEntry: 68725, stopLossForLimit: 68665,
+      stopEntry: 68780, stopLossForStop: 68720, at: 1, ...extra,
+    },
+  });
+
+  // ① ラベルあり × why あり(= ユーザーが見たい形。実測の rationale は検算だけなので理由行は why のみ)
+  it('ラベルは目線行に `・` で添え、why は理由の行に出す', () => {
+    const v = buildSignalView(sig({ rationale: LC_ONLY, strategy: 'トレンド押し目・戻り', strategyWhy: '上昇トレンド中、S1まで引きつけて反発を取る' }));
+    expect(v.bias).toBe('買い目線・トレンド押し目・戻り');
+    expect(v.main).toBe('🎯 シグナル：買い 68,725 指値 (LC 68,665) / 買い 68,780 逆指値 (LC 68,720)');
+    // ★why が在るなら「（理由の記載なし）」は出さない(読みは書かれている)。
+    expect(v.rationale).toBe('上昇トレンド中、S1まで引きつけて反発を取る');
+  });
+
+  // ② ラベルあり × why なし
+  it('why が無ければ理由の行は従来どおり(rationale の残り or 「（理由の記載なし）」)', () => {
+    const v = buildSignalView(sig({ rationale: `68700の節目を上抜けて押し目待ち。${LC_ONLY}`, strategy: 'ブレイク順張り' }));
+    expect(v.bias).toBe('買い目線・ブレイク順張り');
+    expect(v.rationale).toBe('68700の節目を上抜けて押し目待ち。');
+    const v2 = buildSignalView(sig({ rationale: LC_ONLY, strategy: 'ブレイク順張り' }));
+    expect(v2.rationale).toBe('（理由の記載なし）');
+  });
+
+  // ③ ラベルなし × why あり
+  it('ラベルが無ければ目線行は従来どおり(空の `・` を作らない)', () => {
+    const v = buildSignalView(sig({ rationale: LC_ONLY, strategyWhy: '押し安値を割らない前提で拾う' }));
+    expect(v.bias).toBe('買い目線');
+    expect(v.rationale).toBe('押し安値を割らない前提で拾う');
+    // 空白だけのラベルも「無い」と同じ(undefined を文字にしない)。
+    expect(buildSignalView(sig({ rationale: LC_ONLY, strategy: '   ' })).bias).toBe('買い目線');
+    expect(buildSignalView(sig({ rationale: LC_ONLY, strategy: '' })).bias).toBe('買い目線');
+  });
+
+  // ④ 両方なし = ★否定対照(従来と byte 一致)
+  it('★両方無い(旧版のシグナル)ときは従来の表示と byte 一致', () => {
+    const before = buildSignalView(sig({ rationale: `68700の節目を上抜けて押し目待ち。${LC_ONLY}` }));
+    expect(before.bias).toBe('買い目線');
+    expect(before.rationale).toBe('68700の節目を上抜けて押し目待ち。');
+    expect(buildSignalView(sig({ rationale: LC_ONLY })).rationale).toBe('（理由の記載なし）');
+    // rationale ごと無い回も従来どおり空(NO_REASON を作らない)。
+    expect(buildSignalView(sig({})).rationale).toBe('');
+  });
+
+  it('why と rationale の本文が両方あるときは why が先・本文が後の別行', () => {
+    const v = buildSignalView(sig({
+      rationale: `68700の節目を上抜けて押し目待ち。${LC_ONLY}`,
+      strategy: 'トレンド押し目・戻り', strategyWhy: '上昇トレンド中、S1まで引きつけて反発を取る',
+    }));
+    expect(splitRationaleLines(v.rationale))
+      .toEqual(['上昇トレンド中、S1まで引きつけて反発を取る', '68700の節目を上抜けて押し目待ち。']);
+  });
+
+  it('why と完全一致する行だけは重複を落とす(部分一致では落とさない)', () => {
+    const same = buildSignalView(sig({ rationale: '押し目を待つ。', strategy: 'トレンド押し目・戻り', strategyWhy: '押し目を待つ。' }));
+    expect(splitRationaleLines(same.rationale)).toEqual(['押し目を待つ。']);
+    const near = buildSignalView(sig({ rationale: '押し目を待つ。上ヒゲが続いている。', strategyWhy: '押し目を待つ。' }));
+    expect(splitRationaleLines(near.rationale)).toEqual(['押し目を待つ。', '押し目を待つ。上ヒゲが続いている。']);
+  });
+
+  it('コード側の注記(※…)は why の後ろにそのまま残る', () => {
+    const v = buildSignalView(sig({
+      rationale: `${LC_ONLY}\n※上部(売り指値)は不採用: 損切り幅が設定の下限より狭い`,
+      strategyWhy: '上昇トレンド中、S1まで引きつけて反発を取る',
+    }));
+    expect(splitRationaleLines(v.rationale))
+      .toEqual(['上昇トレンド中、S1まで引きつけて反発を取る', '※上部(売り指値)は不採用: 損切り幅が設定の下限より狭い']);
+  });
+
+  it('★一覧(SCALP_STRATEGY_LABELS)外のラベルも丸めずそのまま出す', () => {
+    expect(buildSignalView(sig({ rationale: LC_ONLY, strategy: '寄り天狙い' })).bias).toBe('買い目線・寄り天狙い');
+  });
+
+  it('ドテンの目線行の書式を壊さない(既存の `・` の後ろに足すだけ)', () => {
+    const v = buildSignalView(sig({ rationale: LC_ONLY, doten: true, strategy: 'ドテン', strategyWhy: '上昇転換で保有の売りを畳む' }));
+    expect(v.bias).toBe('🔃 ドテン(反転)・買い目線・ドテン');
+    expect(v.rationale).toBe('上昇転換で保有の売りを畳む');
+    // ラベルが無いドテンは従来どおり。
+    expect(buildSignalView(sig({ rationale: LC_ONLY, doten: true })).bias).toBe('🔃 ドテン(反転)・買い目線');
+  });
+
+  it('レンジ両面でもラベル/why を出す(無ければ従来どおり)', () => {
+    const range: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'buy', at: 1, mode: 'range', rationale: LC_ONLY,
+        range: {
+          upper: { side: 'sell', type: 'limit', entry: 68900, stopLoss: 68960 },
+          lower: { side: 'buy', type: 'limit', entry: 68700, stopLoss: 68640 },
+        },
+        strategy: 'レンジ内', strategyWhy: '上下端が効いているので両側で待つ',
+      },
+    };
+    const v = buildSignalView(range);
+    expect(v.bias).toBe('レンジ・レンジ内');
+    expect(v.rationale).toBe('上下端が効いているので両側で待つ');
+    const bare: SignalTradeState = { ...range, signal: { ...range.signal!, strategy: undefined, strategyWhy: undefined } };
+    expect(buildSignalView(bare).bias).toBe('レンジ');
+    expect(buildSignalView(bare).rationale).toBe('（理由の記載なし）');
+  });
+
+  it('signal が無く entry だけの経路(後方互換)でもラベル/why を落とさない', () => {
+    const s: SignalTradeState = {
+      phase: 'armed', updatedAt: 0,
+      entry: {
+        direction: 'sell', limitEntry: 68900, stopLossForLimit: 68960, at: 1, rationale: LC_ONLY,
+        strategy: '節目の逆張り', strategyWhy: '68900の戻り売り',
+      },
+    };
+    const v = buildSignalView(s);
+    expect(v.bias).toBe('売り目線・節目の逆張り');
+    expect(v.rationale).toBe('68900の戻り売り');
+  });
+});
+
+// ─── 純関数そのもの(組み立ての境界を直接固定する) ───
+describe('withStrategyLabel / buildRationaleView', () => {
+  it('withStrategyLabel: 無い/空白は目線行を1バイトも変えない', () => {
+    expect(withStrategyLabel('買い目線', 'ブレイク順張り')).toBe('買い目線・ブレイク順張り');
+    expect(withStrategyLabel('買い目線', undefined)).toBe('買い目線');
+    expect(withStrategyLabel('買い目線', '')).toBe('買い目線');
+    expect(withStrategyLabel('買い目線', ' \n ')).toBe('買い目線');
+    // 前後の空白は落とすが、語そのものは丸めない。
+    expect(withStrategyLabel('レンジ', '  その他  ')).toBe('レンジ・その他');
+  });
+
+  it('buildRationaleView: why が無ければ stripLcArithmetic と byte 一致(否定対照)', () => {
+    const texts = ['', '押し目買い。', 'LC幅は60円。', '押し目買い。LC幅は60円。', '押し目買い。\n※上部(売り指値)は不採用: 幅が狭い'];
+    for (const t of texts) {
+      expect(buildRationaleView(t, undefined)).toBe(stripLcArithmetic(t));
+      expect(buildRationaleView(t, '  ')).toBe(stripLcArithmetic(t));
+    }
+    expect(buildRationaleView(undefined, undefined)).toBe('');
+  });
+
+  it('buildRationaleView: why が在れば「（理由の記載なし）」は出さない', () => {
+    expect(buildRationaleView('LC幅は60円。', '押し目を取る')).toBe('押し目を取る');
+    expect(buildRationaleView(undefined, '押し目を取る')).toBe('押し目を取る');
+    expect(buildRationaleView('', '押し目を取る')).toBe('押し目を取る');
   });
 });

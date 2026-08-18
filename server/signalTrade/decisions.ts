@@ -45,6 +45,13 @@ export interface ArmedBracket {
   range?: { upper?: RangeLeg; lower?: RangeLeg };
   // v0.7.54: AI 自己レジーム/確信度 + トレンド veto 発火(記録のみ・約定→決済へ持ち回り)。
   planMeta?: PlanMeta;
+  // ★v0.9.86(表示専用・ADD-ONLY): その計画の「相場の読み」。AiPlan.strategy / strategyWhy をそのまま運ぶ。
+  //   ・strategy ……… 相場の読みのラベル(候補=SCALP_STRATEGY_LABELS。**一覧外の生値も丸めずそのまま**=台帳と同じ規約)。
+  //   ・strategyWhy … なぜその読みにしたか(1行・日本語)。
+  //   ★採否・価格・脚落ち・約定・決済には一切使わない(planMeta と同じ「持ち回るだけ」の扱い)。
+  //   欠落(旧版の計画 / AI が書かなかった回)では **フィールドごと付けない**=従来と byte 一致。
+  strategy?: string;
+  strategyWhy?: string;
   // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。約定→決済→meta/SSE へ持ち回る。
   settings?: SignalSettingsSnapshot;
   // ★ドテン(反転): このブラケットが保有中の反転評価で armed された「反対方向の反転建て」であることを示す。
@@ -73,6 +80,9 @@ export interface CurrentSignal {
   stopLossForLimit?: number;
   stopLossForStop?: number;
   rationale: string;
+  // ★v0.9.86(表示専用・ADD-ONLY): その計画の「相場の読み」(ArmedBracket から引き継ぐ)。SSE 経由で画面に出す。
+  strategy?: string;
+  strategyWhy?: string;
   // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
   mode?: 'range';
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -693,6 +703,11 @@ export function toSignalTradeState(
         at: a.at,
       };
     }
+    // ★v0.9.86: 「相場の読み」を entry にも載せる(range/directional 共通)。
+    //   パネルは s.signal を優先し、無い時だけ s.entry を描く経路がある(B 系統/後方互換)ので、
+    //   片方だけに載せると経路によって画面からラベルが消える。欠落時は付与しない=既存 JSON 不変。
+    if (a.strategy !== undefined) s.entry.strategy = a.strategy;
+    if (a.strategyWhy !== undefined) s.entry.strategyWhy = a.strategyWhy;
   }
   if (st.phase === 'filled' && st.position) {
     const p = st.position;
@@ -721,6 +736,10 @@ export function toSignalTradeState(
       s.signal.mode = 'range';
       s.signal.range = signal.range;
     }
+    // ★v0.9.86: 「相場の読み」を露出(在るときだけ)。**画面(シグナル枠)がこれを描く**。
+    //   ラベルは一覧外の生値でも丸めずそのまま載せる(台帳 signal_plans.strategy と同じ規約)。
+    if (signal.strategy !== undefined) s.signal.strategy = signal.strategy;
+    if (signal.strategyWhy !== undefined) s.signal.strategyWhy = signal.strategyWhy;
     // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
     if (signal.settings) s.signal.settings = signal.settings;
     // ★ドテン(反転)フラグ(ADD-ONLY): 実 doten の時だけ付与。非 doten の JSON は不変=dedupe/OFF byte 一致。
@@ -759,12 +778,21 @@ export function planToArmed(
     range?: { upper?: RangeLeg; lower?: RangeLeg };
     // v0.7.54: AI 自己レジーム/確信度(記録のみ)。plan に載っていれば armed へ引き継ぐ。
     regime?: PlanMeta['regime']; confidence?: number;
+    // ★v0.9.86(表示専用): その計画の「相場の読み」。載っていれば armed へそのまま引き継ぐ(丸めない)。
+    strategy?: string; strategyWhy?: string;
   },
   now: number,
   extra?: { vetoFired?: boolean },
 ): ArmedBracket | null {
   // AI 自己レジーム/確信度 + トレンド veto 発火を1つの planMeta にまとめる(いずれも欠落可=記録のみ)。
   const planMeta = buildPlanMeta(plan.regime, plan.confidence, extra?.vetoFired);
+  // ★v0.9.86: 「相場の読み」を armed へ載せる純関数(range / directional の両分岐で同じものを使う)。
+  //   在るときだけ付ける=欠落した計画から作る armed は従来と byte 一致(JSON.stringify も同一)。
+  const carryStrategy = (a: ArmedBracket): ArmedBracket => {
+    if (plan.strategy !== undefined) a.strategy = plan.strategy;
+    if (plan.strategyWhy !== undefined) a.strategyWhy = plan.strategyWhy;
+    return a;
+  };
   // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
   if (plan.direction === 'range') {
     let upper = plan.range?.upper;
@@ -779,7 +807,7 @@ export function planToArmed(
     if (upper) a.range!.upper = upper;
     if (lower) a.range!.lower = lower;
     if (planMeta) a.planMeta = planMeta;
-    return a;
+    return carryStrategy(a);
   }
   if (plan.direction !== 'buy' && plan.direction !== 'sell') return null;
   // ★向きの belt-and-suspenders(directional): buy は損切りが entry の下・sell は上。境界(==)は不正。
@@ -813,7 +841,7 @@ export function planToArmed(
   }
   if (a.limitEntry == null && a.stopEntry == null) return null;   // 引き直した SL が両レッグとも向き違反 = 不成立。
   if (planMeta) a.planMeta = planMeta;
-  return a;
+  return carryStrategy(a);
 }
 
 /** ★刻み丸めで、武装するエントリー価格が **計画値から動いたか**(directional のみ・range は丸めないので常に false)。
@@ -862,6 +890,9 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
     s.mode = 'range';
     s.range = a.range;
   }
+  // ★v0.9.86: 「相場の読み」を引き継ぐ(在るときだけ=欠落なら従来と byte 一致)。
+  if (a.strategy !== undefined) s.strategy = a.strategy;
+  if (a.strategyWhy !== undefined) s.strategyWhy = a.strategyWhy;
   // ★v0.7.56: 実効設定スナップショットを引き継ぐ(在るときだけ)。
   if (a.settings) s.settings = a.settings;
   // ★ドテン(反転)フラグを引き継ぐ(在るときだけ=add-only)。

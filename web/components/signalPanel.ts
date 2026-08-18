@@ -1,7 +1,7 @@
 import { beep } from './soundPlayer.js';
 // ★画面に出す直前にだけ LC幅の検算を落とす(生成側のプロンプトは1文字も変えない=符号の保持に効いているため)。
 //   落とす/落とさないの境界と、語彙の出所(server/llm/rationaleLc.ts)は core/rationaleDisplay.ts の冒頭に書いてある。
-import { stripLcArithmetic } from '../../core/rationaleDisplay.js';
+import { stripLcArithmetic, NO_REASON } from '../../core/rationaleDisplay.js';
 
 // ─── SSE state 契約 (backend→frontend の唯一のIF) ───────────────────────
 // server 側 broadcast({ type: 'signalTrade', payload: SignalTradeState }) を購読する。
@@ -24,6 +24,11 @@ export interface SignalCurrent {
   stopLossForLimit?: number;
   stopLossForStop?: number;
   rationale?: string;
+  // ★v0.9.86: その計画の「相場の読み」(server SignalTradeState.signal と同じ ADD-ONLY フィールド)。
+  //   strategy=ラベル(目線行に添える) / strategyWhy=なぜその読みにしたか(理由の行に出す)。
+  //   どちらも AI 生成文字列 = **必ず textContent で描く**。欠落した回は従来どおりの表示に縮退する。
+  strategy?: string;
+  strategyWhy?: string;
   at?: number;
   mode?: 'range';
   range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
@@ -41,6 +46,8 @@ export interface SignalTradeState {
     initialStop?: number;
     stopLossForLimit?: number; stopLossForStop?: number;
     rationale?: string;
+    strategy?: string;      // ★v0.9.86: signal と同じ「相場の読み」(entry 経路でもラベルを落とさない)。
+    strategyWhy?: string;
     at: number;
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
@@ -173,6 +180,42 @@ export function waitReasonLabel(r?: SignalTradeState['waitReason'] | null): stri
   return '';
 }
 
+/** 純関数: 目線行に「相場の読み」のラベルを添える(例:「買い目線・トレンド押し目・戻り」)。
+ *  ・区切りは **既存の `・`**(ドテン表示 `🔃 ドテン(反転)・買い目線` と同じ文字)。新しい記号を作らない。
+ *  ・ラベルが無い/空白だけ のときは **目線行を1バイトも変えない**(空の `・` を絶対に作らない)。
+ *  ・★一覧(SCALP_STRATEGY_LABELS)外の生値も **そのまま出す**(台帳と同じ規約=丸めると
+ *    「用意した語が現実と合っていない」という一番知りたい事実が画面からも消える)。 */
+export function withStrategyLabel(bias: string, strategy?: string): string {
+  const label = (strategy ?? '').trim();
+  return label ? `${bias}・${label}` : bias;
+}
+
+/** 純関数: 理由の行を組み立てる(strategyWhy + LC検算を落とした rationale)。
+ *
+ *  ■ 出し方の決定と、その理由(★指示どおりコメントに残す)
+ *    **strategyWhy を先に、rationale の残りをその後の行に置く**。理由は3つ:
+ *     ① strategyWhy は「何を狙ったか」= 目線行に添えたラベルの直接の説明で、ラベル→説明の順に読める。
+ *     ② rationale は LC検算を落とした残りかす(実測で89.5%は検算だけ)なので、先頭に置くと
+ *        「読み」に辿り着く前に価格の断片を読まされる。
+ *     ③ 別の行にするのは、コード側の注記(`※…は不採用`)と同じ既存の作法(1要素に `\n` を入れると
+ *        CSS で改行が潰れて本文に埋もれる)。paintPanel が行ごとに div を作る。
+ *    ★重複対策: rationale の行が strategyWhy と(trim して)**完全一致** するときだけ落とす。
+ *      部分一致や類似での間引きはしない(AI の判断理由の本文を落とさない、という既存の規範を優先)。
+ *
+ *  ■ 「（理由の記載なし）」を出す条件(★縮退の要)
+ *    strategyWhy が在るなら **決して出さない**(読みは書かれている)。
+ *    出るのは「strategyWhy が無く、かつ rationale が LC検算しか含まない」回だけ。
+ *    ★strategyWhy が無いときの戻り値は `stripLcArithmetic(rationale)` と **byte 一致**(従来表示に完全縮退)。 */
+export function buildRationaleView(rationale?: string, strategyWhy?: string): string {
+  const stripped = stripLcArithmetic(rationale);
+  const why = (strategyWhy ?? '').trim();
+  if (!why) return stripped;   // ★従来経路: 1バイトも変えない。
+  // 「（理由の記載なし）」は本文ではなく「本文が無い」という印なので、why が在る回では捨てる。
+  const body = stripped === NO_REASON ? '' : stripped;
+  const rest = splitRationaleLines(body).filter(line => line !== why);
+  return [why, ...rest].join('\n');
+}
+
 /** 純関数: シグナル枠の表示モデル。現在シグナル(s.signal)を優先し、無ければ armed の entry、
  *  それも無ければ「シグナル待機」。★保有(filled)でも s.signal がある限りシグナルを描き続ける。 */
 export function buildSignalView(s: SignalTradeState | null): PanelView {
@@ -196,7 +239,12 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
     if (sig.range.upper) parts.push(legStr(sig.range.upper, '上'));
     if (sig.range.lower) parts.push(legStr(sig.range.lower, '下'));
     if (parts.length === 0) return { cls: 'flat', main: waitMain(), rationale: '' };
-    return { cls: 'armed', bias: 'レンジ', main: `🎯 レンジ：${parts.join(' / ')}`, rationale: stripLcArithmetic(sig.rationale) };
+    return {
+      cls: 'armed',
+      bias: withStrategyLabel('レンジ', sig.strategy),
+      main: `🎯 レンジ：${parts.join(' / ')}`,
+      rationale: buildRationaleView(sig.rationale, sig.strategyWhy),
+    };
   }
 
   const lcTag = (lc?: number): string => (lc != null ? ` (LC ${fmtPrice(lc)})` : '');
@@ -207,7 +255,14 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   // ★ドテン(反転)シグナルは目線行に明示(通常の決済→別の新規と区別できるように)。
   const dirBias = sig.direction === 'buy' ? '買い目線' : '売り目線';
   const bias = sig.doten ? `🔃 ドテン(反転)・${dirBias}` : dirBias;
-  return { cls: 'armed', bias, main: `🎯 シグナル：${legs.join(' / ')}`, rationale: stripLcArithmetic(sig.rationale) };
+  return {
+    cls: 'armed',
+    // ★ドテン表示の書式は壊さない: ラベルは既存の目線行の **後ろ** に同じ `・` で足すだけ
+    //   (「🔃 ドテン(反転)・買い目線・ドテン」の形になる)。
+    bias: withStrategyLabel(bias, sig.strategy),
+    main: `🎯 シグナル：${legs.join(' / ')}`,
+    rationale: buildRationaleView(sig.rationale, sig.strategyWhy),
+  };
 }
 
 /** 純関数: 保有枠の表示モデル。保有中は建値+含み、直近決済は一時表示、それ以外は「保有なし」。
