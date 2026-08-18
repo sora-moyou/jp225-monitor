@@ -5,6 +5,8 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, clampRequestedLcFloor, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
+  parseAiStrategy, parseAiStrategyWhy, isKnownScalpStrategy, scalpStrategyContract,
+  SCALP_STRATEGY_LABELS, SCALP_STRATEGY_OTHER,
   lcLegExceeds, lcLegBelowFloor, lcEffectiveCeiling, buildDelegationNote, buildStrategySpec, buildLegNote,
   pickNoneReason, enforceRangeEnabled,
   buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote, buildBandwalkNote,
@@ -3152,5 +3154,138 @@ describe('★逆位置は表現不能(stopSide は構造上発火しない)', ()
   it('★stopSideOk 自体は残す(消さない): 逆位置を渡せば今も false を返す=発火したらバグだと分かる', () => {
     expect(stopSideOk('buy', 100, 110)).toBe(false);
     expect(stopSideOk('sell', 100, 90)).toBe(false);
+  });
+});
+
+// ─── ★v0.9.84: 戦略ラベル(記録専用) ─────────────────────────────────────────
+//   目的は ④AI が理由と共に提示 →⑤結果を記録 →⑥AI に返す のループで
+//   「何を狙って外したのか」を集計できるようにすること。ここで固定するのは3点:
+//     (a) 欠落・不正・未知のラベルでも **計画が落ちない**(記録専用の実証)
+//     (b) v1 と v1e の **両方** の user プロンプトに入っている(片腕だけに入れない)
+//     (c) 提示の仕方が固着対策(番号を振らない・順番に意味を持たせない・例示は「その他」だけ)
+describe('v0.9.84: 戦略ラベル(strategy / strategyWhy)= 記録専用', () => {
+  const base = {
+    direction: 'buy', limitEntry: 38200, stopEntry: 38350,
+    lcWidthForLimit: 55, lcWidthForStop: 55,
+    rationale: '押し目。指値レッグ: 38200-38145=55円。ブレイク新規レッグ: 38350-38295=55円。', refPrice: REF,
+  };
+  /** 採否・価格・脚落ちの観測点をまとめて1つの形にする(比較の母集団を揃えるため)。 */
+  const shapeOf = (r: ReturnType<typeof parseScalpPlan>) => {
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    const { strategy, strategyWhy, ...rest } = r.plan;
+    return { plan: rest, noneReason: r.noneReason, legDrops: r.legDrops };
+  };
+
+  it('正常: ラベルと理由がそのまま plan に載る', () => {
+    const r = parseScalpPlan(JSON.stringify({ ...base, strategy: 'トレンド押し目・戻り', strategyWhy: '上昇トレンド中、S1まで引きつけて反発を取る' }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.strategy).toBe('トレンド押し目・戻り');
+    expect(r.plan.strategyWhy).toBe('上昇トレンド中、S1まで引きつけて反発を取る');
+    expect(isKnownScalpStrategy(r.plan.strategy)).toBe(true);
+  });
+
+  it('★未知のラベルは「その他」に丸めず 生値のまま残す(リストが現実と合っていない証拠を消さない)', () => {
+    const r = parseScalpPlan(JSON.stringify({ ...base, strategy: '寄り天の売り' }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.strategy).toBe('寄り天の売り');
+    expect(r.plan.strategy).not.toBe(SCALP_STRATEGY_OTHER);
+    // 「未知だった」ことは 値 × ラベル一覧 でいつでも数え直せる(台帳に判定は書かない)。
+    expect(isKnownScalpStrategy(r.plan.strategy)).toBe(false);
+  });
+
+  it('★欠落・不正・空文字でも計画は落ちない(undefined にして先へ進む=regime/confidence と同じ形)', () => {
+    const cases: unknown[] = [undefined, null, 123, {}, [], '', '   '];
+    for (const v of cases) {
+      const r = parseScalpPlan(JSON.stringify({ ...base, strategy: v, strategyWhy: v }), REF);
+      expect(r.ok, `strategy=${JSON.stringify(v)} で計画が落ちた`).toBe(true);
+      if (!r.ok) continue;
+      expect(r.plan.strategy).toBeUndefined();
+      expect(r.plan.strategyWhy).toBeUndefined();
+      // ★採否・価格・脚落ちは1バイトも変わらない。
+      expect(r.plan.direction).toBe('buy');
+      expect(r.plan.limitEntry).toBe(38200);
+      expect(r.plan.stopEntry).toBe(38350);
+    }
+  });
+
+  it('★記録専用の実証: ラベルの有無/未知/不正で 採否・価格・脚落ち・noneReason が完全に一致する', () => {
+    const withoutLabel = shapeOf(parseScalpPlan(JSON.stringify(base), REF));
+    for (const v of ['トレンド押し目・戻り', 'その他', '寄り天の売り', '', 42, null]) {
+      const withLabel = shapeOf(parseScalpPlan(JSON.stringify({ ...base, strategy: v, strategyWhy: v }), REF));
+      expect(withLabel, `strategy=${JSON.stringify(v)} で採否/価格が動いた`).toEqual(withoutLabel);
+    }
+  });
+
+  it('見送り(none)・レンジでもラベルは載る(全 plan 形で記録できる)', () => {
+    const none = parseScalpPlan(JSON.stringify({ direction: 'none', rationale: '見送り', refPrice: REF, strategy: 'その他', strategyWhy: '節目まで遠い' }), REF);
+    expect(none.ok && none.plan.strategy).toBe('その他');
+    expect(none.ok && none.noneReason).toBe('ai');
+    const range = parseScalpPlan(JSON.stringify({
+      direction: 'range', rationale: 'レンジ', refPrice: REF, strategy: 'レンジ内', strategyWhy: '横這い',
+      range: { upper: { side: 'sell', type: 'limit', entry: REF + 100, lcWidth: 55 }, lower: { side: 'buy', type: 'limit', entry: REF - 100, lcWidth: 55 } },
+    }), REF);
+    expect(range.ok && range.plan.strategy).toBe('レンジ内');
+  });
+
+  it('parseAiStrategy / parseAiStrategyWhy は寛容(trim する・空は undefined)', () => {
+    expect(parseAiStrategy('  ドテン  ')).toBe('ドテン');
+    expect(parseAiStrategy(undefined)).toBeUndefined();
+    expect(parseAiStrategy(0)).toBeUndefined();
+    expect(parseAiStrategyWhy(' 反転を狙う ')).toBe('反転を狙う');
+    expect(parseAiStrategyWhy(null)).toBeUndefined();
+  });
+
+  // ─── (b) v1 と v1e の両方に入っていること ───
+  //   buildScalpPlan の非 v2 分岐と同じ組み立て(質問文 + JSON 出力指示)を再現する。
+  //   v1e は buildScalpQuestion(omitMaxDistance=true) だけが違い、JSON 出力指示は共通の土台。
+  const userPromptFor = (variant: 'v1' | 'v1d' | 'v1e'): string =>
+    buildScalpQuestion(55, 65, true, 100, LC_CEIL_MANUAL, variant === 'v1d', variant === 'v1e')
+    + '\n\n' + scalpJsonInstruction(REF, 55, 65, true, LC_CEIL_MANUAL);
+
+  for (const variant of ['v1', 'v1d', 'v1e'] as const) {
+    it(`★${variant} の user プロンプトに strategy 契約と全ラベルが入る(片腕だけに入れない)`, () => {
+      const p = userPromptFor(variant);
+      expect(p).toContain('"strategy"');
+      expect(p).toContain('"strategyWhy"');
+      expect(p).toContain('【この計画の読み(strategy / strategyWhy)】');
+      for (const label of SCALP_STRATEGY_LABELS) expect(p, `${variant} に「${label}」が無い`).toContain(label);
+    });
+  }
+
+  it('★v1 と v1e で strategy 契約部分は完全に同一(距離の上限の A/B を汚さない)', () => {
+    expect(scalpStrategyContract()).toBe(scalpStrategyContract());
+    const contract = scalpStrategyContract();
+    expect(userPromptFor('v1')).toContain(contract);
+    expect(userPromptFor('v1e')).toContain(contract);
+  });
+
+  // ─── (c) 固着対策: 提示の仕方 ───
+  it('★ラベルに番号を振らない/順番に意味を持たせない/例示は「その他」だけ', () => {
+    const c = scalpStrategyContract();
+    // 番号(丸数字・①②…/ 1. 2. …)をラベル行に付けない=番号もアンカーになる。
+    for (const n of ['①', '②', '③', '④', '⑤', '⑥', '⑦']) expect(c).not.toContain(n);
+    expect(c).not.toMatch(/^\s*\d[.)]\s/m);
+    // 順序を意味づける語を使わない。
+    for (const w of ['まず', '優先順', '順に']) expect(c).not.toContain(w);
+    // 例示に使ってよいのは偏りを生まない「その他」だけ(他のラベルは一覧の1回のみ)。
+    for (const label of SCALP_STRATEGY_LABELS) {
+      if (label === SCALP_STRATEGY_OTHER) continue;
+      expect(countOf(c, label), `「${label}」が一覧以外にも書かれている(例示に使うとそこへ固着する)`).toBe(1);
+    }
+    // 「その他」を選んだときは狙いを書かせる。
+    expect(c).toContain('strategyWhy に **何を狙ったのか** を必ず書くこと');
+    // ラベルは「脚の機械的な種類」ではなく相場の読みだと明記する。
+    expect(c).toContain('脚の機械的な種類から strategy を決めることはできない');
+  });
+
+  it('★量を印字しない(LC 幅・距離のアンカーを増やさない)', () => {
+    const c = scalpStrategyContract();
+    // 2桁以上の数(55/65/50/200/400 など、これまで実測で固着を起こしてきた種類の数)を1つも持ち込まない。
+    expect(c).not.toMatch(/[0-9０-９]{2,}/);
+    // 残ってよい1桁は「1つだけ/1行/2本」= 個数の語だけ。円/pt などの単位が付いた量は書かない。
+    expect(c).not.toMatch(/[0-9０-９]\s*(円|pt|ティック|%)/);
   });
 });

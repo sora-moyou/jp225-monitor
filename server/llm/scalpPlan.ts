@@ -67,6 +67,18 @@ export interface AiPlan {
   //   後で「確信度は勝率と相関するか」「自己regimeは実際と合うか」を実測する。
   regime?: 'trend_up' | 'trend_down' | 'range' | 'unclear';
   confidence?: number;       // 0-100(この計画/レジーム判断への確信度)。
+  // ★戦略ラベル(v0.9.84・記録のみ=ゲートには使わない)。④AIが理由と共に提示 →⑤結果を記録 →⑥AIへ返す、の
+  //   学習ループで **「何を狙って外したのか」** を集計できるようにするための2つ。いまの⑥は
+  //   「直近の負け: buy 68940→68880 -60」しか返せず、AI は狙いの単位で学べない。これがあれば
+  //   「押し目 12件 勝率33%」の形で返せる。欠落/不正は undefined(regime/confidence と同じ後方互換)。
+  //
+  // ★未知のラベルは **その他に丸めない**。SCALP_STRATEGY_LABELS に無い文字列が来ても生値のまま残す。
+  //   理由: 丸めると「リストが現実と合っていない」という **いちばん知りたい事実** が台帳から消える。
+  //   ★別フィールド(strategyUnknown 等)を足さないのも意図的: 既知/未知は「値 × その時点のラベル一覧」で
+  //     いつでも判定でき(isKnownScalpStrategy)、判定を書き込むと **書いた時点の一覧** が台帳に凍りつく。
+  //     ラベル一覧は今後増える前提なので、凍らせず生値だけを残す方が後から数え直せる。
+  strategy?: string;         // 相場の読みのラベル(候補=SCALP_STRATEGY_LABELS。一覧外の生値もそのまま入る)。
+  strategyWhy?: string;      // なぜその読みにしたか(1行・日本語)。
   // direction==='range' の時のみ。upper.entry>refPrice>lower.entry。enforce/parse で片レッグに
   // 落ちることがある(その場合 upper か lower が undefined=実質片面)。
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -1173,6 +1185,69 @@ export function buildDelegationNote(
   return '\n\n【AI委任(以下の項目はあなたの裁量。上のロジックを踏まえ、必ず根拠を述べること)】\n- ' + lines.join('\n- ');
 }
 
+// ─── ★戦略ラベル(v0.9.84・記録専用) ───────────────────────────────────────
+//
+// なぜ足すか: このプロジェクトの本体は ④AI が理由と共に提示 → ⑤結果を正確に記録 → ⑥それを AI に返す、
+//   の学習ループである。いま⑥が返せるのは「直近の負け: buy 68940→68880 -60」だけで、
+//   **何を狙って外したのか** が無いので AI は学びようがない。ラベルがあれば
+//   「押し目 12件 勝率33%」の単位で返せる。
+//
+// ★前回の失敗(2026-08・実測)を踏まえた構造上の判断:
+//   「なぜその向きか」を根拠文(rationale)に書かせる規則は **効かなかった**(理由の記載率 100%→100%、
+//   ブレイク新規の採用率だけ 24%→8% に悪化)。原因は文言ではなく **箱** で、根拠文には既に LC幅の検算が
+//   入っており、検算の例文は それ単体で完結する文なので AI は検算を書いて満たしたと判断して終わっていた
+//   (中央値76字のうち検算76字・理由0字、98.1% が検算から書き始めていた)。
+//   ⇒ 同じ箱に文言を足しても押し出されるだけ。よって **別の構造化フィールド** にする。
+//
+// ★提示の仕方(実測に基づく固着対策): 選択肢を見せると AI はそこに固着する(上限65円を印字→幅が60に固着、
+//   下限55を強調→55に固着)。ラベルも同じ性質を持つはずなので、
+//   ・番号を振らない(番号もアンカーになる)
+//   ・順番に意味を持たせない(「まず〜を検討し」と書かない・語のグロスにも「上の」等の位置語を使わない)
+//   ・例示に特定のラベルを使わない(使うのは偏りを生まない「その他」だけ)
+//
+// ★ラベル一覧は **設定や場面で出し入れしない**(ドテンが不許可の場面でも同じ7語を見せる)。
+//   台帳の集計語彙が場面ごとに変わると、あとで母集団を揃えられなくなるため。
+
+/** ラベルと、その語が指す **相場の読み**(順序に意味は無い)。プロンプトと一覧の唯一の出所。 */
+const SCALP_STRATEGY_LABEL_DEFS: readonly (readonly [label: string, gloss: string])[] = [
+  ['トレンド押し目・戻り', '順張りで、節目まで引きつけて入る'],
+  ['ブレイク順張り', '節目を抜けた方向へ乗る'],
+  ['節目の逆張り', 'トレンドに逆らって、節目での反転を取る'],
+  ['レンジ内', '横這いの上下端で取る'],
+  ['バンドウォーク追随', 'バンドに沿った継続に乗る'],
+  ['ドテン', '保有と逆へ転換する'],
+  ['その他', 'ほかのどれでもない'],
+] as const;
+
+/** 戦略ラベルの候補(解析側が「既知/未知」を数えるための一覧。判定には使わない)。 */
+export const SCALP_STRATEGY_LABELS: readonly string[] = SCALP_STRATEGY_LABEL_DEFS.map(([label]) => label);
+
+/** どれにも当てはまらないときの語。★例示にはこの語だけを使う(偏りを生まない)。 */
+export const SCALP_STRATEGY_OTHER = 'その他';
+
+/** 受け取った値が一覧のラベルそのものか。★丸めるためではなく **数えるため** の関数
+ *  (parse は一覧外の生値もそのまま残す=リストが現実と合っていないことを台帳に残す)。 */
+export function isKnownScalpStrategy(v: string | undefined): boolean {
+  return v !== undefined && SCALP_STRATEGY_LABELS.includes(v);
+}
+
+/** ★記録専用: 「この計画は何を狙ったのか」を 1語 + 1行 で残させる契約文(純関数)。
+ *  v1 系(v1 / v1d / v1e)の共通の土台である scalpJsonInstruction が唯一の呼び出し元
+ *  = 走行中の距離の上限の実験(v1 vs v1e)は両腕とも同じものを受け取る。 */
+export function scalpStrategyContract(): string {
+  return '\n★【この計画の読み(strategy / strategyWhy)】\n'
+    + '  strategy には、この計画を出したときの **相場の読み** に最も近い語を、次の中から1つだけ選び、その語のまま書く。\n'
+    + SCALP_STRATEGY_LABEL_DEFS.map(([label, gloss]) => `    ${label} … ${gloss}\n`).join('')
+    + '  ★選ぶのは **相場の読み** であって、注文の型ではない。この仕組みの計画は常に'
+    + '「引きつけて入る脚(limitEntry)」と「抜けたら入る脚(stopEntry)」の2本で組まれるので、'
+    + '脚の機械的な種類から strategy を決めることはできない。いまの相場をどう読んでその2本を置いたのかを書くこと。\n'
+    + `  ★どの語にも当てはまらないと感じたら「${SCALP_STRATEGY_OTHER}」と書き、`
+    + 'strategyWhy に **何を狙ったのか** を必ず書くこと(無理に近い語へ寄せない)。\n'
+    + '  ★strategyWhy には、なぜその読みにしたのかを1行で書く(根拠文 rationale とは別に、必ず書く)。\n'
+    + '  ★この2つは、あとで「どの読みが当たり、どの読みが外れたか」を集計してあなたに返すための記録である。'
+    + '注文の採否・価格・損切り幅には使わない。\n';
+}
+
 // LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
 // LC 幅注記に floor/ceiling を反映する(テスト可能なよう export)。
 export function scalpJsonInstruction(
@@ -1209,6 +1284,10 @@ export function scalpJsonInstruction(
     `{\n` +
     `  "regime": "trend_up" | "trend_down" | "range" | "unclear",  // まず自分で現在の相場レジームを判定して入れる\n` +
     `  "confidence": number,        // このレジーム判断と計画への確信度(0〜100の整数)\n` +
+    // ★v0.9.84(記録専用): 狙い(相場の読み)を1語 + 1行で。語の一覧と選び方は下の【この計画の読み】が持つ
+    //   (フィールドの隣に一覧を並べると印字が増えて固着源になるため、ここは名前と役割だけにする)。
+    `  "strategy": string,          // この計画の相場の読み(【この計画の読み】の語から1つ・その語のまま)\n` +
+    `  "strategyWhy": string,       // なぜその読みにしたか(1行・日本語)\n` +
     `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の4フィールドは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の4フィールドは不要)' : ''}\n` +
     `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(ブレイク新規のみ)の時は省略(lcWidthForLimit と対で省く)\n` +
     `  "stopEntry": number,         // ブレイク新規(ブレイク側の新規エントリー。損切りではない)。none/range またはブレイク新規レッグ不採用(指値のみ)の時は省略(lcWidthForStop と対で省く)\n` +
@@ -1221,7 +1300,9 @@ export function scalpJsonInstruction(
     `  "rationale": string,         // 判断理由(日本語)。none の時は見送り理由。★出したレッグごとに、幅を出した引き算(例「${lcWidthDeclarationExample('指値レッグ', '(エントリー価格)', '(損切りの位置)', '(幅)')}」)を必ず含め、その答えを上の lcWidthFor… と一致させる。★「省略」と述べたレッグは そのキー自体を出力しない\n` +
     `  "refPrice": number           // 計画時に見た現在値(${refPrice})\n` +
     `}\n` +
-    `refPrice は ${refPrice} を使うこと。数値はすべて円単位の実数(引用符なし)。`;
+    `refPrice は ${refPrice} を使うこと。数値はすべて円単位の実数(引用符なし)。\n` +
+    // ★v1 系(v1 / v1d / v1e)の共通の土台に置く=距離の上限の A/B は両腕とも同じものを受け取る。
+    scalpStrategyContract();
 }
 
 /** レンジ脚のパース結果。★失敗も「なぜ落ちたか」を持つ:
@@ -1279,6 +1360,26 @@ export function parseAiRegime(v: unknown): AiPlan['regime'] {
 export function parseAiConfidence(v: unknown): number | undefined {
   if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
   return Math.max(0, Math.min(100, v));
+}
+
+/** 記録専用の自由文フィールドを寛容にパースする共通部(非文字列・空白のみ → undefined)。
+ *  ★rationale と同じ扱い(trim するだけ・上限は掛けない)。上限はこの層ではなく台帳側(planLedger)の
+ *    責務で、ここで削ると「④の材料そのもの」を発生源で失う。 */
+function parseAiRecordText(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim();
+  return s ? s : undefined;
+}
+
+/** 戦略ラベルを寛容にパース。★一覧に無い語も **そのまま残す**(その他へ丸めない)。
+ *  丸めると「用意したラベルが現実と合っていない」という証拠が台帳から消えるため。記録のみ=後方互換。 */
+export function parseAiStrategy(v: unknown): string | undefined {
+  return parseAiRecordText(v);
+}
+
+/** 「なぜその読みにしたか」を寛容にパース(空/非文字列は undefined)。記録のみ=後方互換。 */
+export function parseAiStrategyWhy(v: unknown): string | undefined {
+  return parseAiRecordText(v);
 }
 
 /** 損切り(stopLoss)がエントリーの正しい外側にあるか(幾何・向き検証)。純関数。
@@ -1394,9 +1495,15 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   ゲートには使わない=既存の direction/価格の検証挙動は完全に不変。
   const regime = parseAiRegime(o.regime);
   const confidence = parseAiConfidence(o.confidence);
+  // ★戦略ラベル(v0.9.84・記録のみ)。regime/confidence と **同じ形**: 欠落・不正・一覧外でも
+  //   計画は落とさず undefined にして先へ進む(採否・価格・脚落ち・noneReason は1バイトも変わらない)。
+  const strategy = parseAiStrategy(o.strategy);
+  const strategyWhy = parseAiStrategyWhy(o.strategyWhy);
   const withMeta = (p: AiPlan): AiPlan => {
     if (regime !== undefined) p.regime = regime;
     if (confidence !== undefined) p.confidence = confidence;
+    if (strategy !== undefined) p.strategy = strategy;
+    if (strategyWhy !== undefined) p.strategyWhy = strategyWhy;
     return p;
   };
   // ★見送り(direction:"none"): 価格は不要。rationale + refPrice のみで ok:true の正当な「見送り」応答。
@@ -2456,6 +2563,9 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // 落ちることがあるため parsed.plan から再付与する(ゲートには使わない=挙動不変)。
     if (parsed.plan.regime !== undefined) finalPlan.regime = parsed.plan.regime;
     if (parsed.plan.confidence !== undefined) finalPlan.confidence = parsed.plan.confidence;
+    // ★戦略ラベル(記録のみ)も同じ理由で再付与する(enforce/none 化で新規オブジェクトになり落ちるため)。
+    if (parsed.plan.strategy !== undefined) finalPlan.strategy = parsed.plan.strategy;
+    if (parsed.plan.strategyWhy !== undefined) finalPlan.strategyWhy = parsed.plan.strategyWhy;
     // ★v0.9.59(表示専用): **enforce 段で落ちたレッグ**の理由も根拠文へ足す。
     //   parse 段の注記(buildLegNote)は AI 応答の幾何しか説明できず、実データで最多の脱落理由
     //   (損切り幅が設定の下限より狭い=lcFloor / 上限より広い=lc)は画面に何の説明も残らなかった。
