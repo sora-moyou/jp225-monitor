@@ -24,17 +24,26 @@
 //       (触っていない=range が別に持つ規則)
 //   (5) 稼働機は v1e を使わない(engine の3経路は promptVariant を1度も渡さない・既存ガードが担保)
 //   (6) v1d は変種として今も選べる(過去の台帳を読める)が、候補腕はもう v1d を送らない
+//   (7) ★バンドウォーク注記(buildBandwalkNote)の「距離の上限(200/400円)は一切変わらない」という
+//       **参照** も、本則(3箇所)が消えると宛先を失うので、omitMaxDistance で同時に整合させる。
+//       これは v1d のときの「①の免除文」「も→は」と同型の欠陥(存在しない規則を AI に説明しない)。
+//       ★v1 側のバンドウォーク注記は HEAD と byte 一致のまま(200/400円は v1 では生きているため正しい)。
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  buildScalpQuestion, buildScalpSystemPrompt, buildStrategySpec,
+  buildScalpQuestion, buildScalpSystemPrompt, buildStrategySpec, buildBandwalkNote,
 } from './scalpPlan.js';
 import {
   PROMPT_VARIANTS, DEFAULT_PROMPT_VARIANT, normalizePromptVariant, generatorArmKey,
 } from './promptVariant.js';
 import { planCycleArms } from '../generator/cycle.js';
+import type { Bandwalk } from '../bandwalk.js';
+
+const BW: Bandwalk = {
+  direction: 'up', ratio: 0.8, bars: 12, sinceT: 0, t: 3_600_000, close: 42_000, band: 41_900, rsi: 62.5,
+};
 
 const FLOOR = 55;
 const CEIL = 159;
@@ -166,6 +175,49 @@ describe('v1e — 距離の上限は(range 以外の)2箇所すべてから同�
     // 否定対照: v1 側では3件とも在る。
     const allV1 = Q1() + buildScalpSystemPrompt(FLOOR, CEIL, true, 100) + buildStrategySpec(SPEC_IN(false));
     expect(allV1.match(/指値・ブレイク新規の距離\(必須\)/g)?.length).toBe(3);
+  });
+});
+
+describe('v1e — バンドウォーク注記も整合する(距離の上限への「参照」が宛先を失わない)', () => {
+  it('★v1(omitMaxDistance=false・既定)は HEAD と byte 一致 = 「距離の上限は変わらない」は正しい記述のまま', () => {
+    const on = buildBandwalkNote(BW, false, false);
+    expect(on).toContain('★緩むのはこの2点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約、'
+      + '距離の上限(片レッグ200円以内/両レッグ幅400円以内)は **一切変わらない**(そのまま厳守すること)。');
+    // 既定(引数省略)でも同じ = 従来と byte 一致。
+    expect(buildBandwalkNote(BW)).toBe(on);
+    expect(buildBandwalkNote(BW, false)).toBe(on);
+  });
+
+  it('★v1e(omitMaxDistance=true)は「距離の上限(200/400円)」への言及だけが消え、他の"変わらないもの"は残る', () => {
+    const off = buildBandwalkNote(BW, false, true);
+    expect(off).not.toContain('距離の上限');
+    expect(off).not.toContain('200円以内');
+    expect(off).not.toContain('400円以内');
+    // 他の"緩まないもの"の列挙は1バイトも変わらない。
+    expect(off).toContain('★緩むのはこの2点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約は **一切変わらない**(そのまま厳守すること)。');
+  });
+
+  it('★v1d(omitMinDistance)と v1e(omitMaxDistance)は独立に効く(両方 true でも両方 false でも整合)', () => {
+    const both = buildBandwalkNote(BW, true, true);
+    expect(both).toContain('次の1点だけを緩めてよい');   // omitMinDistance の効果は健在
+    expect(both).not.toContain('距離の上限');             // omitMaxDistance の効果も健在
+    expect(both).toContain('★緩むのはこの1点のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約は **一切変わらない**(そのまま厳守すること)。');
+  });
+
+  it('★プロンプトの3ビルダー(質問文+system prompt+strategySpec)にバンドウォーク注記を足しても、'
+    + 'v1e では「距離の上限」系の文言が0件になる', () => {
+    const all = Q1E()
+      + buildScalpSystemPrompt(FLOOR, CEIL, true, 100, false, undefined, true)
+      + buildStrategySpec(SPEC_IN(true))
+      + buildBandwalkNote(BW, false, true);
+    // ★range 専用の距離規則(「上と下の価格差を400円以内にする」)は正しく残るので、'400円以内' 等の
+    //   広い部分一致は使わない(誤検出になる)。「距離の上限」という語自体は、外した規則の掲載
+    //   (質問文②・system prompt・strategySpec)とバンドウォーク注記の参照にしか出てこない。
+    expect(all).not.toContain('距離の上限');
+    expect(all).toContain('上と下の価格差を400円以内にする');   // range の距離規則は残る(対象外の確認)
+    // 否定対照: v1 側(バンドウォーク注記含む)では在る。
+    const allV1 = Q1() + buildScalpSystemPrompt(FLOOR, CEIL, true, 100) + buildStrategySpec(SPEC_IN(false)) + buildBandwalkNote(BW);
+    expect(allV1).toContain('距離の上限(片レッグ200円以内/両レッグ幅400円以内)は **一切変わらない**');
   });
 });
 

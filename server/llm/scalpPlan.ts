@@ -1054,8 +1054,17 @@ export function buildArmedNote(ctx?: { mode: 'range-fade'; ageMs: number; avgMs:
  *   ★助詞も直す: 「要求 **も** 課さない」の「も」は 消えた前項(最低距離の免除)を指す語なので、
  *     単独で残すと **参照先を失った表現** になる。v1d 側だけ「は」にする(v1 は1バイトも変えない)。
  *   ★消えるのは最低距離に関する文と、その「も」だけ。免除の中身(節目起点)と、
- *     緩めないもの(LC幅・向き・距離の上限)の列挙は1バイトも変えない。 */
-export function buildBandwalkNote(bw?: Bandwalk | null, omitMinDistance = false): string {
+ *     緩めないもの(LC幅・向き・距離の上限)の列挙は1バイトも変えない。
+ *
+ *  ★v1e(2026-08-18・omitMaxDistance): 逆に、末尾の「緩まないものの列挙」の中の
+ *   **「距離の上限(片レッグ200円以内/両レッグ幅400円以内)は」の1句だけ** が宛先を失う側。
+ *   v1e は質問文・system prompt・strategySpec から距離の上限そのものを外すので、この注記だけが
+ *   「200/400円は変わらない」と言い続けると **プロンプトのどこにも書かれていない規則を参照する**
+ *   ことになる(このセッションで潰してきた欠陥と同型: 委任時に消える機構への言及、rangeEnabled=false
+ *   時の「上の2択」参照など)。よってこの1句だけを落とす。★緩まないものの残り(LC幅の下限・上限・
+ *   安全上限、価格の向きの不等式、損切りは「幅」だけを出す契約)は1バイトも変えない=v1e でも実在する
+ *   規則だけを列挙する。 */
+export function buildBandwalkNote(bw?: Bandwalk | null, omitMinDistance = false, omitMaxDistance = false): string {
   if (!bw) return '';
   const dirJa = bw.direction === 'up' ? '上昇(買い方向)' : '下降(売り方向)';
   const relaxCount = omitMinDistance ? '1点' : '2点';
@@ -1072,8 +1081,13 @@ export function buildBandwalkNote(bw?: Bandwalk | null, omitMinDistance = false)
     + '直近高安をすぐ抜けるブレイク新規(stopEntry) を、現在値の近くに置いてよい)。\n'
     // ★v0.9.70: 【最優先: 損切りの向き】は「損切りは幅だけを出す」契約に置き換わったので、参照先の名前を直す
     //   (存在しないブロック名を参照させない=緩和の対象が曖昧にならないようにする)。
-    + `  ★緩むのはこの${relaxCount}のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約、`
-    + '距離の上限(片レッグ200円以内/両レッグ幅400円以内)は **一切変わらない**(そのまま厳守すること)。\n'
+    + `  ★緩むのはこの${relaxCount}のみ。損切り(LC)幅の下限・上限・安全上限、【最優先: 価格の向き】の不等式と【最優先: 損切りは「幅」だけを出す】の契約`
+    // ★v1e(omitMaxDistance): 距離の上限(200/400円)への言及だけを落とす。v1 は従来どおり「、距離の上限(…)は」を
+    //   挟む(byte 不変)。v1e は「契約」に直接「は一切変わらない」を続ける(存在しない規則を参照させない)。
+    + (omitMaxDistance
+      ? 'は'
+      : '、距離の上限(片レッグ200円以内/両レッグ幅400円以内)は')
+    + ' **一切変わらない**(そのまま厳守すること)。\n'
     + '  ★バンドウォークは「価格の急変が起きるまで続く」と見なしてよいが、逆方向に強く反転したと判断したら'
     + ' 無理にこの向きへ入らず direction:"none" で見送ること。';
 }
@@ -2318,7 +2332,8 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const armedNote = buildArmedNote(input.armedContext);
   // ★バンドウォーク成立中だけの緩和注記(距離と節目のみ)。非成立/未指定は '' = 従来と byte 一致。
   //   ★v1d: ①の免除文(「最低距離は課さない」)は 本則が消えると宛先を失うので、同じフラグで整合させる。
-  const bandwalkNote = buildBandwalkNote(input.bandwalk, omitMinDistance);
+  //   ★v1e: 「距離の上限は変わらない」の参照も、本則(200/400円)が消えると宛先を失うので、同じフラグで整合させる。
+  const bandwalkNote = buildBandwalkNote(input.bandwalk, omitMinDistance, omitMaxDistance);
   const monitorCtx = buildMonitorContext(now);
   const scalpQuestion = promptVariant === 'v2'
     ? buildScalpQuestionV2({ floorYen, ceilYen: promptCeilingYen, rangeEnabled, refPrice })
