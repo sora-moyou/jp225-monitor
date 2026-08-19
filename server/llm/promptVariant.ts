@@ -81,10 +81,31 @@
 //
 //   ★実行時には稼働機へ接続しない。生成器の候補腕(server/generator/cycle.ts)だけが 'v1e' を送る。
 
-export type PromptVariant = 'v1' | 'v2' | 'v1d' | 'v1e';
+// ─── 'v1f'(2026-08-20 追加) = v1 マイナス「LC の理由の箱の書かせ方」。動かす変数は **1つだけ** ────────
+//
+//   ■ 外すもの/変えるもの: `lcWhyForLimit` / `lcWhyForStop` の **注記だけ**(scalpPlan.ts の lcWhyNote)。
+//     質問文・system プロンプト・strategySpec・rationale の検算要求は **1文字も動かさない**。
+//
+//   ■ なぜ測るか(実測)
+//     v0.9.88 で新設した LC の理由の箱が **8割 検算で埋まる**(「幅の根拠」ではなく引き算がそのまま入る)。
+//     仮説(機構): selfCheckNote が「その引き算を rationale に書き、答えと **lcWidthFor…** の数値が
+//     一致しているか」と言い、新設の箱 **lcWhyFor…** と1文字違いで隣接している=**宛先の取り違え**。
+//     v1f は箱の仕事を **肯定形で具体化**(「根拠に選んだ節目はどれで、なぜそこを選んだか」)して、
+//     判断が書かれるようになるかを見る。★否定形(「ここには書かない」)は採らない
+//     (このプロジェクトは「否定文の中でも語が供給される」という実測を持つ)。
+//
+//   ■ なぜ検証台ではなく生成器の腕で測るか
+//     費用0(既に毎日走っている枠)・標本40倍(200件超/日)・**同じ瞬間の A/B 対照**が取れる。
+//
+//   ■ 主指標(解析側で見る。コードでは何も判定しない)
+//     lcWhyFor* に検算(引き算・「LC幅はN円」の形)が入っている割合 / 節目に言及している割合 /
+//     rationale 側の検算が残っているか(退行の否定対照) / 字数。
+//
+//   ★実行時には稼働機へ接続しない。生成器の候補腕(server/generator/cycle.ts)だけが 'v1f' を送る。
+export type PromptVariant = 'v1' | 'v2' | 'v1d' | 'v1e' | 'v1f';
 
 /** 受理する変種名の一覧(エラーメッセージの生成もここから作る=一覧と実装がずれない)。 */
-export const PROMPT_VARIANTS = ['v1', 'v2', 'v1d', 'v1e'] as const;
+export const PROMPT_VARIANTS = ['v1', 'v2', 'v1d', 'v1e', 'v1f'] as const;
 
 /** 省略時の質問文。既存の呼び出し元(シグナルエンジン・手動診断・trade2)は必ずこれ。 */
 export const DEFAULT_PROMPT_VARIANT: PromptVariant = 'v1';

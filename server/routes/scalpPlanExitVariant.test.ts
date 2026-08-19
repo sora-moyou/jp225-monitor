@@ -130,7 +130,12 @@ describe('/api/scalp-plan — exitVariant(決済仕様の変種)', () => {
       await scalpPlanHandler(reqOf({ exitVariant: 'candidate-a' }), res);
       // ★v0.9.75: 軸が2つになったので、応答は **両方の変種名** を明示する
       //   (片方だけだと台帳から「どの質問文で得た標本か」が読めない)。
-      expect(res._json).toEqual({
+      // ★v0.9.93: ok:false の応答にも app_version が載る(計画が出なかった回こそ「どの版で起きたか」が要る)。
+      //   pb1 は publish 済みのプロセスでだけ載る(このテストは LLM スタックをモックしていて未登録=省かれる)。
+      const { appVersion, promptBuild, ...rest } = res._json as Record<string, unknown>;
+      expect(typeof appVersion).toBe('string');
+      expect(promptBuild === undefined || /^pb1:[0-9a-f]{16}$/.test(String(promptBuild))).toBe(true);
+      expect(rest).toEqual({
         ok: false, error: 'chart-not-generated', exitVariant: 'candidate-a', promptVariant: 'v1',
       });
     });

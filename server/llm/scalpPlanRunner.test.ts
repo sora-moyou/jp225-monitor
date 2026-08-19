@@ -91,7 +91,10 @@ function withoutProvenance(r: unknown): Record<string, unknown> {
   //   このヘルパは「**全経路で additive に載る記録**」を落とすためのもので、
   //   trendDir はまさにその類(分析用だけの記録ではない)。it の目的=「それ以外の
   //   フィールドが1つも増えない」は一ビットも緩めていない。
-  const { contextAt: _c, promptFp: _p, chartVision: _v, trendDir: _t, ...rest } = r as Record<string, unknown>;
+  // ★v0.9.93: appVersion / promptBuild も同じ理由でここへ追加(この行を書いた版とプロンプトの型は
+  //   **全経路で** 載る記録。分析用だけの記録ではない)。it の目的は一ビットも緩めていない。
+  const { contextAt: _c, promptFp: _p, chartVision: _v, trendDir: _t,
+    appVersion: _av, promptBuild: _pb, ...rest } = r as Record<string, unknown>;
   return rest;
 }
 

@@ -27,6 +27,10 @@ import {
   type ProposalRow,
 } from '../db/generatorStore.js';
 import { resolveGeneratorConfig, epochGeneratorConfig } from './config.js';
+// ★v0.9.93(RECORD-ONLY): 版と各腕のプロンプトの型の指紋。台帳に行が無い日でも読めるよう meta に焼く。
+import { APP_VERSION } from '../appVersion.js';
+import { allPromptBuildFps } from '../llm/promptBuild.js';
+import { setBuildIdentityMeta } from '../db/store.js';
 import { buildEpochInput, computeEpoch, canonicalJson } from './epoch.js';
 import { runPreflight } from './preflight.js';
 import { recheck, epochInputDiffKeys } from './recheck.js';
@@ -123,6 +127,14 @@ export async function runGenerator(opts: GeneratorRunOptions = {}): Promise<void
     epochInputJson: canonicalJson(epochInput),
     generatorConfigJson: JSON.stringify(cfg),
   });
+  // ★v0.9.93(RECORD-ONLY): 分析用の台帳にも「いま走っている版と、各腕のプロンプトの型の指紋」を残す。
+  //   ★ここに書くのは **分析用プロセス自身の版**。提案を作った monitor の版は各行の app_version 列
+  //     (monitor のエコー)に入る。**2つは別物なので、混ぜて読まないこと**。
+  try {
+    setBuildIdentityMeta(db, { appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: startedAt });
+  } catch (e) {
+    console.warn('[generator] 版/プロンプト指紋の meta 記録に失敗(走行は続行):', e instanceof Error ? e.message : String(e));
+  }
   console.log(`[generator] 台帳 ${dbPath}`);
 
   const dep: CycleDeps = { fetcher: fetch, now: Date.now, sleep, random: Math.random };

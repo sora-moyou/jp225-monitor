@@ -1,5 +1,5 @@
 import express from 'express';
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { installLogCapture, setLogFile } from './logBuffer.js';
 import { resolveAppDataDir } from './appDataDir.js';
@@ -53,21 +53,15 @@ import { normalizeCorsPath } from './corsPolicy.js';
 import { startGeneratorHeartbeat, stopGeneratorHeartbeat } from './db/generatorHeartbeat.js';
 import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath } from './db/store.js';
+import { openDb, resolveDbPath, setBuildIdentityMeta } from './db/store.js';
+import { allPromptBuildFps, promptBuildFp } from './llm/promptBuild.js';
+// ★版は葉モジュールが唯一の出所(台帳・meta・HTTP 応答が同じ値を使う)。
+import { APP_VERSION } from './appVersion.js';
 
 ensureDefaults();   // 起動時に polling 設定の default を config.json に書き込む
 setCooldownMs(resolveCooldownMin() * 60_000);   // 設定のクールダウン(分)を反映
 
-declare const __APP_VERSION__: string | undefined;
-
 const PORT = resolvePort();
-
-const APP_VERSION: string = (typeof __APP_VERSION__ === 'string')
-  ? __APP_VERSION__
-  : (() => {
-      const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version: string };
-      return pkg.version;
-    })();
 
 console.log(`[server] JP225 Monitor v${APP_VERSION}`);
 
@@ -186,6 +180,10 @@ const server = app.listen(PORT, '127.0.0.1', () => {
     // ★過去に確定前の指紋で採番されてしまった版に印をつける(追記のみ・過去の行は書き換えない)。
     auditExitConfigLedger();
   });
+  // ★v0.9.93: 「いま走っている版とプロンプトの型の指紋」を共有DBの meta に焼く(記録専用)。
+  //   ★loadExitImpl を待たない: pb1 は決済説明を **固定のプレースホルダ** に差し替えて描くので、
+  //     非公開実装のロード有無で値が変わらない(=待つ理由が無く、待つと起動順の罠を作る)。
+  recordBuildIdentity();
   void startSignalEngine();   // トレードシグナル紙エンジン(非公開 exit をロードして有効化)
   startHeartbeat();      // SSE ハートビート(取引時間外でも接続に一定トラフィックを流す)
   // ★分析用の状態(有効か/生きているか/標本/従属停止)を共有DBの meta に定期記録する。
@@ -231,6 +229,21 @@ const server = app.listen(PORT, '127.0.0.1', () => {
  *  過去の行(hash/version/first_seen)も、既に取引へ刻まれた版番号も **書き換えない**
  *  (追記のみの設計)。印は別表 exit_config_version_notes に1行入るだけ。
  *  失敗は握りつぶす(記録専用なので起動を止めない)。 */
+/** ★v0.9.93(RECORD-ONLY): 版と pb1 指紋を共有DBの meta に残す。
+ *  行が1件も無い日でも「どの版が走っていたか」が読めるようにするための1行。失敗しても起動は止めない。 */
+function recordBuildIdentity(): void {
+  let db: DatabaseSync | null = null;
+  try {
+    db = openDb(resolveDbPath());
+    setBuildIdentityMeta(db, { appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: Date.now() });
+    console.log(`[server] prompt build = ${promptBuildFp()}(質問文 v1・pb1)`);
+  } catch (e) {
+    console.warn('[server] 版/プロンプト指紋の記録に失敗(起動は続行):', e instanceof Error ? e.message : String(e));
+  } finally {
+    try { db?.close(); } catch { /* close 失敗は無視 */ }
+  }
+}
+
 function auditExitConfigLedger(): void {
   let db: DatabaseSync | null = null;
   try {

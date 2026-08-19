@@ -61,3 +61,44 @@ export function promptFingerprint(systemPrompt: string, userPrompt: string): str
 export function isPromptFingerprint(v: unknown): v is string {
   return typeof v === 'string' && new RegExp(`^${PROMPT_FP_SCOPE}:[0-9a-f]{${PROMPT_FP_HEX_CHARS}}$`).test(v);
 }
+
+// ─── ★pb1: 「その版が持っているプロンプトの型」の指紋(sp1 とは別物・混ぜない) ───────────────
+//
+// ■ なぜ sp1 では版を識別できないか(★この誤解が実際に解析を誤らせた)
+//   sp1 は **実際に送った全文** の指紋なので、refPrice・時刻(【市場の現状 …】は秒まで印字)・足・
+//   ニュース・画像の有無で **呼び出しごとに変わる**。層別キーには使えない。
+//   (上の説明どおり sp1 は「凍結入力からの再生が実際に渡ったものと一致するか」の突合の道具であって、
+//    版の識別子ではない。ここを取り違えると、版の切り替わりを台帳から読めないまま解析することになる。)
+//
+// ■ pb1 が答える問い: 「この行を書いた版のプロンプトの **文面** は何だったか」
+//   固定の合成コンテキストで組み立てたプロンプト(=データを一切含まない)のダイジェスト。
+//     ・データ(現在値・時刻・足・ニュース・画像)が変わっても **動かない**
+//     ・文面(テンプレート)が1文字でも変われば **必ず動く**
+//     ・腕(質問文の変種)ごとに違う値になる(v1 と v1f は別の指紋)
+//   ⇒ 「chore リリースでプロンプトは不変」と「プロンプトが変わった」を、版番号と独立に区別できる。
+//
+// ■ ★本文は絶対に入れない(sp1 と同じ規約)
+//   合成コンテキストの組み立ては server/llm/promptBuild.ts が持ち、**非公開の決済仕様は固定の
+//   プレースホルダに差し替えてから** 食わせる(=私的な数値はダイジェストに1バイトも入らない)。
+export const PROMPT_BUILD_FP_SCOPE = 'pb1';
+
+/** 固定合成プロンプトの断片列から「プロンプトの型」の指紋(`pb1:<16桁hex>`)を作る。★本文は出さない。
+ *  各断片の **長さを前置** してから食わせる = ある断片の末尾と次の断片の先頭がずれただけの
+ *  2つの入力が同じ指紋にならない(sp1 と同じ作法・境界の曖昧さを消す)。 */
+export function promptBuildFingerprint(parts: readonly string[]): string {
+  const h = createHash('sha256');
+  h.update(PROMPT_BUILD_FP_SCOPE, 'utf8');
+  h.update('\n', 'utf8');
+  for (const part of parts) {
+    h.update(String(Buffer.byteLength(part, 'utf8')), 'utf8');
+    h.update('\n', 'utf8');
+    h.update(part, 'utf8');
+  }
+  return `${PROMPT_BUILD_FP_SCOPE}:${h.digest('hex').slice(0, PROMPT_FP_HEX_CHARS)}`;
+}
+
+/** 記録された値が pb1 指紋の形をしているか(台帳の検証用)。 */
+export function isPromptBuildFingerprint(v: unknown): v is string {
+  return typeof v === 'string'
+    && new RegExp(`^${PROMPT_BUILD_FP_SCOPE}:[0-9a-f]{${PROMPT_FP_HEX_CHARS}}$`).test(v);
+}

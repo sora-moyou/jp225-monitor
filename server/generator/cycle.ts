@@ -54,8 +54,21 @@ import type { Fetcher } from './preflight.js';
  *      主指標: 現在値からの距離の分布 / LC幅の **相異なる値の種類数**(平均では下限＋一定への移行を
  *      見逃す)/ 両レッグ同幅率(実測 87〜92%)/ none 率。
  *  ★v2 の腕は畳む(候補の枠は1つ=1サイクルの LLM 呼び出し回数を増やさない=課金を動かさない)。 */
-const CANDIDATE_ARM: GeneratorArm = 'prompt-v1e';
-const CANDIDATE_PROMPT_VARIANT: PromptVariant = 'v1e';
+/** ★旧4(2026-08-18〜08-20): 'prompt-v1e'(= 質問文 v1e を投げた腕)。v1 から **「指値・ブレイク新規の
+ *      距離の上限(片レッグ200円/両レッグ幅400円)」の記述だけ** を外したもの。
+ *      ★**結論が出る前に降ろした**(優先度がより高い「LC の理由の箱が 8割 検算」を測るため)。
+ *      ★**v1e の測定は未完のまま**= 「効かなかった」でも「効いた」でもない。再開するならこの枠に戻す
+ *      (変種の定義・omitMaxDistance フラグ・テストは残してある)。
+ *
+ *  ★現(2026-08-20): 'prompt-v1f'(= 質問文 v1f を投げた腕)。**送る決済仕様は①と同じ 'current'**。
+ *      v1f は v1 から **`lcWhyForLimit` / `lcWhyForStop` の注記だけ** を差し替えたもの
+ *      (質問文本体・system プロンプト・strategySpec・rationale の検算要求は1文字も動かさない=1変数)。
+ *      理由(実測): v0.9.88 で新設した LC の理由の箱が **8割 検算で埋まる**。
+ *      仮説(機構): selfCheckNote の「その引き算を rationale に書き、答えと **lcWidthFor…** の数値が
+ *      一致しているか」が、隣接する **lcWhyFor…**(1文字違い)と取り違えられている。
+ *      主指標: lcWhyFor* に検算が入る割合 / 節目に言及する割合 / rationale 側の検算の残存(退行の否定対照) / 字数。 */
+const CANDIDATE_ARM: GeneratorArm = 'prompt-v1f';
+const CANDIDATE_PROMPT_VARIANT: PromptVariant = 'v1f';
 
 /** 1サイクルの中の1要求。 */
 export interface ArmRequest {
@@ -70,7 +83,7 @@ export interface ArmRequest {
 
 /** ★1サイクルの構成(純関数)。
  *  ① 'current'(質問文 v1) → ①' 対照(controlEvery サイクルに1回・①と完全に同じ入力)
- *  → ② 'prompt-v1e'(質問文 v1e・決済仕様は①と同じ)の **この順** で直列。
+ *  → ② 'prompt-v1f'(質問文 v1f・決済仕様は①と同じ)の **この順** で直列。
  *  ★①と②の違いは **質問文だけ**(1変数)。①' は同じ入力へ2回問う LLM のばらつきの基準線。 */
 export function planCycleArms(cycleIndex: number, controlEvery: number): ArmRequest[] {
   const out: ArmRequest[] = [
@@ -223,6 +236,11 @@ export function toProposalRow(
     exitVariant: req.exitVariant,
     // ★送った質問文を行そのものに残す(腕名から推測しない)。腕の構成は実験ごとに変わる。
     promptVariant: req.promptVariant,
+    // ★v0.9.93: **monitor がエコーした** 版とプロンプトの型の指紋を写す。
+    //   ここで自分(分析用プロセス)の版を書いてはいけない: 提案を作ったのは monitor で、
+    //   両者は別バンドル・別リリースなので取り違えると層別が壊れる。エコーが無ければ NULL。
+    appVersion: str(b?.appVersion),
+    promptBuild: str(b?.promptBuild),
     seq: req.seq,
     sessionDate: session?.sessionDate ?? null,
     requestedAt: outcome.requestedAt,

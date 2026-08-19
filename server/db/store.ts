@@ -4,6 +4,9 @@ import { mkdirSync } from 'node:fs';
 import { classifySession } from '../../core/session.js';
 import { BAR_SRC_BASE, BAR_SRC_LIVE, shouldOverwriteBar } from '../../core/barSource.js';
 import { resolveAppDataDir } from '../appDataDir.js';
+// ★v0.9.93(RECORD-ONLY): 版とプロンプトの型の指紋。★葉(server/buildIdentity.ts)だけを見る
+//   = 台帳を触るだけで LLM スタックが初期化される、という依存の逆流を作らない。
+import { currentBuildIdentity } from '../buildIdentity.js';
 
 /** 共有 DB ファイルのパス (%APPDATA%/jp225-monitor/jp225.db、無ければ HOME/cwd)。
  *  ★テスト実行中は resolveAppDataDir が実パスを隔離先へ差し替える(server/appDataDir.ts 参照)。
@@ -161,7 +164,10 @@ export function initSchema(db: DatabaseSync): void {
       lc_why_for_limit TEXT,
       lc_why_for_stop TEXT,
       -- ★v0.9.88(RECORD-ONLY): 画面の「順張り/逆張り」を決めた値。下の ALTER と同じ1列。
-      trend_dir TEXT
+      trend_dir TEXT,
+      -- ★v0.9.93(RECORD-ONLY): この行を書いた版と、その版のプロンプトの型。下の ALTER と同じ2列。
+      app_version TEXT,
+      prompt_build TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -280,6 +286,24 @@ export function initSchema(db: DatabaseSync): void {
   //     どれだけ合うか」を数えられる(strategy 列の順張り/逆張りとの照合にも使う)。
   //   ■ 記録専用。採否・価格・脚落ち・決済には一切使わない。
   if (!spCols.includes('trend_dir')) db.exec('ALTER TABLE signal_plans ADD COLUMN trend_dir TEXT');
+  // ★v0.9.93(RECORD-ONLY): **この行を書いたのはどの版・どの文面か**。
+  //
+  //   ■ なぜ要るか(実際に解析が誤った)
+  //     書き出しから版が分からず、collector_status_<host>.txt の起動ログの時刻や
+  //     「機能列(direction_why 等)がいつ初めて埋まったか」からの **間接推定** に頼るしかなかった。
+  //     切り分けの定数を2時間ずらして誤った結論を出しかけている。版が記録に無いことが解析の誤りに直結した。
+  //   ■ 2列に分ける理由(片方では足りない)
+  //     app_version   … アプリの版。ただし chore リリースでも上がり、開発中は上がらないことがある。
+  //     prompt_build  … **プロンプトの型** の指紋(`pb1:<16桁hex>`)。固定の合成コンテキストで描いた
+  //                     文面のダイジェストなので、**データでは動かず、文面が変われば必ず動く**。
+  //                     腕(質問文の変種)ごとに違う値になる=候補腕の識別にも使える。
+  //   ■ ★prompt_fp(sp1)とは別物・混ぜない。あちらは実際に送った全文の指紋で、refPrice・時刻・足で
+  //     **呼び出しごとに変わる**(層別キーには使えない)。sp1 は凍結再生の突合の道具。
+  //   ■ ★本文は入らない(pb1 は一方向ダイジェスト。非公開の決済説明は固定プレースホルダに差し替えてから
+  //     食わせるので、私的な数値はダイジェストの入力に1バイトも入らない=server/llm/promptBuild.ts)。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('app_version')) db.exec('ALTER TABLE signal_plans ADD COLUMN app_version TEXT');
+  if (!spCols.includes('prompt_build')) db.exec('ALTER TABLE signal_plans ADD COLUMN prompt_build TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -290,6 +314,26 @@ export function initSchema(db: DatabaseSync): void {
   // ★検証(monitor2⇔trade2 突合)用: signal_id を1級列にして signals_<host>.db⇔forward_<host>.db を equijoin できるようにする。
   //   既存DBへ後付けマイグレーション(NULL 可=旧行/signalId 未采番の B 行)。RECORD-ONLY(決済ロジック不変)。
   if (!stCols.includes('signal_id')) db.exec('ALTER TABLE signal_trades ADD COLUMN signal_id INTEGER');
+  // ★v0.9.93(RECORD-ONLY): **この行を書いたのはどの版・どの文面か**。
+  //
+  //   ■ なぜ要るか(実際に解析が誤った)
+  //     書き出しから版が分からず、collector_status_<host>.txt の起動ログの時刻や
+  //     「機能列(direction_why 等)がいつ初めて埋まったか」からの **間接推定** に頼るしかなかった。
+  //     切り分けの定数を2時間ずらして誤った結論を出しかけている。版が記録に無いことが解析の誤りに直結した。
+  //   ■ 2列に分ける理由(片方では足りない)
+  //     app_version   … アプリの版。ただし chore リリースでも上がり、開発中は上がらないことがある。
+  //     prompt_build  … **プロンプトの型** の指紋(`pb1:<16桁hex>`)。固定の合成コンテキストで描いた
+  //                     文面のダイジェストなので、**データでは動かず、文面が変われば必ず動く**。
+  //                     腕(質問文の変種)ごとに違う値になる=候補腕の識別にも使える。
+  //   ■ ★prompt_fp(sp1)とは別物・混ぜない。あちらは実際に送った全文の指紋で、refPrice・時刻・足で
+  //     **呼び出しごとに変わる**(層別キーには使えない)。sp1 は凍結再生の突合の道具。
+  //   ■ ★本文は入らない(pb1 は一方向ダイジェスト。非公開の決済説明は固定プレースホルダに差し替えてから
+  //     食わせるので、私的な数値はダイジェストの入力に1バイトも入らない=server/llm/promptBuild.ts)。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  //   ★signal_trades は決済時に1行書く表なので、値は **決済した版**(=書いた版)。エントリー時の版とは
+  //     ずれうる(またいで再起動した建玉)。エントリー側の版は signal_plans に (system, signal_id) で結合して読む。
+  if (!stCols.includes('app_version')) db.exec('ALTER TABLE signal_trades ADD COLUMN app_version TEXT');
+  if (!stCols.includes('prompt_build')) db.exec('ALTER TABLE signal_trades ADD COLUMN prompt_build TEXT');
   // ★遡り解析用(RECORD-ONLY): ARM(武装)時刻と「ARM 時点で monitor が見ていた価格」。
   //   armed_t だけでは「武装時点でエントリー価格を通過済みだったか」を事後判定できない: 判定には武装時点の価格が
   //   必要だが、prices_*.db の ticks は collector が別プロセス・別位相(+AJAXキャッシュ)で記録しており monitor が
@@ -670,6 +714,35 @@ export function setMeta(db: DatabaseSync, key: string, value: string): void {
     .run(key, value);
 }
 
+// ─── ★v0.9.93: 「いま走っている版とプロンプトの指紋」を meta に残す ─────────────────
+//
+// ■ なぜ列だけでは足りないか
+//   台帳の列は **行が1つでもあれば** 版が読める。しかし「今日はまだ1件も提案が無い」「エンジンが
+//   止まっていた」ような日は行が0で、**何も分からない**。meta なら行数に関係なく読める。
+// ■ 置き場所の作法は ledger_export / tick_archive と同じ(JSON 本体 + 人が読む1行の2本)。
+//   共有DB(jp225.db)の meta は trade2 の30分ごとの `VACUUM INTO`(prices_<host>.db)に
+//   そのまま乗るので、**別PCの書き出しからでも版が読める**。
+export const BUILD_IDENTITY_KEY = 'app_build';
+export const BUILD_IDENTITY_STATUS_KEY = 'app_build_status';
+
+/** meta に書く中身。★本文は入らない(pb1 は一方向ダイジェスト)。 */
+export interface BuildIdentityMeta {
+  /** 実行中のアプリの版。 */
+  appVersion: string;
+  /** 質問文の変種ごとの pb1 指紋(例 { v1: 'pb1:...', v1f: 'pb1:...' })。 */
+  promptBuilds: Record<string, string>;
+  /** 記録時刻(epoch ms)。★起動のたびに更新されるので「いつの起動の値か」が分かる。 */
+  at: number;
+}
+
+/** 版とプロンプトの型の指紋を meta に1行(+人が読む1行)書く。失敗は呼び出し側が握りつぶす。 */
+export function setBuildIdentityMeta(db: DatabaseSync, m: BuildIdentityMeta): void {
+  setMeta(db, BUILD_IDENTITY_KEY, JSON.stringify(m));
+  const pairs = Object.entries(m.promptBuilds).map(([k, v]) => `${k}=${v}`).join(' ');
+  setMeta(db, BUILD_IDENTITY_STATUS_KEY,
+    `${new Date(m.at).toISOString()} v${m.appVersion} ${pairs}`);
+}
+
 export interface SessionOHLC {
   sessionDate: string;
   session: 'Day' | 'Night';
@@ -854,6 +927,10 @@ export interface SignalTradeInsert {
   peakProfit?: number | null;       // ★決済時点の含み益ピーク[pt]。未指定/非有限は NULL。
   exitCfgVersion?: number | null;   // ★決済設定の版番号。未指定は NULL(=既存挙動と byte 一致)。
   exitCfgHash?: string | null;      // ★決済設定の振る舞い指紋。未指定は NULL。
+  // ★v0.9.93(RECORD-ONLY): この行を書いた(=決済した)版と、その版のプロンプトの型の指紋。
+  //   未指定なら実行中の値が入る(呼び出し側の付け忘れで無音の欠測を作らない)。
+  appVersion?: string | null;
+  promptBuild?: string | null;
 }
 
 // ★v0.8.2: 系統フィルタ。'A' は NULL 行も含む(既存/A の行)。'B' は 'B' 行のみ。未指定は全件。
@@ -866,13 +943,18 @@ function systemWhere(system: SignalSystemFilter | undefined): { clause: string; 
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit, exit_cfg_version, exit_cfg_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit, exit_cfg_version, exit_cfg_hash, app_version, prompt_build)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
     t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null,
     t.armedT ?? null, t.armedPrice ?? null,
     t.exitReason ?? null, t.exitInitialStop ?? null, t.peakProfit ?? null,
-    t.exitCfgVersion ?? null, t.exitCfgHash ?? null);
+    t.exitCfgVersion ?? null, t.exitCfgHash ?? null,
+    // ★v0.9.93: **この行を書いた(=決済した)版** と、その版のプロンプトの型。
+    //   呼び出し側に足させず既定で埋める=付け忘れによる無音の欠測を作らない。
+    //   ★prompt_build が未登録のプロセス(collector 等)では NULL のまま(捏造しない)。
+    t.appVersion ?? currentBuildIdentity().appVersion,
+    t.promptBuild ?? currentBuildIdentity().promptBuild);
 }
 
 /** 決済済みトレードを新しい順(直近が先)で最大 limit 件返す。
@@ -1100,6 +1182,10 @@ export interface SignalPlanRow {
   context_at: number | null;
   /** 送った system+user プロンプトの一方向指紋(`sp1:<16桁hex>`)。★本文は入らない。 */
   prompt_fp: string | null;
+  /** ★v0.9.93: この行を書いた版(例 '0.9.93')。旧行は NULL。 */
+  app_version: string | null;
+  /** ★v0.9.93: その版の **プロンプトの型** の指紋(`pb1:<16桁hex>`)。旧行は NULL。★sp1 とは別物。 */
+  prompt_build: string | null;
   /** 根拠文の申告 LC幅 と 実出力の突き合わせ(LcDeclarationCheck[] の JSON)。旧行/観測ゼロは NULL。 */
   lc_audit_json: string | null;
   /** 根拠文の「出さない」表明 と 実際に発注されるレッグの突き合わせ(OmissionClaimCheck[] の JSON)。
@@ -1185,6 +1271,10 @@ export interface SignalPlanInsert {
   limitLevel?: number | null;
   /** ★RECORD-ONLY: ブレイク新規の価格の根拠にした節目。同上。 */
   stopLevel?: number | null;
+  /** ★v0.9.93(RECORD-ONLY): この行を書いた版。未指定なら実行中の APP_VERSION が入る。 */
+  appVersion?: string | null;
+  /** ★v0.9.93(RECORD-ONLY): その版のプロンプトの型の指紋(`pb1:…`)。取れなかった回は NULL。 */
+  promptBuild?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1203,8 +1293,8 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       context_at, prompt_fp, lc_audit_json, omission_audit_json,
       provider, provider_model, strategy, strategy_why, limit_level, stop_level,
       direction_why, entry_why_for_limit, entry_why_for_stop, lc_why_for_limit, lc_why_for_stop,
-      trend_dir
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      trend_dir, app_version, prompt_build
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1225,6 +1315,10 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     p.directionWhy ?? null, p.entryWhyForLimit ?? null, p.entryWhyForStop ?? null,
     p.lcWhyForLimit ?? null, p.lcWhyForStop ?? null,
     p.trendDir ?? null,
+    // ★v0.9.93: 版は「未指定なら実行中の版」を入れる(呼び出し側の付け忘れで無音の欠測を作らない)。
+    //   ★prompt_build は取れなかった回だけ NULL(捏造しない)。
+    p.appVersion ?? currentBuildIdentity().appVersion,
+    p.promptBuild ?? currentBuildIdentity().promptBuild,
   );
 }
 

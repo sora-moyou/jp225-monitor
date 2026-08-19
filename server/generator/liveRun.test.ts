@@ -129,13 +129,13 @@ describe('偽 monitor を立てて実走(実 HTTP + 実 SQLite・外部 LLM は�
     expect(seen.map(s => s.caller)).toEqual(['generator', 'generator', 'generator', 'generator', 'generator']);
     // ★v0.9.75: 決済仕様は全腕 'current'。動かす変数は質問文だけ。
     expect(seen.map(s => s.exitVariant)).toEqual(['current', 'current', 'current', 'current', 'current']);
-    expect(seen.map(s => s.promptVariant)).toEqual(['v1', 'v1', 'v1e', 'v1', 'v1e']);
+    expect(seen.map(s => s.promptVariant)).toEqual(['v1', 'v1', 'v1f', 'v1', 'v1f']);
 
     const rows = db.prepare('SELECT arm, seq, status, direction, none_reason, shot_id, cycle_id, prompt_variant FROM proposals ORDER BY id')
       .all() as unknown as Array<Record<string, unknown>>;
-    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'prompt-v1e', 'current', 'prompt-v1e']);
+    expect(rows.map(r => r.arm)).toEqual(['current', 'control', 'prompt-v1f', 'current', 'prompt-v1f']);
     // ★送った質問文が **実DBの列** に落ちている(腕名からの推測ではない)
-    expect(rows.map(r => r.prompt_variant)).toEqual(['v1', 'v1', 'v1e', 'v1', 'v1e']);
+    expect(rows.map(r => r.prompt_variant)).toEqual(['v1', 'v1', 'v1f', 'v1', 'v1f']);
     expect(rows.every(r => r.status === 'plan' && r.direction === 'none' && r.none_reason === 'ai')).toBe(true);
 
     // ★①①'②が同じ1枚を見たことが **記録** から言える

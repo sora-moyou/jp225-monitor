@@ -20,6 +20,7 @@
 //   ★2026-08-17: 候補の枠は 'prompt-v1d'(質問文 v1d = v1 マイナス最低距離)へ載せ替えた
 //     (209件の実測で主指標が悪化し不採用・2026-08-18に降板)。
 //   ★2026-08-18: 候補の枠は 'prompt-v1e'(質問文 v1e = v1 マイナス距離の上限)へ載せ替えた。
+//   ★2026-08-20: さらに 'prompt-v1f'(= v1 マイナス LC の理由の箱の書かせ方)へ載せ替えた。
 //     **v2 のビルダーは残す**(この関数と、それを守るここまでの不変条件は将来もう一度回す時に使える)が、
 //     いま生成器が送っているのは v1e で、v2 は **どの腕も送らない**。この事実をテストで固定する
 //     (腕の構成を書いたテストが1つも無いと、載せ替えが無音になる)。
@@ -50,10 +51,10 @@ describe('v2 質問文', () => {
 
   it('★v2 は現在どの腕も送っていない(候補の枠は v1e へ載せ替え済み)', () => {
     const arms = planCycleArms(0, 1);   // 対照を必ず含むサイクル
-    expect(arms.map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1e']);
+    expect(arms.map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1f']);
     // 決済仕様は3本とも同じ = 動かす変数は質問文だけ。
     expect(new Set(arms.map(a => a.exitVariant))).toEqual(new Set(['current']));
-    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1e']);
+    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1f']);
     expect(arms.some(a => a.promptVariant === 'v2'), 'v2 を送る腕が復活している').toBe(false);
   });
 

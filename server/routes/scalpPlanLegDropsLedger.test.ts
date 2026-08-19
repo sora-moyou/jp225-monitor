@@ -118,8 +118,13 @@ describe('/api/scalp-plan — 片レッグ脱落の理由が応答に載る', ()
     // ★記録専用の出所2列は数値の走査から外し、**形だけ** を固定する(理由は scalpPlanDiagnostics.test.ts と同じ:
     //   contextAt は時計の読み・promptFp は一方向ハッシュで、hex 中の数字列の一致は偶然でしかない)。
     // ★promptVariant は名前('v1')であって数値ではないので走査から外す(理由は scalpPlanDiagnostics.test.ts と同じ)。
-    const { contextAt, promptFp, promptVariant, ...rest } = res._json as Record<string, unknown>;
+    // ★v0.9.93: app_version(版番号)と prompt_build(pb1 の hex)も **数値の走査から外し、形だけ固定** する。
+    //   版は '0.9.93' のような数字列で、pb1 は一方向ハッシュ。どちらも決済仕様から導かれる値ではなく、
+    //   混ぜるとこの検査は「混ざったか」ではなく偶然の数字一致を測り始める(contextAt/promptFp と同じ理由)。
+    const { contextAt, promptFp, promptVariant, appVersion, promptBuild, ...rest } = res._json as Record<string, unknown>;
     expect(promptVariant).toBe('v1');
+    expect(typeof appVersion).toBe('string');
+    expect(promptBuild === undefined || /^pb1:[0-9a-f]{16}$/.test(String(promptBuild))).toBe(true);
     expect(typeof contextAt).toBe('number');
     expect(promptFp === undefined || /^sp1:[0-9a-f]{16}$/.test(String(promptFp))).toBe(true);
     const s = JSON.stringify(rest);

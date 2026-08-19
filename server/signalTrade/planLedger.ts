@@ -102,6 +102,11 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   //   ★指紋は一方向ハッシュ(`sp1:<16桁hex>`)で、プロンプト本文は台帳に1バイトも入らない。
   if (typeof result.contextAt === 'number') row.contextAt = result.contextAt;
   if (typeof result.promptFp === 'string') row.promptFp = result.promptFp;
+  // ★v0.9.93(RECORD-ONLY): **この行を書いたのはどの版・どの文面か**。error 分岐より前に載せる
+  //   =「計画が出なかった回はどの版で起きたか」も残る(版が記録に無いと解析が間接推定に落ちる)。
+  //   ★prompt_build は pb1(固定の合成コンテキストで描いた文面の指紋)。sp1 と混ぜない。
+  if (typeof result.appVersion === 'string') row.appVersion = result.appVersion;
+  if (typeof result.promptBuild === 'string') row.promptBuild = result.promptBuild;
   // ★v0.9.70(RECORD-ONLY): **答えを返した** プロバイダ/モデル。error 分岐より前に載せる=
   //   「答えは返ったが計画としては不成立(ok:false)」の回も、どのモデルが返したかが残る。
   //   答えが得られなかった回は result.provider が無い=列は NULL(=「誰も答えなかった」が形から読める)。

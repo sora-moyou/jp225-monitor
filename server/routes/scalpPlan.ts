@@ -9,6 +9,10 @@ import {
 import { exitVariantImplKind } from '../signalTrade/exitVariantImpl.js';
 import { checkGeneratorGate } from '../llm/generatorGate.js';
 import { normalizePromptVariant, generatorArmKey, type PromptVariant } from '../llm/promptVariant.js';
+// ★v0.9.93(RECORD-ONLY): 版とプロンプトの型の指紋を応答へ(分析用の台帳がそのまま写す)。
+//   ★葉から読む(promptBuild.ts を直に import しない): このルートは openai.js の barrel を
+//     モックするテストが多数あり、barrel を迂回する静的 import を足すと実体が読み込まれて落ちる。
+import { currentBuildIdentity, promptBuildFor } from '../buildIdentity.js';
 import { inPollWindow } from '../../core/session.js';
 import { isAnalysisEnabled } from '../analysisGate.js';
 import { sanitizeErrorForOutput } from '../llm/redact.js';
@@ -225,6 +229,20 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
   const echoVariant = diagnosticsOn
     ? { exitVariant: variantResult.variant, promptVariant: promptResult.variant }
     : {};
+  // ★v0.9.93(RECORD-ONLY): **どの版・どの文面で作った提案か**を応答に載せる。
+  //   分析用(generator)は別プロセスなので、自分の版を書くと **monitor の版ではない** ものが台帳に残る。
+  //   だから monitor 側が自分の版と pb1 指紋をエコーし、記録側はそれを写すだけにする。
+  //   ★pb1 は一方向ダイジェストで、プロンプト本文も決済仕様の数値も含まない(server/llm/promptBuild.ts)。
+  //   ★caller=default(trade2/エンジン)へは従来どおり出さない(既存の応答は byte 不変)。
+  const echoBuild = diagnosticsOn
+    ? {
+        appVersion: currentBuildIdentity().appVersion,
+        // ★未登録なら省く(応答に null を置かない=「この版は指紋を持たない」と読めてしまうため)。
+        ...(promptBuildFor(promptResult.variant) !== null
+          ? { promptBuild: promptBuildFor(promptResult.variant) as string }
+          : {}),
+      }
+    : {};
 
   // ── ★変種を要求されたのに **実体が無い** なら 400(未知の変種名と同じ扱い)。
   //    private(非公開実装)が無い環境では変種の説明文が公開フォールバック(数値なし)になり、
@@ -268,7 +286,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
       //   2本の分析用の見送り率の差が「AI の適応」なのか「enforce の副作用」なのか判別不能になり、
       //   実験の主要比較そのものが成立しない(エンジンは engine.ts でログに出しているが HTTP 越しには届かない)。
       //   ★数値は AI が出したレッグの価格(noneLegs)だけで、決済ラダーの実数値は一切含まれない。
-      res.json({ ok: true, plan: result.plan, ...planDiagnostics(result, diagnosticsOn), ...echoVariant });
+      res.json({ ok: true, plan: result.plan, ...planDiagnostics(result, diagnosticsOn), ...echoVariant, ...echoBuild });
     } else {
       // キー無し/パース失敗/LLM 失敗/チャート未生成は 200 + ok:false で返す。
       // 見送りも実験の1標本なので、変種名(名前のみ・数値なし)は同じように返す。
@@ -278,7 +296,7 @@ export async function scalpPlanHandler(req: Request, res: Response): Promise<voi
       //   落とすのは ①APIキー ②V8 が埋め込むモデル生出力の断片(**非公開の決済数値**を運びうる)。
       //   発生源(llm/scalpPlan.ts の catch)でも通すが、**プロセスから出る境界**でも必ず通す
       //   (sanitizeErrorForOutput は冪等なので二重適用でも文字列は変わらない)。長さは触らない。
-      res.json({ ok: false, error: sanitizeErrorForOutput(result.error), ...echoVariant });
+      res.json({ ok: false, error: sanitizeErrorForOutput(result.error), ...echoVariant, ...echoBuild });
     }
   } catch (err) {
     // ★ok:false の経路と同じ理由で通す。ここも応答が trade2 のログ経由で同期フォルダへ出る。

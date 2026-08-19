@@ -17,7 +17,9 @@ import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import type { ExitVariant } from '../signalTrade/exit/index.js';
-import type { PromptVariant } from './promptVariant.js';
+import { DEFAULT_PROMPT_VARIANT, type PromptVariant } from './promptVariant.js';
+// ★v0.9.93(RECORD-ONLY): 版とプロンプトの型の指紋。**記録の層別キー**(sp1 とは別物)。
+import { currentBuildIdentity, promptBuildFor } from '../buildIdentity.js';
 import type { EntryTrendDir } from '../../core/entryLabel.js';
 import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 
@@ -296,7 +298,8 @@ async function runScalpPlanWithChartInner(
   // ★RECORD-ONLY: buildScalpPlan が組み上げたプロンプトの指紋(本文は受け取らない)。
   let promptFp: string | null = null;
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
-  return attachTrendDir(attachChartVision(attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
+  // ★v0.9.93: いちばん外側で「版とプロンプトの型」を載せる(ok:true / ok:false のどちらにも付く)。
+  return attachBuildIdentity(attachTrendDir(attachChartVision(attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
@@ -317,7 +320,30 @@ async function runScalpPlanWithChartInner(
     bandwalk: richResult.bandwalk,
     // ★RECORD-ONLY: 送るプロンプトの指紋を1回だけ受け取る(本文は渡ってこない)。
     onPromptFingerprint: (fp) => { promptFp = fp; },
-  }), contextAt, () => promptFp), caller, chartShot), visionDecision), regime.trendDir);
+  }), contextAt, () => promptFp), caller, chartShot), visionDecision), regime.trendDir),
+    overrides.promptVariant);
+}
+
+/** ★v0.9.93(RECORD-ONLY): 「この結果を作ったのはどの版・どの文面か」を載せる。
+ *
+ *  ■ なぜ要るか(実際に解析が誤った)
+ *    書き出しから版が分からず、`collector_status_<host>.txt` の起動ログの時刻や
+ *    「機能列がいつ初めて埋まったか」からの **間接推定** に頼るしかなかった
+ *    (切り分けの定数を2時間ずらして誤った結論を出しかけた)。
+ *  ■ 2つ載せる理由(片方では足りない)
+ *    ・app_version … chore リリースでも上がる/開発中は上がらないことがある
+ *    ・prompt_build … **文面が変わったときだけ** 動く(データでは動かない)。版と独立の軸。
+ *  ■ ★ok:false にも載せる: 計画が得られなかった回こそ「どの版で起きたか」が要る。
+ *  ■ ★載せる場所がここな理由: promptBuild.ts は scalpPlan.ts の描画関数を import するので、
+ *    scalpPlan.ts 側で載せると循環参照になる(モジュール初期化順で undefined を踏む)。 */
+function attachBuildIdentity(result: ScalpPlanResult, variant?: PromptVariant): ScalpPlanResult {
+  // ★葉(buildIdentity)から読む: ここで promptBuild.ts を静的 import すると、openai.js の barrel を
+  //   モックしている既存テストの脇をすり抜けて LLM スタックの実体が読み込まれる(実際に15ファイルが落ちた)。
+  //   ★未登録(publish 前 / 別プロセス)なら promptBuild は載せない = 列は NULL(捏造しない)。
+  const fp = promptBuildFor(variant ?? DEFAULT_PROMPT_VARIANT);
+  const out: ScalpPlanResult = { ...result, appVersion: currentBuildIdentity().appVersion };
+  if (fp !== null) out.promptBuild = fp;
+  return out;
 }
 
 /** ★v0.9.88: そのサイクルで **コードが測った** トレンドの向きを結果に載せる(ADD-ONLY)。

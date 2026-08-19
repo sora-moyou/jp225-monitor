@@ -44,7 +44,15 @@ import type { PromptVariant } from '../llm/promptVariant.js';
  *                   外したもの)を投げた分析用。送る exitVariant は 'current'(①と同じ)。
  *  ★旧 'prompt-v2' / 'prompt-v1d' は **語彙から消さない**: 台帳(proposals)に過去の行が残っており、
  *    消すと読めなくなる。 */
-export type GeneratorArm = ExitVariant | 'control' | 'prompt-v2' | 'prompt-v1d' | 'prompt-v1e';
+/** ★2026-08-20: 候補の枠を 'prompt-v1e' → 'prompt-v1f' へ載せ替えた。
+ *  - 'prompt-v1f' … ②**質問文 v1f**(= v1 から `lcWhyForLimit` / `lcWhyForStop` の **注記だけ** を
+ *                   差し替えたもの)を投げた分析用。送る exitVariant は 'current'(①と同じ)。
+ *  ★'prompt-v1e' を降ろした理由: v1e(距離の上限の記述を外した腕)は 2026-08-18 から走ったが、
+ *    **結論が出る前に降ろした**。優先度がより高い「LC の理由の箱が 8割 検算」を測るため。
+ *    ★**v1e の測定は未完のまま**(結論は出ていない=「効かなかった」と読まないこと)。
+ *  ★旧 'prompt-v2' / 'prompt-v1d' / 'prompt-v1e' は **語彙から消さない**: 台帳(proposals)に過去の行が
+ *    残っており、消すと読めなくなる。 */
+export type GeneratorArm = ExitVariant | 'control' | 'prompt-v2' | 'prompt-v1d' | 'prompt-v1e' | 'prompt-v1f';
 
 /** 対照の腕。①と同じ exitVariant を送るので、区別は腕名だけが担う。 */
 export const CONTROL_ARM: GeneratorArm = 'control';
@@ -70,7 +78,7 @@ export interface ProposalRow {
   /** 実際に送った exitVariant。'control' は 'current' を送るので、腕名とは別に残す。 */
   exitVariant: ExitVariant;
   /** ★実際に送った質問文の変種(v0.9.75)。候補の腕だけ v1 以外
-   *  ('prompt-v2'→'v2' / 'prompt-v1d'→'v1d' / 'prompt-v1e'→'v1e')、他は 'v1'。
+   *  ('prompt-v2'→'v2' / 'prompt-v1d'→'v1d' / 'prompt-v1e'→'v1e' / 'prompt-v1f'→'v1f')、他は 'v1'。
    *  ★型上は optional(省略= NULL)。NULL = この列を持たない版で記録された(= v1 しか無かった頃)。 */
   promptVariant?: PromptVariant | null;
   /** サイクル内の直列順(0=①, 1=①' か ②, 2=②)。①②の順序効果を後から検定できるように残す。 */
@@ -133,6 +141,10 @@ export interface ProposalRow {
    *  (プロンプトには非公開の決済仕様が入るため、指紋だけを持つ)。
    *  ★型上は optional(省略= NULL)。 */
   promptFp?: string | null;
+  /** ★v0.9.93(RECORD-ONLY): **monitor の** 版(応答のエコー)。分析用プロセス自身の版ではない。 */
+  appVersion?: string | null;
+  /** ★v0.9.93(RECORD-ONLY): その腕の **プロンプトの型** の指紋(`pb1:<16桁hex>`)。★sp1 とは別物。 */
+  promptBuild?: string | null;
   /** ★根拠文で AI が **申告した LC幅** と、AI が実際に出力した |entry − stopLoss| の突き合わせ
    *  (LcDeclarationCheck[] の JSON)。monitor の signal_plans.lc_audit_json と **同じ意味・同じ形**。
    *  ★本線だけに在って分析用に無いと、同じ故障の頻度を腕どうしで比べられない(母集団が揃わない)。
@@ -205,6 +217,10 @@ export function initGeneratorSchema(db: DatabaseSync): void {
       --   omission_audit_json=「出さない」表明 vs 実際に発注されるレッグ。どちらも記録専用。
       lc_audit_json TEXT,
       omission_audit_json TEXT,
+      -- ★v0.9.93(下の ALTER と同じ2列)。app_version=**monitor の**版(応答のエコー) /
+      --   prompt_build=その腕のプロンプトの型の指紋(pb1)。★本文は決して入れない。
+      app_version   TEXT,
+      prompt_build  TEXT,
       created_at    INTEGER NOT NULL,
       UNIQUE (epoch, cycle_id, arm)
     );
@@ -279,6 +295,18 @@ export function initGeneratorSchema(db: DatabaseSync): void {
   //   実験ごとに変わる(現に決済変種 → 質問文へ載せ替えた)。「何を送ったか」を行そのものに残しておかないと、
   //   1年後に腕名だけを見て取り違える。既存行は NULL =「この列を持たない版で記録された」= v1 相当。
   if (!cols.includes('prompt_variant')) db.exec('ALTER TABLE proposals ADD COLUMN prompt_variant TEXT');
+  // ★v0.9.93(RECORD-ONLY): **この行の提案を作った monitor の版** と、その腕の **プロンプトの型** の指紋。
+  //
+  //   ■ なぜ要るか(実際に解析が誤った): 書き出しから版が分からず、起動ログの時刻や
+  //     「機能列がいつ初めて埋まったか」からの間接推定に頼るしかなかった(切り分けを2時間ずらしかけた)。
+  //   ■ ★app_version は **monitor がエコーした値** を写す。分析用は別プロセスなので、自分の版を書くと
+  //     「プロンプトを作った側の版」ではないものが台帳に残る(いちばん気づけない取り違え)。
+  //   ■ ★prompt_build は pb1: 固定の合成コンテキストで描いた **文面** の指紋。データでは動かず、
+  //     文面が変われば必ず動き、腕ごとに違う値になる。prompt_fp(sp1)は毎回変わるので層別には使えない。
+  //   ■ 本文は入らない(一方向ダイジェスト・非公開の決済説明は固定プレースホルダに差し替え済み)。
+  //   既存行は NULL のまま =「この列を持たない版で記録された」。
+  if (!cols.includes('app_version')) db.exec('ALTER TABLE proposals ADD COLUMN app_version TEXT');
+  if (!cols.includes('prompt_build')) db.exec('ALTER TABLE proposals ADD COLUMN prompt_build TEXT');
 }
 
 /** 台帳 DB を開く(書き込み用)。
@@ -317,8 +345,9 @@ const INSERT_SQL = `
     direction, plan_json, ref_price, regime, confidence,
     none_reason, none_legs_json, leg_drops_json, veto_fired, range_anomaly_json,
     shot_id, shot_age_ms, shot_origin, context_omitted,
-    context_at, prompt_fp, lc_audit_json, omission_audit_json, prompt_variant, created_at
-  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?)
+    context_at, prompt_fp, lc_audit_json, omission_audit_json, prompt_variant,
+    app_version, prompt_build, created_at
+  ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?,?)
 `;
 
 /** 数値は非有限なら NULL(NaN/Infinity を DB に置かない)。 */
@@ -338,7 +367,9 @@ export function insertProposal(db: DatabaseSync, r: ProposalRow): boolean {
     r.noneReason, r.noneLegsJson, r.legDropsJson ?? null, r.vetoFired, r.rangeAnomalyJson,
     r.shotId, num(r.shotAgeMs), r.shotOrigin, r.contextOmittedJson ?? null,
     num(r.contextAt), r.promptFp ?? null,
-    r.lcAuditJson ?? null, r.omissionAuditJson ?? null, r.promptVariant ?? null, r.createdAt,
+    r.lcAuditJson ?? null, r.omissionAuditJson ?? null, r.promptVariant ?? null,
+    // ★monitor がエコーしなかった回(旧 monitor / 429 で届かなかった)は NULL =「分からない」を残す。
+    r.appVersion ?? null, r.promptBuild ?? null, r.createdAt,
   );
   return countProposals(db) > before;
 }

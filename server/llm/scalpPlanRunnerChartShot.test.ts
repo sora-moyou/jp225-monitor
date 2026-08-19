@@ -73,7 +73,11 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
   //   plan は参照ごと素通し=engine が読む中身は1ミリも変わらない。
   const generatorOnlyKeys = (r: object): string[] =>
     // ★v0.9.88: trendDir を除外に追加(全経路で載る記録であって、分析用だけの記録ではない)。
-    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision' && k !== 'trendDir');
+    // ★v0.9.93: appVersion / promptBuild を除外に追加。理由は同じで、これらは **全経路で載る**
+    //   記録(この行を書いた版とプロンプトの型)であり、分析用だけの記録ではない。むしろ
+    //   **A(実取引につながる経路)の台帳にこそ必要**(版が記録に無いと解析が間接推定に落ちる)。
+    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp'
+      && k !== 'chartVision' && k !== 'trendDir' && k !== 'appVersion' && k !== 'promptBuild');
 
   it('★caller 省略(実取引 A の経路)の結果に **分析用だけの記録は1つも付かない**', async () => {
     const r = await runScalpPlanWithChart({});
