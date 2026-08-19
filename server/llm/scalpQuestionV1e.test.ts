@@ -114,7 +114,8 @@ describe('v1e 質問文 — v1 との差分は「距離の上限の記述」1点
     expect(q).toContain('★【最優先: 損切りの幅(無条件・例外なし)】');
     expect(q).toContain(`${FLOOR}円以上`);
     expect(q).toContain('★【出力前の自己検算(必須)】');
-    expect(q).toContain('指値は節目から 5〜10円 内側');
+    // ★v0.9.92: 位置の規則は Ｘ/Ｙ の言葉(Ｃ)に書き換わった。量(5〜10円 内側)は不変。
+    expect(q).toContain('指値なら その節目の 5〜10円 内側');
     expect(q).toContain('その引き算をそのまま書くこと');
   });
 
@@ -223,9 +224,10 @@ describe('v1e — バンドウォーク注記も整合する(距離の上限へ�
 
 describe('v1e — 変種の受け口と腕の接続', () => {
   it('normalizePromptVariant が v1e を受理し、未知は 400 用エラー', () => {
-    expect(PROMPT_VARIANTS).toEqual(['v1', 'v2', 'v1d', 'v1e']);
+    // ★2026-08-20: 'v1f' を語彙に追加(候補腕の載せ替え)。旧変種は消さない=過去の台帳が読めなくなるため。
+    expect(PROMPT_VARIANTS).toEqual(['v1', 'v2', 'v1d', 'v1e', 'v1f']);
     expect(normalizePromptVariant('v1e')).toEqual({ ok: true, variant: 'v1e' });
-    expect(normalizePromptVariant('v1f').ok).toBe(false);
+    expect(normalizePromptVariant('v1g').ok).toBe(false);
   });
 
   it('★予算の帳簿が v1 と別(先着の腕が取引日の残りを食い切らない)', () => {
@@ -235,8 +237,10 @@ describe('v1e — 変種の受け口と腕の接続', () => {
 
   it('★生成器の候補腕だけが v1e を送る(①①\'は v1)', () => {
     const arms = planCycleArms(0, 1);
-    expect(arms.map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1e']);
-    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1e']);
+    // ★2026-08-20: v1e は **結論が出る前に** 腕から降りた(測定は未完)。変種の定義とフラグは残っている。
+    expect(arms.map(a => a.arm)).toEqual(['current', 'control', 'prompt-v1f']);
+    expect(arms.map(a => a.promptVariant)).toEqual(['v1', 'v1', 'v1f']);
+    expect(arms.map(a => a.promptVariant)).not.toContain('v1e');
     // 決済仕様は3本とも同じ = 動かす変数は質問文だけ。
     expect(new Set(arms.map(a => a.exitVariant))).toEqual(new Set(['current']));
   });

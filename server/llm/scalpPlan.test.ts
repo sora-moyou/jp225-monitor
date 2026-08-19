@@ -2103,11 +2103,12 @@ describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決�
   // ★v0.9.64: ブレイク新規のずらし量「0〜5円」を撤去(実測 2026-08-07: ≤10円 の損切り43件が
   //   ほぼ逆指値レッグに集中。stopEntry の隣にある小さい数値が損切りの代入に流用されていた)。
   //   指値側の「5〜10円」は健全なので残す=片側だけ量を持たない表現にする。
-  it('節目への置き方(指値=5〜10円内側 / 逆指値=すぐ外側・量は決めない)を含む', () => {
+  // ★v0.9.92: 位置の規則は Ｃ(Ｘ/Ｙ の言葉)に置き換わった。量の規約(指値=5〜10円内側 / ブレイク新規=量を書かない)は不変。
+  it('Ｃ(位置の規則: 指値=5〜10円内側 / ブレイク新規=すぐ外側・量は決めない)を含む', () => {
     const s = buildStrategySpec(base);
-    expect(s).toContain('節目への置き方');
+    expect(s).toContain('Ｃ: Ｘ・Ｙ の価格の決め方');
     expect(s).toContain('5〜10円');
-    expect(s).toContain('すぐ外側(抜ける方向・量は決めない)');
+    expect(s).toContain('すぐ外側(量は決めない)');
     expect(s).not.toContain('0〜5円');
     expect(s).toContain('内側');
     expect(s).toContain('外側');
@@ -2179,7 +2180,7 @@ describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
   it('不等式は節目の説明より前に置かれる(節目基準が主語にならない)', () => {
     for (const t of targets()) {
       const ineq = t.indexOf('売り: stopEntry < refPrice < limitEntry');
-      const level = t.indexOf('節目への置き方');
+      const level = t.indexOf('Ｃ: Ｘ・Ｙ の価格の決め方');
       expect(ineq).toBeGreaterThanOrEqual(0);
       expect(level).toBeGreaterThanOrEqual(0);
       expect(ineq).toBeLessThan(level);
@@ -2198,12 +2199,16 @@ describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
     }
   });
 
-  it('売り/買いのブレイク新規の置き場所を明示する(サポート/レジスタンス)', () => {
+  // ★v0.9.92: 「売りのブレイク新規はサポート / 買いはレジスタンス」= **方向の語で置き場所を決める** 旧規則は
+  //   Ｃ(Ｘ/Ｙ の言葉)に置き換えた。実測で壊れていたのは置き方ではなく **節目の選択** で、方向の語がある限り
+  //   「現在値より下にあるものをレジスタンスと呼ぶ」余地が残るため(申告値 8/8 がその形)。
+  //   Ｃ は Ｘ(=現在価格より上)/Ｙ(=現在価格より下)しか知らないので、その誤りを **書けない**。
+  it('ブレイク新規の置き場所は Ｃ(Ｘ/Ｙ)が決める: 方向の語で位置を決める旧規則は無い', () => {
     for (const t of targets()) {
-      expect(t).toContain('売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く');
-      expect(t).toContain('買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く');
-      expect(t).toContain('売りプランでは絶対に出さない');
-      expect(t).toContain('買いプランでは絶対に出さない');
+      expect(t).toContain('Ｃ: Ｘ・Ｙ の価格の決め方');
+      expect(t).toContain('ブレイク新規(stopEntry)なら その節目の すぐ外側');
+      expect(t).not.toContain('売り(sell)のブレイク新規は サポート');
+      expect(t).not.toContain('買い(buy)のブレイク新規は レジスタンス');
     }
   });
 
@@ -2553,12 +2558,12 @@ describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
     expect(buildStrategySpec(SPEC_BASE)).not.toContain('stopEntry = ブレイク新規');
   });
 
-  it('ブレイク新規の置き場所(売り=サポート/買い=レジスタンス)が system/question に入る', () => {
+  // ★v0.9.92: 位置の規則 Ｃ は system / question の **両方** に同じ形で入る(片方だけだと非対称が残る)。
+  it('位置の規則 Ｃ(Ｘ/Ｙ)が system/question に同じ形で入る', () => {
     for (const t of [buildScalpSystemPrompt(), buildScalpQuestion()]) {
-      expect(t).toContain('売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く');
-      expect(t).toContain('買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く');
-      expect(t).toContain('売りプランでは絶対に出さない');
-      expect(t).toContain('買いプランでは絶対に出さない');
+      expect(t).toContain('Ｃ: Ｘ・Ｙ の価格の決め方');
+      expect(t).toContain('Ｘ(現在価格より上に置く注文): 現在価格より上の節目を1つ選ぶ。');
+      expect(t).toContain('Ｙ(現在価格より下に置く注文): 現在価格より下の節目を1つ選ぶ。');
     }
   });
 
@@ -2580,7 +2585,7 @@ describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
     expect(s).toContain('安全上限 150円');
     expect(s).toContain('ラチェット');
     expect(s).toContain('【手動=固定・厳守】');
-    expect(s).toContain('節目への置き方');
+    expect(s).toContain('Ｃ: Ｘ・Ｙ の価格の決め方');
     // ★変更B(2026-08-18): range: false(=range 無効)なので、range 専用の距離規則(禁止した機能の規則)は
     //   出ない(旧仕様=無条件に出ていたのが死んだ条項のバグ)。range 有効時に出ることは別テストで固定する。
     expect(s).not.toContain('レンジの距離');
@@ -2627,6 +2632,134 @@ const stripReverseStop = (s: string) =>
 //      = **離れた場所での対応づけを作らない**。方向の反転はこの仕組みで最も高くつく壊れ方なので、
 //        ラベルと enum 値を隣接させたことを機械で固定する。
 //   ★JSON の値(buy/sell/range)と画面の「買い目線/売り目線」は **変えない**(台帳互換・パネルは別担当)。
+// ─── ★v0.9.92: 位置の規則(Ｃ)から「買い」「売り」を追放する ────────────────────────────
+//
+// ■ 実測で確定(limit_level = AI が申告した節目の価格・v0.9.88 配備 2026-08-19 以降は申告率100%)
+//     売り×指値で「現在値の逆側」になった 8本のうち
+//       ・申告した節目が現在値より **下** だった … ★8/8(100%)
+//       ・節目は正しいのに置き方を間違えた     … ★0件
+//   ⇒ AI は「節目の 5〜10円 内側」を **正しく計算している**。壊れているのは **節目の選択**。
+//     v0.9.92 で節目の呼び名に (現在値より上) を足したが、それでも
+//     **AI が下の節目を「レジスタンス」と呼ぶ余地** が残る(規則を強めても表現できてしまう)。
+//
+// ■ この版の手: 規則を足すのではなく **間違いを表現できなくする**(v0.9.70 で損切りを幅だけにしたのと同じ)。
+//   位置は Ｘ/Ｙ が既に持っている(Ｘ=現在価格より上 / Ｙ=現在価格より下)ので、位置の規則は
+//   **買いか売りかを知らなくてよい**。よって Ｃ から方向の語を消す。
+//   ⇒ 実害パターン「売りの指値を現在価格より下」は、この形では **書きようが無い**。
+//
+// ■ このテストが守るもの
+//   ① Ｃ のブロックに「買い」「売り」が **1文字も無い**(question / system / strategySpec の3箇所とも)。
+//   ② Ｃ が Ｘ/Ｙ・内側/外側 で書かれている(位置が現在価格基準で決まる)。
+//   ③ 数値は 5〜10円 だけ(ブレイク新規のずらし量は v0.9.64 で撤去したまま=足し戻していない)。
+//   ④ 旧形(方向の語で位置を決める文)が **1つも残っていない**(否定対照そのもの)。
+//   ★ブロックが見つからなければ落とす(fail-open を作らない)。
+describe('★Ｃ(位置の規則): 方向の語(買い/売り)を使わずに Ｘ/Ｙ で位置を決める', () => {
+  /** Ｃ のブロックを取り出す。見出し行 + それに続くインデント行(2スペース始まり)。 */
+  const ruleC = (text: string, name: string): string => {
+    const lines = text.split('\n');
+    const at = lines.findIndex(l => l.includes('Ｃ: Ｘ・Ｙ の価格の決め方'));
+    expect(at, `${name}: 「Ｃ: Ｘ・Ｙ の価格の決め方」の見出しが無い(文面を変えたなら、このテストも直すこと)`)
+      .toBeGreaterThanOrEqual(0);
+    const out: string[] = [lines[at] as string];
+    for (let i = at + 1; i < lines.length && (lines[i] as string).startsWith('  '); i++) out.push(lines[i] as string);
+    return out.join('\n');
+  };
+
+  const SPEC = (rangeOn: boolean, omitMin = false, omitMax = false) => buildStrategySpec({
+    floor: { mode: 'manual' as const, value: 55 },
+    ceiling: { mode: 'manual' as const, value: 65 },
+    trendVeto: { mode: 'manual' as const, value: 100 },
+    cooldown: { mode: 'manual' as const, value: 90 },
+    bias: { mode: 'manual' as const, value: 'none' as const },
+    range: { mode: 'manual' as const, value: rangeOn },
+    hardMax: { enabled: true, value: 150 },
+    exitDesc: '(決済の説明)',
+    omitMinDistance: omitMin,
+    omitMaxDistance: omitMax,
+  });
+
+  /** ★全腕(v1 / v1d / v1e) × レンジ ON/OFF × 3つの生成箇所。 */
+  const CASES: [string, string][] = [
+    ['question v1(range ON)', buildScalpQuestion()],
+    ['question v1(range OFF)', buildScalpQuestion(45, 65, false)],
+    ['question v1d(range ON)', buildScalpQuestion(45, 65, true, 100, undefined, true)],
+    ['question v1e(range ON)', buildScalpQuestion(45, 65, true, 100, undefined, false, true)],
+    ['question v1(LC上限=AI委任)', buildScalpQuestion(55, 159, true, 100, { delegated: true, capLabel: '安全上限' })],
+    ['system v1(range ON)', buildScalpSystemPrompt()],
+    ['system v1(range OFF)', buildScalpSystemPrompt(45, 65, false)],
+    ['system v1(テクニカルON)', buildScalpSystemPrompt(45, 65, true, 100, true)],
+    ['system v1e(range ON)', buildScalpSystemPrompt(45, 65, true, 100, true, undefined, true)],
+    ['strategySpec(range ON)', SPEC(true)],
+    ['strategySpec(range OFF)', SPEC(false)],
+    ['strategySpec(v1d)', SPEC(true, true, false)],
+    ['strategySpec(v1e)', SPEC(true, false, true)],
+  ];
+
+  it.each(CASES)('① %s: Ｃ に「買い」「売り」が1文字も無い', (name, text) => {
+    const c = ruleC(text, name);
+    expect(c, `Ｃ に「買い」がある: ${c}`).not.toContain('買い');
+    expect(c, `Ｃ に「売り」がある: ${c}`).not.toContain('売り');
+  });
+
+  it.each(CASES)('② %s: Ｃ は Ｘ/Ｙ と 内側/外側 で書かれている(位置は現在価格基準)', (name, text) => {
+    const c = ruleC(text, name);
+    for (const w of ['Ｘ(現在価格より上に置く注文)', 'Ｙ(現在価格より下に置く注文)', '内側', '外側', '現在価格']) {
+      expect(c, `Ｃ に「${w}」が無い`).toContain(w);
+    }
+  });
+
+  it.each(CASES)('③ %s: Ｃ の数値は 5〜10円 だけ(新しい数値を足し戻していない)', (name, text) => {
+    const c = ruleC(text, name);
+    const widths = [...c.matchAll(/(\d+)〜(\d+)円/g)].map(m => m[0]);
+    expect(new Set(widths), `${name}: 想定外の幅(${widths.join(',')})`).toEqual(new Set(['5〜10円']));
+    // ★v0.9.64 で撤去した「ブレイク新規を節目から N円 外側」を足し戻していない(単独の円の数値が無い)。
+    const solo = [...c.matchAll(/(?<![〜\d])(\d+)円/g)].map(m => m[0]);
+    expect(solo, `${name}: 単独の円の数値が復活している(${solo.join(',')})`).toEqual([]);
+  });
+
+  it('④ 旧形(方向の語で位置を決める文)が1つも残っていない = 否定対照', () => {
+    const OLD = [
+      '売りはレジスタンスの5〜10円下',                 // v0.9.90 まで
+      '売りはレジスタンス(現在値より上)の5〜10円下',   // v0.9.92
+      '売りは対象レジスタンスの 5〜10円下',
+      '売りは対象レジスタンス(現在値より上)の 5〜10円下',
+      '売り(sell)のブレイク新規は サポート',
+      '買い(buy)のブレイク新規は レジスタンス',
+      '指値(押し目買い/戻り売り)は節目より',
+      '節目への置き方',
+    ];
+    for (const [name, text] of CASES) {
+      for (const o of OLD) expect(text, `${name}: 旧形「${o}」が残っている`).not.toContain(o);
+    }
+  });
+
+  // ★4通りの検算(ユーザー/リーダーが確認した表)を、Ｃ の文面から機械で導けることの確認。
+  //   Ｃ は「Ｘ=上の節目を選ぶ / Ｙ=下の節目を選ぶ」「指値=内側(近づく) / ブレイク新規=外側(遠ざかる)」
+  //   の2軸しか持たない=方向(ブル/ベア)を知らなくても4通りが一意に決まる。
+  it('★4通りの検算: Ｃ は Ｘ/Ｙ と 指値/ブレイク新規 の2軸だけで一意に決まる', () => {
+    const c = ruleC(buildScalpQuestion(), 'question v1(range ON)');
+    // Ｘ の行と Ｙ の行がそれぞれ独立にあり、どちらも「指値=内側 / ブレイク新規=外側」を持つ。
+    const lines = c.split('\n');
+    const lx = lines.find(l => l.includes('Ｘ(現在価格より上に置く注文)')) as string;
+    const ly = lines.find(l => l.includes('Ｙ(現在価格より下に置く注文)')) as string;
+    for (const [tag, l] of [['Ｘ', lx], ['Ｙ', ly]] as const) {
+      expect(l, `${tag} の行が無い`).toBeTruthy();
+      expect(l).toContain('節目を1つ選ぶ');
+      expect(l.indexOf('指値なら')).toBeLessThan(l.indexOf('内側'));
+      expect(l.indexOf('ブレイク新規(stopEntry)なら')).toBeLessThan(l.indexOf('外側'));
+    }
+    // 上下の別は Ｘ/Ｙ の見出しだけが持つ(行の中に方向の語は無い)。
+    expect(lx).toContain('現在価格より上の節目');
+    expect(ly).toContain('現在価格より下の節目');
+  });
+
+  it('★契約の不等式は残す(位置の導出規則ではなく契約の定義なので、ここは方向の語のまま)', () => {
+    const q = buildScalpQuestion();
+    expect(q).toContain('売り: stopEntry < refPrice < limitEntry');
+    expect(q).toContain('買い: limitEntry < refPrice < stopEntry');
+  });
+});
+
 describe('★Ａ(相場方向)と side で語を分ける: ブル/ベア/レンジ', () => {
   /** 質問文から ①Ａ の行(=相場方向を尋ねる部分)だけを取り出す。 */
   const lineA = (q: string): string => {
@@ -2786,13 +2919,20 @@ describe('レビュー指摘の修正(v0.9.44)', () => {
     expect(s).toContain('レンジ両面(direction:"range"=現在値の上下に1レッグずつ置く両面ストラドル): 有効【手動=固定・厳守】');
   });
 
-  it('② 節目が不等式に反するときは「省く」の前に「選び直す」(3ビルダーとも)', () => {
+  // ★v0.9.92: この規則の **前提が消えた**。旧文は「選んだ節目に置いた結果が不等式に反したら、
+  //   不等式を満たす側の節目を選び直す」= 節目が逆側にあり得ることを前提にしていた。
+  //   Ｃ では節目の側を Ｘ/Ｙ が決めるので「反する」状態が起こらない(=選び直す対象が無い)。
+  //   逃げ道(脚を省く)は Ｃ が同じ強さで持っているので、規則は失われていない。
+  //   ★損切りの節目の「選び直し」(LC下限に届かないとき)は別の規則で、こちらは不変=別テストが固定している。
+  it('② 節目が選べないときの逃げ道は「その脚を省く」(3ビルダーとも・Ｃ が持つ)', () => {
     for (const t of [buildScalpSystemPrompt(), buildScalpQuestion(), buildStrategySpec(SPEC_BASE)]) {
-      expect(t).toContain('まず不等式を満たす側の節目を選び直すこと');
-      expect(t).toContain('選び直しても適切な節目が無いときに限り、そのレッグを省く');
-      // 「省く」しか逃げ道が無かった旧文言は残っていない(見送りを増やす向きの指示)。
+      expect(t).toContain('選べる節目が無ければ その脚を省く');
+      // 方向の語で節目を選び直させる旧文は残っていない(前提が消えたため)。
+      expect(t).not.toContain('まず不等式を満たす側の節目を選び直すこと');
       expect(t).not.toContain('節目ではなく不等式を優先し、そのレッグを省く');
     }
+    // ★損切り側の「選び直す」は不変(消していないことの確認)。
+    expect(buildScalpQuestion()).toContain('もう一段外側');
   });
 
   it('⑥ direction の enum は1箇所だけで、range 有効/無効と矛盾しない', () => {

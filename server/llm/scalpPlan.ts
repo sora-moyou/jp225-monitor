@@ -237,9 +237,14 @@ export interface AnsweringProvider { name: string; model: string }
 //   ★AI の自己申告(AiPlan.regime)とは別物。画面の「順張り/逆張り」はこちらを使う
 //   (AI に見せた勢いの行と同じ値=画面とプロンプトで食い違わない)。
 //   ★採否・価格・脚落ち・決済には一切使わない(veto は従来どおり Regime.dir/strong が駆動する)。
+// appVersion / promptBuild(RECORD-ONLY・v0.9.93): ★「この行を書いたのはどの版・どの文面か」。
+//   appVersion  … 実行中のアプリの版(server/appVersion.ts)。
+//   promptBuild … その質問文の変種の **プロンプトの型** の指紋(`pb1:<16桁hex>`・server/llm/promptBuild.ts)。
+//   ★どちらも scalpPlanRunner が載せる(この層で載せると promptBuild.ts ⇄ scalpPlan.ts が循環参照になる)。
+//   ★prompt_fp(sp1)とは別物: sp1 は毎回変わる全文の指紋で、版の層別キーには使えない。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string; trendDir?: EntryTrendDir }
-  | { ok: false; error: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; contextAt?: number; promptFp?: string };
+  | { ok: true; plan: AiPlan; appVersion?: string; promptBuild?: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string; trendDir?: EntryTrendDir }
+  | { ok: false; error: string; appVersion?: string; promptBuild?: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; contextAt?: number; promptFp?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
 // トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
@@ -893,29 +898,33 @@ export function buildScalpQuestion(
     // ★v0.9.60(削除): 「rationale でも別の語で書くこと」の1行は system prompt に同文があり、
     //   質問文の末尾にも rationale の書き方の指示が別に入っているので重複。
 
-    // ★v0.9.63: 【ブレイク新規(stopEntry)の置き場所】は残す。実測の残存誤り(✗②=売りのブレイク新規の符号ミス)が
-    //   まさにこのレッグで起きているので、質問文からこの規則を減らすのは逆方向。
-    '\n★【ブレイク新規(stopEntry)の置き場所】\n' +
-    '  売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く。' +
-    'レジスタンス(現在値より上)の上に置くのは買いのブレイク新規であり、売りプランでは絶対に出さない。\n' +
-    '  買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く。' +
-    'サポート(現在値より下)の下に置くのは売りのブレイク新規であり、買いプランでは絶対に出さない。\n' +
-    // ★節目基準は不等式の後。ここでの「内側/外側」は節目に対する相対で、上の不等式を覆さない。
-    '\n★【節目への置き方(約定させるため必須)】狙うサポート/レジスタンスちょうどには置かない。\n' +
-    // ★v0.9.64(圧縮): 「最低5円(目安5〜10円)」→「5〜10円」。範囲は残し、単独の「5円」という量だけ落とす。
-    '  指値は節目から 5〜10円 内側[現在値側]にずらす=買いはサポートの5〜10円上・売りはレジスタンスの5〜10円下。\n' +
-    // ★v0.9.64: ブレイク新規のずらし量「0〜5円」を撤去し、量を持たない表現にする。実測 2026-08-07 で
-    //   ≤10円 の損切り43件は **ほぼ逆指値レッグに集中**(指値レッグは中央値50で健全)。ここが全プロンプト中で
-    //   stopEntry の隣に置かれた唯一の小さい数値で、同じ 5 が損切りの代入にも流用されていた。
-    //   ★指値側の 5〜10円 は残す(健全な側の唯一の較正で、消す根拠が実測に無い=片側だけ断つ)。
-    '  ブレイク新規(stopEntry)は節目の すぐ外側[抜ける方向]に置く=買いはレジスタンスのすぐ上・売りはサポートのすぐ下(抜けたと分かる最小限だけ離す。ずらす量は決めない)。' +
-    'この「外側」は抜ける方向であって、損切りの「外側」(建玉を守る向き)とは別物。' +
-    '★このずらし幅は損切りには一切使わない(損切りの幅は下の【導出の順序】で節目から出す)。\n' +
-    // ★v0.9.60(削除): 「節目ちょうどだと指値は刺さらず/ブレイク新規はだましに遭いやすいため」の理由行は
-    //   system prompt に同じ理由文があるので質問文からは削る(理由は1箇所で足りる)。
-    // ★v0.9.60(削除): 「逆張り指値の『強さ』でもう一つ先の節目まで引きつけるのと同じ要領で…」は、
-    //   質問文から『逆張り指値の節目選び』ブロックを削った時点で参照先の無い文になるため一緒に削る。
-    '  ★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと(売りなら 指値=現在値より上のレジスタンス / ブレイク新規=現在値より下のサポート、買いは対称)。選び直しても適切な節目が無いときに限り、そのレッグを省く。\n' +
+    // ★★★ v0.9.92: 位置の規則(Ｃ)から **方向の語(買い/売り)を追放** する ★★★
+    //
+    //   ■ 実測で確定したこと(limit_level=AI が申告した節目の価格・v0.9.88 以降は申告率100%)
+    //     売り×指値で『現在値の逆側』になった 8本のうち、**申告した節目が現在値より下だったもの 8/8(100%)**。
+    //     『節目は正しいのに置き方を間違えた』は **0件**。
+    //     ⇒ AI は「節目の5〜10円内側」を **正しく計算している**。壊れているのは **節目の選択** で、
+    //       『現在値より下にあるもの』を レジスタンス と呼んで売り指値の基準にしていた。
+    //   ■ v0.9.92(節目の呼び名に (現在値より上) を足す)では足りない: 呼び名を足しても
+    //     **AI が下の節目を『レジスタンス』と呼ぶ余地** が残る(=規則を強めても表現できてしまう)。
+    //   ■ ★この版の手: 規則を足すのではなく **間違いを表現できなくする**(v0.9.70 で損切りを幅だけにしたのと同じ)。
+    //     位置は Ｘ/Ｙ が既に持っている(Ｂ の定義: Ｘ=現在価格より上 / Ｙ=現在価格より下)ので、
+    //     位置の規則は **買いか売りかを知らなくてよい**。よって Ｃ から方向の語を消す。
+    //     ⇒ 実害パターン(売りの指値を現在価格より下)は、この形では **書きようが無い**。
+    //   ■ 段の分担(各段の仕事は1つ): Ａ=相場の方向(ブル/ベア/レンジ) → Ｂ=方向から注文の種類 → Ｃ=Ｘ/Ｙ の価格。
+    //   ■ 消えた規則は無い(旧【ブレイク新規の置き場所】と【節目への置き方】は Ｃ から導ける):
+    //     ブル Ｙ 指値   = 下の節目の5〜10円内側 → 節目より上・現在価格より下(押し目)
+    //     ブル Ｘ ブレイク新規 = 上の節目のすぐ外側 → 現在価格より上(レジスタンス抜け)
+    //     ベア Ｘ 指値   = 上の節目の5〜10円内側 → 節目より下・現在価格より上(戻り売り)
+    //     ベア Ｙ ブレイク新規 = 下の節目のすぐ外側 → 現在価格より下(サポート抜け)
+    //   ★数値は1つも足していない(5〜10円は不変。ブレイク新規のずらし量は v0.9.64 で撤去したまま=量を書かない)。
+    //   ★語彙も足していない(内側/外側/節目/Ｘ/Ｙ/指値/ブレイク新規 はすべて既存語)。
+    '\n★【Ｃ: Ｘ・Ｙ の価格の決め方(位置の規則)】現在価格(refPrice)だけを基準にする。内側=現在価格に近づく向き / 外側=現在価格から遠ざかる向き。\n' +
+    '  Ｘ(現在価格より上に置く注文): 現在価格より上の節目を1つ選ぶ。指値なら その節目の 5〜10円 内側 / ブレイク新規(stopEntry)なら その節目の すぐ外側(抜けたと分かる最小限だけ離す。ずらす量は決めない)。\n' +
+    '  Ｙ(現在価格より下に置く注文): 現在価格より下の節目を1つ選ぶ。指値なら その節目の 5〜10円 内側 / ブレイク新規(stopEntry)なら その節目の すぐ外側(同上)。\n' +
+    '  ★狙う節目ちょうどには置かない。選べる節目が無ければ その脚を省く。\n' +
+    // ★v0.9.64 の判断を維持: ブレイク新規のずらし量(0〜5円)は書かない。損切りの代入へ 5 が流用されていた実測による。
+    '  ★この「外側」は現在価格から遠ざかる向きであって、損切りの「外側」(建玉を守る向き)とは別物。★このずらし幅は損切りには一切使わない(損切りの幅は下の【導出の順序】で節目から出す)。\n' +
     // ★v0.9.60(削除): 『★【逆張り指値の節目選び(重要)】』の4行(約230字)は system prompt に同文が入る重複。
     //   質問文(user)側は「向き」の規則に集中させ、節目の強弱の解説は system prompt 1箇所に集約する。
     // ★v0.9.60(圧縮): 距離ルールの1行目は ★最優先 の不等式をこの同じメッセージ内で3度目に書き写していたので、
@@ -1075,15 +1084,13 @@ function buildScalpSystemPromptBody(
   stopEntry = ブレイク新規(まだ建てていない・節目を抜けたら入るエントリー注文)。損切りではない。
   lcWidthForLimit / lcWidthForStop = 損切りの **幅**(すでに約定した建玉を守る注文の大きさ)。エントリーでも価格でもない。
   rationale(説明文)でも両方をまとめて「逆指値」とだけ書かないこと。
-- ★【ブレイク新規(stopEntry)の置き場所】
-  売り(sell)のブレイク新規は サポート(現在値より下) を抜ける価格に置く。レジスタンス(現在値より上)の上に置くのは買いのブレイク新規であり、売りプランでは絶対に出さない。
-  買い(buy)のブレイク新規は レジスタンス(現在値より上) を抜ける価格に置く。サポート(現在値より下)の下に置くのは売りのブレイク新規であり、買いプランでは絶対に出さない。
-- ★【節目への置き方(約定させるため必須)】指値・ブレイク新規を狙う節目(サポート/レジスタンス)ちょうどに置かないこと。
-  指値(押し目買い/戻り売り)は節目より 5〜10円 内側(現在値側)にずらす: 買いは対象サポートの 5〜10円上、売りは対象レジスタンスの 5〜10円下。
-  ブレイク新規(stopEntry)は節目の すぐ外側(抜ける方向)に置く: 買いは対象レジスタンス(現在値より上)のすぐ上、売りは対象サポート(現在値より下)のすぐ下(抜けたと分かる最小限だけ離す。ずらす量は決めない)。
+- ★【Ｃ: Ｘ・Ｙ の価格の決め方(位置の規則)】現在価格(refPrice)だけを基準にする。内側=現在価格に近づく向き / 外側=現在価格から遠ざかる向き。
+  Ｘ(現在価格より上に置く注文): 現在価格より上の節目を1つ選ぶ。指値なら その節目の 5〜10円 内側 / ブレイク新規(stopEntry)なら その節目の すぐ外側(抜けたと分かる最小限だけ離す。ずらす量は決めない)。
+  Ｙ(現在価格より下に置く注文): 現在価格より下の節目を1つ選ぶ。指値なら その節目の 5〜10円 内側 / ブレイク新規(stopEntry)なら その節目の すぐ外側(同上)。
+  ★狙う節目ちょうどには置かないこと。選べる節目が無ければ その脚を省く。
   理由: 指値を節目ちょうどに置くと反応して約定しない(刺さらない)ことが多く、ブレイク新規を節目ちょうどに置くとだまし(往復)に遭いやすい。
-  ★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと(売りなら 指値=現在値より上のレジスタンス / ブレイク新規=現在値より下のサポート、買いは対称)。選び直しても適切な節目が無いときに限り、そのレッグを省く。
-  range の各レッグ(limit=逆張り指値 / stop=抜け追随のブレイク新規)も同じ置き方にする。
+  ★この「外側」は現在価格から遠ざかる向きであって、損切りの「外側」(建玉を守る向き)とは別物。このずらし幅は損切りには一切使わない。
+  range の各レッグ(upper=Ｘ / lower=Ｙ)も同じ置き方にする。
 - ★【逆張り(指値)の節目選び】反発を狙う指値は十分に強い節目(複数回タッチ/主要ラウンド/上位足の節目)にのみ置く。最も近い(隣接の)節目が弱い(タッチ浅い/新しい/薄い)ときは、そこで逆張りせず もう一つ先のより強い節目まで引きつけて置くこと。近くに強い節目が無ければ逆張り指値は見送り、順方向のブレイク新規(stopEntry)を優先する。★この「一段先まで引きつける」考え方は損切りの節目選びにも同じく適用する(下の【導出の順序】)。
 ${omitMaxDistance ? '' : '- ★【指値・ブレイク新規の距離(必須)】両方を出すときは現在値がその2つの価格の間に入るように置き(上の不等式のとおり)、指値とブレイク新規の価格差(両者の幅)は400円以内にすること=幅が広すぎる両面は出さない。片方だけ(指値のみ/ブレイク新規のみ)を出すときは、その1本を上の向き通りに置いた上で現在値から200円以内に収めること(200円を超えて離れた片レッグは出さない=約定不能・古い価格になりやすいため)。\n'}- それぞれの約定時の損切りの **幅**(lcWidthForLimit / lcWidthForStop・正の数)を出す(損切りの価格は出力しない=システムが向きを付けて計算する)。${LC_BUFFER_NOTE}指値レッグは limitEntry+lcWidthForLimit、ブレイク新規レッグは stopEntry+lcWidthForStop を対で出す(片方だけは不可)。
 - ${LC_DERIVATION_ORDER}
@@ -1400,6 +1407,36 @@ export function scalpOrderTypeContract(rangeEnabled: boolean): string {
     + (rangeEnabled ? '(レンジは脚別の欄が無いので rationale に書く)' : '') + '。\n';
 }
 
+/** ★lcWhyFor* の注記(SSOT)。**judgment=false は v1 と byte 一致**(既定・実取引経路はここを通っても不変)。
+ *
+ *  ■ 何を測る腕か(v1f・2026-08-20)
+ *    実測: LC の理由の箱(lcWhyForLimit / lcWhyForStop)が **8割 検算で埋まる**。
+ *    仮説(機構): selfCheckNote が「その引き算を rationale に書き、答えと **lcWidthFor…** の数値が一致しているか」と
+ *    言っており、新設の箱 **lcWhyFor…** と1文字違いで隣接している。★**宛先の取り違え** が疑われる。
+ *
+ *  ■ ★文面の決め方(ユーザー指示・逐語「rationaleに書いたのち、検算に類するものを削除」)
+ *    最初の案は「検算は rationale に書くので、**ここには書かない**」だった。これは **禁止(否定文)** で、
+ *    このプロジェクトは「数値や語は **否定文の中でも供給される**」という実測を持つ
+ *    (v0.9.64: 「LC幅の下限に5円を足す という意味ではない」という否定文が 5 の供給源になっていた)。
+ *    ⇒ **禁止をやめ、手順にする**。「書かない」ではなく「書いたのち、削除する」= 命令形の作業であって
+ *      否定ではない(★この注記には 〜ない / 禁止 / 不可 の語が1つも無い)。
+ *  ■ ★手順に「何を書くか」を必ず含める(削除だけで終わらせない)
+ *    いまこの箱は **8割が検算** なので、検算を取り除くだけだと **理由が入るのではなく空になる**。
+ *    よって ②で書く中身(根拠に選んだ節目と なぜそこか)を手順の真ん中に置く。
+ *    ★これは新しい規則ではない: 【導出の順序】① が既に「損切りの根拠にする節目を選ぶ」と要求しており、
+ *      この箱はその **答え** を書く場所だと言い直しただけ(新しい数値も長さの指示も新語も足していない)。
+ *    ★①で rationale を名指しするのは **宛先の明示**(肯定形の割り当て)。rationale 側の検算要求は
+ *      1文字も外していない(外すと損切りの符号ミスが3倍という実測がある)。
+ *  ★同じことをコードでやる案(core/rationaleDisplay.ts の stripLcArithmetic を lcWhyFor* にも当てる)は
+ *    **今回は入れない**: コードは確実だが **理由を増やさない**(空欄になるだけ)。この腕が測りたいのは
+ *    「判断が書かれるようになるか」なので、プロンプトで測る。 */
+export function lcWhyNote(field: 'lcWidthForLimit' | 'lcWidthForStop', judgment: boolean): string {
+  return judgment
+    ? `幅の根拠を書く欄。順序=①検算は rationale に書く →②この欄には根拠に選んだ節目と なぜそこかを書く`
+      + ` →③この欄に残った検算に類する記述は削除して出す。${field} と対で省略`
+    : `なぜ ${field} をその幅にしたか(日本語)。${field} と対で省略`;
+}
+
 // LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
 // LC 幅注記に floor/ceiling を反映する(テスト可能なよう export)。
 export function scalpJsonInstruction(
@@ -1409,6 +1446,9 @@ export function scalpJsonInstruction(
   rangeEnabled = true,
   // ★v0.9.56: 上限が AI委任のときだけ提示の形を変える(既定=手動=従来と byte 一致)。
   lcCeil: LcCeilingPresentation = LC_CEIL_MANUAL,
+  // ★v1f(2026-08-20): lcWhyForLimit / lcWhyForStop の **注記だけ** を差し替える候補腕のフラグ。
+  //   **既定 false = v1 と byte 一致**(実取引につながる経路は1ミリも動かない)。理由は lcWhyNote を参照。
+  lcWhyJudgment = false,
 ): string {
   // ★v0.9.56 ①: LC 幅の書き方だけが手動(保存値)/委任(実効上限までの範囲)で分かれる。
   // ★v0.9.60: 旧文言「本来のストップ位置から+5円外側」をこのフィールド注記から撤去した。
@@ -1468,9 +1508,9 @@ export function scalpJsonInstruction(
     `  "entryWhyForStop": string,   // なぜ stopEntry をその価格にしたか(日本語)。stopEntry と対で省略\n` +
     // ★v0.9.70: 損切りは **幅** だけ。価格のフィールドは無い(向きはシステムが direction から付ける)。
     `  "lcWidthForLimit": number,   // 指値約定時の損切りの幅(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
-    `  "lcWhyForLimit": string,     // なぜ lcWidthForLimit をその幅にしたか(日本語)。lcWidthForLimit と対で省略\n` +
+    `  "lcWhyForLimit": string,     // ${lcWhyNote('lcWidthForLimit', lcWhyJudgment)}\n` +
     `  "lcWidthForStop": number,    // ブレイク新規約定時の損切りの幅(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
-    `  "lcWhyForStop": string,      // なぜ lcWidthForStop をその幅にしたか(日本語)。lcWidthForStop と対で省略\n` +
+    `  "lcWhyForStop": string,      // ${lcWhyNote('lcWidthForStop', lcWhyJudgment)}\n` +
     // ★v0.9.87: 「なぜこの価格なのか」を数値で残す。**新しい規則は足さない**(節目への置き方は既に上で
     //   決まっている)。ここで求めるのは「その規則で **実際に使った節目の価格**」だけ。
     //   文章の枠を増やさないのが要点(根拠文は実測で LC検算に埋め尽くされ、増やしても押し出される)。
@@ -2183,7 +2223,8 @@ export function buildStrategySpec(i: StrategySpecInput): string {
     // ★v0.9.63(削除): 「※この『外側』は抜ける方向の意味で、損切りの『外側』(建玉を守る向き)とは別物」は question に
     //   同じ1文が残る(spec の役割は設定値＋委任タグで、規則の全文は system/question が持つ=このファイル内の既存方針)。
     // ★v0.9.64: ブレイク新規のずらし量(0〜5円)を撤去=量を持たない表現へ(question / system prompt と同じ理由)。
-    '- 節目への置き方(約定重視・節目ちょうどには置かない): 指値=狙う節目から 5〜10円 内側(現在値側)。ブレイク新規(stopEntry)=狙う節目の すぐ外側(抜ける方向・量は決めない)。★選んだ節目に置いた結果が上の不等式に反するときは、まず不等式を満たす側の節目を選び直すこと。選び直しても適切な節目が無いときに限り、そのレッグを省く。',
+    // ★v0.9.92: 3箇所目の位置の規則も **同じ構造(Ｃ)** に揃える。方向の語は使わない=位置は Ｘ/Ｙ が持つ。
+    '- ★Ｃ: Ｘ・Ｙ の価格の決め方(位置の規則・現在価格(refPrice)だけを基準にする。内側=現在価格に近づく向き / 外側=現在価格から遠ざかる向き): Ｘ(現在価格より上に置く注文)=現在価格より上の節目を1つ選び、指値なら その 5〜10円 内側 / ブレイク新規(stopEntry)なら その すぐ外側(量は決めない)。Ｙ(現在価格より下に置く注文)=現在価格より下の節目を1つ選び、同じ規則を適用する。狙う節目ちょうどには置かない。選べる節目が無ければ その脚を省く',
     // ★v0.9.60(削除): 『逆張り指値の節目選び』(約190字)も system prompt と question に同文が入る重複。
     //   spec 自身のコメントが宣言しているとおり、規則の全文は system/question が持ち、spec は設定値＋委任タグを担う。
     // ★v0.9.61(圧縮): 距離ルールの不等式の再掲(直上の『最優先: 価格の向き』と同文)と括弧内の理由づけを外し、
@@ -2702,7 +2743,10 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   //   ★2群の違いは【画像の有無】と【この1行の有無】だけ。画像なし側に説明を足さない(足すと交絡する)。
   const img = input.chartImageDataUrl && input.chartImageDataUrl.startsWith('data:image/')
     ? input.chartImageDataUrl : null;
-  const jsonInstruction = scalpJsonInstruction(refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil);
+  // ★v1f(2026-08-20): 候補腕。lcWhyFor* の注記 **だけ** を差し替える(質問文・system・strategySpec は v1 と同一)。
+  const jsonInstruction = scalpJsonInstruction(
+    refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil, promptVariant === 'v1f',
+  );
   const userPromptFor = (withImage: boolean): string =>
     promptVariant === 'v2'
       // v2 は質問文の中に JSON 契約を持つ。ここで v1 の jsonInstruction を足すと契約が2つ並び、

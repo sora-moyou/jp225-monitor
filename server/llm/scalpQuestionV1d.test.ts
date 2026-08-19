@@ -95,7 +95,8 @@ describe('v1d 質問文 — v1 との差分は「最低距離の記述」1点だ
     expect(q).toContain('★【最優先: 損切りの幅(無条件・例外なし)】');
     expect(q).toContain(`${FLOOR}円以上`);
     expect(q).toContain('★【出力前の自己検算(必須)】');
-    expect(q).toContain('指値は節目から 5〜10円 内側');
+    // ★v0.9.92: 位置の規則は Ｘ/Ｙ の言葉(Ｃ)に書き換わった。量(5〜10円 内側)は不変。
+    expect(q).toContain('指値なら その節目の 5〜10円 内側');
     expect(q).toContain('その引き算をそのまま書くこと');
   });
 
@@ -166,7 +167,7 @@ describe('v1d — 変種の受け口(腕からは降りたが、変種として�
   //   'v1d' は PROMPT_VARIANTS の語彙・normalizePromptVariant・omitMinDistance フラグとしては残す。
   //   腕接続のテスト(planCycleArms が v1e を送ること)は scalpQuestionV1e.test.ts へ移した。
   it('normalizePromptVariant が v1d を受理し、未知は 400 用エラー(v1e も語彙に追加済み)', () => {
-    expect(PROMPT_VARIANTS).toEqual(['v1', 'v2', 'v1d', 'v1e']);
+    expect(PROMPT_VARIANTS).toEqual(['v1', 'v2', 'v1d', 'v1e', 'v1f']);
     expect(normalizePromptVariant('v1d')).toEqual({ ok: true, variant: 'v1d' });
     expect(normalizePromptVariant('v1c').ok).toBe(false);
   });

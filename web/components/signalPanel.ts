@@ -624,6 +624,102 @@ const SIGNAL_MARK = '🎯';
  *    同じ理由を2箇所に書くと、片方だけ直る事故の芽になる。 */
 const legAbsentText = (name: string): string => `${name}なし`;
 
+// ─── ★v0.9.92: 脚落ちの注記を「空いている欄」へ移す ──────────────────────────
+//
+// ■ 依頼(逐語) 「（指値は不採用: エントリーが現在値の逆側、または損切り幅の値が不正）の表示位置は、
+//   上　指値なしの場所が望ましい。」
+//
+// ■ ★どうやって「どの脚の注記か」を知るか(取り違えを起こさない作り)
+//   ★**日本語を解釈しない。** 注記は AI の文ではなく **コードが決まった書式で作った文字列** なので、
+//     その書式の **名前の位置** だけを見る。名前に使われている語は画面が既に持っている定数
+//     (WHY_LABEL.limit='指値' / WHY_LABEL.stop='逆指値' / SECTION_HEAD.above='上' / below='下')。
+//   ★さらに **二重の条件** を課す。注記を動かすのは
+//        「注記が名乗る脚」==「その欄の脚」 かつ 「その欄が空(脚が落ちている)」
+//     のときだけ。欄の脚は entryLabel().above / range.upper・lower という **コードの事実** から決まる。
+//     ⇒ 仮に文字列の一致が誤って起きても、**空いていない欄には絶対に入らない**し、
+//       名乗った脚と違う欄にも入らない。**一致が確認できない注記は目線の欄に残す**
+//       (嘘の欄に置くくらいなら動かさない)。
+//
+// ■ ★構造化された脚落ち情報(legDrops)を使わなかった理由(調査の結果)
+//   server には `LegDrop{name:'limit'|'stop'|'upper'|'lower', reason:'geometry'|…}` が在り、
+//   ログと台帳(signal_plans.leg_drops_json)には入っている。しかし **SSE には載っていない**:
+//   legDrops は ScalpPlanResult に付くだけで AiPlan → ArmedBracket → CurrentSignal のどこにも
+//   引き継がれていない(engine.ts はログに出して捨てている)。届けるには
+//   ①発生源 server/llm/scalpPlan.ts(別担当の領域・触れない) か
+//   ②engine→decisions→CurrentSignal→SSE の契約を広げる(trade2 が読む共有IF)
+//   のどちらかが要る。**今回の表示のためだけに共有IFを広げるのは割に合わない** と判断した
+//   (上の二重条件で取り違えは構造的に起きないため、今ある材料で足りる)。
+//   ★ただし脚落ちの情報を画面で他にも使うようになるなら、②を先にやるべき。そのときは
+//     ここの文字列一致を捨てて識別子で引ける。
+//
+// ■ 注記の出所と形(server/llm/scalpPlan.ts。★ここを直すときは向こうも見ること)
+//   ・方向レッグ legDropPhrase … `（指値なし: AIが提案せず）` / `（指値は不採用: …）`(逆指値も同型)。
+//     ★AI の本文の **末尾に半角スペース1つで連結** される(`${rationale} ${legNote}`)=独立した行ではない。
+//     2本落ちた回は区切り無しで連続する(`（指値は不採用: …）（逆指値は不採用: …）`)。
+//   ・レンジ rangeDropNote … `※上部(売り指値)は不採用: …` / `※上部のレッグなし: …`。
+//     こちらは改行で連結される=**行そのもの**。
+//   ・理由の日本語(legDropReasonText)は12語すべてに `（` `）` を含まないので、
+//     開き `（…なし: `/`（…は不採用: ` から **最初の `）`** までが注記1本と確定する。
+
+/** 脚落ちの注記の持ち主。方向レッグは脚の種別、レンジは欄の位置(上/下)で決まる。 */
+export type LegNoteOwner = EntryKind | 'above' | 'below';
+
+/** 方向レッグの注記の開き方 → 持ち主。★語は画面が持つ定数から組む(新しい語彙を作らない)。 */
+const LEG_NOTE_OPENERS: ReadonlyArray<{ open: string; owner: LegNoteOwner }> = [
+  { open: `（${WHY_LABEL.limit}なし: `,     owner: 'limit' },
+  { open: `（${WHY_LABEL.limit}は不採用: `, owner: 'limit' },
+  { open: `（${WHY_LABEL.stop}なし: `,      owner: 'stop' },
+  { open: `（${WHY_LABEL.stop}は不採用: `,  owner: 'stop' },
+];
+
+/** レンジの注記の行頭 → 持ち主。`※上部…` / `※下部…`(rangeDropNote と同じ形)。 */
+const RANGE_NOTE_OPENERS: ReadonlyArray<{ open: string; owner: LegNoteOwner }> = [
+  { open: `※${SECTION_HEAD.above}部`, owner: 'above' },
+  { open: `※${SECTION_HEAD.below}部`, owner: 'below' },
+];
+
+/** 注記を取り出した後の本文を整える。★取り出しが起きた行にだけ掛ける(掛けない行は1バイトも変えない)。
+ *  末尾に連結されていた注記を抜くと空白が余るので、連続空白を1つに畳んで前後を落とすだけ。 */
+const tidyRest = (s: string): string => s.replace(/ {2,}/g, ' ').trim();
+
+/** 純関数: 1行から **持ち主が引き取れる** 脚落ちの注記だけを切り出す。
+ *  @param claimable その持ち主の欄が「空いていて、まだ注記を持っていない」か。false なら **動かさない**。
+ *  @returns rest   … 注記を抜いた本文(1本も抜かなければ **入力と同一のインスタンス**)。
+ *           claimed… 抜いた注記(持ち主つき)。
+ *  ★閉じ `）` が見つからない・開きが無い行は触らない(注記の形をしていない=AI の文として扱う)。 */
+export function extractLegDropNotes(
+  line: string, claimable: (owner: LegNoteOwner) => boolean,
+): { rest: string; claimed: ReadonlyArray<{ owner: LegNoteOwner; text: string }> } {
+  // ① レンジの注記は行そのもの。行頭一致だけを見る(本文の途中に現れる形では作られない)。
+  for (const { open, owner } of RANGE_NOTE_OPENERS) {
+    if (line.startsWith(open)) {
+      return claimable(owner) ? { rest: '', claimed: [{ owner, text: line }] } : { rest: line, claimed: [] };
+    }
+  }
+  // ② 方向レッグの注記は本文と同じ行の中に在る。開き → 最初の `）` までを1本として切る。
+  const claimed: Array<{ owner: LegNoteOwner; text: string }> = [];
+  let rest = '';
+  let i = 0;
+  for (;;) {
+    let hit: { open: string; owner: LegNoteOwner; at: number } | undefined;
+    for (const o of LEG_NOTE_OPENERS) {
+      const at = line.indexOf(o.open, i);
+      if (at >= 0 && (!hit || at < hit.at)) hit = { open: o.open, owner: o.owner, at };
+    }
+    if (!hit) { rest += line.slice(i); break; }
+    const close = line.indexOf('）', hit.at + hit.open.length);
+    if (close < 0) { rest += line.slice(i); break; }
+    if (claimable(hit.owner)) {
+      rest += line.slice(i, hit.at);                       // 注記を落とす
+      claimed.push({ owner: hit.owner, text: line.slice(hit.at, close + 1) });
+    } else {
+      rest += line.slice(i, close + 1);                    // ★動かさない=そのまま残す
+    }
+    i = close + 1;
+  }
+  return claimed.length ? { rest: tidyRest(rest), claimed } : { rest: line, claimed: [] };
+}
+
 /** 脚1本ぶんのメイン行(★既存のメイン行の1レッグぶんと byte 一致)。
  *  従来: `🎯 シグナル：買い 68,725 指値 (LC 68,665) / 買い 68,780 逆指値 (LC 68,720)`
  *  今回: 上の欄に `🎯 買い 68,780 逆指値 (LC 68,720)` / 下の欄に `🎯 買い 68,725 指値 (LC 68,665)` */
@@ -672,14 +768,18 @@ function legWhyLine(name: string, entryWhy?: string, lcWhy?: string): string {
  *    PanelView.basis を従来どおり組み立てており(値は不変。ただし armed では描かれない=
  *    PanelView の注記を参照)、台帳側の limit_level / stop_level と合わせて後から検証できる。
  *  ・脚が無ければ `empty` を立てて「指値なし」/「逆指値なし」を出す(★行を消さない=理由は下記)。 */
-function buildLegSection(sig: SignalCurrent, kind: EntryKind): SignalSection {
+function buildLegSection(sig: SignalCurrent, kind: EntryKind, dropNote?: string): SignalSection {
   const isLimit = kind === 'limit';
   const name = isLimit ? WHY_LABEL.limit : WHY_LABEL.stop;
   const head = entryLabel(sig.direction, kind).above ? SECTION_HEAD.above : SECTION_HEAD.below;
   const entry = isLimit ? sig.limitEntry : sig.stopEntry;
   // ★「脚が在るか」の判定は **メイン行と同じ `!= null`**(buildSignalView の legs と揃える)。
   //   ここだけ Number.isFinite にすると、壊れた値のとき片方の判定にだけ引っかかって欄が消える。
-  if (entry == null) return { head, main: legAbsentText(name), lines: [], empty: true };
+  // ★v0.9.92: 脚が落ちた回にその脚の注記(`（指値は不採用: …）`)が引き当てられていれば、
+  //   `指値なし` の **代わりに** それを出す(依頼どおり)。両方は出さない: 注記には既に脚の名前と
+  //   「なし/不採用」が入っており、`指値なし` は1ビットも足さない(同じことを2行書かない)。
+  //   引き当てられなかった回は従来どおり `指値なし`(=無言で空にしない)。
+  if (entry == null) return { head, main: dropNote ?? legAbsentText(name), lines: [], empty: true };
   const lines: string[] = [];
   const why = isLimit
     ? legWhyLine(name, sig.entryWhyForLimit, sig.lcWhyForLimit)
@@ -735,6 +835,21 @@ export function buildSignalSections(
   parts: { bias: string; rationale: string },
 ): SignalSections {
   const biasLines: string[] = [];
+  // ★v0.9.92: **どの欄が空いているか** を先に確定させる(注記を引き当てる条件の片方)。
+  //   ここは文字列を一切見ない=コードの事実(脚が在るか)だけで決まる。
+  const isRange = sig.mode === 'range' && !!sig.range;
+  const emptyOwners = new Set<LegNoteOwner>();
+  if (isRange) {
+    if (!sig.range?.upper) emptyOwners.add('above');
+    if (!sig.range?.lower) emptyOwners.add('below');
+  } else {
+    if (sig.limitEntry == null) emptyOwners.add('limit');
+    if (sig.stopEntry == null) emptyOwners.add('stop');
+  }
+  /** 空いている欄が引き取った注記(欄ごとに最初の1本だけ)。 */
+  const claimedNotes = new Map<LegNoteOwner, string>();
+  const claimable = (owner: LegNoteOwner): boolean =>
+    emptyOwners.has(owner) && !claimedNotes.has(owner);
   // ★重複の間引き(v0.9.89)。規約は **既存のものをそのまま使う**:
   //   buildRationaleView の「**完全一致の行だけ** 落とす(部分一致や類似では落とさない)」。
   //   ■ なぜ要るか(実測): rationale 由来と buildWhyLines の畳み由来が別々に出るため、
@@ -749,7 +864,13 @@ export function buildSignalSections(
   //     buildRationaleView は「理由が書かれていない」ことを1行で告げる規約のままなので
   //     (=PanelView.rationale は不変)、画面に出す側でだけ落とす。
   const pushUnique = (text: string): void => {
-    for (const line of splitRationaleLines(text)) {
+    for (const raw of splitRationaleLines(text)) {
+      // ★v0.9.92: 空いている欄が引き取れる脚落ちの注記は、ここで本文から抜いて欄へ渡す。
+      //   引き取り手が無い注記は **1バイトも動かさず** 目線の欄に残る(嘘の欄に置かない)。
+      const { rest, claimed } = extractLegDropNotes(raw, claimable);
+      for (const c of claimed) claimedNotes.set(c.owner, c.text);
+      const line = rest;
+      if (!line) continue;                        // 注記だけの行 → 行ごと欄へ移った
       if (line === NO_REASON) continue;           // ★空を告げる行は画面に出さない(台帳で数える)
       if (!biasLines.includes(line)) biasLines.push(line);
     }
@@ -759,16 +880,17 @@ export function buildSignalSections(
   const directionWhy = cleanAiText(sig.directionWhy);
   if (directionWhy) pushUnique(`${WHY_LABEL.bias}: ${directionWhy}`);
 
-  if (sig.mode === 'range' && sig.range) {
-    const rangeSec = (leg: SignalRangeLeg | undefined, pos: '上' | '下'): SignalSection =>
+  if (isRange && sig.range) {
+    const rangeSec = (leg: SignalRangeLeg | undefined, pos: '上' | '下', owner: LegNoteOwner): SignalSection =>
       leg
         ? { head: pos, main: `${SIGNAL_MARK} ${rangeLegText(leg, pos)}`, lines: [] }
         // ★片面だけのレンジ。語の出所は注記の「上部/下部」(server の legDropPhrase と同じ `なし`)。
-        : { head: pos, main: legAbsentText(`${pos}部`), lines: [], empty: true };
+        //   ★v0.9.92: その脚の注記(`※上部(売り指値)は不採用: …`)が在ればそれを出す(方向レッグと同じ規約)。
+        : { head: pos, main: claimedNotes.get(owner) ?? legAbsentText(`${pos}部`), lines: [], empty: true };
     return {
       bias: { head: SECTION_HEAD.bias, main: parts.bias, lines: biasLines },
-      above: rangeSec(sig.range.upper, SECTION_HEAD.above),
-      below: rangeSec(sig.range.lower, SECTION_HEAD.below),
+      above: rangeSec(sig.range.upper, SECTION_HEAD.above, 'above'),
+      below: rangeSec(sig.range.lower, SECTION_HEAD.below, 'below'),
     };
   }
 
@@ -791,8 +913,8 @@ export function buildSignalSections(
   const note = entryStanceUnknownReason(sig.trendDir);
   if (note && (sig.limitEntry != null || sig.stopEntry != null)) biasLines.push(note);
 
-  const limitSec = buildLegSection(sig, 'limit');
-  const stopSec = buildLegSection(sig, 'stop');
+  const limitSec = buildLegSection(sig, 'limit', claimedNotes.get('limit'));
+  const stopSec = buildLegSection(sig, 'stop', claimedNotes.get('stop'));
   // ★上/下の振り分けは core/entryLabel.ts の above が唯一の権威(買い=逆指値が上 / 売り=指値が上)。
   const limitIsAbove = entryLabel(sig.direction, 'limit').above;
   return {

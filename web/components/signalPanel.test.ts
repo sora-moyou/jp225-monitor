@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, withStrategyLabel, buildRationaleView, buildLevelBasis, basisTail, buildEntryStance, buildWhyLines, buildSignalSections, cleanAiText, DISPLAY_TRUNCATED_MARK, type SignalTradeState, type SignalSections } from './signalPanel.js';
+import { buildSignalView, buildPositionView, splitRationaleLines, buildWaitMain, withStrategyLabel, buildRationaleView, buildLevelBasis, basisTail, buildEntryStance, buildWhyLines, buildSignalSections, extractLegDropNotes, cleanAiText, DISPLAY_TRUNCATED_MARK, type SignalTradeState, type SignalSections } from './signalPanel.js';
 import { stripLcArithmetic, NO_REASON as NO_REASON_TEXT } from '../../core/rationaleDisplay.js';
 import { entryStanceUnknownReason } from '../../core/entryLabel.js';
 
@@ -1276,5 +1276,161 @@ describe('★トレンドが断定できない回: 画面には語だけを出�
       .flatMap(x => [x.main, ...x.lines]).join('\n');
     expect(flat).not.toContain('順張り/逆張りなし');
     expect(flat).toContain('横ばい');
+  });
+});
+
+// ─── ★v0.9.92: 脚落ちの注記を、その脚の欄へ移す ────────────────────────────
+// 依頼(逐語)「（指値は不採用: …）の表示位置は、上　指値なしの場所が望ましい。」
+describe('★v0.9.92: 脚落ちの注記を空いている欄へ', () => {
+  const sections = (signal: Record<string, unknown>): SignalSections =>
+    buildSignalView({ phase: 'armed', updatedAt: 0, signal: signal as never }).sections!;
+  const GEOM = '（指値は不採用: エントリーが現在値の逆側、または損切り幅の値が不正）';
+  const STOP_NOTE = '（逆指値は不採用: 損切り幅が設定の上限より広い）';
+  // 依頼の画面と同じ回: 売り・指値が落ちて逆指値だけ残った(売りの指値=上の欄)。
+  const SELL_LIMIT_DROPPED = {
+    direction: 'sell' as const, at: 10, refPrice: 65_800, trendDir: 'down' as const,
+    stopEntry: 65_740, stopLossForStop: 65_800,
+    rationale: `下降トレンドの中で、サポートを下抜けたため。 ${GEOM}`,
+    directionWhy: '下降トレンドが続いており、サポートを割ったため、売りのエントリーが適切と判断した。',
+    entryWhyForStop: 'サポートの65,760円を下抜けた位置にブレイク新規を設定した。',
+  };
+
+  it('①依頼の例そのもの: 注記が「上」の欄へ移り、目線の欄からは消える', () => {
+    const s = sections(SELL_LIMIT_DROPPED);
+    expect(s.above).toEqual({ head: '上', main: GEOM, lines: [], empty: true });
+    expect(s.bias.lines).toEqual([
+      '下降トレンドの中で、サポートを下抜けたため。',
+      '目線: 下降トレンドが続いており、サポートを割ったため、売りのエントリーが適切と判断した。',
+    ]);
+    expect(s.below.main).toBe('🎯 売り 65,740 逆指値 (LC 65,800)');
+    // ★`指値なし` は出さない(注記が脚の名前と状態を既に持っている)。
+    expect(s.above.main).not.toContain('指値なし');
+  });
+
+  it('②逆側: 買い・逆指値が落ちた回は「上」、売り・逆指値が落ちた回は「下」へ入る', () => {
+    const buy = sections({
+      direction: 'buy', at: 10, refPrice: 66_190, limitEntry: 66_145, stopLossForLimit: 66_085,
+      rationale: `押し目を拾う ${STOP_NOTE}`,
+    });
+    expect(buy.above).toEqual({ head: '上', main: STOP_NOTE, lines: [], empty: true });
+    expect(buy.bias.lines).toEqual(['押し目を拾う']);
+    const sell = sections({
+      direction: 'sell', at: 10, refPrice: 66_190, limitEntry: 66_240, stopLossForLimit: 66_300,
+      rationale: `戻りを売る ${STOP_NOTE}`,
+    });
+    expect(sell.below).toEqual({ head: '下', main: STOP_NOTE, lines: [], empty: true });
+    expect(sell.above.main).toBe('🎯 売り 66,240 指値 (LC 66,300)');
+  });
+
+  it('★取り違えの実証: 注記が名乗る脚と空いている欄の脚が違えば **動かさない**', () => {
+    // 買い・指値が落ちた(空いているのは「下」=指値の欄)のに、注記は逆指値のもの。
+    const s = sections({
+      direction: 'buy', at: 10, refPrice: 66_190, stopEntry: 66_240, stopLossForStop: 66_180,
+      rationale: `ブレイクに乗る ${STOP_NOTE}`,
+    });
+    expect(s.below).toEqual({ head: '下', main: '指値なし', lines: [], empty: true });   // 縮退表示のまま
+    expect(s.bias.lines).toEqual([`ブレイクに乗る ${STOP_NOTE}`]);                        // 1バイトも動かさない
+  });
+
+  it('★脚が在る欄には絶対に入らない(両脚ある回は注記があっても目線に残る)', () => {
+    const s = sections({
+      direction: 'buy', at: 10, refPrice: 66_190,
+      limitEntry: 66_145, stopLossForLimit: 66_085, stopEntry: 66_240, stopLossForStop: 66_180,
+      rationale: `両方出した ${GEOM}`,
+    });
+    expect(s.above.main).toBe('🎯 買い 66,240 逆指値 (LC 66,180)');
+    expect(s.below.main).toBe('🎯 買い 66,145 指値 (LC 66,085)');
+    expect(s.bias.lines).toEqual([`両方出した ${GEOM}`]);
+  });
+
+  it('★注記が2つある回: 引き取れるものだけ移り、残りは目線に残る', () => {
+    // 買い・指値が落ちた(空きは「下」)。注記は指値と逆指値の2本。
+    const s = sections({
+      direction: 'buy', at: 10, refPrice: 66_190, stopEntry: 66_240, stopLossForStop: 66_180,
+      rationale: `本文 ${GEOM}${STOP_NOTE}`,
+    });
+    expect(s.below.main).toBe(GEOM);                       // 指値の注記だけが移る
+    expect(s.bias.lines).toEqual([`本文 ${STOP_NOTE}`]);    // 逆指値の注記は残る(脚が在るので)
+  });
+
+  it('★両脚とも落ちた回は欄そのものが出ない(従来どおり「シグナル待機」)', () => {
+    const v = buildSignalView({ phase: 'armed', updatedAt: 0, signal: {
+      direction: 'buy', at: 10, refPrice: 66_190, rationale: `見送り ${GEOM}${STOP_NOTE}`,
+    } as never });
+    expect(v.sections).toBeUndefined();
+    expect(v.main).toBe('シグナル待機');
+  });
+
+  it('★注記だけの行は行ごと欄へ移る / 本文と同じ行なら本文だけが残る(空白を残さない)', () => {
+    const onlyNote = sections({ ...SELL_LIMIT_DROPPED, rationale: GEOM, directionWhy: undefined });
+    expect(onlyNote.bias.lines).toEqual([]);
+    expect(onlyNote.above.main).toBe(GEOM);
+    const withBody = sections({ ...SELL_LIMIT_DROPPED, directionWhy: undefined });
+    expect(withBody.bias.lines).toEqual(['下降トレンドの中で、サポートを下抜けたため。']);
+  });
+
+  it('⑥レンジ: ※上部/※下部 の注記も同じ規約でその欄へ入る', () => {
+    const s = sections({
+      direction: 'buy', mode: 'range', at: 10,
+      rationale: 'レンジと判断\n※上部(売り指値)は不採用: 損切り幅が設定の上限より広い',
+      range: { lower: { side: 'buy', type: 'limit', entry: 66_100, stopLoss: 66_040 } },
+    });
+    expect(s.above).toEqual({
+      head: '上', main: '※上部(売り指値)は不採用: 損切り幅が設定の上限より広い', lines: [], empty: true,
+    });
+    expect(s.bias.lines).toEqual(['レンジと判断']);
+    // ★下部の注記は「下」へ(位置がそのまま欄になる)。
+    const lower = sections({
+      direction: 'buy', mode: 'range', at: 10,
+      rationale: 'レンジ\n※下部のレッグなし: AIが提案せず',
+      range: { upper: { side: 'sell', type: 'limit', entry: 66_300, stopLoss: 66_360 } },
+    });
+    expect(lower.below.main).toBe('※下部のレッグなし: AIが提案せず');
+  });
+
+  it('★レンジの注記は方向レッグの回では動かない(位置の語を脚の欄へ読み替えない)', () => {
+    const s = sections({
+      direction: 'buy', at: 10, refPrice: 66_190, limitEntry: 66_145, stopLossForLimit: 66_085,
+      rationale: '押し目\n※上部(買い逆指値)は不採用: 損切り幅が設定の上限より広い',
+    });
+    expect(s.above.main).toBe('逆指値なし');
+    expect(s.bias.lines).toContain('※上部(買い逆指値)は不採用: 損切り幅が設定の上限より広い');
+  });
+});
+
+describe('★extractLegDropNotes: 注記の切り出し(純関数)', () => {
+  const all = (): boolean => true;
+  const none = (): boolean => false;
+
+  it('★引き取り手が無ければ入力と同一のインスタンスを返す(1バイトも触らない)', () => {
+    const line = '本文（指値は不採用: 損切り幅が設定の上限より広い）';
+    const r = extractLegDropNotes(line, none);
+    expect(r.rest).toBe(line);
+    expect(r.claimed).toEqual([]);
+  });
+
+  it('★「（指値」と「（逆指値」を取り違えない(名前は開き括弧の直後で決まる)', () => {
+    expect(extractLegDropNotes('（逆指値なし: AIが提案せず）', all).claimed)
+      .toEqual([{ owner: 'stop', text: '（逆指値なし: AIが提案せず）' }]);
+    expect(extractLegDropNotes('（指値なし: AIが提案せず）', all).claimed)
+      .toEqual([{ owner: 'limit', text: '（指値なし: AIが提案せず）' }]);
+  });
+
+  it('連続した2本を別々に切り出す(区切り無しで連結される実際の形)', () => {
+    const r = extractLegDropNotes('本文 （指値なし: AIが提案せず）（逆指値は不採用: トレンドに逆行）', all);
+    expect(r.claimed.map(c => c.owner)).toEqual(['limit', 'stop']);
+    expect(r.rest).toBe('本文');
+  });
+
+  it('★閉じ括弧が無い壊れた形は触らない(注記として扱わない)', () => {
+    const line = '本文 （指値は不採用: 途中で切れている';
+    expect(extractLegDropNotes(line, all).rest).toBe(line);
+    expect(extractLegDropNotes(line, all).claimed).toEqual([]);
+  });
+
+  it('レンジの注記は行頭一致だけを見る(本文の途中の同じ語では動かない)', () => {
+    expect(extractLegDropNotes('※上部(売り指値)は不採用: トレンドに逆行', all).claimed[0]?.owner).toBe('above');
+    const mid = 'AI が ※上部 と書いた本文';
+    expect(extractLegDropNotes(mid, all).rest).toBe(mid);
   });
 });
