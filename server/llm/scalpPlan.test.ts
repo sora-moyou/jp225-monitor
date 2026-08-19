@@ -5,7 +5,7 @@ import {
   buildScalpQuestion, buildScalpSystemPrompt, resolveLcRange, clampRequestedLcFloor, scalpJsonInstruction,
   enforcePlanConstraints, enforcePlanConstraintsReport,
   parseAiRegime, parseAiConfidence, stopSideOk, entrySideOk,
-  parseAiStrategy, parseAiStrategyWhy, isKnownScalpStrategy, scalpStrategyContract, parseAiLevelPrice,
+  parseAiStrategy, parseAiStrategyWhy, isKnownScalpStrategy, scalpStrategyContract, scalpOrderTypeContract, parseAiLevelPrice,
   SCALP_STRATEGY_LABELS, SCALP_STRATEGY_OTHER,
   lcLegExceeds, lcLegBelowFloor, lcEffectiveCeiling, buildDelegationNote, buildStrategySpec, buildLegNote,
   pickNoneReason, enforceRangeEnabled,
@@ -2608,6 +2608,116 @@ describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
 const REVERSE_STOP_ALLOWED = ['「逆指値」', '決済逆指値', 'Ｘの逆指値買い注文', 'Ｙの逆指値売り注文'];
 const stripReverseStop = (s: string) =>
   REVERSE_STOP_ALLOWED.reduce((acc, w) => acc.split(w).join(''), s);
+
+// ─── ★v0.9.90: 相場の方向を尋ねる軸(Ａ)と、注文の売買方向(side)で **語を分ける** ────────────
+//
+// ■ 依頼(ユーザー逐語): 「Ａの相場方向を尋ねるプロンプトは、ブル、ベア。レンジを使用し、
+//   買い/売りの用語は用いないようにしてください。ただし、パネル表示では、買い目線/売り目線の日本語を使います。」
+//
+// ■ 何が問題だったか
+//   Ａ「最初に **買い**/**売り**/レンジのどれかを判断」= 相場観
+//   Ｂ「**買い**目線の場合：Ｘの逆指値**買い**注文」   = 注文の side
+//   同じ「買い」が2つの別の軸を指していた。v0.9.44 の「逆指値」(ブレイク新規 / 損切り)と同じ形の二義で、
+//   あの時は **損切り逆位置171件** を生んだ。
+//
+// ■ ★このテストが守るもの(2つ)
+//   ① Ａの行に「買い」「売り」の **日本語が1文字も出ない**(次に誰かが戻したら赤)。
+//   ② ブル/ベア/レンジ ↔ buy/sell/range の対応が **一意**(反転しない)。
+//      具体的には「ブル」「ベア」が現れる場所は必ず (a)`(direction:"…")` が直後 か (b)「…の場合」だけ、とする。
+//      = **離れた場所での対応づけを作らない**。方向の反転はこの仕組みで最も高くつく壊れ方なので、
+//        ラベルと enum 値を隣接させたことを機械で固定する。
+//   ★JSON の値(buy/sell/range)と画面の「買い目線/売り目線」は **変えない**(台帳互換・パネルは別担当)。
+describe('★Ａ(相場方向)と side で語を分ける: ブル/ベア/レンジ', () => {
+  /** 質問文から ①Ａ の行(=相場方向を尋ねる部分)だけを取り出す。 */
+  const lineA = (q: string): string => {
+    const l = q.split('\n').find(x => x.startsWith('①Ａ:'));
+    // ★fail-open を作らない: 見出しを変えたらここで落とす(見つからないまま素通りさせない)。
+    expect(l, '質問文に「①Ａ:」で始まる行が無い(見出しを変えたなら、このテストも直すこと)').toBeTruthy();
+    return l as string;
+  };
+  /** ★全腕(v1 / v1d / v1e / control)と ON/OFF・LC委任を網羅する(片方だけ直す事故を作らない)。 */
+  const QUESTIONS: [string, string][] = [
+    ['v1(range ON)', buildScalpQuestion()],
+    ['v1(range OFF)', buildScalpQuestion(45, 65, false)],
+    ['v1(LC上限=AI委任)', buildScalpQuestion(55, 159, true, 100, { delegated: true, capLabel: '安全上限' })],
+    ['v1d(omitMinDistance)', buildScalpQuestion(45, 65, true, 100, undefined, true)],
+    ['v1e(omitMaxDistance)', buildScalpQuestion(45, 65, true, 100, undefined, false, true)],
+  ];
+
+  it.each(QUESTIONS)('① %s: Ａの行に「買い」「売り」が1文字も無い', (_name, q) => {
+    const a = lineA(q);
+    expect(a).not.toContain('買い');
+    expect(a).not.toContain('売り');
+  });
+
+  it.each(QUESTIONS)('① %s: Ａの行は ブル / ベア を使う', (_name, q) => {
+    const a = lineA(q);
+    expect(a).toContain('ブル');
+    expect(a).toContain('ベア');
+  });
+
+  it('① レンジ ON のときだけ Ａの行に「レンジ」が出る(既存の条件分岐を壊さない)', () => {
+    expect(lineA(buildScalpQuestion(45, 65, true))).toContain('レンジ');
+    expect(lineA(buildScalpQuestion(45, 65, false))).not.toContain('レンジ');
+  });
+
+  // ─── ② 対応の一意性(方向が反転しない) ──────────────────────────
+  /** 「ブル」「ベア」の出現を全部拾い、直後が enum か「の場合」かを検査する。
+   *  ★`ダブル`(アラート名)の部分一致を数えないよう、直前が「ダ」の出現は除く。 */
+  const occurrences = (text: string, label: string): string[] => {
+    const out: string[] = [];
+    for (let i = text.indexOf(label); i >= 0; i = text.indexOf(label, i + 1)) {
+      if (i > 0 && text[i - 1] === 'ダ') continue;   // ダブル(検知名)は対象外
+      out.push(text.slice(i + label.length, i + label.length + 20));
+    }
+    return out;
+  };
+  const BINDINGS: [string, string][] = [['ブル', 'buy'], ['ベア', 'sell']];
+  const TEXTS: [string, string][] = [
+    ['question(range ON)', buildScalpQuestion()],
+    ['question(range OFF)', buildScalpQuestion(45, 65, false)],
+    ['対応表(range ON)', scalpOrderTypeContract(true)],
+    ['対応表(range OFF)', scalpOrderTypeContract(false)],
+  ];
+  for (const [tname, text] of TEXTS) {
+    for (const [label, want] of BINDINGS) {
+      it(`② ${tname}: 「${label}」は必ず (direction:"${want}") か 「の場合」の直前にしか現れない`, () => {
+        const occ = occurrences(text, label);
+        expect(occ.length, `「${label}」が1度も出ていない`).toBeGreaterThan(0);
+        for (const after of occ) {
+          const ok = after.startsWith(`(direction:"${want}")`) || after.startsWith('の場合');
+          expect(ok, `「${label}」の直後が想定外: 「${label}${after}」`).toBe(true);
+        }
+      });
+    }
+  }
+
+  it('② 対応表は ブル=buy / ベア=sell を明示し、逆の組は1つも無い', () => {
+    for (const c of [scalpOrderTypeContract(true), scalpOrderTypeContract(false)]) {
+      expect(c).toContain('ブル(direction:"buy")');
+      expect(c).toContain('ベア(direction:"sell")');
+      // ★反転(最悪の壊れ方)を名指しで禁じる。
+      expect(c).not.toContain('ブル(direction:"sell")');
+      expect(c).not.toContain('ベア(direction:"buy")');
+    }
+  });
+
+  it('② レンジは range にだけ結ばれ、ON のときだけ対応表に出る', () => {
+    expect(scalpOrderTypeContract(true)).toContain('レンジ(direction:"range")');
+    expect(scalpOrderTypeContract(false)).not.toContain('レンジ');
+  });
+
+  it('★JSON の値(buy/sell/range)と画面の語は変えていない(台帳互換・パネルは別担当)', () => {
+    // 契約の enum は英語の識別子のまま(ここが変わると parse と実データの互換が壊れる)。
+    expect(scalpJsonInstruction(38250)).toContain('"buy" | "sell" | "none" | "range"');
+    expect(scalpJsonInstruction(38250, 45, 65, false)).toContain('"buy" | "sell" | "none"');
+    // ★プロンプトに「買い目線/売り目線」(画面の語)を持ち込んでいない=軸の語が再び混ざらない。
+    expect(buildScalpQuestion()).not.toContain('買い目線');
+    expect(buildScalpQuestion()).not.toContain('売り目線');
+    expect(scalpOrderTypeContract(true)).not.toContain('買い目線');
+    expect(scalpOrderTypeContract(true)).not.toContain('売り目線');
+  });
+});
 
 describe('★許容の狭さ(fail-open を作らない): 損切りの説明に紛れた「逆指値買い/売り注文」は赤のまま', () => {
   // ★次に誰かが REVERSE_STOP_ALLOWED を短く(= side 付き複合語だけに)緩めたら、この3件が緑に化けて赤くなる。

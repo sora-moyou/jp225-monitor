@@ -141,6 +141,34 @@ let prevExitAt = 0;
 // 決済一時表示の自動クリアタイマ(保有枠)。
 const clearTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
+/** シグナル枠/保有枠の表示モデル。
+ *
+ *  ■ ★★v0.9.90 時点の「どれが実際に画面に出るか」(★誤解しやすいので先に書く)
+ *    ★**PanelView は記録ではない。画面用の中間表現である。**
+ *      記録は SSE(server SignalTradeState)と台帳(signal_plans / signal_trades)で、
+ *      このファイルはそれらに一切書かない。以下は **画面に出るか出ないか** の話。
+ *
+ *    ┌ sections が在る回(armed / レンジ両面 = シグナルが出ている回) ─────────────
+ *    │  paintPanel は **sections だけ** を描く。したがって:
+ *    │    cls        … 使う(枠の色)
+ *    │    bias       … 使う(sections.bias.main の素材)
+ *    │    rationale  … 使う(sections.bias.lines の素材)
+ *    │    main       … ★描かれない(欄ごとの1脚に組み替えたものを sections が持つ)
+ *    │    basis      … ★描かれない(v0.9.90 のユーザー指示で節目の行を画面から外した)
+ *    │    stance     … ★描かれない(sections が脚ごとに legStanceText を呼び直している)
+ *    │    whys       … ★描かれない(sections は legWhyLine で「空を落とした」行を作る)
+ *    └ sections が無い回(待機 flat / 保有枠) ───────────────────────────
+ *       従来どおり bias / main / rationale を縦に描く(basis/stance/whys はそもそも生えない)。
+ *
+ *  ■ ★では main/basis/stance/whys を **なぜ残すのか**(消さない理由)
+ *    ① **否定対照**: 「表示の作り直しで壊していない」ことを、公開済みの旧版と突き合わせて
+ *       固定できる唯一の場所。実際 v0.9.90 では 8ケースで旧版と byte 一致を実測している。
+ *       これを消すと「画面を変えたら記録側の計算も変わった」を検知する手段が無くなる。
+ *    ② **計算を1箇所に保つ**: basis は台帳の limit_level / stop_level と同じ幾何を計算しており、
+ *       whys は「空をどう埋めるか」の規約を持つ。呼び出しを消すと関数ごと腐る。
+ *    ③ **将来また画面へ戻す/別の画面(履歴モーダル等)で使う** ときの土台。
+ *    ★★読み手への注意: **これらのフィールドを読んでいるのはテストだけ** である。
+ *      期待値を直すときは「画面がそう出ている」ではなく「旧版と同じ値か」で判断すること。 */
 export interface PanelView {
   cls: 'flat' | 'armed' | 'filled' | 'exit';
   bias?: string;     // 目線行 (買い目線/売り目線/レンジ)。シグナルがある時だけ。メイン行と同サイズ・同色・左詰め。
@@ -158,11 +186,10 @@ export interface PanelView {
   //   理由のフィールドが **1つも来ていない** 回は undefined = 行ごと出さない
   //   (= 旧版の記録の形を食わせたときに従来の表示と byte 一致になる)。
   whys?: string[];
-  // ★v0.9.89(依頼の本体): シグナル枠を **3つの欄**(目線 / 上 / 下)に組み替えたもの。
-  //   ★上の bias/main/rationale/basis/stance/whys を **1バイトも変えず**、同じ素材を
-  //     欄ごとに配り直しただけ(= 純関数の中身を変えていない。詳細は buildSignalSections)。
+  // ★v0.9.89: シグナル枠を **3つの欄**(目線 / 上 / 下)に組み替えたもの。★画面に出るのはこれ。
   //   シグナルが在る回(armed / レンジ両面)だけ生える。待機(flat)・保有枠は従来どおり
-  //   1枠のまま(=欄に分けるべき脚が存在しない)。paintPanel はこれが在れば **こちらだけ** を描く。
+  //   1枠のまま(=欄に分けるべき脚が存在しない)。paintPanel はこれが在れば **こちらだけ** を描く
+  //   (=上の main/basis/stance/whys はその回は描かれない。冒頭の表を参照)。
   sections?: SignalSections;
 }
 
@@ -382,7 +409,16 @@ const WRONG_SIDE_MARK = '⚠';
  *    注記が無いと「なぜ付かないのか」が画面から読めず、ユーザーは表示の不具合と区別できない
  *    (=このプロジェクトが禁じている無言の失敗)。
  *  ■ 位置: **脚の行の末尾に1回だけ**。脚ごとに付けると同じ語が2回出る(理由はシグナル全体のもので、
- *    脚ごとに違う値にはならない)。 */
+ *    脚ごとに違う値にはならない)。
+ *
+ *  ■ ★v0.9.90: **画面に出ているのはこの書式ではない**。
+ *    3欄のパネル(buildSignalSections)は括弧を外した **語だけ**(`横ばい` 等)を目線の欄に出す。
+ *    ここの括弧付きが残っているのは、buildEntryStance が「`指値 押し目買い ／ 逆指値 ブレイク新規` と
+ *    **同じ1行の末尾に** 足す」文脈だからで、そこで裸の語を置くと直前の脚のラベルの一部に見える。
+ *    ★その buildEntryStance の出力(PanelView.stance)は **armed の回には描かれない**
+ *    (PanelView の注記を参照)。★語そのものは両方とも core/entryLabel.ts の
+ *    entryStanceUnknownReason ひとつから来るので、**語を直せば両方に効く**。
+ *    書式だけがこの2箇所で違う、と分かって読むこと。 */
 const stanceNote = (reason: string): string => `（順張り/逆張りなし: ${reason}）`;
 const WRONG_SIDE_TEXT = 'エントリーが現在値の逆側';
 
@@ -521,7 +557,19 @@ const WHY_LABEL = { bias: '目線', limit: '指値', stop: '逆指値', lc: 'LC'
  *    節目の行 buildLevelBasis と同じ規約)。台帳側には落ちた脚の理由も残る。
  *
  *  ■ レンジ両面(mode='range')は対象外。理由のフィールドは指値/ブレイク新規の2脚に対応しており、
- *    上下2レッグへの対応づけが無い(節目の行と同じ線引き)。 */
+ *    上下2レッグへの対応づけが無い(節目の行と同じ線引き)。
+ *
+ *  ■ ★★対になる関数がある: `legWhyLine`(下の方)。**片方だけ直すと画面と PanelView がずれる。**
+ *    ・この関数 …… PanelView.whys を作る。空の枠を `（理由の記載なし）` で埋める(①②③の畳み規約つき)。
+ *      ★v0.9.90 以降 **画面には出ない**(PanelView の注記を参照)。残しているのは、
+ *      旧版との差分ゼロを固定する否定対照(テスト)としての価値と、埋め方の規約の記録のため。
+ *    ・legWhyLine …… 3欄のパネルに **実際に出る** 行を作る。**空の項目は落とす**(ユーザー指示)。
+ *    ・共有しているのは語彙と整形だけ(WHY_LABEL / BASIS_SEP / cleanAiText)。**違うのは
+ *      「空をどう扱うか」の1点だけ** で、そこは意図的に違う(片方は記録寄り・片方は表示)。
+ *    ・★片方から他方を導いていない理由: この関数は **プラン全体** を見て畳む(①1つも来ていない/
+ *      ②全部空/③一部空)のに対し、legWhyLine は **枠ごと** に落とす。導出しようとすると
+ *      出来上がった文字列から `（理由の記載なし）` を剥がすことになり、AI の理由に同じ文字列が
+ *      入っていた回に誤爆する。**相互参照のコメントで守るほうが安全** と判断した。 */
 export function buildWhyLines(sig: {
   limitEntry?: number; stopEntry?: number;
   directionWhy?: string; entryWhyForLimit?: string; entryWhyForStop?: string;
@@ -569,32 +617,6 @@ const SECTION_HEAD = { bias: '目線', above: '上', below: '下' } as const;
  *  ★欄ごとに付く=「どちらの側が生きているか」が印の有無で読める。 */
 const SIGNAL_MARK = '🎯';
 
-/** ★v0.9.89: 上/下 の振り分けが **何を基準にした上下なのか** を1回だけ出す行。
- *
- *      上/下 ← ARM時 68,700
- *
- *  ■ ★なぜ要るか(この実装で見つけた食い違い)
- *    依頼の言葉は「**現在価格**より上/下」だが、コードの規約(core/entryLabel.ts の above)が
- *    基準にしているのは **ARM 時に monitor が見ていた価格**(refPrice)。ARM 後に価格が動けば
- *    「上」の欄の脚が **いまの値段より下** にある状態が普通に起こる。
- *    しかも位置の検査(⚠ エントリーが現在値の逆側)も同じ refPrice 基準なので、この食い違いは
- *    ⚠ では捕まらない。**どの値段を基準にした上下なのかを画面に書かないと読めない。**
- *
- *  ■ 語彙の出所(★新しい語を1つも作っていない)
- *    「ARM時 68,700」… 位置の検査の印 `⚠ エントリーが現在値の逆側（ARM時 68,700）` と同じ語・同じ数値の書式。
- *    「上」「下」   … 欄の見出しそのもの(SECTION_HEAD)。
- *    「←」        … 節目の行 `指値 ← 68,700 の 25円内側` と同じ記号。どちらも
- *                    **「この表示は何から出ているか」** を指す矢印で、意味も揃っている。
- *
- *  ■ 位置: 目線の欄の **最後の行**(= 「上」の見出しの直前)。理由ではなく、下2欄の読み方の注記なので
- *    理由の後ろに置く。★**目線の欄に1回だけ**(3つの欄それぞれには書かない=同じ数字を3回出さない)。
- *
- *  ■ refPrice が無い/非有限の回は **行ごと出さない**(旧い記録では従来と byte 一致)。
- *  ■ レンジ両面では出さない: レンジの上下は range.upper/lower が **計画の側で** 決めており、
- *    refPrice と比べて決めていない。基準を書くと嘘になる。 */
-const refPriceNote = (ref: number): string =>
-  `${SECTION_HEAD.above}/${SECTION_HEAD.below} ← ARM時 ${fmtPrice(ref)}`;
-
 /** 脚が1本も入らない欄の縮退表示(★無言で空にしない)。
  *  書式の出所は server/llm/scalpPlan.ts の legDropPhrase「（指値なし: AIが提案せず）」の `${name}なし`。
  *  ★理由(「AIが提案せず」等)を **ここには書かない**: 落とした理由はコード側の注記
@@ -614,12 +636,43 @@ function rangeLegText(leg: SignalRangeLeg, pos: '上' | '下'): string {
   return `${dirJa(leg.side)}${fmtPrice(leg.entry)}${leg.type === 'limit' ? '指値' : '逆指値'}(${pos})${leg.stopLoss != null ? ` (LC ${fmtPrice(leg.stopLoss)})` : ''}`;
 }
 
+/** 脚1本ぶんの理由の行を組み立てる(純関数)。**中身のある項目だけ** を並べる。
+ *
+ *      逆指値: 68,775 を抜けたら追随 ／ LC: 節目の内側に戻る幅   … 両方ある
+ *      逆指値: 68,775 を抜けたら追随                            … LC の理由が空(★片方だけ落とす)
+ *      LC: 節目の内側に戻る幅                                    … 脚の理由が空
+ *      (行そのものが出ない)                                      … 両方空
+ *
+ *  ■ ★v0.9.90(ユーザー指示): 「空なら項目ごと出さない」。従来は空の枠を
+ *    `（理由の記載なし）` で埋めていたが、それは **画面に診断をさせていた** もの。
+ *    欠測は台帳(signal_plans の direction_why / entry_why_for_* / lc_why_for_*)で数える。
+ *  ■ ★★対になる関数がある: `buildWhyLines`(上の方)。**片方だけ直すと画面と PanelView がずれる。**
+ *    あちらは空の枠を `（理由の記載なし）` で埋めたまま PanelView.whys を作り続ける
+ *    (=1バイトも変えていない)。**違うのは「空をどう扱うか」の1点だけ**。
+ *    導出せず相互参照にした理由は buildWhyLines 側のコメントに書いた。
+ *  ■ ★SSE と台帳(signal_plans)には手を触れていない。PanelView は **記録ではなく画面用の中間表現** で、
+ *    そちらの既存フィールドも値は変えていないが、それは「記録が不変」という意味ではない。
+ *  ■ 語彙は既存のまま(WHY_LABEL の脚名と `LC`、区切りは BASIS_SEP)。新しい語は作っていない。
+ *  ■ AI 生成文は例外なく cleanAiText を通す(LC検算を落とし、検算しか無い枠は空として扱う)。 */
+function legWhyLine(name: string, entryWhy?: string, lcWhy?: string): string {
+  const parts: string[] = [];
+  const e = cleanAiText(entryWhy);
+  const l = cleanAiText(lcWhy);
+  if (e) parts.push(`${name}: ${e}`);
+  if (l) parts.push(`${WHY_LABEL.lc}: ${l}`);
+  return parts.join(BASIS_SEP);
+}
+
 /** 脚1本ぶんの欄を組み立てる(純関数)。
  *  ・見出し(上/下)は **entryLabel().above が決める**(規約の写しを作らない)。
- *  ・中身は既存の関数そのまま: 理由(buildWhyLines の該当行)→ ラベル(legStanceText)→ 節目(buildLevelBasis)。
- *    ★順序は従来の画面(理由 → 脚のラベル → 節目)と同じ。
- *  ・脚が無ければ `empty` を立てて「指値なし」/「逆指値なし」を出す(行を消さない)。 */
-function buildLegSection(sig: SignalCurrent, kind: EntryKind, whys: string[]): SignalSection {
+ *  ・中身: 理由(中身のあるものだけ)→ 脚のラベル(legStanceText。⚠ の警告も含む)。
+ *  ・★v0.9.90: **節目の行(buildLevelBasis)は画面に出さない**(ユーザー指示)。
+ *    `指値 ← 66,145 ちょうど` のような行は、どの節目から出した価格かという **開発側の検算** で、
+ *    トレーダーの判断には使われていない。★**関数(buildLevelBasis)は残す**: buildSignalView が
+ *    PanelView.basis を従来どおり組み立てており(値は不変。ただし armed では描かれない=
+ *    PanelView の注記を参照)、台帳側の limit_level / stop_level と合わせて後から検証できる。
+ *  ・脚が無ければ `empty` を立てて「指値なし」/「逆指値なし」を出す(★行を消さない=理由は下記)。 */
+function buildLegSection(sig: SignalCurrent, kind: EntryKind): SignalSection {
   const isLimit = kind === 'limit';
   const name = isLimit ? WHY_LABEL.limit : WHY_LABEL.stop;
   const head = entryLabel(sig.direction, kind).above ? SECTION_HEAD.above : SECTION_HEAD.below;
@@ -628,17 +681,12 @@ function buildLegSection(sig: SignalCurrent, kind: EntryKind, whys: string[]): S
   //   ここだけ Number.isFinite にすると、壊れた値のとき片方の判定にだけ引っかかって欄が消える。
   if (entry == null) return { head, main: legAbsentText(name), lines: [], empty: true };
   const lines: string[] = [];
-  // ★理由の行は buildWhyLines(1回だけ呼ぶ)の **配列要素** を脚名で振り分ける。
-  //   要素単位で配るので、AI の理由が改行を含んでいても2行目以降が迷子にならない
-  //   (行に割るのは描画側 = 従来と同じ splitRationaleLines)。
-  const why = whys.find(l => l.startsWith(name + ': '));
+  const why = isLimit
+    ? legWhyLine(name, sig.entryWhyForLimit, sig.lcWhyForLimit)
+    : legWhyLine(name, sig.entryWhyForStop, sig.lcWhyForStop);
   if (why) lines.push(why);
   const stance = legStanceText(sig.direction, kind, name, entry, sig.refPrice, sig.trendDir);
   if (stance) lines.push(stance);
-  const basis = buildLevelBasis(sig.direction, isLimit
-    ? { limitEntry: sig.limitEntry, limitLevel: sig.limitLevel }
-    : { stopEntry: sig.stopEntry, stopLevel: sig.stopLevel });
-  if (basis) lines.push(basis);
   const lc = isLimit ? sig.stopLossForLimit : sig.stopLossForStop;
   return { head, main: `${SIGNAL_MARK} ${legMainText(sig.direction, name, entry, lc)}`, lines };
 }
@@ -659,17 +707,32 @@ function buildLegSection(sig: SignalCurrent, kind: EntryKind, whys: string[]): S
  *    ・rationale の残り(LC検算を落とした本文)と strategyWhy … プラン全体の話。
  *    ・コード側の注記(`※上部(売り指値)は不採用: …`) … どの脚の話かは日本語の中にしか無く、
  *      機械で欄に振り分けると **読み違えたときに嘘の欄に置く**。振り分けない。
- *    ・「（理由の記載なし）」1行に畳まれた回(buildWhyLines の②) … 脚名が付かないので目線の欄。
+ *      ★v0.9.90 でも **残す**: 「なぜ片脚しか無いのか」は開発用の記述ではなく、
+ *        いま出ている注文の説明(片脚のブラケットは別の取引)。判断に使う情報なので消さない。
  *    ・「（順張り/逆張りなし: 横ばい）」 … トレンドはシグナル全体の観測なので目線の欄に1回だけ。
+ *      ★v0.9.90 でも **残す**: 「横ばい/方向不一致/判定保留」は **相場の事実** で、
+ *        パネルの他のどこにも出ていない(「なし」という形をしているが中身は観測結果)。
+ *
+ *  ■ ★v0.9.90(ユーザー指示)で **画面から外した** もの
+ *    (★SSE と台帳には手を触れていない。PanelView の既存フィールドも値は変えていないが、
+ *      PanelView は記録ではなく画面用の中間表現なので「記録が不変」とは書かない)
+ *    ① `上/下 ← ARM時 68,700`(基準価格の行) … 丸ごと廃止。
+ *    ② `（理由の記載なし）` の類 … 目線も脚も **空なら項目ごと出さない**(片方だけ空なら片方だけ落とす)。
+ *    ③ `指値 ← 66,145 ちょうど`(節目の行) … 画面に出さない(buildLevelBasis は残す)。
+ *    ★①②③はどれも「AI/コードが何を書かなかったか」を画面に語らせるもの=診断の役目。
+ *      その役目は **台帳** が負う(signal_plans の理由5列と limit_level, stop_level, ref_price)。
+ *      画面はトレーダーが判断に使うものだけを出す。
  *
  *  ■ ★レンジ両面(mode='range')は上下が **元から** 決まっている(range.upper/lower)。
- *    節目/ラベル/理由の行はレンジでは対象外(既存の線引き)なので、脚の欄はメイン行だけになる。
+ *    ラベル/理由の行はレンジでは対象外(既存の線引き)なので、脚の欄はメイン行だけになる。
  *
- *  @param parts buildSignalView が既に組み立てた素材(bias 行 / rationale の行 / 理由の行)。
- *    ★ここで作り直さない=同じ文字列が2通りの経路で作られることを避ける。 */
+ *  @param parts buildSignalView が既に組み立てた素材(bias 行 / rationale の行)。
+ *    ★ここで作り直さない=同じ文字列が2通りの経路で作られることを避ける。
+ *    ★理由の行(whys)は **受け取らない**: 空の枠を落とすには枠ごとの生の値が要るので、
+ *      sig から legWhyLine で組み立てる。buildWhyLines は PanelView.whys のために従来どおり走る。 */
 export function buildSignalSections(
   sig: SignalCurrent,
-  parts: { bias: string; rationale: string; whys: string[] },
+  parts: { bias: string; rationale: string },
 ): SignalSections {
   const biasLines: string[] = [];
   // ★重複の間引き(v0.9.89)。規約は **既存のものをそのまま使う**:
@@ -682,17 +745,19 @@ export function buildSignalSections(
   //     完全に同じ文字列なので、落とした行は情報を1ビットも持っていない。
   //   ■ 行に割ってから比べる(splitRationaleLines)のも buildRationaleView と同じ流儀。
   //     描画側 paintPanel が同じ関数で割るので、**画面に出る行は間引き以外1バイトも変わらない**。
+  //   ★v0.9.90: あわせて `（理由の記載なし）` の行は **そもそも積まない**(下の NO_REASON 判定)。
+  //     buildRationaleView は「理由が書かれていない」ことを1行で告げる規約のままなので
+  //     (=PanelView.rationale は不変)、画面に出す側でだけ落とす。
   const pushUnique = (text: string): void => {
     for (const line of splitRationaleLines(text)) {
+      if (line === NO_REASON) continue;           // ★空を告げる行は画面に出さない(台帳で数える)
       if (!biasLines.includes(line)) biasLines.push(line);
     }
   };
   if (parts.rationale) pushUnique(parts.rationale);
-  // 脚名の付いていない理由の行(目線の理由 / 全枠空で畳まれた1行)は目線の欄へ。
-  const legPrefixes = [WHY_LABEL.limit + ': ', WHY_LABEL.stop + ': '];
-  for (const line of parts.whys) {
-    if (!legPrefixes.some(p => line.startsWith(p))) pushUnique(line);
-  }
+  // 目線の理由。★中身があるときだけ出す(空なら項目ごと出さない)。
+  const directionWhy = cleanAiText(sig.directionWhy);
+  if (directionWhy) pushUnique(`${WHY_LABEL.bias}: ${directionWhy}`);
 
   if (sig.mode === 'range' && sig.range) {
     const rangeSec = (leg: SignalRangeLeg | undefined, pos: '上' | '下'): SignalSection =>
@@ -707,15 +772,27 @@ export function buildSignalSections(
     };
   }
 
-  // ★順張り/逆張りが出なかった理由は **シグナル全体に1つ**(既存 buildEntryStance と同じ規約)。
+  // ★順張り/逆張りが決まらなかった回に添える語。**シグナル全体に1つ**(既存 buildEntryStance と同じ規約)。
   //   脚が1本も無い回は buildEntryStance も出さないので、ここも出さない。
+  //
+  // ■ ★v0.9.90(裁定): 画面には **語だけ** を出す。`横ばい` / `方向不一致` /
+  //   `判定保留(寄り付きギャップ)`。括弧と「順張り/逆張りなし:」は付けない。
+  //   ■ なぜ: この注記は **約54%の回で出る**(up/down が出るのは ARM 時刻・A系で 45.8%)=
+  //     例外ではなく標準的な見え方。その形が「（〜なし: …）」だと、ユーザーが消せと言った
+  //     `（理由の記載なし）` と **同型の「欠落の告知」** になる。
+  //   ■ ただし消しはしない: 「横ばい」「方向不一致」「判定保留」は **相場の観測結果** で、
+  //     パネルの他のどこにも出ていない。欠落の告知をやめて **事実の記述に変える**、が裁定。
+  //   ■ 語そのものは core/entryLabel.ts の entryStanceUnknownReason が唯一の出所
+  //     (formatMomentumLine の語をそのまま)。**新しい語は作っていない**。
+  //   ■ trendDir が欠落している回は entryStanceUnknownReason が undefined を返す=何も出さない
+  //     (旧い記録では従来と byte 一致)。位置も変えていない(目線の欄の末尾に1回だけ)。
+  //   ■ ★対になる書式: 括弧付きの `（順張り/逆張りなし: …）`(stanceNote)は
+  //     buildEntryStance =「1行に脚と一緒に並べる」文脈でだけ残る(下の PanelView.stance の注記を参照)。
   const note = entryStanceUnknownReason(sig.trendDir);
-  if (note && (sig.limitEntry != null || sig.stopEntry != null)) biasLines.push(stanceNote(note));
-  // ★上/下 が何を基準にした上下なのかを目線の欄に1回だけ(refPrice が無ければ行ごと出さない)。
-  if (typeof sig.refPrice === 'number' && Number.isFinite(sig.refPrice)) biasLines.push(refPriceNote(sig.refPrice));
+  if (note && (sig.limitEntry != null || sig.stopEntry != null)) biasLines.push(note);
 
-  const limitSec = buildLegSection(sig, 'limit', parts.whys);
-  const stopSec = buildLegSection(sig, 'stop', parts.whys);
+  const limitSec = buildLegSection(sig, 'limit');
+  const stopSec = buildLegSection(sig, 'stop');
   // ★上/下の振り分けは core/entryLabel.ts の above が唯一の権威(買い=逆指値が上 / 売り=指値が上)。
   const limitIsAbove = entryLabel(sig.direction, 'limit').above;
   return {
@@ -784,7 +861,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
     };
     // ★v0.9.89: レンジ両面も3つの欄に配る(上下は range.upper/lower が元から決めている)。
     rangeView.sections = buildSignalSections(sig, {
-      bias: rangeView.bias ?? '', rationale: rangeView.rationale, whys: [],
+      bias: rangeView.bias ?? '', rationale: rangeView.rationale,
     });
     return rangeView;
   }
@@ -825,7 +902,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   // ★理由の行も同じ規約(1行も無ければフィールドごと付けない=旧版の記録では従来と byte 一致)。
   if (whys.length) view.whys = whys;
   // ★v0.9.89: 上の素材を3つの欄へ配り直す(素材そのものは1バイトも変えない)。
-  view.sections = buildSignalSections(sig, { bias: view.bias ?? '', rationale: view.rationale, whys });
+  view.sections = buildSignalSections(sig, { bias: view.bias ?? '', rationale: view.rationale });
   return view;
 }
 

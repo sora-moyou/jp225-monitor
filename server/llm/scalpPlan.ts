@@ -841,15 +841,28 @@ export function buildScalpQuestion(
     //   ★Ｂは「上の価格Ｘ・下の価格Ｙ」という **位置** で脚を指し、目線ごとに注文タイプが決まる形。
     //     フィールド(limitEntry/stopEntry/range.upper/range.lower)への割り当ては scalpJsonInstruction が持つ
     //     (同じ対応表を2箇所に散文で書かない=ここは注文の言葉・契約はフィールドの言葉)。
-    `①Ａ: 最初に${rangeEnabled ? '買い/売り/レンジのどれか' : '買い/売りのどちらか'}を判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい)\n` +
+    // ★v0.9.90(ユーザー指示): Ａ(相場方向を尋ねる軸)の日本語を **ブル / ベア / レンジ** にする。
+    //   ■ なぜ(依頼の狙い): それまでＡとＢが **同じ語「買い」「売り」** を共有していた
+    //     (Ａ「買い/売りのどちらかを判断」= 相場観 ／ Ｂ「買い目線の場合: …指値買い注文」= 注文の side)。
+    //     1つの語が「相場の方向」と「注文の売買方向」の2つを指す状態は、v0.9.44 の「逆指値」の二義
+    //     (ブレイク新規 / 損切り)と同じ形で、あの時は損切り逆位置171件を生んだ。軸ごとに語を分ける。
+    //   ■ 変えないもの(重要): **注文タイプの側の「買い注文/売り注文」は売買の side なので そのまま**。
+    //     JSON の値(direction:"buy"|"sell"|"range")も **英語の識別子** なので不変
+    //     (変えると台帳・parse・実データとの互換が壊れる)。画面(パネル)の「買い目線/売り目線」も不変。
+    //   ■ ★方向が反転しないための書き方: ブル/ベア/レンジは **必ず direction の値と同じ括弧の中で** 出す。
+    //     ここ(Ａ)と対応表(scalpOrderTypeContract)の両方で `ブル(direction:"buy")` の形にしてあり、
+    //     日本語ラベルと enum 値が **隣接して1対1** で結ばれる(対応表では さらに同じ行に注文の side も並ぶ
+    //     =ブル→buy→買い注文 が1行で自己補強される)。★離れた場所での対応づけは作らない。
+    `①Ａ: 最初に${rangeEnabled ? 'ブル(direction:"buy")/ベア(direction:"sell")/レンジ(direction:"range")のどれか' : 'ブル(direction:"buy")/ベア(direction:"sell")のどちらか'}を判断(良い場面が無ければ無理に作らず direction:"none" で見送ってよい)\n` +
     '②Ｂ: 現在価格より上の価格Ｘと下の価格Ｙを一つづつを選び、それぞれに対して、Ａに応じたエントリー注文を提案してください。先に約定した方で取引します' +
     // ★v1d: この括弧まるごとが「最低距離」の記述(本則+range への非適用の但し書き)。
     //   但し書きは本則が消えれば宛先を失う(存在しない規則の例外の説明になる)ので、一緒に落とす。
     (omitMinDistance
       ? '\n'
       : '(指値とブレイク新規は、現在値からそれぞれ少なくとも50円以上離すこと。この最低距離は buy/sell のみで、range の各レッグには適用しない=レンジは上下の反応帯の位置で決める)\n') +
-    '-買い目線の場合：Ｘの逆指値買い注文、Ｙの指値買い注文-\n' +
-    '-売り目線の場合：Ｘの指値売り注文、Ｙの逆指値売り注文\n' +
+    // ★v0.9.90: 条件ラベル(目線)だけを Ａ と同じ語に揃える。**注文名(逆指値買い注文/指値売り注文)は side なので不変**。
+    '-ブルの場合：Ｘの逆指値買い注文、Ｙの指値買い注文-\n' +
+    '-ベアの場合：Ｘの指値売り注文、Ｙの逆指値売り注文\n' +
     // ★レンジの2行(ア/イ)は **レンジ設定が ON のときだけ** 出す。OFF では買い/売りの2ケースだけになり、
     //   この段落にレンジの語は1文字も出ない(=禁止の説明すら足さない。死んだ条項を作らないため)。
     (rangeEnabled
@@ -1374,8 +1387,10 @@ export function scalpStrategyContract(): string {
  *    ★レンジ両面は過去に実験して既定OFFにした経緯があるため、既定は OFF のままにしてある。 */
 export function scalpOrderTypeContract(rangeEnabled: boolean): string {
   return '\n★【Ａに応じた注文タイプ(Ｂの対応表 → フィールド)】質問文Ｂの「上の価格Ｘ」「下の価格Ｙ」を、この対応で JSON のフィールドへ入れる。\n'
-    + '  買い目線(direction:"buy")  … Ｘの逆指値買い注文=stopEntry(+lcWidthForStop) / Ｙの指値買い注文=limitEntry(+lcWidthForLimit)\n'
-    + '  売り目線(direction:"sell") … Ｘの指値売り注文=limitEntry(+lcWidthForLimit) / Ｙの逆指値売り注文=stopEntry(+lcWidthForStop)\n'
+    // ★v0.9.90: 条件ラベルを Ａ と同じ語(ブル/ベア/レンジ)にする。★日本語ラベルと direction の値を
+    //   **同じ括弧で隣接** させ、さらに同じ行に注文の side を並べる=ブル→buy→買い注文 が1行で閉じる。
+    + '  ブル(direction:"buy")  … Ｘの逆指値買い注文=stopEntry(+lcWidthForStop) / Ｙの指値買い注文=limitEntry(+lcWidthForLimit)\n'
+    + '  ベア(direction:"sell") … Ｘの指値売り注文=limitEntry(+lcWidthForLimit) / Ｙの逆指値売り注文=stopEntry(+lcWidthForStop)\n'
     + (rangeEnabled
       ? '  レンジ(direction:"range")  … アまたはイのどちらか一方を丸ごと選ぶ(組を混ぜない)。\n'
         + '   ア）レンジ抜け … Ｘの逆指値買い注文=range.upper{side:"buy",type:"stop"} / Ｙの逆指値売り注文=range.lower{side:"sell",type:"stop"}(=上の breakout の組)\n'
