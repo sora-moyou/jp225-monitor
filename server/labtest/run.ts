@@ -25,6 +25,7 @@ import { SCALP_STRATEGY_LABELS, scalpStrategyContract } from '../llm/scalpPlan.j
 import { buildLabContext, type ContextDiagnostics } from './context.js';
 import { positionJsonContract, positionJsonContractSplit, productionLikeContract } from './jsonContract.js';
 import { buildQuestionV8 } from './questionV8.js';
+import { pass9UserPrompt } from './prodPrompt.js';
 import { getSandbox, refreshSandbox } from './sandbox.js';
 
 /** ★ユーザーが書いた質問文そのまま(1 文字も足さない・減らさない)。 */
@@ -89,6 +90,10 @@ export function buildPromptB(refPrice = 0): string {
   const mode = process.env.LABTEST_B_MODE ?? '';
   // pass8: ユーザー原文の v8(A の判断ごとに注文の型を指定・ストップ幅も提案させる)。散文で返させる。
   if (mode === 'v8') return buildQuestionV8();
+  // pass9: 本番の user プロンプトそのもの。a=本番のまま / b,c は lcWhy の2行だけ差し替え。
+  if (mode === 'p9a') return pass9UserPrompt(refPrice, 'a');
+  if (mode === 'p9b') return pass9UserPrompt(refPrice, 'b');
+  if (mode === 'p9c') return pass9UserPrompt(refPrice, 'c');
   // pass7: 本番同型の契約。prod1line=「(1行・日本語)」入り / prodfree=「1行・」を落とした版。
   if (mode === 'prod1line' || mode === 'prodfree') {
     return `${QUESTION_B}
@@ -152,7 +157,7 @@ export interface RunResult {
   systemPromptUsed: '本番の規則文は付けない(system にはデータ全文のみ)';
 }
 
-const MAX_TOKENS = 2000;
+const MAX_TOKENS = Number(process.env.LABTEST_MAX_TOKENS ?? 2000);
 /** ★本番(buildScalpPlan)と同じ温度。プロンプトに足す制約ではなく、サンプリングの条件を揃えるだけ。 */
 const TEMPERATURE = 0.4;
 

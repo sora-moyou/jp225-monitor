@@ -67,7 +67,18 @@ async function main(): Promise<void> {
   }
 
   const cache = await import('../cache.js');
-  const { INSTRUMENTS } = await import('../config.js');
+  const cfg = await import('../config.js');
+  const { INSTRUMENTS } = cfg;
+  // ★LABTEST_PROVIDER=openai … プロバイダを1本に固定する(pass9 の診断: 本番は openai/gpt-4o-mini)。
+  //   providers.js は import 時にプールを構築するので、**その前に** 候補配列を絞る。
+  //   ファイルは1バイトも書き換えない(このプロセスのメモリ上だけ)。
+  const only = process.env.LABTEST_PROVIDER;
+  if (only) {
+    const keep = cfg.LLM_PROVIDERS.filter(x => x.name === only);
+    if (keep.length === 0) throw new Error(`LABTEST_PROVIDER=${only} は候補に無い`);
+    cfg.LLM_PROVIDERS.length = 0;
+    cfg.LLM_PROVIDERS.push(...keep);
+  }
   const { buildLabContext } = await import('./context.js');
   const { callOnce, QUESTION_A, QUESTION_B_V4, buildPromptB, outDir, DUMMY_SIGNAL } = await import('./run.js');
 
@@ -111,6 +122,8 @@ async function main(): Promise<void> {
   const kiriban = /^(1|true|yes)$/i.test(process.env.LABTEST_KIRIBAN ?? '');
   // ★LABTEST_SKIP_A=1 … A を呼ばず、B に A の答えを **1文字も** 渡さない(pass5a: 連鎖の交絡を切る)。
   const skipA = /^(1|true|yes)$/i.test(process.env.LABTEST_SKIP_A ?? '');
+  // ★LABTEST_PROD_SYSTEM=1 … system に本番の規則プロンプトを前置きする(pass9 診断)。
+  const prodSystem = /^(1|true|yes)$/i.test(process.env.LABTEST_PROD_SYSTEM ?? '');
   // ★LABTEST_B_SUFFIX … B の末尾に足す1文(pass5b)。★質問文の本体は1文字も変えない。
   const bSuffix = process.env.LABTEST_B_SUFFIX ?? '';
   const promptB = bSuffix ? `${buildPromptB(fx.refPrice)}\n${bSuffix}` : buildPromptB(fx.refPrice);
@@ -126,8 +139,13 @@ async function main(): Promise<void> {
   const noLlm = /^(1|true|yes)$/i.test(process.env.LABTEST_NO_LLM ?? '');
   const skipped = { messages: [] as never[], answer: null, error: '(LABTEST_NO_LLM=1 のため呼んでいない)',
     provider: null, model: null, ms: 0, usage: null };
+  const sysText = prodSystem
+    ? `${(await import('./prodPrompt.js')).productionSystemRules()}
+
+${built.text}`
+    : built.text;
   const msgsA = [
-    { role: 'system' as const, content: built.text },
+    { role: 'system' as const, content: sysText },
     { role: 'user' as const, content: QUESTION_A },
   ];
   const a = skipA
@@ -136,7 +154,7 @@ async function main(): Promise<void> {
   // ★pass5a: A を呼ばない回の B は **データ + B の質問文だけ**(assistant 発話を1つも入れない)。
   const msgsB = skipA
     ? [
-      { role: 'system' as const, content: built.text },
+      { role: 'system' as const, content: sysText },
       { role: 'user' as const, content: promptB },
     ]
     : [
