@@ -24,6 +24,7 @@ import { callWithFallback, isLLMEnabled } from '../llm/providers.js';
 import { SCALP_STRATEGY_LABELS, scalpStrategyContract } from '../llm/scalpPlan.js';
 import { buildLabContext, type ContextDiagnostics } from './context.js';
 import { positionJsonContract, positionJsonContractSplit, productionLikeContract } from './jsonContract.js';
+import { buildQuestionV8 } from './questionV8.js';
 import { getSandbox, refreshSandbox } from './sandbox.js';
 
 /** ★ユーザーが書いた質問文そのまま(1 文字も足さない・減らさない)。 */
@@ -86,6 +87,8 @@ export function strategyLabelList(): { line: string; withGloss: number } {
  *  strategyLabelList() は過去の記録を読み直すために残す(呼び出しはしない)。 */
 export function buildPromptB(refPrice = 0): string {
   const mode = process.env.LABTEST_B_MODE ?? '';
+  // pass8: ユーザー原文の v8(A の判断ごとに注文の型を指定・ストップ幅も提案させる)。散文で返させる。
+  if (mode === 'v8') return buildQuestionV8();
   // pass7: 本番同型の契約。prod1line=「(1行・日本語)」入り / prodfree=「1行・」を落とした版。
   if (mode === 'prod1line' || mode === 'prodfree') {
     return `${QUESTION_B}
