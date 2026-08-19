@@ -1,6 +1,6 @@
 {
   "name": "finance-monitor",
-  "version": "0.9.85",
+  "version": "0.9.88",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,6 +15,7 @@
     "collector:dev": "tsx watch collector/index.ts",
     "generator:dev": "tsx server/generator/index.ts",
     "replay:dev": "tsx server/replay/index.ts",
+    "labtest": "tsx --env-file=.env server/labtest/index.ts",
     "package": "npm run build && node scripts/package-sea.mjs",
     "package:pkg": "npm run build && pkg dist/server.cjs --targets node18-win-x64 --output bin/jp225-monitor",
     "icons": "node scripts/gen-placeholder-icons.mjs",
