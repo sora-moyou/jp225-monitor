@@ -31,6 +31,7 @@ import {
   type ShadowExitLadder, type ShadowExitSpec, type ShadowParamClass,
 } from '../exit/index.js';
 import type { ExitReason } from '../../../core/exitReasons.js';
+import type { EntryTrendDir } from '../../../core/entryLabel.js';
 import { isAnalysisEnabled } from '../../analysisGate.js';
 
 /** 観測地平[ms]。**この時間を過ぎた影は「決済した」ことにせず、打ち切り(censored)として記録する。**
@@ -118,7 +119,10 @@ export interface ShadowOpenArgs {
   now: number;
   /** 武装時点で見ていた価格(記録専用・取れなければ省略)。 */
   armedPrice?: number | null;
-  extra?: { vetoFired?: boolean };
+  // ★v0.9.88: planToArmed へそのまま渡る。trendDir(コードが測ったトレンドの向き)も運べるようにする。
+  //   ★オフライン再生(server/replay)は **凍結した過去の提案** から開くので、この版より前の標本には
+  //     trendDir が存在しない=渡さない(undefined)。そこは「材料が無い」が正しく、捏造しない。
+  extra?: { vetoFired?: boolean; trendDir?: EntryTrendDir };
 }
 
 export type ShadowOpenResult =

@@ -105,6 +105,9 @@ describe('分析用のプロンプト: A の仮想取引の成績を外す(両�
     expect((r as { plan: unknown }).plan).toBe(PLAN_RESULT.plan);   // plan は同一参照=コピーすらしていない
     // ★contextAt/promptFp(記録専用の出所)は全経路で載る。それ以外は1つも増えない
     //   = contextOmitted(分析用だけの記録)が A/B に混ざらない、という元の不変条件はそのまま。
-    expect(Object.keys(r).filter(k => k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision')).toEqual(['ok', 'plan']);
+    // ★v0.9.88: trendDir を除外に追加(リーダーへ報告済み)。除外しているのは
+    //   「全経路で additive に載る記録」で、trendDir はその類。
+    //   この it の目的=「**分析用だけの記録**(chartShot/contextOmitted)が A の結果に混ざらない」は不変。
+    expect(Object.keys(r).filter(k => k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision' && k !== 'trendDir')).toEqual(['ok', 'plan']);
   });
 });

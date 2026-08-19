@@ -99,7 +99,14 @@ describe('buildScalpPlan — exitVariant で AI に渡す決済仕様を切り�
   it('変わるのは決済ブロックだけ(エントリー側の仕様は candidate-a でも不変)', async () => {
     const cur = await systemPromptFor('current');
     const cand = await systemPromptFor('candidate-a');
-    const head = (s: string) => s.slice(0, s.indexOf(EXIT_HEAD));
-    expect(head(cand)).toBe(head(cur));
+    // ★indexOf の戻りを必ず検査する(fail-open を作らない)。ここは slice(0, -1) になるだけなので
+    //   見出しが消えても「決済ブロックを含んだまま比較」になり普通は赤くなる=いまは fail-closed だが、
+    //   両者が偶然一致すれば通ってしまう。同じ形は同じ守り方をする。
+    const headOf = (s: string) => {
+      const at = s.indexOf(EXIT_HEAD);
+      expect(at, '決済ブロックの見出しが system prompt に無い').toBeGreaterThanOrEqual(0);
+      return s.slice(0, at);
+    };
+    expect(headOf(cand)).toBe(headOf(cur));
   });
 });

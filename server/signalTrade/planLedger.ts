@@ -151,6 +151,23 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   //   書かれなかった回は列ごと NULL=「申告なし」が形から読める(0 を捏造しない)。
   if (plan.limitLevel !== undefined) row.limitLevel = plan.limitLevel;
   if (plan.stopLevel !== undefined) row.stopLevel = plan.stopLevel;
+  // ★v0.9.88(RECORD-ONLY): **レッグごとの理由**。strategy_why と同じ規約:
+  //   ・在るときだけ入れる(書かれなかった回は列ごと NULL=「欠測」が形から読める)。
+  //   ・★**rationale と同じ安全弁を通す**(trimRationale = 上限 PLAN_RATIONALE_MAX_CHARS + 切詰の印)。
+  //     当初これを掛けなかったのは「理由の量を測るのが目的だから削らない」という判断だったが、
+  //     それは **正常な出力の話** で、上限が守っているのは LLM の暴走出力(同じ文の反復・
+  //     プロンプトの丸写し)である。実測の根拠文の最長が 319字 に対し 2000 は桁で余裕があり、
+  //     正常な理由には事実上効かない=測定対象は削られない。上限が無いと台帳が無制限に膨らみ、
+  //     画面には 5,000字が1行として描かれる。
+  //   ・★切られた回は末尾の印(PLAN_RATIONALE_TRUNCATED_MARK)で分かる=無言で削らない。
+  if (plan.directionWhy !== undefined) row.directionWhy = trimRationale(plan.directionWhy);
+  if (plan.entryWhyForLimit !== undefined) row.entryWhyForLimit = trimRationale(plan.entryWhyForLimit);
+  if (plan.entryWhyForStop !== undefined) row.entryWhyForStop = trimRationale(plan.entryWhyForStop);
+  if (plan.lcWhyForLimit !== undefined) row.lcWhyForLimit = trimRationale(plan.lcWhyForLimit);
+  if (plan.lcWhyForStop !== undefined) row.lcWhyForStop = trimRationale(plan.lcWhyForStop);
+  // ★v0.9.88(RECORD-ONLY): 画面の「順張り/逆張り」を決めた値。plan ではなく **result** に載る
+  //   (コードが測った値で、AI の応答ではないため)。無い回は列ごと NULL=「測れなかった」が形から読める。
+  if (result.trendDir !== undefined) row.trendDir = result.trendDir;
   if (result.vetoFired !== undefined) row.vetoFired = result.vetoFired;
   if (result.noneReason !== undefined) row.noneReason = result.noneReason;
   if (plan.limitEntry !== undefined) row.limitEntry = plan.limitEntry;

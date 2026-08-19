@@ -83,11 +83,15 @@ import { feedRealtimePrice, _reset as resetBars } from '../feedBars.js';
 const GOOD_PLAN = { ok: true, plan: { direction: 'buy' } };
 
 /** ★記録専用の出所(contextAt=文脈を組み立てた時刻 / promptFp=プロンプトの指紋 /
- *  chartVision=そのサイクルのチャート画像の群)を落とした結果。
+ *  chartVision=そのサイクルのチャート画像の群 / trendDir=コードが測ったトレンドの向き)を落とした結果。
  *  これらは **全経路** で additive に載る(凍結再生の突合 / A/B の群の記録)。それ以外のフィールドは
  *  1つも増えないことを、以下の toEqual(GOOD_PLAN) が従来どおり固定し続ける。 */
 function withoutProvenance(r: unknown): Record<string, unknown> {
-  const { contextAt: _c, promptFp: _p, chartVision: _v, ...rest } = r as Record<string, unknown>;
+  // ★v0.9.88: trendDir をここへ追加した理由(リーダーへ報告済み)。
+  //   このヘルパは「**全経路で additive に載る記録**」を落とすためのもので、
+  //   trendDir はまさにその類(分析用だけの記録ではない)。it の目的=「それ以外の
+  //   フィールドが1つも増えない」は一ビットも緩めていない。
+  const { contextAt: _c, promptFp: _p, chartVision: _v, trendDir: _t, ...rest } = r as Record<string, unknown>;
   return rest;
 }
 

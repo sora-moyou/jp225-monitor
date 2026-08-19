@@ -165,6 +165,15 @@ export interface SignalTradeState {
     // ★v0.9.87(ADD-ONLY): signal と同じ「その価格の根拠にした節目」。欠落時は付与しない=既存 JSON 不変。
     limitLevel?: number;
     stopLevel?: number;
+    // ★v0.9.88(ADD-ONLY): signal と同じレッグごとの理由/トレンド/ARM時価格。
+    //   パネルは signal を優先し無い時だけ entry を描くので、片方だけだと経路によって理由が消える。
+    directionWhy?: string;
+    entryWhyForLimit?: string;
+    entryWhyForStop?: string;
+    lcWhyForLimit?: string;
+    lcWhyForStop?: string;
+    trendDir?: 'up' | 'down' | 'flat' | 'conflict' | 'stale';
+    refPrice?: number;
     mode?: 'range';
     range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   };
@@ -193,6 +202,30 @@ export interface SignalTradeState {
     //   AI が書かなかった回は **フィールドごと欠落**=既存 SSE JSON 不変(dedupe / 旧クライアント互換)。
     limitLevel?: number;
     stopLevel?: number;
+    // ★v0.9.88(ADD-ONLY・表示用): ARM した瞬間に monitor が見ていた価格(ArmedBracket.armedPrice)。
+    //   画面はこれを **各脚の位置の検査の基準** に使う(core/entryLabel.ts の entryPositionOk)。
+    //   ★「今の値段」ではなく **ARM 時点の値段** でなければならない: 脚の位置は ARM 時の現在値を
+    //     基準に決められており、その後価格が脚を越えるのは普通のこと(それは別の概念=stale)。
+    //     今の値段を当てると、正常な脚を次々不正と報告する偽の警報になる。
+    //   取れない/stale の回は **フィールドごと欠落**=既存 SSE JSON 不変。画面は検査ごと出さない。
+    refPrice?: number;
+    // ★v0.9.88(ADD-ONLY・表示用): **レッグごとの理由**。
+    //   directionWhy … なぜこの目線(direction)にしたか
+    //   entryWhyForLimit / entryWhyForStop … なぜそのエントリー価格にしたか
+    //   lcWhyForLimit / lcWhyForStop … なぜその損切り幅にしたか
+    //   ★既存の rationale とは **別の箱**。rationale はプラン全体で1本しか無く、
+    //     実測でその中身は LC検算に埋め尽くされていた。箱を分けると理由の量が増える
+    //     という実測(1脚59字→07字)に基づく追加で、rationale は一切変えていない。
+    //   AI が書かなかった回は **フィールドごと欠落**=既存 SSE JSON 不変。
+    directionWhy?: string;
+    entryWhyForLimit?: string;
+    entryWhyForStop?: string;
+    lcWhyForLimit?: string;
+    lcWhyForStop?: string;
+    // ★v0.9.88(ADD-ONLY・表示用): そのサイクルで **コードが測った** トレンドの向き
+    //   (server/signalTrade/regime.ts の Regime.trendDir)。画面の「順張り/逆張り」は
+    //   これと売買の向きで決まる。'flat'/'conflict'/'stale'/欠落 は断定しない(語を出さない)。
+    trendDir?: 'up' | 'down' | 'flat' | 'conflict' | 'stale';
     at: number;
     // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
     mode?: 'range';

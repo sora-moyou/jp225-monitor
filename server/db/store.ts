@@ -153,7 +153,15 @@ export function initSchema(db: DatabaseSync): void {
       strategy_why TEXT,
       -- ★v0.9.87(RECORD-ONLY): その価格の **根拠にした節目**。下の ALTER と同じ2列。
       limit_level REAL,
-      stop_level REAL
+      stop_level REAL,
+      -- ★v0.9.88(RECORD-ONLY): **レッグごとの理由**。下の ALTER と同じ5列。
+      direction_why TEXT,
+      entry_why_for_limit TEXT,
+      entry_why_for_stop TEXT,
+      lc_why_for_limit TEXT,
+      lc_why_for_stop TEXT,
+      -- ★v0.9.88(RECORD-ONLY): 画面の「順張り/逆張り」を決めた値。下の ALTER と同じ1列。
+      trend_dir TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -243,6 +251,35 @@ export function initSchema(db: DatabaseSync): void {
   //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版の旧行 / AI が書かなかった回)。
   if (!spCols.includes('limit_level')) db.exec('ALTER TABLE signal_plans ADD COLUMN limit_level REAL');
   if (!spCols.includes('stop_level')) db.exec('ALTER TABLE signal_plans ADD COLUMN stop_level REAL');
+  // ★v0.9.88(RECORD-ONLY): **レッグごとの理由**。
+  //
+  //   ■ なぜ列を分けるか(1列の JSON にしない理由)
+  //     この追加の目的は **理由の量を測ること**なので、
+  //     `length(entry_why_for_limit)` がそのまま書ける形にする。
+  //     既存の strategy_why / limit_level と同じ作法(意味のある値は列にする)。
+  //   ■ 値は AI の自由文。★**rationale と同じ安全弁を通る**(planLedger.ts が trimRationale を掛ける
+  //     = 上限 PLAN_RATIONALE_MAX_CHARS(2000字) + 切り詰めたときだけ末尾に PLAN_RATIONALE_TRUNCATED_MARK)。
+  //     ★当初は「理由の量を測るのが目的だから削らない」として上限を掛けていなかったが、それは
+  //       正常な出力しか想定していなかった誤り。上限が守っているのは LLM の暴走出力(同じ文の反復・
+  //       プロンプトの丸写し)で、無いと台帳が無制限に膨らみ画面には5,000字が1行として描かれる。
+  //     ★実測の理由は平均56字・最長でも100字未満なので、2000 は正常な理由には事実上効かない
+  //       (=測りたい量は削られない)。切られた回は末尾の印で判別できる。
+  //   ■ 記録専用。採否・価格・脚落ち・決済には一切使わない。
+  //   既存DBへ後付けマイグレーション(NULL 可=旧行 / AI が書かなかった回)。
+  if (!spCols.includes('direction_why')) db.exec('ALTER TABLE signal_plans ADD COLUMN direction_why TEXT');
+  if (!spCols.includes('entry_why_for_limit')) db.exec('ALTER TABLE signal_plans ADD COLUMN entry_why_for_limit TEXT');
+  if (!spCols.includes('entry_why_for_stop')) db.exec('ALTER TABLE signal_plans ADD COLUMN entry_why_for_stop TEXT');
+  if (!spCols.includes('lc_why_for_limit')) db.exec('ALTER TABLE signal_plans ADD COLUMN lc_why_for_limit TEXT');
+  if (!spCols.includes('lc_why_for_stop')) db.exec('ALTER TABLE signal_plans ADD COLUMN lc_why_for_stop TEXT');
+  // ★v0.9.88(RECORD-ONLY): その計画のときに **コードが測った** トレンドの向き(Regime.trendDir)。
+  //   ■ なぜ要るか: 画面の「順張り/逆張り」は この値 × direction だけで決まる。
+  //     これが残っていないと **「画面が何と言ったか」を後から復元できない**(理由5列は残るのに、
+  //     ラベルを決めた入力だけが消える状態だった)。
+  //   ■ 値: 'up'|'down'(断定) / 'flat'|'conflict'|'stale'(断定しない=画面は語を出さない) / NULL(旧行)。
+  //   ■ ★AI の自己申告 regime 列とは **別物**。突き合わせると「AI の相場観がコードの測定と
+  //     どれだけ合うか」を数えられる(strategy 列の順張り/逆張りとの照合にも使う)。
+  //   ■ 記録専用。採否・価格・脚落ち・決済には一切使わない。
+  if (!spCols.includes('trend_dir')) db.exec('ALTER TABLE signal_plans ADD COLUMN trend_dir TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -1080,6 +1117,18 @@ export interface SignalPlanRow {
   limit_level: number | null;
   /** ★ブレイク新規の価格の根拠にした節目(同上)。 */
   stop_level: number | null;
+  /** ★v0.9.88: なぜこの目線(direction)にしたか。旧行/AI が書かなかった回は NULL。 */
+  direction_why: string | null;
+  /** ★v0.9.88: なぜ指値をその価格にしたか。同上。 */
+  entry_why_for_limit: string | null;
+  /** ★v0.9.88: なぜブレイク新規をその価格にしたか。同上。 */
+  entry_why_for_stop: string | null;
+  /** ★v0.9.88: なぜ指値の損切り幅をその幅にしたか。同上。 */
+  lc_why_for_limit: string | null;
+  /** ★v0.9.88: なぜブレイク新規の損切り幅をその幅にしたか。同上。 */
+  lc_why_for_stop: string | null;
+  /** ★v0.9.88: その計画のときにコードが測ったトレンドの向き(画面の順張り/逆張りを決めた値)。旧行は NULL。 */
+  trend_dir: string | null;
 }
 
 export interface SignalPlanInsert {
@@ -1123,6 +1172,15 @@ export interface SignalPlanInsert {
   strategy?: string | null;
   /** ★RECORD-ONLY: なぜその読みにしたか。同上。 */
   strategyWhy?: string | null;
+  /** ★v0.9.88: レッグごとの理由(記録専用)。★値は planLedger.ts が trimRationale で
+   *  上限2000字に切り、切ったときだけ末尾に PLAN_RATIONALE_TRUNCATED_MARK が付く(rationale と同じ安全弁)。 */
+  directionWhy?: string | null;
+  entryWhyForLimit?: string | null;
+  entryWhyForStop?: string | null;
+  lcWhyForLimit?: string | null;
+  lcWhyForStop?: string | null;
+  /** ★v0.9.88: コードが測ったトレンドの向き(記録専用・画面のラベルを決めた入力)。 */
+  trendDir?: string | null;
   /** ★RECORD-ONLY: 指値の価格の根拠にした節目。申告が無かった回は未指定=NULL。 */
   limitLevel?: number | null;
   /** ★RECORD-ONLY: ブレイク新規の価格の根拠にした節目。同上。 */
@@ -1143,8 +1201,10 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       leg_drops_json, settings_json, rationale, error,
       arm_wait_ms, arm_wait_distance, arm_wait_sigma, arm_wait_reason,
       context_at, prompt_fp, lc_audit_json, omission_audit_json,
-      provider, provider_model, strategy, strategy_why, limit_level, stop_level
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      provider, provider_model, strategy, strategy_why, limit_level, stop_level,
+      direction_why, entry_why_for_limit, entry_why_for_stop, lc_why_for_limit, lc_why_for_stop,
+      trend_dir
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1160,6 +1220,11 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     p.strategy ?? null, p.strategyWhy ?? null,
     // ★節目は数値列。非有限は NULL(壊れた値を入れて後の |entry − level| 集計を汚さない)。
     finiteOrNull(p.limitLevel), finiteOrNull(p.stopLevel),
+    // ★v0.9.88: レッグごとの理由(自由文)。★planLedger.ts で trimRationale 済み(上限2000字+切詰印)。
+    //   ここでは受け取った値をそのまま入れる(切り詰めの責務を2箇所に持たない)。
+    p.directionWhy ?? null, p.entryWhyForLimit ?? null, p.entryWhyForStop ?? null,
+    p.lcWhyForLimit ?? null, p.lcWhyForStop ?? null,
+    p.trendDir ?? null,
   );
 }
 

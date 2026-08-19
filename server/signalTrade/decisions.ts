@@ -10,6 +10,7 @@ import type { RangeLeg, AiPlan } from '../llm/openai.js';
 import { computeExitStop, type ExitFn } from './exit/index.js';
 import { roundEntryToTick } from './entryTick.js';
 import type { ExitReason } from '../../core/exitReasons.js';
+import type { EntryTrendDir } from '../../core/entryLabel.js';
 // ★損切りの向きの規約(買い=建値の下 / 売り=建値の上・同値=不正)は core/stopGeometry.ts が **唯一の権威**。
 //   従来この2つはここに手書きで複製されていた(stopOnCorrectSide / stopLossAtEntry)。複製していた理由は
 //   「decisions は純粋コアなので configStore/LLM/cache を引く scalpPlan を静的 import したくない」だったが、
@@ -58,6 +59,19 @@ export interface ArmedBracket {
   //   ★採否・価格・脚落ち・約定・決済には一切使わない(strategy と同じ「持ち回るだけ」の扱い)。
   limitLevel?: number;
   stopLevel?: number;
+  // ★v0.9.88(表示専用・ADD-ONLY): **レッグごとの理由**。AiPlan の同名フィールドをそのまま運ぶ。
+  //   directionWhy=なぜこの目線か / entryWhyFor*=なぜこの価格か / lcWhyFor*=なぜこの損切り幅か。
+  //   ★採否・価格・脚落ち・約定・決済には一切使わない(strategy と同じ「持ち回るだけ」)。
+  //   欠落(旧版の計画 / AI が書かなかった回)では **フィールドごと付けない**=従来と byte 一致。
+  directionWhy?: string;
+  entryWhyForLimit?: string;
+  entryWhyForStop?: string;
+  lcWhyForLimit?: string;
+  lcWhyForStop?: string;
+  // ★v0.9.88(表示専用・ADD-ONLY): その計画を出したときに **コードが測った** トレンドの向き。
+  //   画面の「順張り/逆張り」はこれと売買の向きで決まる(core/entryLabel.ts の entryStance)。
+  //   'flat'/'conflict'/'stale'/欠落 は **どちらとも言えない**=画面は語を出さない。
+  trendDir?: EntryTrendDir;
   // ★v0.7.56: このシグナルの実効設定スナップショット(委任モード+値)。約定→決済→meta/SSE へ持ち回る。
   settings?: SignalSettingsSnapshot;
   // ★ドテン(反転): このブラケットが保有中の反転評価で armed された「反対方向の反転建て」であることを示す。
@@ -92,6 +106,21 @@ export interface CurrentSignal {
   // ★v0.9.87(表示専用・ADD-ONLY): その価格の根拠にした節目(ArmedBracket から引き継ぐ)。
   limitLevel?: number;
   stopLevel?: number;
+  // ★v0.9.88(表示専用・ADD-ONLY): ARM 時点で monitor が見ていた価格(ArmedBracket.armedPrice をそのまま)。
+  //   画面が各脚の位置(指値=手前 / 逆指値=向こう)を検査するための **基準価格**。
+  //   取れない/stale なら欠落(=画面は検査を出さない)。採否・価格・約定・決済には一切使わない。
+  refPrice?: number;
+  // ★v0.9.88(表示専用・ADD-ONLY): **レッグごとの理由**。AiPlan の同名フィールドをそのまま運ぶ。
+  //   directionWhy=なぜこの目線か / entryWhyFor*=なぜこの価格か / lcWhyFor*=なぜこの損切り幅か。
+  //   ★採否・価格・脚落ち・約定・決済には一切使わない(strategy と同じ「持ち回るだけ」)。
+  //   欠落(旧版の計画 / AI が書かなかった回)では **フィールドごと付けない**=従来と byte 一致。
+  directionWhy?: string;
+  entryWhyForLimit?: string;
+  entryWhyForStop?: string;
+  lcWhyForLimit?: string;
+  lcWhyForStop?: string;
+  // ★v0.9.88: コードが測ったトレンドの向き(画面の順張り/逆張りの基準)。
+  trendDir?: EntryTrendDir;
   // レンジ両面ストラドル(trade2 追従用)。mode==='range' の時は range に上下2レッグ(片レッグ落ちも可)。
   mode?: 'range';
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -720,6 +749,15 @@ export function toSignalTradeState(
     // ★v0.9.87: 価格の根拠にした節目も entry に載せる(signal が無い経路でも節目の行が出るように)。
     if (a.limitLevel !== undefined) s.entry.limitLevel = a.limitLevel;
     if (a.stopLevel !== undefined) s.entry.stopLevel = a.stopLevel;
+    // ★v0.9.88: レッグごとの理由/トレンド/ARM時価格も entry に載せる
+    //   (パネルは signal を優先し、無い時だけ entry を描く経路がある=片方だけだと画面から理由が消える)。
+    if (a.directionWhy !== undefined) s.entry.directionWhy = a.directionWhy;
+    if (a.entryWhyForLimit !== undefined) s.entry.entryWhyForLimit = a.entryWhyForLimit;
+    if (a.entryWhyForStop !== undefined) s.entry.entryWhyForStop = a.entryWhyForStop;
+    if (a.lcWhyForLimit !== undefined) s.entry.lcWhyForLimit = a.lcWhyForLimit;
+    if (a.lcWhyForStop !== undefined) s.entry.lcWhyForStop = a.lcWhyForStop;
+    if (a.trendDir !== undefined) s.entry.trendDir = a.trendDir;
+    if (a.armedPrice !== undefined && Number.isFinite(a.armedPrice)) s.entry.refPrice = a.armedPrice;
   }
   if (st.phase === 'filled' && st.position) {
     const p = st.position;
@@ -755,6 +793,15 @@ export function toSignalTradeState(
     // ★v0.9.87: 「その価格の根拠にした節目」を露出(在るときだけ)。**画面が内側/外側と距離を計算して描く**。
     if (signal.limitLevel !== undefined) s.signal.limitLevel = signal.limitLevel;
     if (signal.stopLevel !== undefined) s.signal.stopLevel = signal.stopLevel;
+    // ★v0.9.88: ARM 時点の価格(位置検査の基準)を露出(在るときだけ=既存 JSON 不変)。
+    if (signal.refPrice !== undefined) s.signal.refPrice = signal.refPrice;
+    // ★v0.9.88: レッグごとの理由とトレンドの向きを露出(在るときだけ=既存 JSON 不変)。
+    if (signal.directionWhy !== undefined) s.signal.directionWhy = signal.directionWhy;
+    if (signal.entryWhyForLimit !== undefined) s.signal.entryWhyForLimit = signal.entryWhyForLimit;
+    if (signal.entryWhyForStop !== undefined) s.signal.entryWhyForStop = signal.entryWhyForStop;
+    if (signal.lcWhyForLimit !== undefined) s.signal.lcWhyForLimit = signal.lcWhyForLimit;
+    if (signal.lcWhyForStop !== undefined) s.signal.lcWhyForStop = signal.lcWhyForStop;
+    if (signal.trendDir !== undefined) s.signal.trendDir = signal.trendDir;
     // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
     if (signal.settings) s.signal.settings = signal.settings;
     // ★ドテン(反転)フラグ(ADD-ONLY): 実 doten の時だけ付与。非 doten の JSON は不変=dedupe/OFF byte 一致。
@@ -797,9 +844,13 @@ export function planToArmed(
     strategy?: string; strategyWhy?: string;
     // ★v0.9.87(表示専用): その価格の根拠にした節目。同じく載っていればそのまま引き継ぐ。
     limitLevel?: number; stopLevel?: number;
+    // ★v0.9.88(表示専用): レッグごとの理由。同じく載っていればそのまま引き継ぐ(中身は見ない)。
+    directionWhy?: string; entryWhyForLimit?: string; entryWhyForStop?: string;
+    lcWhyForLimit?: string; lcWhyForStop?: string;
   },
   now: number,
-  extra?: { vetoFired?: boolean },
+  // ★v0.9.88: trendDir = そのサイクルでコードが測ったトレンドの向き(表示専用・未指定は従来と同じ)。
+  extra?: { vetoFired?: boolean; trendDir?: EntryTrendDir },
 ): ArmedBracket | null {
   // AI 自己レジーム/確信度 + トレンド veto 発火を1つの planMeta にまとめる(いずれも欠落可=記録のみ)。
   const planMeta = buildPlanMeta(plan.regime, plan.confidence, extra?.vetoFired);
@@ -813,6 +864,14 @@ export function planToArmed(
     //     planToArmed は純関数として直接も呼ばれる(テスト/影シミュ)ので、NaN が画面まで抜けない場所を作る。
     if (plan.limitLevel !== undefined && Number.isFinite(plan.limitLevel)) a.limitLevel = plan.limitLevel;
     if (plan.stopLevel !== undefined && Number.isFinite(plan.stopLevel)) a.stopLevel = plan.stopLevel;
+    // ★v0.9.88: レッグごとの理由も同じ経路で運ぶ(在るときだけ=欠落なら従来と byte 一致)。
+    if (plan.directionWhy !== undefined) a.directionWhy = plan.directionWhy;
+    if (plan.entryWhyForLimit !== undefined) a.entryWhyForLimit = plan.entryWhyForLimit;
+    if (plan.entryWhyForStop !== undefined) a.entryWhyForStop = plan.entryWhyForStop;
+    if (plan.lcWhyForLimit !== undefined) a.lcWhyForLimit = plan.lcWhyForLimit;
+    if (plan.lcWhyForStop !== undefined) a.lcWhyForStop = plan.lcWhyForStop;
+    // ★v0.9.88: コードが測ったトレンドの向き(画面の順張り/逆張りの基準)。
+    if (extra?.trendDir !== undefined) a.trendDir = extra.trendDir;
     return a;
   };
   // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
@@ -918,6 +977,16 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
   // ★v0.9.87: 価格の根拠にした節目を引き継ぐ(同上)。
   if (a.limitLevel !== undefined) s.limitLevel = a.limitLevel;
   if (a.stopLevel !== undefined) s.stopLevel = a.stopLevel;
+  // ★v0.9.88: ARM 時点の価格を refPrice として引き継ぐ(有限値・在るときだけ)。
+  //   画面の位置検査の基準になる。欠落すれば画面は検査を出さない(=従来と byte 一致)。
+  if (a.armedPrice !== undefined && Number.isFinite(a.armedPrice)) s.refPrice = a.armedPrice;
+  // ★v0.9.88: レッグごとの理由と、コードが測ったトレンドの向きを引き継ぐ(在るときだけ)。
+  if (a.directionWhy !== undefined) s.directionWhy = a.directionWhy;
+  if (a.entryWhyForLimit !== undefined) s.entryWhyForLimit = a.entryWhyForLimit;
+  if (a.entryWhyForStop !== undefined) s.entryWhyForStop = a.entryWhyForStop;
+  if (a.lcWhyForLimit !== undefined) s.lcWhyForLimit = a.lcWhyForLimit;
+  if (a.lcWhyForStop !== undefined) s.lcWhyForStop = a.lcWhyForStop;
+  if (a.trendDir !== undefined) s.trendDir = a.trendDir;
   // ★v0.7.56: 実効設定スナップショットを引き継ぐ(在るときだけ)。
   if (a.settings) s.settings = a.settings;
   // ★ドテン(反転)フラグを引き継ぐ(在るときだけ=add-only)。
@@ -963,7 +1032,10 @@ export function shouldRequestHeldEval(a: {
  *  前提: 呼び出し側が「plan.direction === opposite(保有方向)」と checkSanity 通過を既に確認済み(第一級ガードは engine)。
  *  filled でない / planToArmed が null / range になった 場合は null(ドテンしない=保有継続)。 */
 export function reverseToDoten(
-  st: EngineState, plan: AiPlan, price: number, now: number, extra?: { vetoFired?: boolean },
+  st: EngineState, plan: AiPlan, price: number, now: number,
+  // ★v0.9.88: extra はそのまま planToArmed へ渡る。trendDir を受け取れないと **反転シグナルだけ**
+  //   画面の順張り/逆張りが無言で消える(通常の ARM とドテンで表示の作りが変わってしまう)。
+  extra?: { vetoFired?: boolean; trendDir?: EntryTrendDir },
 ): { next: EngineState; recorded: RecordedTrade; armed: ArmedBracket } | null {
   if (st.phase !== 'filled' || !st.position) return null;
   if (!Number.isFinite(price)) return null;

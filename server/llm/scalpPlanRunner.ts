@@ -18,6 +18,7 @@ import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js'
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import type { ExitVariant } from '../signalTrade/exit/index.js';
 import type { PromptVariant } from './promptVariant.js';
+import type { EntryTrendDir } from '../../core/entryLabel.js';
 import { beginScalpPlan, endScalpPlan } from './generatorGate.js';
 
 // 構造化データブロックに使う実 OHLC の取得窓(直近6時間ぶんの1分足)。
@@ -295,7 +296,7 @@ async function runScalpPlanWithChartInner(
   // ★RECORD-ONLY: buildScalpPlan が組み上げたプロンプトの指紋(本文は受け取らない)。
   let promptFp: string | null = null;
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
-  return attachChartVision(attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
+  return attachTrendDir(attachChartVision(attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
     symbol,
     prices,
     news: getNews(),
@@ -316,7 +317,17 @@ async function runScalpPlanWithChartInner(
     bandwalk: richResult.bandwalk,
     // ★RECORD-ONLY: 送るプロンプトの指紋を1回だけ受け取る(本文は渡ってこない)。
     onPromptFingerprint: (fp) => { promptFp = fp; },
-  }), contextAt, () => promptFp), caller, chartShot), visionDecision);
+  }), contextAt, () => promptFp), caller, chartShot), visionDecision), regime.trendDir);
+}
+
+/** ★v0.9.88: そのサイクルで **コードが測った** トレンドの向きを結果に載せる(ADD-ONLY)。
+ *  画面の「順張り/逆張り」はこれを基準に決める(core/entryLabel.ts の entryStance)。
+ *  ★同じ regime を (a)技術文脈への注入と (b)コードの trend veto と (c)ここ の3つで共有する
+ *    = AI に見せた勢いの行と画面のラベルが食い違わない。
+ *  ★ok:false(計画が得られなかった回)には載せない: 描くプランが無いので使い道が無く、
+ *    ok:false の形を変えると既存の台帳/テストの byte 一致が崩れる。 */
+function attachTrendDir(result: ScalpPlanResult, trendDir: EntryTrendDir): ScalpPlanResult {
+  return result.ok ? { ...result, trendDir } : result;
 }
 
 /** ★RECORD-ONLY(v0.9.70): そのサイクルの **チャート画像の群** を結果に載せる。

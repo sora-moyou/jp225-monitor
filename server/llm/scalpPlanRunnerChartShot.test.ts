@@ -72,7 +72,8 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
   //   ここで守り続けているのは「分析用だけの記録(chartShot / contextOmitted)が A の結果に混ざらない」こと。
   //   plan は参照ごと素通し=engine が読む中身は1ミリも変わらない。
   const generatorOnlyKeys = (r: object): string[] =>
-    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision');
+    // ★v0.9.88: trendDir を除外に追加(全経路で載る記録であって、分析用だけの記録ではない)。
+    Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision' && k !== 'trendDir');
 
   it('★caller 省略(実取引 A の経路)の結果に **分析用だけの記録は1つも付かない**', async () => {
     const r = await runScalpPlanWithChart({});

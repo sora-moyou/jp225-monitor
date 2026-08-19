@@ -605,7 +605,7 @@ export class SignalEngine {
                 + `anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=refstale`);
               return;   // ★finally で planning=false に戻る(この IIFE を抜けるだけ)。
             }
-            const armed0 = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired });
+            const armed0 = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired, trendDir: result.trendDir });
             // ★stale plan veto: ARM 時点の live 価格で「もう通過した価格」のレッグは武装しない。
             //   checkSanity は plan.refPrice(撮影時価格)基準のまま(上のコメントの設計判断=不変)。ここは別観点の
             //   ガードで、画像生成+LLM のレイテンシ中に価格が動き「ARM 時点では既にエントリーを通過している」計画を
@@ -776,7 +776,7 @@ export class SignalEngine {
       console.log(`${this.logTag} doten-reject ${drift.reason} ref=${Math.round(plan.refPrice)} reason=refstale`);
       return 'reject';
     }
-    const rev = reverseToDoten(this.state, plan, price, now, { vetoFired: result.vetoFired });
+    const rev = reverseToDoten(this.state, plan, price, now, { vetoFired: result.vetoFired, trendDir: result.trendDir });
     if (!rev) return 'reject';
     // ★stale plan veto(反対ブラケットにも同一規約で適用): ARM 時点の live 価格でもう通過しているレッグは武装しない。
     //   reverseToDoten は純関数=ここまで engine 状態は未変更なので、全レッグ通過済みならそのまま降りれば保有継続(無害)。
@@ -939,7 +939,7 @@ export class SignalEngine {
       console.log(`${this.logTag} reeval-reject ${drift.reason} ref=${Math.round(plan.refPrice)} reason=refstale`);
       return 'reject';
     }
-    const armed0 = planToArmed(plan, now, { vetoFired: result.vetoFired });
+    const armed0 = planToArmed(plan, now, { vetoFired: result.vetoFired, trendDir: result.trendDir });
     if (!armed0) return 'reject';
     if (sameBracketShape(cur, armed0)) return 'keep';   // 実質同じ fade(=反発継続の維持)→ 何もしない。
     // ★stale plan veto(差替え先にも同一規約で適用): ARM 時点の live 価格でもう通過しているレッグは武装しない。

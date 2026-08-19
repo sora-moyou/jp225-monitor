@@ -13,6 +13,10 @@ import { BB_BAND_LABEL } from '../../core/indicatorSpec.js';
 // ★損切りの向きの規約は core/stopGeometry.ts が唯一の権威(依存ゼロの葉)。ここでは複製せず import する。
 //   従来ここから export されていた2関数は、外部の import 面を変えないよう そのまま再輸出する(下)。
 import { stopLossFromWidth, stopSideOk } from '../../core/stopGeometry.js';
+// ★エントリー位置(指値=現在値の手前 / 逆指値=現在値の向こう)の規約も同じ理由で core の葉へ移した。
+//   画面(web/components/signalPanel.ts)が同じ判定を必要とするが、web は server を import できない。
+//   複製すると「片方だけ直す」事故が生まれるので、実体を core/entryLabel.ts に置いて両方から import する。
+import { entryPositionOk, type EntryTrendDir } from '../../core/entryLabel.js';
 import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 // 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
 import type { ChartShotIdentity } from '../chart/chartShot.js';
@@ -88,6 +92,27 @@ export interface AiPlan {
   //   欠落・不正・非数値でも計画は落とさない(strategy と同じ後方互換)。
   limitLevel?: number;       // 指値の根拠にした節目の価格。
   stopLevel?: number;        // ブレイク新規の根拠にした節目の価格。
+  // ★v0.9.88(記録+表示・ゲートには使わない): **理由の箱をレッグごとに分ける**。
+  //
+  //   ■ なぜ分けるか(実測)
+  //     同じ断面・同じデータで **JSON の理由フィールドの数だけ** を変えた測定で、
+  //     1脚あたりの理由は 散文211字 / 箱の数 1 で59字 / 箱の数 2 で107字(+81%) だった。
+  //     パース失敗0・欠損0・型違反0で、位置/種別/SL の向きも 24/24 で崩れていない。
+  //     ⇒ 理由の量を決めているのは文言ではなく **箱の数** だという読み。
+  //     本番の rationale はプラン全体で1本なのに脚は2本あり、「理由の記載なし 80.3%」の
+  //     原因は文言ではなく **箱の不足** だろうという仮説。★本番データでは未検証。
+  //   ■ 命名の規則(本番の既存語彙に揃える)
+  //     「なぜ」= `...Why`(既存 `strategyWhy`) / レッグ別 = `...ForLimit` / `...ForStop`
+  //     (既存 `lcWidthForLimit` / `stopLossForStop`)。実験で使った `biasWhy` / `slWhy` は採らない:
+  //     `bias` は **設定名**(long/short/none)と衝突し、`sl` は JSON の語彙に存在しない(幅は `lcWidth`)。
+  //   ■ rationale は **消さない・意味も変えない**。監査(server/llm/rationaleLc.ts)が生の rationale を
+  //     読んでおり、LC検算の要求も外さない(外すと符号ミスが3倍になる実測がある)。
+  //   ■ 欠落・不正でも計画は落とさない(strategy と同じ後方互換)。
+  directionWhy?: string;     // なぜその direction(目線)にしたか。
+  entryWhyForLimit?: string; // なぜ limitEntry をその価格にしたか。
+  entryWhyForStop?: string;  // なぜ stopEntry をその価格にしたか。
+  lcWhyForLimit?: string;    // なぜ lcWidthForLimit をその幅にしたか。
+  lcWhyForStop?: string;     // なぜ lcWidthForStop をその幅にしたか。
   // direction==='range' の時のみ。upper.entry>refPrice>lower.entry。enforce/parse で片レッグに
   // 落ちることがある(その場合 upper か lower が undefined=実質片面)。
   range?: { upper?: RangeLeg; lower?: RangeLeg };
@@ -207,8 +232,13 @@ export interface ChartVisionRecord {
 //   「送ろうとした先」は記録しない(曖昧さを残さない)。
 export interface AnsweringProvider { name: string; model: string }
 
+// trendDir(RECORD-ONLY + 表示・v0.9.88): その計画を出したときに **コードが測った** トレンドの向き
+//   (server/signalTrade/regime.ts の Regime.trendDir をそのまま)。runner が足す。
+//   ★AI の自己申告(AiPlan.regime)とは別物。画面の「順張り/逆張り」はこちらを使う
+//   (AI に見せた勢いの行と同じ値=画面とプロンプトで食い違わない)。
+//   ★採否・価格・脚落ち・決済には一切使わない(veto は従来どおり Regime.dir/strong が駆動する)。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string }
+  | { ok: true; plan: AiPlan; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string; trendDir?: EntryTrendDir }
   | { ok: false; error: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; contextAt?: number; promptFp?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
@@ -1270,11 +1300,29 @@ export function scalpStrategyContract(): string {
     + `  ★どの語にも当てはまらないと感じたら「${SCALP_STRATEGY_OTHER}」と書き、`
     + 'strategyWhy に **何を狙ったのか** を必ず書くこと(無理に近い語へ寄せない)。\n'
     + '  ★strategyWhy には、なぜその読みにしたのかを1行で書く(根拠文 rationale とは別に、必ず書く)。\n'
-    // ★v0.9.87: 事実に合わせて直す。v0.9.86 で strategy / strategyWhy を画面(シグナル枠)に描くようにしたので、
-    //   「あとで返すための記録である」だけでは **嘘** になる(読み手はいま画面でこれを読んでいる)。
-    //   注文に使わないのは事実なのでそのまま残す。
-    + '  ★この2つは、そのままトレーダーの画面に表示され、かつ、あとで「どの読みが当たり、どの読みが外れたか」を'
-    + '集計してあなたに返すための記録になる。注文の採否・価格・損切り幅には使わない。\n';
+    // ★★★ この3行は「事実の記述」であって指示ではない。表示の実装を変えたら必ず一緒に直すこと ★★★
+    //   経緯(同じ場所で事実が4度動いている。戻しではなく、そのつど実装が変わっている):
+    //     v0.9.85 まで … 記録専用だった → 「あとで返すための記録である」と書いていた
+    //     v0.9.86     … strategy / strategyWhy を画面(シグナル枠)に描くようにした
+    //     v0.9.87     … 上に合わせて「そのままトレーダーの画面に表示され」に直した
+    //     v0.9.88(1) … 脚のラベルをコードが導出するようになり(core/entryLabel.ts)、strategy が
+    //                   目線行から落ちる場合ができた =「そのまま表示され」は また嘘 になった
+    //     v0.9.88(2=ここ) … ★**どのラベルが落ちるかを書くのをやめた**。
+    //   ★(2)の理由(測定の汚染を避ける):
+    //     いったんは「順張り/逆張りに触れているラベルは表示されないことがある」と条件まで書いた。
+    //     事実ではあるが、これは **どの選択肢が画面から消えるかを AI に名指しで教える** ことになる。
+    //     strategy の分布は **測定対象** で(最頻ラベルは実測65%)、そこが動くと過去との比較が切れる。
+    //     ★このブロックの外側には「押し目/戻り」「ブレイク新規」が既に7箇所以上あり、ラベルの偏りの
+    //       第一容疑はもともとアンカーである(上のブロック参照)。**その真上に語を足すのは最悪の位置**。
+    //     ⇒ 条件も、コードが出す語(押し目買い/戻り売り/ブレイク新規/順張り/逆張り)も **書かない**。
+    //       AI はそれらのラベルを自分では書かないので、知っても出力は1ビットも変えられない
+    //       = 伝える価値はゼロで、アンカーになる危険だけが残る。
+    //   ★「画面にも出る」は残す(嘘にしないため)。「そのまま表示される」とは約束しない。
+    //   ★書いてよいのは 事実だけ。「順張り/逆張りの語を避けろ」等の指示にはしない。
+    + '  ★この2つがどう使われるか(事実):\n'
+    + '    ・記録に残り、あとで「どの読みが当たり、どの読みが外れたか」を集計してあなたに返す。\n'
+    + '    ・トレーダーの画面にも出るが、どう表示するかはコードが決める。\n'
+    + '    ・注文の採否・価格・損切り幅には使わない。\n';
 }
 
 // LLM に構造化 JSON を強制するための出力指示。JSON モード非対応プロバイダでも効くよう厳格な文言で指示し、パースで検証する。
@@ -1318,14 +1366,48 @@ export function scalpJsonInstruction(
     `  "strategy": string,          // この計画の相場の読み(【この計画の読み】の語から1つ・その語のまま)\n` +
     `  "strategyWhy": string,       // なぜその読みにしたか(1行・日本語)\n` +
     `  "direction": ${dirEnum},  // none=見送り(良い場面が無い)。none の時は下の4フィールドは不要(rationale と refPrice のみ)${rangeEnabled ? '。range=レンジ両面(range フィールドを使い buy/sell 用の4フィールドは不要)' : ''}\n` +
+    // ★v0.9.88(記録+表示): 理由の箱を **それが説明するフィールドの隣** に1つずつ置く。
+    //   ★実験(同じ断面)で、箱が1つのとき1脚あたり59字 → 2つのとき107字(+81%)。
+    //   文言ではなく **箱の数** が理由の量を決めているという読みによる(本番データでは未検証)。
+    //
+    // ★★★ なぜ「1行」と書かないのか(★戻さないこと。実測で否定済み) ★★★
+    //   最初の版は既存 strategyWhy に倣って `(1行・日本語)` と書いていた。**これは新規に入れた語** で
+    //   (既存フィールドの語彙の再利用ではあっても、新しい箱に新しく書いた指示であることに変わりはない)、
+    //   検証台で `1行・` の3文字だけを変えた対照を取ったところ:
+    //
+    //       directionWhy 50→76 / entryWhyForLimit 33→47 / entryWhyForStop 35→50
+    //       lcWhyForLimit 37→55 / lcWhyForStop 37→50   [文字]
+    //       平均 38字 → 56字 = ★**+47%。5フィールドすべてが増えた(例外なし)**
+    //
+    //   そして ★**改行の混入は両パスとも0件(全72フィールド)** = 「1行」が防ぐはずのものは
+    //   書かなくても起きなかった。払っていたのは理由の 47% だった。
+    //   ⇒ このプロジェクトの既知の性質「プロンプトの数値/量の指示はアンカーとして効く」の一例。
+    //   ★「改行されたら困る」は表示側で受ける(paintPanel が splitRationaleLines で行に分ける)。
+    //     **指示で防ぐのではなく、起きても壊れない実装で受ける**(「起きなかった」は「起きない」ではない)。
+    //   ★退行が無いことも同時に確認済み: LC検算は rationale に 6/6 残存・新5フィールドへの流出0件 /
+    //     パース0失敗・欠損0・型違反0・位置12/12・10円未満0件・5円刻み違反0件。
+    `  "directionWhy": string,      // なぜその direction にしたか(日本語)\n` +
     `  "limitEntry": number,        // 指値(押し目/戻り側の新規)。none/range または指値レッグ不採用(ブレイク新規のみ)の時は省略(lcWidthForLimit と対で省く)\n` +
+    `  "entryWhyForLimit": string,  // なぜ limitEntry をその価格にしたか(日本語)。limitEntry と対で省略\n` +
     `  "stopEntry": number,         // ブレイク新規(ブレイク側の新規エントリー。損切りではない)。none/range またはブレイク新規レッグ不採用(指値のみ)の時は省略(lcWidthForStop と対で省く)\n` +
+    `  "entryWhyForStop": string,   // なぜ stopEntry をその価格にしたか(日本語)。stopEntry と対で省略\n` +
     // ★v0.9.70: 損切りは **幅** だけ。価格のフィールドは無い(向きはシステムが direction から付ける)。
     `  "lcWidthForLimit": number,   // 指値約定時の損切りの幅(${lcNote})。指値レッグを出さない/none の時は limitEntry と対で省略\n` +
+    `  "lcWhyForLimit": string,     // なぜ lcWidthForLimit をその幅にしたか(日本語)。lcWidthForLimit と対で省略\n` +
     `  "lcWidthForStop": number,    // ブレイク新規約定時の損切りの幅(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
+    `  "lcWhyForStop": string,      // なぜ lcWidthForStop をその幅にしたか(日本語)。lcWidthForStop と対で省略\n` +
     // ★v0.9.87: 「なぜこの価格なのか」を数値で残す。**新しい規則は足さない**(節目への置き方は既に上で
     //   決まっている)。ここで求めるのは「その規則で **実際に使った節目の価格**」だけ。
     //   文章の枠を増やさないのが要点(根拠文は実測で LC検算に埋め尽くされ、増やしても押し出される)。
+    // ★★★ v0.9.88 でこの判断を **転回** した(次に読む人が両方を根拠に反対の判断をしないよう明記する) ★★★
+    //   v0.9.87 が言う「増やしても押し出される」は **1本の箱(rationale)の中で枠を取り合う話**。
+    //   v0.9.88 が増やしたのは **箱そのもの**(directionWhy / entryWhyFor* / lcWhyFor*)で、
+    //   取り合いが起きない別のフィールドに分けた。実測(同じ断面・箱の数だけを変えた比較)は
+    //     散文211字 / 箱1つ 59字 / 箱2つ 107字(+81%)  ※1脚あたり
+    //   で、パース失敗0・欠損0・型違反0・位置/種別/SLの向き 24/24。
+    //   ⇒ **同じ箱の中に文章を足す(v0.9.87 が否定した手)は今も否定されたまま**で、
+    //     v0.9.88 が是としたのは **箱を分けること** だけ。両者は矛盾しない。
+    //   ★ただし本番データでは未検証(検証台の測定であって、実運用の理由の字数はまだ測っていない)。
     `  "limitLevel": number,        // 指値を置くときに使った節目の価格(その節目の値そのもの)。指値レッグを出さない/none の時は省略\n` +
     `  "stopLevel": number,         // ブレイク新規を置くときに使った節目の価格(同上)。ブレイク新規レッグを出さない/none の時は省略\n` +
     rangeShape +
@@ -1441,13 +1523,10 @@ export { stopSideOk };
 /** エントリーが refPrice の正しい側にあるか(幾何・純関数)。
  *  limit(指値=押し目/戻り): buy は現在値より下・sell は現在値より上。
  *  stop(逆指値=ブレイク追随): buy は現在値より上・sell は現在値より下。
- *  境界(entry===refPrice=距離0)は即約定=不正。refPrice 非有限は検証しない(true=従来通り通す)。 */
-export function entrySideOk(direction: 'buy' | 'sell', kind: 'limit' | 'stop', entry: number, refPrice: number): boolean {
-  if (!Number.isFinite(refPrice)) return true;
-  // buy 指値=下 / buy 逆指値=上 / sell 指値=上 / sell 逆指値=下。
-  const wantBelow = kind === 'limit' ? direction === 'buy' : direction === 'sell';
-  return wantBelow ? entry < refPrice : entry > refPrice;
-}
+ *  境界(entry===refPrice=距離0)は即約定=不正。refPrice 非有限は検証しない(true=従来通り通す)。
+ *  ★実体は core/entryLabel.ts(エントリー位置の規約の唯一の権威)。ここは従来の import 面を保つ再輸出
+ *    (stopSideOk と同じ形)。**挙動は1ビットも変えていない**(境界・非有限の扱いを含めて移設しただけ)。 */
+export { entryPositionOk as entrySideOk };
 
 /** LLM のテキスト応答から AiPlan を抽出・検証する純関数。refPrice は monitor 側の現在値で必ず上書きする。
  *  コードフェンスや前後の説明文が混じっていても最初の { … } を拾ってパースする。失敗時は { ok:false }。 */
@@ -1550,6 +1629,14 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   // ★v0.9.87(記録+表示): 価格の根拠にした節目。strategy と **同じ形**=欠落・不正でも計画は落とさない。
   const limitLevel = parseAiLevelPrice(o.limitLevel);
   const stopLevel = parseAiLevelPrice(o.stopLevel);
+  // ★v0.9.88(記録+表示): レッグごとの理由。strategyWhy と **完全に同じパース**
+  //   (parseAiRecordText = 非文字列/空白のみは undefined・trim のみ)。
+  //   ★欠落・不正でも計画は落とさない=採否・価格・脚落ち・noneReason は1バイトも変わらない。
+  const directionWhy = parseAiStrategyWhy(o.directionWhy);
+  const entryWhyForLimit = parseAiStrategyWhy(o.entryWhyForLimit);
+  const entryWhyForStop = parseAiStrategyWhy(o.entryWhyForStop);
+  const lcWhyForLimit = parseAiStrategyWhy(o.lcWhyForLimit);
+  const lcWhyForStop = parseAiStrategyWhy(o.lcWhyForStop);
   const withMeta = (p: AiPlan): AiPlan => {
     if (regime !== undefined) p.regime = regime;
     if (confidence !== undefined) p.confidence = confidence;
@@ -1557,6 +1644,14 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     if (strategyWhy !== undefined) p.strategyWhy = strategyWhy;
     if (limitLevel !== undefined) p.limitLevel = limitLevel;
     if (stopLevel !== undefined) p.stopLevel = stopLevel;
+    // ★v0.9.88: レッグごとの理由。**在るときだけ付ける**=書かれなかった回の AiPlan は従来と byte 一致。
+    //   ★レッグが落ちても理由は消さない: 「AI は出したがコードが落とした」回の理由こそ
+    //   台帳に残す価値がある(落ちた理由は leg_drops_json と並べて読む)。
+    if (directionWhy !== undefined) p.directionWhy = directionWhy;
+    if (entryWhyForLimit !== undefined) p.entryWhyForLimit = entryWhyForLimit;
+    if (entryWhyForStop !== undefined) p.entryWhyForStop = entryWhyForStop;
+    if (lcWhyForLimit !== undefined) p.lcWhyForLimit = lcWhyForLimit;
+    if (lcWhyForStop !== undefined) p.lcWhyForStop = lcWhyForStop;
     return p;
   };
   // ★見送り(direction:"none"): 価格は不要。rationale + refPrice のみで ok:true の正当な「見送り」応答。
@@ -1672,8 +1767,8 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   レッグは stopSideOk と entrySideOk の両方を満たすときだけ有効。違反レッグは落とす(既存の「片レッグ落とし」と同じ
   //   機構=entry+SL を省く)。ここは幾何(向き)のみで、LC 幅≤上限の強制は enforce の責務(不変)。
   //   両レッグとも違反で落ちたら「見送り(none)」を ok:true で返す。
-  const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!) && entrySideOk(o.direction, 'limit', limitEntry!, refPrice);
-  const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!) && entrySideOk(o.direction, 'stop', stopEntry!, refPrice);
+  const limitLegOk = hasLimitLeg && stopSideOk(o.direction, limitEntry!, stopLossForLimit!) && entryPositionOk(o.direction, 'limit', limitEntry!, refPrice);
+  const stopLegOk = hasStopLeg && stopSideOk(o.direction, stopEntry!, stopLossForStop!) && entryPositionOk(o.direction, 'stop', stopEntry!, refPrice);
   // ★v0.9.44(記録専用): どの検証で落ちたかをレッグ単位で判定して残す(採否は不変)。
   //   検証順(stopSideOk → entrySideOk)に合わせ、レッグ不在=missing / SL 向き違反=stopSide / 残りは geometry。
   // ★v0.9.57: 判定を **両レッグ落ちの分岐の外** へ出した(値は従来と同一・null=そのレッグは落ちていない)。
