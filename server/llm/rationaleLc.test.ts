@@ -285,9 +285,16 @@ describe('★プロンプトの例文がパーサで読めること(書式の SS
     expect(rows.map(r => [r.declaredYen, r.status])).toEqual([[null, 'undeclared']]);
   });
 
-  it('例文は実際にプロンプト(lcFloorRule / scalpJsonInstruction)へ入っている', () => {
+  // ★v0.9.94: プロンプトは **引き算の申告を要求しなくなった**(AI が出すのは幅だけ・損切りの価格は
+  //   こちらで付ける、というユーザーの設計を最後まで通した)。よって例文はプロンプトから消えている。
+  //   ★lcWidthDeclarationExample 自体は残す: **過去の台帳に残る申告** を読むためのパーサ側の書式 SSOT
+  //   (rationaleLc.ts が読む形)であり、消すと古い記録が読めなくなる。
+  //   ★帰結(正直に): これから記録される lc_audit_json は **ほぼ全件 undeclared** になる。
+  it('例文はプロンプトから消え、パーサ側の書式 SSOT としてだけ残る', () => {
     const placeholder = lcWidthDeclarationExample('指値レッグ', '(エントリー価格)', '(損切りの位置)', '(幅)');
-    expect(lcFloorRule(55)).toContain(placeholder);
-    expect(scalpJsonInstruction(38250, 55, 65, false)).toContain(placeholder);
+    expect(lcFloorRule(55)).not.toContain(placeholder);
+    expect(scalpJsonInstruction(38250, 55, 65, false)).not.toContain(placeholder);
+    // パーサは今も同じ書式を読める(過去の記録の読み取りが壊れていない)。
+    expect(placeholder).toContain('引き算');
   });
 });

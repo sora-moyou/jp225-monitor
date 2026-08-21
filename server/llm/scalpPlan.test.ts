@@ -11,7 +11,9 @@ import {
   pickNoneReason, enforceRangeEnabled,
   buildBiasNote, buildHeldNote, buildArmedNote, buildVisionNote, buildBandwalkNote,
   DEFAULT_LC_FLOOR_YEN, DEFAULT_LC_CEILING_YEN, LC_YEN_MAX,
-  resolveLcPresentation, LC_CEIL_MANUAL, LC_BUFFER_NOTE, LC_DERIVATION_ORDER, PLAN_BAD_EXAMPLES,
+  resolveLcPresentation, LC_CEIL_MANUAL, PLAN_BAD_EXAMPLES,
+  // ★v0.9.94: 自己検算③の削除で「範囲外を巻き込んでいない」ことを固定するため、各 SSOT を直接見る。
+  selfCheckNote, lcFloorRule, SL_SIDE_RULE,
   type ToolHandlers, type AiPlan, type KnobModes, type LcCeilingPresentation,
 } from './openai.js';
 import { describeRangeAnomaly } from '../signalTrade/rangeShape.js';
@@ -2085,7 +2087,8 @@ describe('buildStrategySpec(戦略仕様・完全版=全定数+委任状態+決�
     // ★v0.9.64: 緩衝の注記から数値「+5円」を撤去した(実測 2026-08-07: 損切りが 建値±5 に汚染。
     //   この「+5円」は v0.9.60 以降 参照先を失ったまま、損切りに足し引きする量を名指しする唯一の数値だった)。
     //   規則(「節目からわずかに離すだけ・幅を作る量ではない」)は残っているので、そちらを固定する。
-    expect(s).toContain('この緩衝は LC幅を作る量ではない');  // ストップ緩衝(量を持たない表現)
+    // ★v0.9.94: 損切りの緩衝(LC_BUFFER_NOTE)は定数ごと削除した(導出①への参照 + 上/下 の産地)。
+    expect(s).not.toContain('この緩衝は LC幅を作る量ではない');
     expect(s).not.toContain('★この「+5円」は');
     expect(s).toContain('50円');               // 最低距離
     expect(s).toContain('安全上限 150円');
@@ -2215,8 +2218,10 @@ describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
   it('JSON 出力前の自己検算を要求する', () => {
     for (const t of targets()) {
       expect(t).toContain('出力前に limitEntry と stopEntry を refPrice と比較し');
-      // ★自己検算は「省く」を言い切らない: 出力直前という最も直近性の高い位置で②の「選び直す」を打ち消さないため。
-      expect(t).toContain('省く前に、まず上の『節目を選び直す』を試すこと');
+      // ★v0.9.94: 「省く前に『節目を選び直す』」は導出の順序への参照だった。導出ごと消したので、この
+      //   参照も消してある(参照先の無い指示を残さない)。逃げ道(対の幅ごと省く)は残っている。
+      expect(t).toContain('満たさないレッグは 対の幅ごと省略すること');
+      expect(t).not.toContain('節目を選び直す');
     }
   });
 
@@ -2298,11 +2303,78 @@ describe('scalp プロンプト 向きの構造化(v0.9.44)', () => {
       }
     });
 
-    it('★②③ は1文字も変わっていない(この版で動かした変数は① だけ)', () => {
+    // ★v0.9.94: ② も削除した。導出の順序を消すと「損切りの根拠にした節目」という概念自体が無くなり、
+    //   ②は **参照先の無い検算** になるため(孤児を残さない)。自己検算に残るのは ① だけ。
+    it('★② は削除された(導出を消したので「損切りの根拠にした節目」が存在しない)', () => {
       for (const t of targets()) {
-        expect(t).toContain('②節目の別: 損切りの根拠にした節目が、エントリーの根拠にした節目と **別**(もう一段外側)か。');
-        expect(t).toContain('③損切りの幅: エントリーと損切りの位置の距離を実際に引き算し');
-        expect(t).toContain('その引き算を rationale に書き、答えと 実際に出力する lcWidthFor… の数値が一致しているか。');
+        expect(t).not.toContain('②節目の別');
+        expect(t).not.toContain('損切りの根拠にした節目');
+      }
+    });
+  });
+
+  // ─── ★v0.9.94: 自己検算③(損切りの幅)を **丸ごと削除** した ──────────────────────────
+  //
+  // ■ ユーザー指示(逐語)「LC幅をAIにも求め、LC価格はこちらでつけてください。」→「a です。LCの自己検証は不要です。」
+  // ■ 何が壊れていたか
+  //   契約に損切りの **価格** フィールドは無い(v0.9.70)。価格は stopLossFromWidth が direction から付ける。
+  //   ★なのに旧③は「エントリーと **損切りの位置** の距離を実際に **引き算** し」と要求していた。
+  //   「損切りの位置」は出力に存在しないので、AI は毎回それを **想像して** 引き算していた。
+  //   実測: LC の理由の箱は 100% がこの引き算で、幅が合わない 14/39・向きが逆 24/39。
+  // ■ このテストが守るもの
+  //   ③-a 自己検算に ③ が無い / 見出しの数が「2点」になっている(数の合わない指示を残さない)
+  //   ③-b 末尾の1文は残っている(①②に対しても意味を持つ)
+  //   ③-c ★**幅の下限/上限は他の SSOT に残っている**(自己検算だけを消した=範囲外を巻き込んでいない)
+  //   ③-d ★**③の外の「損切りの位置」「引き算」は1文字も減っていない**
+  //   ★① と ② は1文字も変わっていない
+  describe('★自己検算③(損切りの幅)は削除された', () => {
+    it('③-a 自己検算に ③ が無く、見出しは「次の2点」', () => {
+      for (const t of targets()) {
+        expect(t, '③ が残っている').not.toContain('③損切りの幅');
+        expect(t).toContain('レッグごとに次の1点を確かめること。');
+        for (const w of ['次の2点', '次の3点']) expect(t, '数が合っていない').not.toContain(w);
+      }
+      // ★SSOT 単体でも同じ(呼び出し側の連結に依存しない)。
+      expect(selfCheckNote()).not.toContain('③');
+      expect(selfCheckNote().split('\n').filter(l => l.trim().startsWith('①') || l.trim().startsWith('②')))
+        .toHaveLength(1);
+    });
+
+    it('③-b 末尾の1文は残っている(①②に対しても意味を持つ)', () => {
+      for (const t of targets()) {
+        expect(t).toContain('満たさないレッグは 対の幅ごと省略すること。両レッグとも満たさなければ direction:"none" にする。');
+      }
+    });
+
+    it('★③-c 幅の下限/上限は他の SSOT に残っている(自己検算だけを消した)', () => {
+      // 最優先ブロックの不等式(lcFloorRule)。
+      expect(lcFloorRule(55)).toContain('55円');
+      // JSON 契約のフィールド注記(lcNote)。
+      const j = scalpJsonInstruction(38250, 55, 160);
+      expect(j).toContain('55円未満は不可');
+      expect(j).toContain('160円超は出さない');
+      // 戦略仕様の初期LC行。
+      expect(buildStrategySpec(SPEC_BASE)).toContain('初期LC(損切り)幅');
+    });
+
+    // ★v0.9.94: 「損切りの価格を AI に導かせる」記述は **どこにあっても同じ対象** と判断し、
+    //   lcFloorRule と JSON 契約の rationale 注記からも外した(ユーザー設計: 幅だけ出す/価格はこちらで付ける)。
+    //   ★残るのは PLAN_BAD_EXAMPLES(過去の実出力の引用)だけ=指示ではなく例なので参照先を必要としない。
+    it('★③-d 価格を導かせる要求は指示側から消え、幅の範囲だけが残る', () => {
+      expect(lcFloorRule(55)).not.toContain('引き算');
+      expect(lcFloorRule(55)).not.toContain('損切りの位置');
+      expect(lcFloorRule(55)).toContain('55円');
+      expect(scalpJsonInstruction(38250, 55, 160)).not.toContain('幅を出した引き算');
+      expect(scalpJsonInstruction(38250, 55, 160)).toContain('55〜160円');
+      // ★SL_SIDE_RULE に残る「エントリーからの引き算の答え(=価格)を幅の欄に書かないこと」は
+      //   **価格を幅の欄に入れさせないための防御** であって、価格を導かせる要求ではない=残す。
+      expect(SL_SIDE_RULE).toContain('幅の欄に書かないこと');
+      expect(SL_SIDE_RULE).not.toContain('損切りの位置');
+    });
+
+    it('★① は1文字も変わっていない(v0.9.93 で直したもの)', () => {
+      for (const t of targets()) {
+        expect(t).toContain('①エントリーの向き: refPrice と、出したレッグの limitEntry / stopEntry を実際に大小比較し、小さい順に並べて rationale に書くこと。両レッグを出したなら、真ん中に来る名前は refPrice。');
       }
     });
   });
@@ -2667,7 +2739,8 @@ describe('3ビルダーの語彙/規約パリティ(v0.9.44)', () => {
     expect(s).toContain('±100円');
     expect(s).toContain('90秒');
     // ★v0.9.64: 緩衝の注記は「+5円」という数値を持たない表現へ(規則は不変)。
-    expect(s).toContain('この緩衝は LC幅を作る量ではない');
+    // ★v0.9.94: 損切りの緩衝(LC_BUFFER_NOTE)は定数ごと削除した(導出①への参照 + 上/下 の産地)。
+    expect(s).not.toContain('この緩衝は LC幅を作る量ではない');
     expect(s).toContain('50円');
     expect(s).toContain('安全上限 150円');
     expect(s).toContain('ラチェット');
@@ -3018,8 +3091,8 @@ describe('レビュー指摘の修正(v0.9.44)', () => {
       expect(t).not.toContain('まず不等式を満たす側の節目を選び直すこと');
       expect(t).not.toContain('節目ではなく不等式を優先し、そのレッグを省く');
     }
-    // ★損切り側の「選び直す」は不変(消していないことの確認)。
-    expect(buildScalpQuestion()).toContain('もう一段外側');
+    // ★v0.9.94: 損切り側の「選び直す/もう一段外側」も導出ごと消えた(参照先が無くなるため)。
+    expect(buildScalpQuestion()).not.toContain('もう一段外側');
   });
 
   it('⑥ direction の enum は1箇所だけで、range 有効/無効と矛盾しない', () => {
@@ -3269,13 +3342,18 @@ describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従�
     expect(b).not.toContain('あなたが決める');                 // 委任の文言は混入しない
   });
 
-  it('★A と B の差は「上限の提示」だけ: ②緩衝・③導出順序は byte 単位で同一・同回数', () => {
+  // ★v0.9.94: ②緩衝(LC_BUFFER_NOTE)と ③導出順序(LC_DERIVATION_ORDER)は **定数ごと削除** した。
+  //   どちらも「損切りの価格を AI に導かせる」記述で、ユーザーの設計(幅だけ出す/価格はこちらで付ける)と
+  //   矛盾し、かつ「買いは下・売りは上」を計9回印字する産地だった(実測 sell/stop/上 22件の源)。
+  //   ⇒ A/B で同回数であることを固定していたこの it は、**両方とも0回である**ことの固定に置き換える。
+  it('★②緩衝・③導出順序は A/B どちらにも出ない(定数ごと削除した)', () => {
     const a = compose('ai'), b = compose('manual');
-    expect(countOf(a, LC_BUFFER_NOTE)).toBe(countOf(b, LC_BUFFER_NOTE));
-    expect(countOf(a, LC_DERIVATION_ORDER)).toBe(countOf(b, LC_DERIVATION_ORDER));
-    expect(countOf(a, LC_BUFFER_NOTE)).toBeGreaterThanOrEqual(3);
-    expect(countOf(a, LC_DERIVATION_ORDER)).toBeGreaterThanOrEqual(3);
-    // JSON 注記の +5円 表現も A/B 同一。
+    for (const t of [a, b]) {
+      expect(t).not.toContain('導出の順序');
+      expect(t).not.toContain('損切りの緩衝');
+      expect(t).not.toContain('根拠に選んだ節目から わずかに離すだけ');
+    }
+    // JSON 注記の +5円 表現も A/B 同一(従来どおり0)。
     expect(countOf(a, '本来のストップ位置から+5円外側')).toBe(countOf(b, '本来のストップ位置から+5円外側'));
   });
 
@@ -3290,7 +3368,9 @@ describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従�
       //   規則は失われていないので、検証も「+5円は緩衝であって幅ではない」を残しつつ、置き換え先の例を固定する。
       // ★v0.9.64: 主語だった数値「+5円」を撤去(参照先を失ったまま、損切りに足し引きする量を
       //   名指しする唯一の数値になっていた)。規則そのもの=「節目からわずかに離すだけ・幅を作る量ではない」を固定する。
-      expect(t).toContain('わずかに離すだけ(買いは下へ・売りは上へ)。この緩衝は LC幅を作る量ではない');
+      // ★v0.9.94: 緩衝の注記ごと削除(「根拠に選んだ節目」= 導出①への参照であり、
+      //   「買いは下へ・売りは上へ」= 損切り基準の上/下 の産地でもあった)。
+      expect(t).not.toContain('わずかに離すだけ');
       expect(t).toContain('緩衝を、損切りの幅そのものと読んだ形');
       expect(t).not.toContain('節目の緩衝(5円)');
     }
@@ -3298,8 +3378,13 @@ describe('v0.9.56: LC上限の提示(委任=実効上限の範囲 / 手動=従�
 
   it('★③: 節目 → ストップ位置 → 幅 の順序が明示され、幅を先に決めるのは誤りと書いてある', () => {
     for (const t of [compose('ai'), compose('manual')]) {
-      expect(t).toContain('導出の順序(必ずこの順)');
-      expect(t).toContain('先に幅(下限や上限の数値)を決めてから節目に当てはめるのは誤り');
+      // ★v0.9.94: 導出の順序は定数ごと削除(理由は scalpPlan.ts の削除の記録を参照)。
+      //   ★同じブロックに在った **固着対策の1文**(「LC幅は結果であって出発点ではない…」)も一緒に消えた。
+      //   同じ圧力は PLAN_BAD_EXAMPLES の ✗③(幅が毎回ほぼ同じ・下限ちょうど)/ ✗④(両レッグ同幅)が持つ。
+      expect(t).not.toContain('導出の順序(必ずこの順)');
+      expect(t).not.toContain('先に幅(下限や上限の数値)を決めてから節目に当てはめるのは誤り');
+      expect(PLAN_BAD_EXAMPLES).toContain('幅が毎回ほぼ同じ・下限ちょうど');
+      expect(PLAN_BAD_EXAMPLES).toContain('両レッグが同じ幅');
     }
   });
 

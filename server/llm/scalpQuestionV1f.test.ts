@@ -97,11 +97,16 @@ describe('v1f 質問文 — v1 との差分は「LC の理由の箱の書かせ�
     expect(note).toContain('lcWidthForLimit と対で省略');
   });
 
-  it('(4) rationale の検算要求は 両腕とも 外れていない(符号ミス3倍の実測)', () => {
+  // ★v0.9.94: 自己検算③ から「引き算して rationale に書く」を外した(AI に **存在しない価格** を
+  //   想像させていたため)。★rationale の引き算要求そのものは **別の SSOT**(lcFloorRule /
+  //   JSON 契約の rationale 注記)に残っており、両腕とも外れていない=ここで守る不変条件は不変。
+  // ★v0.9.94: 引き算の申告要求そのものを削除した(AI が出すのは幅だけ/価格はこちらで付ける)。
+  //   ★この it が守る不変条件は「両腕で同じ」に読み替える: **幅の下限の要求** は両腕とも外れていない。
+  it('(4) 幅の下限の要求は 両腕とも 外れていない(引き算の申告は両腕とも消えた)', () => {
     for (const [name, t] of [['v1', V1()], ['v1f', V1F()]] as const) {
-      expect(t, `${name}: rationale の引き算要求が消えている`).toContain('幅を出した引き算');
+      expect(t, `${name}: 幅の下限の要求が消えている`).toContain('★【最優先: 損切りの幅(無条件・例外なし)】');
       expect(t, `${name}: 自己検算が消えている`).toContain('★【出力前の自己検算(必須)】');
-      expect(t, `${name}: 自己検算③(引き算を rationale に書く)が消えている`).toContain('その引き算を rationale に書き');
+      expect(t, `${name}: 引き算の申告が残っている`).not.toContain('その引き算をそのまま書くこと');
     }
   });
 

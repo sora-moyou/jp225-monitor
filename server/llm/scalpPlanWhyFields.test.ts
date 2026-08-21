@@ -109,9 +109,11 @@ describe('★v0.9.88: 理由の箱を JSON 契約へ足す(全腕に同時に)',
   it('★rationale の契約(LC検算の要求)を1文字も変えていない', () => {
     const p = scalpJsonInstruction(REF, 55, 65, true, LC_CEIL_MANUAL);
     const line = p.split('\n').find(l => l.includes('"rationale"'))!;
-    // 監査(server/llm/rationaleLc.ts)が生の rationale を読む。式の要求を外すと符号ミスが3倍になる実測がある。
-    expect(line).toContain('幅を出した引き算');
-    expect(line).toContain('上の lcWidthFor… と一致させる');
+    // ★v0.9.94: 引き算の申告要求は外した。「符号ミス3倍」は **損切りの価格フィールドが在った時期** の
+    //   実測で、v0.9.70 以降は価格を書く場所が無く符号は direction からコードが付ける(逆位置は表現不能)。
+    //   ★残すのは「省略の規約」= レッグを出さないなら そのキー自体を出さない(食い違いの防止)。
+    expect(line).not.toContain('幅を出した引き算');
+    expect(line).toContain('「省略」と述べたレッグは そのキー自体を出力しない');
   });
 });
 
