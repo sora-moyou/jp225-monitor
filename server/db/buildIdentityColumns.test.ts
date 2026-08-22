@@ -141,6 +141,43 @@ describe('signal_plans / signal_trades: app_version / prompt_build(実ファイ�
     expect(line).toContain('v1f=pb1:2222222222222222');
     db.close();
   });
+
+  // ★段5: A/B 分割の実行時状態(measurement discontinuity)を meta に載せる。
+  it('★段5: planSplit(A/B 分割の実行時状態)が meta の JSON と人が読む1行の両方に載る', () => {
+    const db = new DatabaseSync(tmpFile('jp225-meta-split.db'));
+    initSchema(db);
+    setBuildIdentityMeta(db, {
+      appVersion: '1.2.3',
+      promptBuilds: { v1: 'pb1:1111111111111111' },
+      at: Date.parse('2026-08-22T00:00:00Z'),
+      planSplit: {
+        enabled: true,
+        aPromptBuild: 'pb1:aaaaaaaaaaaaaaaa',
+        bPromptBuilds: { buy: 'pb1:bbbbbbbbbbbbbbbb', sell: 'pb1:cccccccccccccccc' },
+      },
+    });
+    expect(JSON.parse(getMeta(db, BUILD_IDENTITY_KEY) ?? '{}')).toMatchObject({
+      planSplit: {
+        enabled: true, aPromptBuild: 'pb1:aaaaaaaaaaaaaaaa',
+        bPromptBuilds: { buy: 'pb1:bbbbbbbbbbbbbbbb', sell: 'pb1:cccccccccccccccc' },
+      },
+    });
+    expect(getMeta(db, BUILD_IDENTITY_STATUS_KEY) ?? '').toContain('planSplit=on');
+    db.close();
+  });
+
+  it('★段5: planSplit を渡さない既存呼び出しは JSON にキーが増えない(後方互換)', () => {
+    const db = new DatabaseSync(tmpFile('jp225-meta-nosplit.db'));
+    initSchema(db);
+    setBuildIdentityMeta(db, {
+      appVersion: '1.2.3', promptBuilds: { v1: 'pb1:1111111111111111' },
+      at: Date.parse('2026-08-22T00:00:00Z'),
+    });
+    const parsed = JSON.parse(getMeta(db, BUILD_IDENTITY_KEY) ?? '{}');
+    expect(Object.keys(parsed).sort()).toEqual(['appVersion', 'at', 'promptBuilds']);
+    expect(getMeta(db, BUILD_IDENTITY_STATUS_KEY) ?? '').not.toContain('planSplit');
+    db.close();
+  });
 });
 
 describe('proposals: app_version / prompt_build(実ファイル SQLite)', () => {

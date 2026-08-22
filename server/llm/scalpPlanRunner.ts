@@ -11,10 +11,23 @@ import {
 import { buildBandwalkSamples, evaluateBandwalk, DEFAULT_BANDWALK, type Bandwalk } from '../bandwalk.js';
 import { getRealtimeOHLCBars } from '../feedBars.js';
 import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
-import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades } from '../db/store.js';
+import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades, getDailyCloses } from '../db/store.js';
 import { collectRecentBars } from '../barsSource.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
+// ★v0.9.98: 基礎データ(日足)ブロック。純関数 + 既存の取得だけ(新しい計算・新しい閾値は無し)。
+import { buildBasedataContext, type DailyBar } from './basedataContext.js';
+// ★v0.9.100(段4): A/B 分割が有効なときだけ、A 用(節目・アラート・長期高安ぬき)の文脈も作る。
+import { buildTrendContext } from './abContext.js';
+import { isPlanSplitEnabled } from './planSplitConfig.js';
+import { getIndicatorsSnapshot } from '../loops/indicatorsLoop.js';
+import type { SqueezeState } from './planVariants.js';
+import type { SplitRecord } from './scalpPlanSplit.js';
+// ★段5: A/B 分割のプロンプトの型の指紋(データを含まない・pb1 と同じ作法)。
+import { aTrendPromptBuildFp, bOrderPromptBuildFp } from './abPromptBuild.js';
+// ★段5続き: 文脈のどのブロックが実際に入ったか(データ不足による黙示的な省略)を検出する純関数。
+import { detectContextPresence, type ContextPresence } from './contextPresence.js';
+import { DAILY_CLOSES_KEEP, DAILYBAND_FETCH_SESSIONS } from '../dailyBand.js';
 import { DEFAULT_CALLER, type LlmCaller } from './caller.js';
 import type { ExitVariant } from '../signalTrade/exit/index.js';
 import { DEFAULT_PROMPT_VARIANT, type PromptVariant } from './promptVariant.js';
@@ -41,6 +54,35 @@ const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
  *  ★A/B(caller='default'・実取引につながる経路)では **一切外さない**(従来どおり履歴を入れる)。 */
 export const GENERATOR_OMITTED_CONTEXT: readonly string[] = ['paper-trade-history'];
 
+/** ★BB スクイーズ判定の解決結果。★state(判定できた) と unavailable(判定できなかった理由) は **別物**。
+ *  これを分けないと「スクイーズでなかった」と「測れなかった」が同じ NULL に潰れる(段1 の設計)。 */
+export interface SqueezeForPlan { state: SqueezeState; unavailable?: string }
+
+/** ★既存の指標スナップショットから、版の選択に使う生値と「使えなかった理由」を取り出す純関数。
+ *  ★新しい判定は作らない(buildSqueezeSnapshot の結果をそのまま読むだけ)。
+ *    snapshot 無し           → 'no_snapshot'
+ *    progress が closed/disabled → その語(取引時間外/機能OFF で **計算そのものが止まっている**)
+ *    squeeze 欠落            → 'no_squeeze'
+ *    ready=false             → 'ready_false'(参照本数が揃っていない)
+ *    それ以外                → state をそのまま('squeeze' / 'bulge' / null=どちらでもない) */
+export function resolveSqueezeFromSnapshot(
+  snap: ReturnType<typeof getIndicatorsSnapshot>,
+): SqueezeForPlan {
+  if (!snap) return { state: null, unavailable: 'no_snapshot' };
+  const ps = snap.progress?.state;
+  if (ps === 'closed' || ps === 'disabled') return { state: null, unavailable: ps };
+  const sq = snap.squeeze;
+  if (!sq) return { state: null, unavailable: 'no_squeeze' };
+  if (!sq.ready) return { state: null, unavailable: 'ready_false' };
+  return { state: sq.state };
+}
+
+/** 実行時の解決(スナップショットを読むだけ)。 */
+function resolveSqueezeForPlan(): SqueezeForPlan {
+  try { return resolveSqueezeFromSnapshot(getIndicatorsSnapshot()); }
+  catch { return { state: null, unavailable: 'no_snapshot' }; }
+}
+
 /** 構造化データ(数値主軸)＋自分の仮想取引成績を組み立てる(DB 読み・欠損は各ブロック省略)。
  *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。
  *  ★caller!=='default'(分析用)のときだけ仮想取引の成績ブロックを外す(理由は GENERATOR_OMITTED_CONTEXT)。
@@ -57,7 +99,7 @@ export function buildRichScalpContext(
  *  bandwalk: Bandwalk=成立中 / null=非成立 / undefined=判定していない(機能OFF・目線なし・足不足)。 */
 export function buildRichScalpContextResult(
   symbol: string, currentPrice: number, now: number, profile?: SignalProfile, caller: LlmCaller = DEFAULT_CALLER,
-): { text: string; bandwalk?: Bandwalk | null } {
+): { text: string; trendText?: string; bandwalk?: Bandwalk | null } {
   if (!(typeof currentPrice === 'number' && currentPrice > 0)) return { text: '' };
   // ★DB が開けなくても止めない: メモリ内ライブ足だけで足/ボラ/スイング/テクニカルは組める。
   //   indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で AI 文脈をゼロにしない。
@@ -74,6 +116,28 @@ export function buildRichScalpContextResult(
     const levels = getLevelsSnapshot();
     const alerts = db ? getRecentAlerts(db, 8) : [];
     const session = db ? (getSessionOHLC(db, symbol, 1)[0] ?? null) : null;
+    // ★v0.9.98(基礎データ): 日足MA/バンド/長期高安/日足OHLC。★出所は **アラートが読むのと同じ**
+    //   daily_closes(基礎データ import が歴史を埋め、ライブが確定日を追記する)と bars_1m のセッション集計。
+    //   ■ 古い値が残らない: ここで **毎回 DB から読み直す**。モジュール側にキャッシュを置いていないので、
+    //     collector が止まって系列が伸びなければ **確定日が古いまま見出しに出る**(黙って新しい顔にならない)。
+    //   ■ DB が無い/読めない回は空配列 → basedataContext が「取得できず」と書く(ブロックを消さない)。
+    let dailyCloses: number[] = [];
+    let dailyBars: DailyBar[] = [];
+    if (db) {
+      try {
+        dailyCloses = getDailyCloses(db, symbol, DAILY_CLOSES_KEEP).map(r => r.close);
+        // 取引日足 = Day セッション。★古い→新しい順に並べ、直近 DAILY_CLOSES_KEEP 本に切る。
+        dailyBars = getSessionOHLC(db, symbol, DAILYBAND_FETCH_SESSIONS)
+          .filter(x => x.session === 'Day')
+          .sort((a, b) => a.sessionDate.localeCompare(b.sessionDate))
+          .slice(-DAILY_CLOSES_KEEP)
+          .map(x => ({ sessionDate: x.sessionDate, open: x.open, high: x.high, low: x.low, close: x.close }));
+      } catch (e) {
+        // ★失敗を握りつぶして「日足が無い」ように見せない: 空にして basedataContext に書かせる。
+        dailyCloses = []; dailyBars = [];
+        console.warn('[scalp-plan] 基礎データ(日足)取得失敗:', e instanceof Error ? e.message : String(e));
+      }
+    }
     // ★v0.8.2: 自系統の仮想取引の成績のみを文脈に入れる(A は 'A'=NULL含む / B は 'B')。
     //   A は自分の履歴だけを見る=B の仮想取引に汚染されない(=A の提案が B の存在で変わらない)。
     // ★分析用(caller!=='default')は **両腕とも** 仮想取引の成績を読まない(DB も引かない)。理由は
@@ -101,7 +165,21 @@ export function buildRichScalpContextResult(
     // 外した回は buildScalpTradeHistory を呼ばない(空配列で呼んで '' を得るのと結果は同じだが、
     // 「読んでいない」ことをコード上でも一意にする)。
     const history = omitHistory ? '' : buildScalpTradeHistory(trades, now);
-    return { text: [marketData, history].filter(Boolean).join('\n\n'), bandwalk };
+    // ★基礎データは **足の直後・仮想取引の成績の前** に置く(大きい時間軸 → 小さい時間軸 の順)。
+    const basedata = buildBasedataContext({ dailyCloses, dailyBars, currentPrice });
+    // ★A/B 分割が有効なときだけ A 用の文脈も組む(無効なら1回も作らない=無駄な計算をしない)。
+    //   ★同じ材料(bars/levels/alerts/日足)から作るので、A と B は **同じ断面** を見る。
+    const trendText = isPlanSplitEnabled()
+      ? buildTrendContext({
+        market: { bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: indicatorsOn, bandwalk },
+        basedata: { dailyCloses, dailyBars, currentPrice },
+      })
+      : undefined;
+    return {
+      text: [marketData, basedata, history].filter(Boolean).join('\n\n'),
+      ...(trendText === undefined ? {} : { trendText }),
+      bandwalk,
+    };
   } catch (e) {
     console.warn('[scalp-plan] rich context 構築失敗(省略):', e instanceof Error ? e.message : String(e));
     return { text: '' };
@@ -287,6 +365,12 @@ async function runScalpPlanWithChartInner(
   const contextAt = Date.now();
   const richResult = buildRichScalpContextResult(symbol, price ?? 0, contextAt, overrides.profile, caller);
   const rich = richResult.text;
+  // ★段5続き(RECORD-ONLY): その回に getNews() を呼んだ結果を1回だけ変数へ控える
+  //   (buildScalpPlan への news 入力と、下の contextPresence 判定の両方で同じ値を使う=二重に呼ばない)。
+  const newsItems = getNews();
+  // ★段5続き(RECORD-ONLY): 文脈の各ブロックが実際に入ったか(旧経路でも無条件に計算する=
+  //   buildRichScalpContextResult 自体が分割の有無に関係なく必ず呼ばれるため)。
+  const contextPresence = detectContextPresence(rich, newsItems.length);
   if (caller !== DEFAULT_CALLER) {
     // 外したことは server.log にも残す(台帳が読めない状況でも「いつから外したか」が追える)。
     console.log(`[scalp-plan] ${caller}: 文脈から除外=${GENERATOR_OMITTED_CONTEXT.join(',')}(母集団の独立性・両腕とも同一)`);
@@ -297,12 +381,18 @@ async function runScalpPlanWithChartInner(
 
   // ★RECORD-ONLY: buildScalpPlan が組み上げたプロンプトの指紋(本文は受け取らない)。
   let promptFp: string | null = null;
+  // ★RECORD-ONLY(段5): A/B 分割の測定材料。onSplitRecord コールバックが
+  //   buildScalpPlan の実行中(分割が実際に走った回だけ)に埋める。attachSplitRecord がこれを
+  //   最終結果へ additive に載せ、下流(engine → planLedger → signal_plans)へ届く。
+  let splitRecord: SplitRecord | null = null;
+  // ★版の選択に使う BB スクイーズ判定の生値と、使えなかった理由(既存の判定を読むだけ)。
+  const squeeze = resolveSqueezeForPlan();
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
   // ★v0.9.93: いちばん外側で「版とプロンプトの型」を載せる(ok:true / ok:false のどちらにも付く)。
-  return attachBuildIdentity(attachTrendDir(attachChartVision(attachGeneratorRecord(attachPlanProvenance(await buildScalpPlan({
+  return attachContextPresence(attachBuildIdentity(attachTrendDir(attachChartVision(attachGeneratorRecord(attachSplitRecord(attachPlanProvenance(await buildScalpPlan({
     symbol,
     prices,
-    news: getNews(),
+    news: newsItems,
     // chat と同じく、バー蓄積中でも節目メドを出せるよう fallbackPrice を渡す。勢い1行を末尾に注入済み。
     technical,
     chartImageDataUrl,
@@ -318,10 +408,57 @@ async function runScalpPlanWithChartInner(
     // ★バンドウォーク: 成立中のときだけプロンプトの「距離50円 / 節目起点」を緩める(LC は緩めない)。
     //   AI 文脈(ブロックG)に書いたものと **同じ判定結果** を渡す(画面/文脈/プロンプトで食い違わせない)。
     bandwalk: richResult.bandwalk,
+    // ★A/B 分割(段4): A に渡す文脈(節目・アラート・長期高安ぬき)。分割が無効なら undefined=使われない。
+    //   ★勢い1行と基礎テクニカルは B と同じものを付ける(A も「いまの勢い」は判断に要る)。
+    technicalForTrend: richResult.trendText === undefined
+      ? undefined
+      : `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime, rangeEnabled)}\n\n${richResult.trendText}`,
+    // ★版の選択に使う BB スクイーズ判定の生値と、使えなかった理由(段5 で台帳に残す)。
+    squeezeState: squeeze.state,
+    ...(squeeze.unavailable ? { squeezeUnavailable: squeeze.unavailable } : {}),
+    // ★RECORD-ONLY: A/B 分割の測定材料(段5 で台帳へ)。
+    onSplitRecord: (r) => { splitRecord = r; },
     // ★RECORD-ONLY: 送るプロンプトの指紋を1回だけ受け取る(本文は渡ってこない)。
     onPromptFingerprint: (fp) => { promptFp = fp; },
-  }), contextAt, () => promptFp), caller, chartShot), visionDecision), regime.trendDir),
-    overrides.promptVariant);
+  }), contextAt, () => promptFp), splitRecord), caller, chartShot), visionDecision), regime.trendDir),
+    overrides.promptVariant), contextPresence);
+}
+
+/** ★段5(RECORD-ONLY): A/B 分割の測定材料(SplitRecord)を結果に additive で載せる。
+ *
+ *  ■ なぜここで載せるか(scalpPlan.ts では載せない)
+ *    scalpPlan.ts(buildScalpPlan)は onSplitRecord コールバックで record を **呼び出し側へ渡すだけ**
+ *    (段4)。段5 でその中身を最終結果へ実際に反映させるのはこの層の責務にする——
+ *    aPromptBuild/bPromptBuild の計算(abPromptBuild.ts)を scalpPlan.ts に持ち込まないため
+ *    (promptBuild.ts と同じ理由: 層を混ぜない)。
+ *  ■ 旧経路(分割 OFF)は record が null のまま(コールバックが1度も呼ばれない)= splitRecord は
+ *    結果に乗らない=signal_plans の新列は NULL(段5 の後方互換の要)。
+ *  ■ aPromptBuild は record がある回(=A が実際に呼ばれた回)には必ず載せる。
+ *    bPromptBuild は bVariant が実際の版(buy/sell/range-fade/range-breakout)のときだけ載せる
+ *    (bVariant='none'=B を呼んでいない回に「B の型」を捏造しない)。 */
+function attachSplitRecord(result: ScalpPlanResult, record: SplitRecord | null): ScalpPlanResult {
+  if (!record) return result;
+  const withA: SplitRecord = { ...record, aPromptBuild: aTrendPromptBuildFp() };
+  const withB: SplitRecord = record.bVariant === 'none'
+    ? withA
+    : { ...withA, bPromptBuild: bOrderPromptBuildFp(record.bVariant) };
+  return { ...result, splitRecord: withB };
+}
+
+/** ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったかを結果に additive で載せる。
+ *
+ *  ■ なぜ全経路(A/B=default も分析用=generator も)で載せるか
+ *    「本当に帯(55〜160円)しか手がかりが無い回」が何%あるかを測るのが目的なので、
+ *    A/B 分割の有無・caller に関係なく **常に** 記録する(buildRichScalpContextResult 自体が
+ *    分割の有無と無関係に無条件で呼ばれるため、この関数も同様に無条件で呼ぶ)。
+ *  ■ ★旧経路(分割 OFF)でも記録される: contextPresence は分割の分岐より **前** で
+ *    (buildRichScalpContextResult の直後に)計算しているので、isPlanSplitEnabled() の値に
+ *    一切依存しない。
+ *  ■ NULL の意味: この関数を持たない旧版(今回のリリース前)で記録された行だけが NULL になる。
+ *    「入った」false と「その版に無い」NULL を混同させないため、ここでは常に値を持つ
+ *    ContextPresence オブジェクトを渡す(全部 false の値を返すことはあっても、呼ばないことは無い)。 */
+function attachContextPresence(result: ScalpPlanResult, presence: ContextPresence): ScalpPlanResult {
+  return { ...result, contextPresence: presence };
 }
 
 /** ★v0.9.93(RECORD-ONLY): 「この結果を作ったのはどの版・どの文面か」を載せる。

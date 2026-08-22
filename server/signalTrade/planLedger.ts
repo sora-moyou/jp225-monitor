@@ -88,6 +88,13 @@ export interface SignalPlanRecordInput {
   /** ★ARM した回だけ: 未約定待ち時間(armed-timeout までの猶予)の決定内訳。
    *  「なぜこの待ち時間になったか」を後から読めるようにするための記録(採否には一切影響しない)。 */
   armWait?: ArmWaitDecision | null;
+  /** ★v0.9.96(RECORD-ONLY): ARM 直前のゲートの生数値。
+   *  driftYen  … |plan.refPrice − ARM 時 live|[円]。live が取れない回は未指定(=NULL)。
+   *  staleLegs … 「もう通過している」と判定されたレッグの本数(0/1/2)。判定を走らせなかった回は未指定。
+   *  ★どちらも **閾値を超えたときだけ** ではなく **測れたら必ず** 入れる: 分布が見たい
+   *    (200円という上限が妥当かを後から見直すため)。採否には一切影響しない。 */
+  driftYen?: number | null;
+  staleLegs?: number | null;
 }
 
 /** 1計画サイクルぶんの挿入行を組み立てる(純関数)。
@@ -105,8 +112,42 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   // ★v0.9.93(RECORD-ONLY): **この行を書いたのはどの版・どの文面か**。error 分岐より前に載せる
   //   =「計画が出なかった回はどの版で起きたか」も残る(版が記録に無いと解析が間接推定に落ちる)。
   //   ★prompt_build は pb1(固定の合成コンテキストで描いた文面の指紋)。sp1 と混ぜない。
+  // ★v0.9.96(RECORD-ONLY): ARM 直前のゲートの生数値。error 分岐より前に載せる
+  //   =「計画は出たが drift で落ちた」回も残る(この列が無いと console ログにしか出ない)。
+  if (input.driftYen != null && Number.isFinite(input.driftYen)) row.driftYen = input.driftYen;
+  if (input.staleLegs != null && Number.isFinite(input.staleLegs)) row.staleLegs = input.staleLegs;
   if (typeof result.appVersion === 'string') row.appVersion = result.appVersion;
   if (typeof result.promptBuild === 'string') row.promptBuild = result.promptBuild;
+  // ★段5(RECORD-ONLY): A/B 分割の測定材料。error 分岐より前に載せる
+  //   = 「A は答えたが B が呼べなかった」ような回(ok:false)にも、目線側の記録だけは残る。
+  //   ★b_variant / squeeze_state は SplitRecord では必須(常に値を持つ)ので、in がある回は必ず writes する
+  //   (undefined と null を混ぜない・既存の8列の規約と同じ)。
+  const sr = result.splitRecord;
+  if (sr) {
+    if (sr.aDirection !== undefined) row.aDirection = sr.aDirection;
+    if (sr.aWhy !== undefined) row.aWhy = sr.aWhy;
+    row.bVariant = sr.bVariant;
+    row.squeezeState = sr.squeezeState;
+    if (sr.squeezeUnavailable !== undefined) row.squeezeUnavailable = sr.squeezeUnavailable;
+    if (sr.bStrategy !== undefined) row.bStrategy = sr.bStrategy;
+    if (sr.aiWhy !== undefined) row.aiWhy = sr.aiWhy;
+    // ★段6: B が「判断に必要なデータが足りなかった」と自己申告した自由文。ai_why とは別列。
+    if (sr.missingData !== undefined) row.missingData = sr.missingData;
+    if (sr.toolCalls !== undefined) row.toolCalls = sr.toolCalls;
+    // ★段5: A/B それぞれを答えたプロバイダ。callWithFallback は呼び出しごとにプールを引くため、
+    //   A と B が別プロバイダで答える組み合わせが起こる。既存の provider/provider_model(単一)とは別列。
+    if (sr.aProvider) { row.aProvider = sr.aProvider.name; row.aProviderModel = sr.aProvider.model; }
+    if (sr.bProvider) { row.bProvider = sr.bProvider.name; row.bProviderModel = sr.bProvider.model; }
+    // ★段5: A/B それぞれのプロンプトの型の指紋(pb1 と同じ作法・データを含まない)。
+    if (sr.aPromptBuild !== undefined) row.aPromptBuild = sr.aPromptBuild;
+    if (sr.bPromptBuild !== undefined) row.bPromptBuild = sr.bPromptBuild;
+  }
+  // ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったか。error 分岐より前に載せる
+  //   = 「計画は組めたが LLM で落ちた」回(ok:false)にも、その回の文脈が何を持っていたかが残る。
+  //   ★sr(splitRecord)とは無関係(分割の有無に関わらず contextPresence は付く)ので独立に読む。
+  if (result.contextPresence) row.contextPresenceJson = JSON.stringify(result.contextPresence);
+  // ★段6続き(RECORD-ONLY): 分割ON設定なのに、この回だけ旧経路へ落とした理由。error 分岐より前に載せる。
+  if (result.splitBypassReason) row.splitBypassReason = result.splitBypassReason;
   // ★v0.9.70(RECORD-ONLY): **答えを返した** プロバイダ/モデル。error 分岐より前に載せる=
   //   「答えは返ったが計画としては不成立(ok:false)」の回も、どのモデルが返したかが残る。
   //   答えが得られなかった回は result.provider が無い=列は NULL(=「誰も答えなかった」が形から読める)。

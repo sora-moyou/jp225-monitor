@@ -37,7 +37,7 @@ import { extractSwingPivots } from '../swingPivots.js';
 import { detectSwingDouble, DEFAULT_SWING_DOUBLE } from '../swingDouble.js';
 import { detectNWave, nwaveLevelCandidates, type NWave } from '../nwave.js';
 import { aggregateSignals, DEFAULT_AGGREGATE, recentMomentumDir } from '../signals/aggregate.js';
-import { computeDailyBands, computeDailyMAs, dailyCloseSeries, type DailyBand, type DailyMA } from '../dailyBand.js';
+import { computeDailyBands, computeDailyMAs, dailyCloseSeries, DAILY_CLOSES_KEEP, DAILYBAND_FETCH_SESSIONS, type DailyBand, type DailyMA } from '../dailyBand.js';
 import type { AlertSignal } from '../signals/types.js';
 import {
   resolveLevelsConfig, resolveBreakScore, resolveDoubleFormingEnabled, resolveSlopeConfluenceBonus,
@@ -131,8 +131,7 @@ const TREND_LOOKBACK_DAYS = 15;
 const TREND_CONFLUENCE_YEN = 40;
 const DAILYBAND_CHECK_MS = 60_000;
 const DAILYBAND_COOLDOWN_MS = 20 * 60_000;
-const DAILY_CLOSES_KEEP = 80;
-const DAILYBAND_FETCH_SESSIONS = 200;
+// ★v0.9.98: この2つは server/dailyBand.ts へ移した(AI 文脈と共有する SSOT・値は不変)。
 
 /** 価格比(%)→円。スイング/節目の閾値を現値に追従させる。 */
 export function yenPct(price: number, pct: number): number {

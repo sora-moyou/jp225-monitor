@@ -22,7 +22,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  parseScalpPlan, enforcePlanConstraintsReport, type AiPlan, type LegDrop,
+  parseScalpPlan, enforcePlanConstraintsReport, legDropReasonText, type AiPlan, type LegDrop,
 } from './scalpPlan.js';
 
 const REF = 38250;
@@ -72,7 +72,8 @@ describe('★片レッグだけ落ちた回の理由が構造的に残る(parse 
 
   // ★v0.9.70: 「AI が幅を書いたが値が使えない」は **提案せず(missing)ではない**。
   //   'missing' にすると台帳と画面が「AIが提案せず」と虚偽を語り、書いた値も残らず件数も数えられなかった。
-  it('幅が使えないレッグ(lcWidth<=0)は geometry で記録され、書いた値が残る', () => {
+  // ★v0.9.95: 「幅の値が不正」は geometry から lcWidthInvalid へ分離(ユーザー指摘「『または』でなく特定して」)。
+  it('幅が使えないレッグ(lcWidth<=0)は lcWidthInvalid で記録され、書いた値が残る', () => {
     const r = parseScalpPlan(planJson({
       direction: 'buy',
       limitEntry: 38200, lcWidthForLimit: 50,
@@ -81,13 +82,13 @@ describe('★片レッグだけ落ちた回の理由が構造的に残る(parse 
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.plan.stopEntry).toBeUndefined();
-    expect(drops(r.legDrops)).toEqual([['stop', 'geometry']]);
-    expect(r.legDrops?.[0]).toEqual({ name: 'stop', reason: 'geometry', entry: 38350, lcWidth: 0 });
+    expect(drops(r.legDrops)).toEqual([['stop', 'lcWidthInvalid']]);
+    expect(r.legDrops?.[0]).toEqual({ name: 'stop', reason: 'lcWidthInvalid', entry: 38350, lcWidth: 0 });
     expect(r.plan.rationale).toContain('（逆指値は不採用: ');
     expect(r.plan.rationale).not.toContain('AIが提案せず');
   });
 
-  it('★負の幅も同じ経路(reason=geometry・AI が書いた −55 が台帳に残る)', () => {
+  it('★負の幅も同じ経路(reason=lcWidthInvalid・AI が書いた −55 が台帳に残る)', () => {
     const r = parseScalpPlan(planJson({
       direction: 'sell',
       limitEntry: 38300, lcWidthForLimit: -55,
@@ -95,7 +96,7 @@ describe('★片レッグだけ落ちた回の理由が構造的に残る(parse 
     }), REF);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.legDrops).toEqual([{ name: 'limit', reason: 'geometry', entry: 38300, lcWidth: -55 }]);
+    expect(r.legDrops).toEqual([{ name: 'limit', reason: 'lcWidthInvalid', entry: 38300, lcWidth: -55 }]);
     expect(r.plan.rationale).not.toContain('AIが提案せず');
   });
 
@@ -246,7 +247,7 @@ describe('★enforce 段(LC 幅)でも片レッグ脱落が残る — A/B 実験
 
 describe('★語彙は既存のものだけを使う(新しい語彙を作らない)', () => {
   it('現れる reason は NoneReason の値のいずれか', () => {
-    const known = ['ai', 'geometry', 'stopSide', 'lc', 'lcFloor', 'bias', 'trend', 'rangeDisabled', 'missing', 'stale'];
+    const known = ['ai', 'geometry', 'lcWidthInvalid', 'stopSide', 'lc', 'lcFloor', 'bias', 'trend', 'rangeDisabled', 'missing', 'stale'];
     const cases: LegDrop[][] = [];
     const r1 = parseScalpPlan(planJson({ direction: 'buy', limitEntry: 38200, stopLossForLimit: 38150 }), REF);
     if (r1.ok && r1.legDrops) cases.push([...r1.legDrops]);
@@ -257,5 +258,58 @@ describe('★語彙は既存のものだけを使う(新しい語彙を作らな
     if (r2.legDrops) cases.push([...r2.legDrops]);
     expect(cases.length).toBeGreaterThan(0);
     for (const legs of cases) for (const d of legs) expect(known).toContain(d.reason);
+  });
+});
+
+// ─── ★v0.9.95: 'geometry' を2つに分ける(ユーザー指摘「『または』でなく、不採用の理由を特定して」) ───
+//
+// ■ 分離前の問題
+//   `geometry: 'エントリーが現在値の逆側、または損切り幅の値が不正'` — 1つの理由コードが2つの失敗を束ね、
+//   画面も台帳も **どちらか を特定できなかった**。
+// ■ 分離の根拠(推定ではなく構造)
+//   parse 段では、対の整合チェック(entry だけ在る/幅だけ在るは ok:false)を通った後なので:
+//     ・脚が組めなかった(!hasLeg)かつ 提案あり ⟺ **幅の値が使えなかった** → 'lcWidthInvalid'
+//     ・脚は組めたが entryPositionOk 違反      ⟺ **エントリーが現在値の逆側** → 'geometry'
+// ■ ★このテストが守るもの: 2つが同じコードに戻らないこと / 画面の文言に「または」が復活しないこと。
+describe("★v0.9.95: geometry(逆側) と lcWidthInvalid(幅の値が不正) を取り違えない", () => {
+  it('幅の値が不正 → lcWidthInvalid(geometry ではない)', () => {
+    const r = parseScalpPlan(JSON.stringify({
+      direction: 'buy', limitEntry: 38200, lcWidthForLimit: -55,
+      stopEntry: 38350, lcWidthForStop: 60, rationale: 'x', refPrice: REF,
+    }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.legDrops?.map(d => d.reason)).toEqual(['lcWidthInvalid']);
+  });
+
+  it('エントリーが現在値の逆側 → geometry(lcWidthInvalid ではない)', () => {
+    const r = parseScalpPlan(JSON.stringify({
+      direction: 'buy', limitEntry: 38200, lcWidthForLimit: 60,
+      stopEntry: 38100, lcWidthForStop: 60, rationale: 'x', refPrice: REF,   // 買いの逆指値が現在値より下
+    }), REF);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.legDrops?.map(d => d.reason)).toEqual(['geometry']);
+  });
+
+  it('★画面の文言が別々で、「または」で束ねていない', () => {
+    expect(legDropReasonText('geometry')).toBe('エントリーが現在値の逆側');
+    expect(legDropReasonText('lcWidthInvalid')).toBe('損切り幅の値が不正');
+    for (const r of ['geometry', 'lcWidthInvalid'] as const) {
+      expect(legDropReasonText(r), '理由が「または」で束ねられている').not.toContain('または');
+    }
+  });
+
+  it('★旧記録を遡って分ける判別式が構造的に成立する(幅不正の脚は stopLoss を持たない)', () => {
+    const bad = parseScalpPlan(JSON.stringify({
+      direction: 'buy', limitEntry: 38200, lcWidthForLimit: 0,
+      stopEntry: 38350, lcWidthForStop: 60, rationale: 'x', refPrice: REF,
+    }), REF);
+    const side = parseScalpPlan(JSON.stringify({
+      direction: 'buy', limitEntry: 38200, lcWidthForLimit: 60,
+      stopEntry: 38100, lcWidthForStop: 60, rationale: 'x', refPrice: REF,
+    }), REF);
+    expect(bad.ok && bad.legDrops?.[0]?.stopLoss, '幅不正の脚は stopLoss を持たない').toBeUndefined();
+    expect(side.ok && side.legDrops?.[0]?.stopLoss, '逆側の脚は stopLoss を持つ').toEqual(expect.any(Number));
   });
 });

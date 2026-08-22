@@ -27,6 +27,12 @@ import { DEFAULT_PROMPT_VARIANT, type PromptVariant } from './promptVariant.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 // ★RECORD-ONLY: 送るプロンプトの一方向指紋だけを作る純関数(本文はこのファイルの外へ出さない)。
 import { promptFingerprint } from './promptFingerprint.js';
+// ★v0.9.100(A/B 分割・段4): 切り替えは planSplitConfig の1箇所。
+import { isPlanSplitEnabled } from './planSplitConfig.js';
+import { runSplitPlan, type SplitRecord } from './scalpPlanSplit.js';
+import type { ContextPresence } from './contextPresence.js';
+import { TREND_MAX_TOKENS } from './trendPrompt.js';
+import type { SqueezeState } from './planVariants.js';
 // ★RECORD-ONLY: 根拠文の「申告した LC幅」と実際に出力した損切りの突き合わせ(純関数・判定には使わない)。
 import { auditLcDeclarations, type LcDeclarationCheck, type LcLegName } from './rationaleLc.js';
 // ★RECORD-ONLY: 根拠文の「そのレッグは出さない」表明と、実際に発注されるレッグの突き合わせ(判定には使わない)。
@@ -156,37 +162,40 @@ export interface AiPlan {
   //       ★どちらでも正しいが、**どちらなのかを知らないまま運用しない**。
   //       前例: 「実データ11,859レッグで0件・構造的に発火しない保険」を **測って初めて知った**。
   //     2 5円の置き場所(core/ の葉)。プロンプトには書かない。
-  //     2' ★「価格は5円刻み」を AI に伝えるか(ユーザー指示「価格は5円刻みとすることは、AIに伝えて。」)
-  //       ■ いまは不要: 実測で **5円刻みでない価格は本番1,430件・検証台130脚とも0件**
-  //         (AI が節目の価格をほぼそのまま出すので刻みは自然に揃っている)。
-  //       ■ ★次の版で「節目の中間でもよい」にすると初めて崩れる(68,735 と 68,750 の中間は 68,742.5)。
-  //       ■ ★危険: プロンプトに「5」を書くことになる。v0.9.64 で stopEntry の隣の「5」が損切りに流用され
-  //         **10円以下の損切りが43件** 出た前例がある。伝えるなら:
-  //         (a) 損切りの幅のフィールドから **離す**(価格のフィールドの近くに置く)
-  //         (b)「呼値は5円刻み」の形で書く(裸の数字を置かない)
-  //         (c) ★ピボットのずらしの5は **依然としてプロンプトに書かない**。
-  //             ★刻みの5と ずらしの5 を **プロンプト上で隣接させない**(同じ「5」が2つの意味を持つ形)
-  //         (d) コードの丸め(server/signalTrade/entryTick.ts の roundEntryToTick / ENTRY_TICK_YEN=5)は
-  //             **そのまま残す**。伝えても最後はコードが保証する(AI の遵守に依存しない)
-  //         (e) ★投入後の監視: **10円以下の損切りが出ていないか**(v0.9.64 と同じ症状の再発)
-  //       ■ ★実装側の評価(結論): **次の版では伝えない**。理由:
-  //         ・丸めのずれは **上限 5円未満** で、しかも roundEntryToTick は必ず **約定しにくい側** へ寄せる
-  //           (買い指値→切り下げ / 売り指値→切り上げ / 買い逆指値→切り上げ / 売り逆指値→切り下げ)。
-  //           意図しない約定を作らない。
-  //         ・そのずれは、ユーザーが既に「矛盾しない」と明言した **ピボットの5円ずらしより小さい**。
-  //         ・一方「5」の印字には **測定済みの実害(43件)** がある。得るものより失うものが大きい。
-  //         ・★代わりに測る: 「中間を狙った回の割合」と「丸めで価格が動いた幅」。
-  //           中間狙いが実際に多く、かつ表示のずれが問題になったときに初めて伝える(測ってから決める)。
-  //       ■ ★ずれが実害になる唯一の面は **表示**: 理由は「狙う価格」について述べるので、
-  //         画面には **発注価格** を出すか、狙う価格と発注価格の両方を出す必要がある(別コーダーの担当)。
+  //     2' ★5円刻みへの丸め = **コードがやる。プロンプトには刻みのことを書かない**
+  //       (ユーザー指示「価格は5円刻みとすることは、AIに伝えて。」→ ★**取り消し**「あらためます。
+  //        こちらで丸めてください。」= 確定)。
+  //       ■ 実装は **既にある**(v0.9.83): server/signalTrade/entryTick.ts の
+  //         `roundEntryToTick` / `ENTRY_TICK_YEN=5`。**そのまま使う**(新しく作らない)。
+  //       ■ ★これでプロンプトに「5」を書かずに済む。v0.9.64 で stopEntry の隣の「5」が損切りの値に
+  //         流用され **10円以下の損切りが43件** 出た前例があるので、**入れずに済むならそのほうが安全**。
+  //       ■ ★丸めると「AI が狙った価格」と「実際の発注価格」がずれる(68,742.5 → 68,740)。
+  //         ★**ピボットの5円ずらしとは性質が違う。混ぜないこと**:
+  //           ・ピボットの5円ずらし … **執行の都合として説明できる**(70,000のブレイク → 70,005)。
+  //             だから理由(狙う価格について述べる)と矛盾しない。
+  //           ・端数の丸め         … ★**説明する筋が無い。ただの処理**。理由の対象ではない。
+  //         丸めの向きは必ず **約定しにくい側**(買い指値→切り下げ / 売り指値→切り上げ /
+  //         買い逆指値→切り上げ / 売り逆指値→切り下げ)なので、意図しない約定は作らない。ずれは5円未満。
   //       ■ ★二重にずれることは無い(確認済み): ピボットは実際に注文が出た値段なので5円刻みに乗っており、
-  //         ±5円しても刻みのまま = 丸めは no-op。中間を狙った回だけ丸めが働く。
+  //         ±5円しても刻みのまま = 丸めは no-op。**中間を狙った回だけ丸めが働く**。
+  //       ■ ★丸めが **何件発火したか** を後から数えられるようにする。
+  //         実データ1,430件では **一度も発火していない**(AI が自然に5円刻みを出しているため)。
+  //         次の版で中間を許して初めて出番が来る。★発火しているのかどうかを知らないまま運用しない
+  //         (前例: 「実データ11,859レッグで0件・構造的に発火しない保険」を **測って初めて知った**)。
   //     3 ★limitEntry / stopEntry は **フィールドごと消さない**(trade2 が読むのは最終価格 = 執行の契約を動かさない)。
   //     4 後方互換(旧記録が壊れないこと)。
   //     5 理由フィールド(entryWhyForLimit / entryWhyForStop)の文面を **「なぜその価格を選んだか」** にする。
   //       ★契約の構造変更と **同じ版** に入れる(分けると片方が嘘になる期間ができる)。
   //     6 画面は別コーダーの担当。**同じ版に揃える**(契約が変わって画面が古いと「契約文が嘘になる」再発)。
   //     7 5円が執行の都合であることをコメントに明記(上記)。
+  //
+  //   ── ★次の版に入るもの(これで確定・2026-08-21) ─────────────────────────────────
+  //     1 AI が「狙う価格」を出す(節目でも中間でも)
+  //     2 理由は「なぜその価格を選んだか」
+  //     3 コードが5円ずらす — ★**ピボットに完全一致したときだけ**
+  //     4 コードが側を検査する(Ｘ は現在価格より上 / Ｙ は下・逆側ならその脚を落とす)
+  //     5 ★コードが5円刻みに丸める(**プロンプトには書かない**・既存の roundEntryToTick を使う)
+  //     6 ★一致しなかった件数・丸めが発火した件数を台帳に残す
   //
   //   ── ★実装前に直す必要がある事実の誤り(このファイルの実装と照合した結果) ──────────────
   //     上の分類表に付いていた識別子には **実在しないもの/取り違え** がある(server/levels.ts と照合):
@@ -231,7 +240,22 @@ export interface AiPlan {
 /** ★v0.9.44: 見送り(none)に至った経路(記録専用)。判定・採否・SSE・決済には一切影響しない。
  *  従来 engine のログは veto=y/n の1ビットしか区別できず、8通りの経路が同じ見た目になっていた。
  *  - 'ai'            : AI 自身が direction:"none" を返した(良い場面が無い)
- *  - 'geometry'      : エントリーが refPrice の反対側(売りなのに指値が現在値の下 等)で両レッグ落ち
+ *  - 'geometry'      : ★**エントリーが refPrice の反対側**(売りなのに指値が現在値の下 等)で両レッグ落ち。
+ *                      ★v0.9.95 でこの意味に **限定** した(下の 'lcWidthInvalid' を参照)。
+ *  - 'lcWidthInvalid': ★**AI が幅の欄に書いた値が使えない**(負・0・非有限・建値と同じ点になる)で落ちた。
+ *                      ★v0.9.95 で 'geometry' から分離。分離前は両者が同じコードに束ねられており、
+ *                        画面の文言も「エントリーが現在値の逆側、**または**損切り幅の値が不正」と
+ *                        2つを『または』で並べるしかなかった(=台帳から どちらか を特定できない)。
+ *
+ *  ★★ 旧記録(分離前の 'geometry')は **遡って分けられる**(実測で確認済み・2026-08-21) ★★
+ *    判別は推定ではなく **構造** で決まる:
+ *      ・幅が使えず落ちた脚 … 損切り価格を導けていないので LegDrop に `stopLoss` が **無い**
+ *      ・逆側で落ちた脚     … 脚は組めているので `entry` と `stopLoss` が **両方ある**
+ *    ⇒ 旧 'geometry' のうち `stopLoss` を持つものが「逆側」、持たないものが「幅の値が不正」。
+ *    ★実測(手元の全複製・内容が同一の leg_drops_json は1回だけ数えた): **geometry の脚 589件 →
+ *      逆側 589件(100%) / 幅の値が不正 0件 / 判定不能 0件**。`lcWidth` を持つ geometry も 0件。
+ *    ⇒ ★**過去の geometry の集計に「幅が不正だった回」は混ざっていない**。分離前の分析はそのまま使える。
+ *    (ただし これは手元の複製の範囲での実測。別PC/別期間の台帳を足すときは同じ判別式で数え直すこと。)
  *  - 'stopSide'      : 損切りがエントリーの内側/反対側で両レッグ落ち
  *  - 'lc'            : 初期LC幅が上限超で両レッグ落ち
  *  - 'lcFloor'       : ★初期LC幅が下限未満で両レッグ落ち(下限は委任対象外=常に強制)
@@ -240,8 +264,12 @@ export interface AiPlan {
  *  - 'rangeDisabled' : レンジ無効設定なのに range が返った(防御多重化)
  *  - 'missing'       : AI がレッグを出さなかった / 壊れた形だった
  *  - 'stale'         : ★ARM 時点の live 価格では既にエントリーを通過していて全レッグ落ち(engine の
- *                      stale plan veto=checkStaleLegs。plan 段では起きない=engine のログ専用の値) */
-export type NoneReason = 'ai' | 'geometry' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'trend' | 'rangeDisabled' | 'missing' | 'stale';
+ *                      stale plan veto=checkStaleLegs。plan 段では起きない=engine のログ専用の値)
+ *  - 'aFailed'       : ★v0.9.97 **目線を決める呼び出し自体の故障**。応答が得られない/3語(buy/sell/range)の
+ *                      どれでもない値が返った。★相場のせいではないので 'ai' と混ぜない。
+ *  - 'aiSilent'      : ★v0.9.97 **AI が価格も理由も返さなかった**(無言の見送り)。★'ai' は「置けないと
+ *                      **文で** 言った」を指す。無言をそこに混ぜると **故障が「相場が悪かった」に化ける**。 */
+export type NoneReason = 'ai' | 'geometry' | 'lcWidthInvalid' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'trend' | 'rangeDisabled' | 'missing' | 'stale' | 'aFailed' | 'aiSilent';
 
 /** 見送り(none)時に「AI が出したが最終プランに残らなかった」レッグの生数値(記録専用)。
  *  ログ1行に出すことで、根拠文(rationale)から価格を推定する必要を無くす。 */
@@ -265,7 +293,7 @@ export interface NoneLegs { dir: 'buy' | 'sell' | 'range'; legs: NoneLeg[]; }
  *    - enforce 段: **受け取った時点で在ったレッグだけ** を対象にする(parse で既に落ちた/不在のレッグは
  *      ここでは何も落としていないので記録しない=同じ事実を二重に数えない)。
  *  ★理由の語彙は既存の NoneReason をそのまま使う(新しい語彙を作らない)。実際に現れるのは
- *    'missing' / 'stopSide' / 'geometry'(parse 段)と 'stopSide' / 'lc' / 'lcFloor' / 'trend' / 'bias'(enforce 段)。
+ *    'missing' / 'lcWidthInvalid' / 'stopSide' / 'geometry'(parse 段)と 'stopSide' / 'lc' / 'lcFloor' / 'trend' / 'bias'(enforce 段)。
  *  ★記録専用: 採否・価格・veto・SSE・決済には一切影響しない。 */
 export interface LegDrop {
   /** どのレッグか(NoneLeg と同じ語彙)。 */
@@ -352,15 +380,28 @@ export interface AnsweringProvider { name: string; model: string }
 //   promptBuild … その質問文の変種の **プロンプトの型** の指紋(`pb1:<16桁hex>`・server/llm/promptBuild.ts)。
 //   ★どちらも scalpPlanRunner が載せる(この層で載せると promptBuild.ts ⇄ scalpPlan.ts が循環参照になる)。
 //   ★prompt_fp(sp1)とは別物: sp1 は毎回変わる全文の指紋で、版の層別キーには使えない。
+// splitRecord(RECORD-ONLY・段5): ★A/B 分割の測定材料(server/llm/scalpPlanSplit.ts の SplitRecord)。
+//   ★scalpPlanRunner が(A/B 分割が実際に走った回だけ)載せる。分割が無効/A が一度も呼ばれなかった
+//   旧経路の回は undefined のまま=signal_plans の新列は NULL(段5 の後方互換の要)。
+// contextPresence(RECORD-ONLY・段5続き): ★文脈のどのブロック(ATR/節目/本日高安/BB/スイング/
+//   長い時間軸/日足バンド/基礎データ全体/アラート/ニュース)が実際に入ったかの記録(server/llm/contextPresence.ts)。
+//   ★scalpPlanRunner が **分割の有無に関係なく無条件で** 載せる(旧経路でも記録される)。
+//   ★この関数を持たない旧版(このリリース前)で記録された行だけが undefined=signal_plans は NULL。
+// splitBypassReason(RECORD-ONLY・段6続き): ★分割ON設定なのに、この回だけ旧経路へ落とした理由。
+//   'heldPosition'/'armedContext'/'promptVariant' のいずれか(複数ならカンマ区切り)。resolveSplitBypassReasons
+//   が検出した回だけ載る。★分割OFFの回・分割ONで実際に分割経路を通った回は undefined=NULL
+//   (「使わなかった」と「使った」を同じ NULL に潰さない)。
 export type ScalpPlanResult =
-  | { ok: true; plan: AiPlan; appVersion?: string; promptBuild?: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string; trendDir?: EntryTrendDir }
-  | { ok: false; error: string; appVersion?: string; promptBuild?: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; contextAt?: number; promptFp?: string };
+  | { ok: true; plan: AiPlan; appVersion?: string; promptBuild?: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; vetoFired?: boolean; noneReason?: NoneReason; noneLegs?: NoneLegs; legDrops?: readonly LegDrop[]; lcAudit?: readonly LcAuditRow[]; omissionAudit?: readonly OmissionClaimCheck[]; rangeAnomaly?: RangeAnomaly; chartShot?: ChartShotIdentity; contextOmitted?: readonly string[]; contextAt?: number; promptFp?: string; trendDir?: EntryTrendDir; splitRecord?: SplitRecord; contextPresence?: ContextPresence; splitBypassReason?: string }
+  | { ok: false; error: string; appVersion?: string; promptBuild?: string; imageSent?: boolean; provider?: AnsweringProvider; chartVision?: ChartVisionRecord; contextAt?: number; promptFp?: string; splitRecord?: SplitRecord; contextPresence?: ContextPresence; splitBypassReason?: string };
 
 // 見送り理由の優先順位(記録専用)。2レッグで理由が異なるとき、より上流(先に適用される)ステージを採る。
 // トレンド/バイアスは plan 全体の veto、LC は制約、geometry/stopSide は AI 応答の幾何、missing は不提示。
 // 'stale' は plan 段では発生しない(engine の ARM 直前ガード=最下流)ため末尾に置く。
+// ★v0.9.97: 'aFailed'(目線側の故障)は **最上流**。目線が出ていないので下流の理由はどれも成立しない。
+//   'aiSilent'(無言の見送り)は 'ai' の直後=「AI が言ったこと」の並びに置くが、★別の語なので潰れない。
 const NONE_REASON_PRIORITY: NoneReason[] =
-  ['trend', 'bias', 'lc', 'lcFloor', 'geometry', 'stopSide', 'missing', 'rangeDisabled', 'ai', 'stale'];
+  ['aFailed', 'trend', 'bias', 'lc', 'lcFloor', 'geometry', 'lcWidthInvalid', 'stopSide', 'missing', 'rangeDisabled', 'ai', 'aiSilent', 'stale'];
 
 /** 2レッグ分の脱落理由から、ログに載せる代表理由を1つ選ぶ純関数(記録専用)。両方 null なら undefined。 */
 export function pickNoneReason(a: NoneReason | null, b: NoneReason | null): NoneReason | undefined {
@@ -1697,12 +1738,13 @@ export function scalpJsonInstruction(
 
 /** レンジ脚のパース結果。★失敗も「なぜ落ちたか」を持つ:
  *  - 'missing'  = AI がその脚を出していない/形が壊れている(side/type/entry が読めない)。
- *  - 'geometry' = 脚は出したが **幅の値が使えない**(負・0・非有限・建値と同じ点になる)。
+ *  - 'lcWidthInvalid' = 脚は出したが **幅の値が使えない**(負・0・非有限・建値と同じ点になる)。
+ *    ★v0.9.95: 旧 'geometry'。上下の位置が不正な脚(upper が現在値の下 等)と区別できなかったので分離した。
  *  ★この区別が無いと、AI が出した脚が台帳と画面で「AIが提案せず」と **虚偽に** 記録される。 */
 export type RangeLegParse =
   | { ok: true; leg: RangeLeg; source: LcWidthSource; signCorrected?: boolean }
   /** side は読めた分だけ載せる(注記を「上部(売り指値)」のように具体的に書くため)。 */
-  | { ok: false; reason: Extract<NoneReason, 'missing' | 'geometry'>; side?: 'buy' | 'sell'; entry?: number; lcWidth?: number; stopLoss?: number };
+  | { ok: false; reason: Extract<NoneReason, 'missing' | 'lcWidthInvalid'>; side?: 'buy' | 'sell'; entry?: number; lcWidth?: number; stopLoss?: number };
 
 /** レンジ両面ストラドルの1レッグを検証する純関数(幅の出所つき)。side/type の enum・entry の有限性、
  *  および損切りの **幅**(lcWidth・正の数。無ければ旧形式 stopLoss=価格から復元)を確認する。
@@ -1719,7 +1761,7 @@ export function parseRangeLegDetail(v: unknown): RangeLegParse {
   if (!hasLcField(o.lcWidth, o.stopLoss)) return { ok: false, reason: 'missing', side: o.side, entry };
   const lc = resolveLcWidth({ side: o.side, entry, width: o.lcWidth, legacyStopLoss: o.stopLoss });
   if (lc.widthYen === null || lc.source === undefined) {
-    const bad: RangeLegParse = { ok: false, reason: 'geometry', side: o.side, entry };
+    const bad: RangeLegParse = { ok: false, reason: 'lcWidthInvalid', side: o.side, entry };
     if (lc.rawWidth !== undefined) bad.lcWidth = lc.rawWidth;
     if (lc.rawStopLoss !== undefined) bad.stopLoss = lc.rawStopLoss;
     return bad;
@@ -1808,16 +1850,21 @@ const LEG_DROP_REASON_TEXT: Record<NoneReason, string> = {
   missing:       'AIが提案せず',
   ai:            'AIが提案せず',
   stopSide:      '損切りがエントリーの逆側',
-  // ★v0.9.70: geometry は「AI が出した値が幾何的に不正」の器。従来はエントリー位置だけだったが、
-  //   損切りが幅になったことで「幅の値そのものが不正(負・0・非有限・建値と同じ点になる)」もここへ入る。
+  // ★v0.9.95(ユーザー指摘「『または』でなく、不採用の理由を特定して」): geometry を
+  //   **エントリーが現在値の逆側** に限定し、幅の値の不正は 'lcWidthInvalid' へ分けた。
   //   ★'missing'(AIが提案せず)には **絶対に入れない**: AI は提案しているので、台帳と画面が嘘をつく。
-  geometry:      'エントリーが現在値の逆側、または損切り幅の値が不正',
+  geometry:      'エントリーが現在値の逆側',
+  lcWidthInvalid: '損切り幅の値が不正',
   lcFloor:       '損切り幅が設定の下限より狭い',
   lc:            '損切り幅が設定の上限より広い',
   trend:         'トレンドに逆行',
   bias:          'バイアス設定と逆',
   stale:         '現在値が既にエントリーを通過',
   rangeDisabled: 'レンジ設定が無効',
+  // ★v0.9.97: この2つは **サイクル全体** の理由でレッグ単位では起きない。ただし Record<NoneReason,…> は
+  //   全キーを要求するので、画面に undefined を出さないため文言を持たせる(無音の失敗を作らない)。
+  aFailed:       '目線の判断が得られず',
+  aiSilent:      'AIが理由も価格も返さず',
 };
 
 /** ★列挙に無い値が来たときの表示(防御)。型で塞がれていても、画面に `undefined` を出す経路は残さない。
@@ -2052,13 +2099,18 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
   //   画面が「（指値なし: AIが提案せず）」と **虚偽** を語り、生の値も残らず件数すら数えられなかった。
   const limitProposed = limitEntry !== null || hasLcField(o.lcWidthForLimit, o.stopLossForLimit);
   const stopProposed = stopEntry !== null || hasLcField(o.lcWidthForStop, o.stopLossForStop);
+  // ★v0.9.95: 「幅の値が使えない」を 'geometry' から **分離** した('lcWidthInvalid')。
+  //   ここで一意に分けられる理由: 直前の対の整合チェックで「entry だけ在る/幅だけ在る」は ok:false で
+  //   弾かれているので、この時点で !hasLimitLeg かつ 提案あり ⟺ **幅の値が使えなかった** だけになる
+  //   (entry が非有限なら対の不整合として既に弾かれている)。よって残る 'geometry' は
+  //   **エントリーが現在値の逆側** だけを指す(entryPositionOk 違反)。
   const limitReason: NoneReason | null =
     limitLegOk ? null
-    : !hasLimitLeg ? (limitProposed ? 'geometry' : 'missing')
+    : !hasLimitLeg ? (limitProposed ? 'lcWidthInvalid' : 'missing')
     : !stopSideOk(o.direction, limitEntry!, stopLossForLimit!) ? 'stopSide' : 'geometry';
   const stopReason: NoneReason | null =
     stopLegOk ? null
-    : !hasStopLeg ? (stopProposed ? 'geometry' : 'missing')
+    : !hasStopLeg ? (stopProposed ? 'lcWidthInvalid' : 'missing')
     : !stopSideOk(o.direction, stopEntry!, stopLossForStop!) ? 'stopSide' : 'geometry';
   const legDrops: LegDrop[] = [];
   //   ★落とした生の値も残す: 導出できた損切り価格が無いときは、AI が幅の欄に書いた値(rawWidth)/
@@ -2257,6 +2309,14 @@ export interface ScalpPlanInput {
    *  'v2' のとき user プロンプト(質問文＋JSON契約)だけが差し替わる。system プロンプト・parse・enforce・
    *  実際の決済計算には一切影響しない。★ExitVariant とは **別の軸** なので、同時に指定してよい。 */
   promptVariant?: PromptVariant;
+  /** ★v0.9.100(A/B 分割): **A(目線)に渡す文脈**。節目・アラート・長期高安を外したもの(abContext.buildTrendContext)。
+   *  ★分割が無効なときは使われない。有効なのに未指定なら A は文脈なしで走る(嘘の文脈を渡さない)。 */
+  technicalForTrend?: string | null;
+  /** ★v0.9.100(記録専用): A/B 分割で得た測定材料を呼び出し側へ返す。段5 で台帳へ落とす。 */
+  onSplitRecord?: (r: SplitRecord) => void;
+  /** ★v0.9.100(A/B 分割): BB スクイーズ判定の生値と、使えなかった理由。版の選択に使う。 */
+  squeezeState?: SqueezeState;
+  squeezeUnavailable?: string;
   /** ★v0.9.61: バンドウォークの判定結果(server/bandwalk.ts)。runner が算出して渡す。
    *  成立中のときだけプロンプト末尾に緩和注記(buildBandwalkNote)を足す。
    *  未指定/null(非成立)では systemPrompt は従来と **byte 一致**(緩和は一切起きない)。 */
@@ -2462,7 +2522,7 @@ export function lcLegBelowFloor(w: number, opts: { floorYen?: number }): boolean
  *  trend/lc/bias は enforcePlanConstraints(制約適用)由来、geometry/missing は parseScalpPlan(AI応答の検証)由来、
  *  stopSide は両方で起きうる(parse で落ちた脚は enforce では既に無いので注記は重複しない)。
  *  ★語彙は NoneReason の部分集合(別の列挙を作らない)。 */
-type RangeDropReason = Extract<NoneReason, 'trend' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'geometry' | 'missing'>;
+type RangeDropReason = Extract<NoneReason, 'trend' | 'stopSide' | 'lc' | 'lcFloor' | 'bias' | 'geometry' | 'lcWidthInvalid' | 'missing'>;
 
 /** 脱落したレンジ脚の位置(上部/下部)・side・理由から、rationale へ追記する注記文を組み立てる。
  *  例: `※下部(買い指値)は不採用: バイアス設定と逆` / `※上部(売り指値)は不採用: 損切り幅が設定の上限より広い`。
@@ -2663,7 +2723,15 @@ export function enforcePlanConstraintsReport(
 
 /** レンジ無効設定なのに direction:"range" が返った場合の防御多重化(純関数・プロンプト指示の保険)。
  *  rangeEnabled=false かつ range のときだけ none 化し、記録専用の noneReason='rangeDisabled' を添える。
- *  それ以外は plan をそのまま返す(参照も維持=挙動不変)。 */
+ *  それ以外は plan をそのまま返す(参照も維持=挙動不変)。
+ *
+ *  ★★集計するときの注意(A/B 分割で **語の意味が変わる**):
+ *    いま(〜v0.9.97)   'rangeDisabled' = 「1回の呼び出しで AI が range を返した。設定が不許可なので none 化した」
+ *    分割後(段3以降)   'rangeDisabled' = 「目線を決める呼び出しが range と答えたので、**注文側を呼ばなかった**」
+ *    ★同じ語で母集団が変わる(前者は AI が価格まで出したかもしれない回・後者は価格を一度も聞いていない回)。
+ *    ★**app_version で切らないと2つが混ざります。** 版をまたいで単純に COUNT すると、
+ *    「レンジで見送った率が変わった」ように見えるが、それは定義が変わっただけ。
+ *    分割後は b_variant='none' と組で見ること(signal_plans の列・v0.9.97 で追加済)。 */
 export function enforceRangeEnabled(
   plan: AiPlan, rangeEnabled: boolean,
 ): { plan: AiPlan; noneReason?: NoneReason; noneLegs?: NoneLegs } {
@@ -2759,9 +2827,99 @@ export function clampRequestedLcFloor(requested: number | undefined, configFloor
   return Math.max(configFloorYen, requested);
 }
 
+/** ★段5続き(2026-08-22・リーダー指摘への対応): A/B 分割の B(価格と損切幅)に渡す文脈へ
+ *  ★旧経路(1回呼び出し)にはあったのに配線されていなかった2つを足す純関数
+ *  (多資産の現在価格board + ニュース)。★A(technicalForTrend)はこの関数を通さない=呼び出し側の責務。
+ *
+ *  ■ ①ニュース: なぜ要るか(誰も決めていない挙動変更だった)
+ *    旧経路の systemPrompt は末尾に必ず '■ 関連ニュース:' を追記していた(news.length===0 でも
+ *    formatNewsForChat が '(ニュースなし)' を返すので行自体は必ず出る)。★A/B 分割では
+ *    「ニュースは A には渡さない」と決めただけで、B に渡すかは誰も決めておらず、結果として
+ *    B にも1文字も渡らなくなっていた(旧と揃えるのが既定のところ、無言で消えていた)。
+ *    queryText を空にする理由: 旧経路は bigram 関連度フィルタの queryText に scalpQuestion(汎用の
+ *    指示文)を渡していたが、汎用語はニュース見出しと bigram が一致しにくく、実質 news.slice(0,15)
+ *    (直近フォールバック)に落ちていた。B は4版に分かれ「その版の問い」を1つの文で代表できないため、
+ *    空文字にする(= 常にフォールバック経路と同じ=旧経路の実質的な挙動と揃う)。
+ *  ■ ②多資産の現在価格board: なぜ要るか(ニュースと全く同じ形の欠測)
+ *    旧経路は systemPrompt の先頭側で '■ 現在価格:' に formatPricesForChat(全銘柄の現値・前日比)を
+ *    書いていたが、分割経路の B には1文字も渡っていなかった。★server/llm/abContext.ts 自身の
+ *    コメントが「現在価格は呼び出し側が別ブロックで付ける」としていたのに、実際には誰も配線して
+ *    いなかった(buildOrderContext という専用関数まで用意されていたのに1回も呼ばれていなかった)。
+ *    ★A には入れない(ユーザー指示「A にはトレンド判断に有用なものだけ」に従う。他銘柄の現値・
+ *    前日比は A の問い=目線の有無には不要)。
+ *  ■ ★monitorCtx(直近アラート60分・本日高安の簡易サマリ)は据え置き
+ *    既存の節目ブロック(B)・ボラ/レンジブロック(本日高安)と内容の重複が大きく、実害が小さいと
+ *    判断したため、意図的にここへは足していない(=欠測のままだが、忘れているのではない)。
+ *  ■ 記録・採否・veto には無関係(プロンプトの中身が増えるだけ)。 */
+export function buildOrderContextExtras(
+  technical: string | null | undefined, prices: Price[], news: NewsItem[], now: number,
+): string {
+  const priceBlock = `■ 現在価格:
+${formatPricesForChat(prices, now)}`;
+  const newsBlock = `■ 関連ニュース:
+${formatNewsForChat(news, now, '')}`;
+  return [priceBlock, technical, newsBlock].filter((s) => Boolean(s)).join('\n\n');
+}
+
 /** 固定のスキャル質問で LLM を走らせ、構造化 AiPlan を返す。既存の chat と同じ tool ループ・プロバイダ選択・
  *  キー解決を再利用する。キー未設定は { ok:false, error:'LLM未設定' }。パース失敗は1回だけ厳格に再要求する。
  *  refPrice は monitor の現在 NIY=F 価格。 */
+/** ★段6続き(2026-08-22・エバリュエーター指摘への対応): 「分割ONでも黙って無視される」を構造で塞ぐ。
+ *
+ *  ■ 何を検出するか(overrides を1つずつ確認した結果。当初「3つで全部」と報告したのは誤りだった)
+ *    A/B 分割の B(buildBSystemPrompt/buildBUserPrompt)は、次の3つを一切受け取らない:
+ *      ・heldPosition(ドテン評価)  … buildHeldNote は旧経路の systemPrompt でしか呼ばれない
+ *      ・armedContext(レンジ再評価) … buildArmedNote も同様
+ *      ・promptVariant(候補腕)    … v1 以外を指定しても B は常に固定の4版の文面を使う
+ *    ★見落としていた4つ目: exitVariant(決済仕様の名前付き変種)も同様に B に届かない
+ *      (B の戦略仕様=strategySpec は既に仕様書で「損切幅の範囲だけ残す」と意図的に圧縮済みで、
+ *       exitDesc を差し込む場所が最初から無い)。★ただし「宛先が無いから届かない」だけでは済まない:
+ *      分析用(caller='generator')が exitVariant を腕として使う実験(現行/候補仕様の比較)がある以上、
+ *      黙って両腕とも同じ扱いになれば実験が無効化される。★よって記録・ガード対象に含める。
+ *  ■ ★5つ目にして最重要: caller(呼び出し元)
+ *    分析用(server/generator/cycle.ts)は caller='generator' を渡し、その腕(v1=対照 / v2=候補、
+ *    exitVariant も同様)を比較する **測定器そのもの**。もし分割 ON のとき、
+ *    「promptVariant が既定(v1)の対照腕」だけが分割経路(A+B・新プロンプト)を通り、
+ *    「v2 の候補腕」だけが上のガードでバイパスされて旧経路(旧プロンプト)を通ると、
+ *    ★2本の腕の差が「質問文 v1 vs v2」ではなく「分割 vs 旧経路」にすり替わる(エラーは出ない)。
+ *    ★分析用(measurement rig)に新しい変数(分割の有無)を無断で混ぜてはいけない。
+ *    分割そのものを測りたければ、分割を明示的な腕として立てるのが筋(既定で混ぜない)。
+ *    ★よって caller が 'default' 以外(=現状は 'generator' のみ。LlmCaller 型で列挙・
+ *    server/generator/cycle.ts が唯一の非 default 呼び出し元であることをコードで確認済み)なら、
+ *    値に関わらず無条件でバイパスする。
+ *  ■ ★6つ目: emptyTrendContext(文脈構築の失敗・空文脈)
+ *    buildRichScalpContextResult が失敗(currentPrice 未確定 / 例外)すると、A の文脈
+ *    (technicalForTrend)が空になる。A は判断材料ゼロで「確信が持てない」→ range と答え、
+ *    レンジ不許可(既定)の運用では B を呼ばず全サイクル見送りに倒れる。
+ *    ★旧経路なら基礎テクニカル・勢い1行・現在価格・ニュースは引き続き利用できたので計画が出ていた
+ *    (=これは無言の失敗そのもの)。★catch を握り潰さず、文脈が空だった事実を旧経路への
+ *    フォールバックと同じ仕組みで数えられる形にする(buildRichScalpContextResult 自体は変更しない
+ *    ——分割 OFF でも technicalForTrend は undefined になるが、その場合はそもそもこの分岐に
+ *    入らないので誤検出しない)。
+ *  ■ なぜコードで塞ぐか(「運用ルール」では足りない・規範「無言の失敗は欠陥」)
+ *    黙って無視する/黙って空文脈で判断させるより、その回だけ旧経路(1回呼び出し)へ
+ *    フォールバックするほうが安全(旧経路はこれらを最初から正しく扱える・計画を出し続けられる)。
+ *  ■ 例外で止めない理由
+ *    サイクルが丸ごと落ちるより、旧経路へ落として計画を出し続けるほうが安全側(可用性を落とさない)。
+ *  ★新しい閾値は作らない(既存フィールドの有無 / 既存の LlmCaller 列挙 / 既存の文脈欠落を見るだけ)。 */
+export function resolveSplitBypassReasons(input: {
+  heldPosition?: unknown;
+  armedContext?: unknown;
+  promptVariant?: PromptVariant;
+  exitVariant?: unknown;
+  caller?: LlmCaller;
+  technicalForTrend?: string | null;
+}): string[] {
+  const reasons: string[] = [];
+  if (input.heldPosition !== undefined) reasons.push('heldPosition');
+  if (input.armedContext !== undefined) reasons.push('armedContext');
+  if (input.promptVariant !== undefined && input.promptVariant !== DEFAULT_PROMPT_VARIANT) reasons.push('promptVariant');
+  if (input.exitVariant !== undefined) reasons.push('exitVariant');
+  if (input.caller !== undefined && input.caller !== DEFAULT_CALLER) reasons.push('caller');
+  if (input.technicalForTrend == null || input.technicalForTrend.trim() === '') reasons.push('emptyTrendContext');
+  return reasons;
+}
+
 export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpPlanResult> {
   if (!isLLMEnabled()) return { ok: false, error: 'LLM未設定' };
   // ★v0.7.58: 決済ロジック(phase-exit)の実数値説明を AI に渡すため private 実装をロード(冪等・キャッシュ)。
@@ -2866,6 +3024,15 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // ★bandwalkNote は strategySpec / delegationNote の **後ろ**(= 距離50円・節目起点を書いている
     //   ブロックより後)に置く。緩和は「直前の指示を上書きする」形なので、読み順で後に来る必要がある。
     `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil, omitMaxDistance)}${biasNote}${strategySpec}${delegationNote}${bandwalkNote}${heldNote}${armedNote}\n\n` +
+    // ★ここは **壁時計を秒の粒度で** system プロンプトに埋める(唯一の箇所)。
+    //   ■ 副作用: 同じ入力で2回組み立てても、**秒の境界をまたぐと byte 一致しない**。
+    //     scalpPlanPromptVariant.test.ts の「未指定 と v1 は byte 一致」が ときどき赤くなるのは
+    //     ★これが真因で、**自分の変更のせいではない**(2026-08-22 に特定)。同テストは
+    //     vi.useFakeTimers({ toFake: ['Date'] }) で時計だけ凍らせてある。
+    //   ■ ★同じ直し方をするときの落とし穴(実際に踏んだ):
+    //     ・setTimeout まで差し替えると LLM 経路の await が進まず固まる → toFake は ['Date'] に限る
+    //     ・日付を別の日に動かすと取引時間の判定が変わり、create が1度も呼ばれない別経路に入る
+    //       → 動かさず「いまの時刻をそのまま凍らせる」。
     `【市場の現状 ${new Date(now).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}】\n\n` +
     `■ 現在価格:\n${formatPricesForChat(prices, now)}\n\n` +
     (input.technical ? `${input.technical}\n\n` : '') +
@@ -2907,6 +3074,11 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★RECORD-ONLY: **答えを返した** プロバイダ。runScalpPlanResult が解決した直後にだけ入れる
   //   (送る前に入れると「送ろうとした先」になり、全滅した回に嘘が残る)。
   let answeredBy: AnsweringProvider | null = null;
+  // ★段6続き(RECORD-ONLY): 分割ONでも黙って無視される3つ(ドテン評価・レンジ再評価・候補腕)を検出する。
+  //   ★catch 節(異常終了)でも記録できるよう、try の外(関数スコープ)で計算する。
+  const splitBypassReasons = resolveSplitBypassReasons(input);
+  const splitBypassReason = isPlanSplitEnabled() && splitBypassReasons.length > 0
+    ? splitBypassReasons.join(',') : undefined;
 
   try {
     // ★v0.9.46 修正: parse は runScalpPlanResult の中で1回だけ走らせ、その結果をここで受け取る。
@@ -2914,7 +3086,92 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   おり、parse 段の機械生成注記(レッグ注記/レンジ脚の脱落理由)が2回連結されて画面に二重表示されていた。
     //   採否ロジックは parse も enforce も一切変えていない(注記の連結回数だけが 2→1 に戻る)。
     let planResult: Extract<ScalpPlanResult, { ok: true }> | null = null;
-    const raw = await callWithFallback(async (p) => {
+
+    // ═══ ★A/B 分割(段4・v0.9.100) ═══════════════════════════════════════════════
+    //   ★切り替えは planSplitConfig.ts の1箇所だけ(PLAN_SPLIT_DEFAULT / 環境変数 JP225_PLAN_SPLIT)。
+    //   ★ここが false のとき、下の従来経路は **1バイトも変わらずに** 走る(この if の外は無改造)。
+    //   ★分割経路も、得た plan を planResult に入れるだけ = **下流(enforce/veto/legDrops/台帳/SSE)は共通**。
+    // ★段6続き: 分割ONでも黙って無視される3つ(ドテン評価・レンジ再評価・候補腕)を検出し、
+    //   1つでも該当する回はこの if へ入らせない(=旧経路に落ちる)。記録は下の3箇所で行う。
+    if (isPlanSplitEnabled() && splitBypassReasons.length === 0) {
+      const outcome = await runSplitPlan({
+        // ── A(目線): ★ツールを1つも付けない・max_tokens は小さい ──
+        callTrend: async (sys, usr) => {
+          const text = await callWithFallback(async (p) => {
+            const r = await p.client!.chat.completions.create({
+              model: p.config.chatModel, temperature: 0.4, max_tokens: TREND_MAX_TOKENS,
+              messages: [{ role: 'system', content: sys }, { role: 'user', content: usr }],
+            } as any);
+            answeredBy = { name: p.config.name, model: p.config.chatModel };
+            return (r as any).choices?.[0]?.message?.content?.trim() ?? '';
+          }, 'scalp-plan-trend', input.caller ?? DEFAULT_CALLER, sys.length + usr.length);
+          // ★A のツール呼び出しは **数えて 0**(undefined=数えていない とは別物)。
+          return { text, toolCalls: 0, ...(answeredBy ? { provider: answeredBy } : {}) };
+        },
+        // ── B(価格と損切幅): ツールは従来どおり3本(+キーがあれば web_search)・画像も従来どおり ──
+        callOrder: async (sys, usr) => {
+          let calls = 0;
+          const counting: ToolHandlers = Object.fromEntries(
+            Object.entries(handlers).map(([k, fn]) => [k, async (a: unknown) => { calls++; return fn(a as never); }]),
+          );
+          const text = await callWithFallback(async (p) => {
+            const create: CreateFn = (params) => p.client!.chat.completions.create({
+              model: p.config.chatModel, temperature: 0.4, max_tokens: 8000, ...params,
+            } as any);
+            const imgForThis = img && isVisionCapableProvider(p.config.name, p.config.chatModel) ? img : null;
+            imageSent = !!imgForThis;
+            // ★エバリュエーター指摘C: 旧経路は「画像を実際に送る試行だけ」buildVisionNote(true) を
+            //   userプロンプトへ足していた(送らない試行では1文字も触れない=存在しない画像を参照させない)。
+            //   分割経路の B にはこの注記が無かったため、画像を添付しているのにプロンプトが一言も
+            //   触れない逆向きの事故になっていた。★ここで旧経路と同じ「その試行で実際に送るか」の
+            //   関数として付け直す(usr 自体・buildBUserPrompt は変えない=位置は末尾になるが、
+            //   送った/送っていないの対応は旧実装と同じ性質を保つ)。
+            const usrWithVision = [usr, buildVisionNote(!!imgForThis)].filter(Boolean).join('\n\n').trimEnd();
+            try {
+              input.onPromptFingerprint?.(promptFingerprint(sys, usrWithVision));
+            } catch (e) {
+              console.warn('[scalp-plan] プロンプト指紋の記録に失敗(計画は続行):', e instanceof Error ? e.message : String(e));
+            }
+            const out = await runChatWithTools(
+              create, [{ role: 'system', content: sys }, { role: 'user', content: buildScalpUserContent(usrWithVision, imgForThis) }],
+              tools, counting,
+            );
+            answeredBy = { name: p.config.name, model: p.config.chatModel };
+            return out;
+          }, 'scalp-plan', input.caller ?? DEFAULT_CALLER, sys.length + usr.length);
+          return { text, toolCalls: calls, ...(answeredBy ? { provider: answeredBy } : {}) };
+        },
+      }, {
+        refPrice,
+        // ★A には **節目・アラート・長期高安を外した** 文脈を渡す(runner が組み立てて渡す)。
+        //   未指定なら文脈なしで走らせる=B 用の全部入りを A に流用して「渡していない」を嘘にしない。
+        trendContext: input.technicalForTrend ?? '',
+        // ★リーダー指摘(2026-08-22): 旧経路(1回呼び出し)は systemPrompt の末尾に必ずニュースを
+        //   付けていたが、分割経路の B にはニュースが1文字も渡っていなかった——
+        //   「A には渡さない」は決めたが「B に渡すか」は誰も決めておらず、旧と揃えるのが既定のところ
+        //   無言で消えていた挙動変更。★ここで旧と揃える(B にだけ・A には付けない)。
+        //   queryText は空にする(B は4版に分かれ「その版の問い」を単一のクエリ文で代表できない。
+        //   旧経路の scalpQuestion も汎用の指示文で bigram 一致はほぼ無く、実質 news.slice(0,15) に
+        //   フォールバックしていたため、空文字でも挙動はほぼ同値)。
+        orderContext: buildOrderContextExtras(input.technical, prices, news, now),
+        floorYen, ceilingYen: promptCeilingYen, rangeEnabled,
+        squeezeState: input.squeezeState ?? null,
+        ...(input.squeezeUnavailable ? { squeezeUnavailable: input.squeezeUnavailable } : {}),
+        // ★2026-08-22 訂正(リーダー指摘): delegationNote を B へ渡す配線はここに一度あったが、取り消した。
+        //   理由: buildDelegationNote の文面は「上のロジック」「上の2択」「direction」「regime」
+        //   「confidence」など B に存在しないブロック/フィールドへの参照を含み、分割の芯(side は
+        //   AI に返させない)と衝突する。実測で B が契約外の JSON を返し aiSilent に化けることを確認した。
+        //   詳細は docs/superpowers/specs/2026-08-21-ab-split-prompts.md を参照。
+      });
+      planResult = outcome.parsed;
+      if (outcome.provider) answeredBy = outcome.provider;
+      // ★記録は握りつぶさない(失敗しても計画は続けるが、失敗した事実は1行残す)。
+      try { input.onSplitRecord?.(outcome.record); }
+      catch (e) { console.warn('[scalp-plan] A/B 記録の受け渡しに失敗(計画は続行):', e instanceof Error ? e.message : String(e)); }
+    }
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const raw = planResult ? '' : await callWithFallback(async (p) => {
       const create: CreateFn = (params) => p.client!.chat.completions.create({
         model: p.config.chatModel, temperature: 0.4, max_tokens: 8000, ...params,
       } as any);
@@ -2966,7 +3223,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     // task が一度も走らなかった場合(callWithFallback がプロバイダ不在の定型文を返す経路)だけ raw を読む。
     // 通常は planResult が入っているので再パースは起きない。
     const parsed: ScalpPlanResult = planResult ?? parseScalpPlan(raw, refPrice);
-    if (!parsed.ok) return { ...parsed, imageSent, ...(answeredBy ? { provider: answeredBy } : {}) };
+    if (!parsed.ok) return { ...parsed, imageSent, ...(answeredBy ? { provider: answeredBy } : {}), ...(splitBypassReason ? { splitBypassReason } : {}) };
     // トレンド veto: 閾値>0 かつ runner が trend を渡した時だけ効かせる(未指定/0=ai は現行挙動=veto なし)。
     const trend = trendVetoYen > 0 ? input.trend : undefined;
     // ★v0.7.56: LC上限は ceilingMode(manual→設定上限 / ai→実効上限=安全網 or LC_YEN_MAX)で分岐し、
@@ -3008,6 +3265,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     }
     const out: Extract<ScalpPlanResult, { ok: true }> = { ok: true, plan: finalPlan, imageSent, vetoFired: enforced.vetoFired };
     if (answeredBy) out.provider = answeredBy;
+    if (splitBypassReason) out.splitBypassReason = splitBypassReason;
     // ★v0.9.44(記録専用): レンジの規約違反は **parsed.plan(AI の生出力)** に対して判定する。
     //   enforce 後の plan で判定すると、トレンド veto / バイアスで片脚が落ちた回が upper/lower 不揃いになり
     //   null=観測不能になる。「プロンプトが効いていない」ことを知りたい母集団はまさにそこなので生出力を見る。
@@ -3049,6 +3307,6 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   ★落とすのは2種: ①APIキー ②V8 が埋め込むモデル生出力の断片。②は
     //     **非公開の決済ロジックの数値**(describeExitLogic がプロンプトへ実行時注入し、モデルが
     //     根拠文で言い直しうる)を同期フォルダへ運びうるため。長さは触らない(診断値を落とさない)。
-    return { ok: false, error: sanitizeErrorForOutput(e instanceof Error ? e.message : String(e)), imageSent, ...(answeredBy ? { provider: answeredBy } : {}) };
+    return { ok: false, error: sanitizeErrorForOutput(e instanceof Error ? e.message : String(e)), imageSent, ...(answeredBy ? { provider: answeredBy } : {}), ...(splitBypassReason ? { splitBypassReason } : {}) };
   }
 }

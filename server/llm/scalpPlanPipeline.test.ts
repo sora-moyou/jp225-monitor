@@ -83,8 +83,9 @@ function countOf(s: string, sub: string): number {
 // ★v0.9.59(ユーザー指示): 注記は「プランの言い直し」を止め、**片方が無い理由だけ** を書く形に変わった。
 //   両レッグ揃っている回は注記そのものが出ない(=旧 NOTE_BOTH は存在しない)。
 const NOTE_STOP_MISSING = '（逆指値なし: AIが提案せず）';
-const NOTE_STOP_GEOMETRY = '（逆指値は不採用: エントリーが現在値の逆側、または損切り幅の値が不正）';
-const NOTE_LIMIT_GEOMETRY = '（指値は不採用: エントリーが現在値の逆側、または損切り幅の値が不正）';
+// ★v0.9.95: geometry は「エントリーが現在値の逆側」に限定(幅の値の不正は lcWidthInvalid へ分離)。
+const NOTE_STOP_GEOMETRY = '（逆指値は不採用: エントリーが現在値の逆側）';
+const NOTE_LIMIT_GEOMETRY = '（指値は不採用: エントリーが現在値の逆側）';
 const NOTE_STOP_LC = '（逆指値は不採用: 損切り幅が設定の上限より広い）';
 const NOTE_STOP_LC_FLOOR = '（逆指値は不採用: 損切り幅が設定の下限より狭い）';
 

@@ -110,7 +110,9 @@ describe('分析用のプロンプト: A の仮想取引の成績を外す(両�
     //   この it の目的=「**分析用だけの記録**(chartShot/contextOmitted)が A の結果に混ざらない」は不変。
     // ★v0.9.93: appVersion / promptBuild も「全経路で additive に載る記録」なので除外に加える
     //   (分析用だけの記録=chartShot / contextOmitted が混ざらない、という元の不変条件は不変)。
+    // ★段5続き: contextPresence も「全経路で無条件に additive に載る記録」なので除外に加える。
     expect(Object.keys(r).filter(k => k !== 'contextAt' && k !== 'promptFp' && k !== 'chartVision'
-      && k !== 'trendDir' && k !== 'appVersion' && k !== 'promptBuild')).toEqual(['ok', 'plan']);
+      && k !== 'trendDir' && k !== 'appVersion' && k !== 'promptBuild'
+      && k !== 'contextPresence')).toEqual(['ok', 'plan']);
   });
 });

@@ -76,8 +76,11 @@ describe('提案に「どの1枚を見たか」を載せる', () => {
     // ★v0.9.93: appVersion / promptBuild を除外に追加。理由は同じで、これらは **全経路で載る**
     //   記録(この行を書いた版とプロンプトの型)であり、分析用だけの記録ではない。むしろ
     //   **A(実取引につながる経路)の台帳にこそ必要**(版が記録に無いと解析が間接推定に落ちる)。
+    // ★段5続き: contextPresence を除外に追加。理由は同じ——分割の有無・caller に関係なく
+    //   **全経路で無条件に**載る記録(文脈のどのブロックが実際に入ったか)であり、分析用だけの記録ではない。
     Object.keys(r).filter(k => k !== 'ok' && k !== 'plan' && k !== 'contextAt' && k !== 'promptFp'
-      && k !== 'chartVision' && k !== 'trendDir' && k !== 'appVersion' && k !== 'promptBuild');
+      && k !== 'chartVision' && k !== 'trendDir' && k !== 'appVersion' && k !== 'promptBuild'
+      && k !== 'contextPresence');
 
   it('★caller 省略(実取引 A の経路)の結果に **分析用だけの記録は1つも付かない**', async () => {
     const r = await runScalpPlanWithChart({});

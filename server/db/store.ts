@@ -167,7 +167,32 @@ export function initSchema(db: DatabaseSync): void {
       trend_dir TEXT,
       -- ★v0.9.93(RECORD-ONLY): この行を書いた版と、その版のプロンプトの型。下の ALTER と同じ2列。
       app_version TEXT,
-      prompt_build TEXT
+      prompt_build TEXT,
+      -- ★v0.9.96(RECORD-ONLY): ARM 直前のゲートの生数値。下の ALTER と同じ2列。
+      drift_yen REAL,
+      stale_legs INTEGER,
+      -- ★v0.9.97(RECORD-ONLY): A/B 分割の測定台。下の ALTER と同じ8列。
+      a_direction TEXT,
+      a_why TEXT,
+      b_variant TEXT,
+      squeeze_state TEXT,
+      squeeze_unavailable TEXT,
+      b_strategy TEXT,
+      ai_why TEXT,
+      tool_calls INTEGER,
+      -- ★段5(RECORD-ONLY): A/B それぞれを答えたプロバイダと、それぞれのプロンプトの型の指紋。下の ALTER と同じ6列。
+      a_provider TEXT,
+      a_provider_model TEXT,
+      b_provider TEXT,
+      b_provider_model TEXT,
+      a_prompt_build TEXT,
+      b_prompt_build TEXT,
+      -- ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったか(ContextPresence の JSON)。下の ALTER と同じ2列。
+      context_presence_json TEXT,
+      -- ★段6(RECORD-ONLY): B が「判断に必要なデータが足りなかった」と自己申告した自由文。下の ALTER と同じ1列。
+      missing_data TEXT,
+      -- ★段6続き(RECORD-ONLY): 分割ON設定なのに、この回だけ旧経路へ落とした理由。下の ALTER と同じ1列。
+      split_bypass_reason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_signal_plans_sys_t ON signal_plans (system, t);
   `);
@@ -304,6 +329,135 @@ export function initSchema(db: DatabaseSync): void {
   //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
   if (!spCols.includes('app_version')) db.exec('ALTER TABLE signal_plans ADD COLUMN app_version TEXT');
   if (!spCols.includes('prompt_build')) db.exec('ALTER TABLE signal_plans ADD COLUMN prompt_build TEXT');
+  // ★v0.9.96(RECORD-ONLY): **ARM 直前のゲートが何を見て落としたか**。
+  //
+  //   ■ なぜ要るか(A/B 分割の前提条件)
+  //     計画サイクルを A(目線)と B(注文)の2回に分けると 応答が直列になり、
+  //     **文脈を組んだ時刻と ARM 時刻の差が伸びる**。その結果 checkRefDrift(上限 200円)と
+  //     stale plan veto(ARM 時 live で既に通過しているレッグを落とす)に掛かる回が増える。
+  //     ★いまこの2つは **console ログにしか出ない**。台帳に無いので「増えたこと」に気づけない。
+  //     = 分割を入れる前に、**増減を数えられる形**を先に作る(измерение を後から足せない設計にしない)。
+  //   ■ 値の意味
+  //     drift_yen  … |plan.refPrice − ARM 時 live| [円]。live が取れない/非有限の回は NULL
+  //                  (「測れなかった」と「0円だった」を混ぜない)。★閾値超えでなくても **常に** 入れる
+  //                  = 分布が見たい(200円という上限が妥当かを後から見直すため)。
+  //     stale_legs … checkStaleLegs が「もう通過している」と判定したレッグの本数(0/1/2)。
+  //                  判定を走らせなかった回(ARM 候補が無い/live が無い)は NULL。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('drift_yen')) db.exec('ALTER TABLE signal_plans ADD COLUMN drift_yen REAL');
+  if (!spCols.includes('stale_legs')) db.exec('ALTER TABLE signal_plans ADD COLUMN stale_legs INTEGER');
+  // ★v0.9.97(RECORD-ONLY): **A/B 分割の測定台**。分割の本体より先にこの8列を入れる。
+  //
+  //   ■ なぜ先に入れるか
+  //     いま「取引しなかった」は none_reason='ai'(実測 33.9%)に4つの別ものが潰れている:
+  //       ① AI が目線を見つけられなかった / ② こちらの設定でレンジを取引しない /
+  //       ③ AI が「置けない」と理由つきで言った / ④ AI は答えたがコードの検証で落とした。
+  //     ★分割してから列を足すと、分割の前後で **同じ土俵の比較ができない**。
+  //     ★2026-08-22 訂正: 先に列だけ入れておいても、分割を入れない現行版(既定 OFF)ではこの8列は
+  //     **全て NULL のまま**(実測: 分割 OFF の行はこの8列すべて NULL)。値は分割 ON の回にしか
+  //     埋まらない(段6の resolveSplitBypassReasons で旧経路へ落ちた回も同様=NULL)。
+  //     「列を先に用意しておく」ことの意味は、分割を実装した瞬間から同じスキーマで書き込めること
+  //     (=分割の前後でスキーマ変更を挟まない)であって、分割前から値が入り始めるという意味ではない。
+  //   ■ 値の意味(すべて NULL 可。★埋められない回は捏造せず NULL)
+  //     a_direction         … A(目線)の答え('bull'/'bear'/'range')。★注文の side(buy/sell)ではない。
+  //                           (2026-08-22 訂正: ここが 'buy'/'sell'/'range' と書いていたのは
+  //                            仕様修正(2026-08-22・A の語を bull/bear/range へ変更)前の古い記述のまま
+  //                            残っていた=宣言だけ残る事故。実装は trendPrompt.ts の TrendAnswerDirection)。
+  //                           ★分割 OFF(旧経路)ではこの列は埋めない(A/B 分割を通った回だけ書く)= NULL。
+  //     a_why               … その目線の理由(自由文)。
+  //     b_variant           … 注文側に渡した版('buy'/'sell'/'range-fade'/'range-breakout'/'none'=呼ばなかった)。
+  //                           ★'none' と NULL は違う: 'none'=呼ばないと決めた / NULL=この列を持たない版の記録。
+  //     squeeze_state       … 版を選んだ生の根拠('squeeze'/'bulge'/NULL=どちらでもない)。
+  //     squeeze_unavailable … 判定が使えなかった理由('ready_false'/'closed'/'disabled')。★これが無いと
+  //                           「測れなかった」が「スクイーズでなかった」に化ける(NULL の中身を分ける)。
+  //     b_strategy          … 注文側が書いた「この相場をどう読んで この価格にしたか」(1行の自由文)。
+  //     ai_why              … AI が書いた aWhy/iWhy(あ/い それぞれの提案理由)を joinWhy で結合した自由文。
+  //                           ★2026-08-22 訂正: 当初「見送ったときの理由」とだけ書いていたが実態と違った。
+  //                           AI は aWhy/iWhy を **見送ったかどうかに関わらず** 書く(片脚成立・両脚成立の
+  //                           回にも実測で入っていた)。「見送りの理由」として読みたいときは、この列単体でなく
+  //                           `none_reason = 'ai'` と組み合わせて絞ること(③の SQL は元からそうしている)。
+  //     tool_calls          … その計画でデータツールが実際に呼ばれた回数。★0 と NULL は違う
+  //                           (0=数えて0回 / NULL=数えていない版の記録)。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('a_direction')) db.exec('ALTER TABLE signal_plans ADD COLUMN a_direction TEXT');
+  if (!spCols.includes('a_why')) db.exec('ALTER TABLE signal_plans ADD COLUMN a_why TEXT');
+  if (!spCols.includes('b_variant')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_variant TEXT');
+  if (!spCols.includes('squeeze_state')) db.exec('ALTER TABLE signal_plans ADD COLUMN squeeze_state TEXT');
+  if (!spCols.includes('squeeze_unavailable')) db.exec('ALTER TABLE signal_plans ADD COLUMN squeeze_unavailable TEXT');
+  if (!spCols.includes('b_strategy')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_strategy TEXT');
+  if (!spCols.includes('ai_why')) db.exec('ALTER TABLE signal_plans ADD COLUMN ai_why TEXT');
+  if (!spCols.includes('tool_calls')) db.exec('ALTER TABLE signal_plans ADD COLUMN tool_calls INTEGER');
+  // ★段5(RECORD-ONLY): A/B 分割の測定台の続き — **どちらが答えたか** と **どちらの文面だったか**。
+  //
+  //   ■ なぜ a_provider/b_provider を分けるか(既存の provider/provider_model とは別列)
+  //     callWithFallback は呼び出しごとにプールを引く(A/B は2回の別呼び出し)ので、
+  //     ★A を gemini・B を groq が答える組み合わせが実際に起こりうる。既存の provider 列は
+  //     「最後に答えた1つ」(B 優先)に潰しているので、2列に分けないと「どちらが答えたか」が消える。
+  //   ■ なぜ a_prompt_build/b_prompt_build を分けるか(既存の prompt_build とは別物)
+  //     既存の prompt_build(pb1)は **旧経路(1回呼び出し)** の文面の指紋で、A/B 分割の文面
+  //     (trendPrompt.ts / planVariants.ts)を一切通らない。分割の文面が変わったことを版番号と
+  //     独立に見分けるには、分割専用の指紋が要る(server/llm/abPromptBuild.ts)。
+  //     b_prompt_build は b_variant(buy/sell/range-fade/range-breakout)ごとに別の値になる。
+  //   ■ 値の意味(すべて NULL 可)
+  //     a_provider/a_provider_model … A(目線)を答えたプロバイダ/モデル。A が一度も答えなかった回は NULL。
+  //     b_provider/b_provider_model … B(価格と損切幅)を答えたプロバイダ/モデル。B を呼ばなかった
+  //       (b_variant='none')回・B が一度も答えなかった回は NULL。
+  //     a_prompt_build … A のプロンプトの型の指紋(`pb1:<16桁hex>`)。A が呼ばれた回は必ず入る
+  //       (分割 OFF の旧行/A を一度も呼ばなかった回は NULL)。
+  //     b_prompt_build … B のプロンプトの型の指紋。B を実際に呼んだ回だけ入る。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('a_provider')) db.exec('ALTER TABLE signal_plans ADD COLUMN a_provider TEXT');
+  if (!spCols.includes('a_provider_model')) db.exec('ALTER TABLE signal_plans ADD COLUMN a_provider_model TEXT');
+  if (!spCols.includes('b_provider')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_provider TEXT');
+  if (!spCols.includes('b_provider_model')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_provider_model TEXT');
+  if (!spCols.includes('a_prompt_build')) db.exec('ALTER TABLE signal_plans ADD COLUMN a_prompt_build TEXT');
+  if (!spCols.includes('b_prompt_build')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_prompt_build TEXT');
+  // ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったか(ContextPresence の JSON)。
+  //
+  //   ■ なぜ要るか(リーダー指摘)
+  //     ATR14・節目までの距離・BB幅・スイング高安・長い時間軸・日足バンド等は、いずれも
+  //     scalpContext.ts / basedataContext.ts の各サブブロックが try/catch で **独立に省略しうる**。
+  //     「本当に帯(55〜160円)しか手がかりが無い回」が何%あるかを、まず記録できる形にする。
+  //   ■ ★既存の proposals.context_omitted は流用しない(意味が違う): あちらは caller による
+  //     **ポリシー除外**(定数配列)の記録。ここは **データ不足による黙示的な省略**の記録で毎回変わりうる。
+  //     同じ列に混ぜると squeeze_state/squeeze_unavailable を分けた理由と同じ罠(「除外した」と
+  //     「無かった」が区別できなくなる)を再現する。
+  //   ■ 値(server/llm/contextPresence.ts の ContextPresence を JSON 化したもの):
+  //     {atr,sessionHighLow,levels,bb,swing,longHorizon,alerts,dailyBand,basedata,news} の
+  //     真偽値10個。★同じ行の none_reason/b_variant/a_direction と結合不要で突き合わせられる
+  //     (JOIN が要らないことがこの設計の目的)。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('context_presence_json')) db.exec('ALTER TABLE signal_plans ADD COLUMN context_presence_json TEXT');
+  // ★段6(RECORD-ONLY): B が「判断に必要なデータが足りなかった」と自己申告した自由文。
+  //
+  //   ■ なぜ要るか
+  //     B の user プロンプトに1文足した(「判断に必要なデータが足りなかったときは、何が足りなかったかも
+  //     書いてください」)。AI の自己申告をコードだけに埋もれさせず、①(context_presence_json)と
+  //     突き合わせて「AI が『節目が無い』と言った回に、本当に levels が false だったか」を後から測れる形にする。
+  //   ■ ★ai_why(価格を置けないと判断した理由)とは別列: 見送ったかどうかに関わらず書かれうる
+  //     (片脚だけ置けた回にも書ける)ため、意味も母集団も違う。混ぜると「置けなかった理由」と
+  //     「データが足りなかった申告」が区別できなくなる。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('missing_data')) db.exec('ALTER TABLE signal_plans ADD COLUMN missing_data TEXT');
+  // ★段6続き(RECORD-ONLY): 分割ON設定なのに、この回だけ旧経路へ落とした理由(構造で塞ぐための記録)。
+  //
+  //   ■ なぜ要るか(リーダー指摘: 「運用ルールでは足りない。構造で塞げ」)
+  //     A/B 分割の B(buildBSystemPrompt/buildBUserPrompt)は heldPosition(ドテン評価)・
+  //     armedContext(レンジ再評価)・promptVariant(候補腕)を一切受け取らない。分割ONのまま
+  //     これらが渡ると黙って無視されてしまうため、その回だけ旧経路(1回呼び出し)へフォールバックする
+  //     ガードを入れた(server/llm/scalpPlan.ts の resolveSplitBypassReasons)。この列はその**発動事実**の記録。
+  //   ■ 値の意味
+  //     'heldPosition' / 'armedContext' / 'promptVariant' のいずれか(複数該当時はカンマ区切り)。
+  //     ★分割OFFの回・分割ONで実際に分割経路を通った回は NULL(「使わなかった」と「使った」を混同しない)。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない(フォールバック自体は安全側の挙動選択で、
+  //     この列は後から「分割が効かない回がどれだけあるか」を測るためだけにある)。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('split_bypass_reason')) db.exec('ALTER TABLE signal_plans ADD COLUMN split_bypass_reason TEXT');
   // v0.7.51: レンジ両面ストラドルを別枠集計するための mode タグ('range' / 'directional')。
   //   既存DBへ後付けマイグレーション(NULL は directional 扱い=後方互換)。
   const stCols = (db.prepare('PRAGMA table_info(signal_trades)').all() as Array<{ name: string }>).map(c => c.name);
@@ -733,14 +887,33 @@ export interface BuildIdentityMeta {
   promptBuilds: Record<string, string>;
   /** 記録時刻(epoch ms)。★起動のたびに更新されるので「いつの起動の値か」が分かる。 */
   at: number;
+  /** ★段5(RECORD-ONLY): A/B 分割の実行時状態と、この版が持つ A/B のプロンプトの型。
+   *
+   *  ■ なぜ列(signal_plans)だけでは足りないか(★測定の断絶をここに記録する理由)
+   *    signal_plans の a_direction/b_variant 等は **行が1つでもあれば** 分割が動いていたか読めるが、
+   *    行が0の日(エンジン停止・取引時間外のみの日)は「分割 ON だったのに1件も発生しなかった」のか
+   *    「分割そのものが OFF だった」のかを区別できない。★同じ none_reason='rangeDisabled' でも
+   *    分割前後で意味が変わる(server/llm/scalpPlan.ts の enforceRangeEnabled 参照)ので、
+   *    行数に関係なく読める「この時点で分割が有効だったか」の記録が要る = **これが土俵の境目そのもの**。
+   *  ■ ★enabled は起動時に1回だけ解決される(planSplitConfig.ts)。プロセス生存中は変わらない。
+   */
+  planSplit?: {
+    /** その起動でプロセスが分割経路を使っていたか(isPlanSplitEnabled())。 */
+    enabled: boolean;
+    /** A(目線)のプロンプトの型の指紋(版が1つだけ)。 */
+    aPromptBuild: string;
+    /** B(価格と損切幅)の版ごとの指紋(buy/sell/range-fade/range-breakout)。 */
+    bPromptBuilds: Record<string, string>;
+  };
 }
 
 /** 版とプロンプトの型の指紋を meta に1行(+人が読む1行)書く。失敗は呼び出し側が握りつぶす。 */
 export function setBuildIdentityMeta(db: DatabaseSync, m: BuildIdentityMeta): void {
   setMeta(db, BUILD_IDENTITY_KEY, JSON.stringify(m));
   const pairs = Object.entries(m.promptBuilds).map(([k, v]) => `${k}=${v}`).join(' ');
+  const splitNote = m.planSplit ? ` planSplit=${m.planSplit.enabled ? 'on' : 'off'}` : '';
   setMeta(db, BUILD_IDENTITY_STATUS_KEY,
-    `${new Date(m.at).toISOString()} v${m.appVersion} ${pairs}`);
+    `${new Date(m.at).toISOString()} v${m.appVersion} ${pairs}${splitNote}`);
 }
 
 export interface SessionOHLC {
@@ -1186,6 +1359,48 @@ export interface SignalPlanRow {
   app_version: string | null;
   /** ★v0.9.93: その版の **プロンプトの型** の指紋(`pb1:<16桁hex>`)。旧行は NULL。★sp1 とは別物。 */
   prompt_build: string | null;
+  /** ★v0.9.96: |plan.refPrice − ARM 時 live|[円]。測れなかった回は NULL(0 と混ぜない)。 */
+  drift_yen: number | null;
+  /** ★v0.9.96: ARM 時 live で「もう通過している」と判定されたレッグの本数(0/1/2)。未判定は NULL。 */
+  stale_legs: number | null;
+  /** ★v0.9.97: A(目線)の答え('bull'/'bear'/'range')。旧行/A が呼ばれなかった回は NULL。
+   *  ★注文の side(buy/sell)ではない(2026-08-22 訂正: 'buy'/'sell'/'range' としていたのは仕様修正前の
+   *  古い記述のまま残っていたもの=宣言だけ残る事故。実装は trendPrompt.ts の TrendAnswerDirection)。 */
+  a_direction: string | null;
+  /** ★v0.9.97: その目線の理由(自由文)。同上。 */
+  a_why: string | null;
+  /** ★v0.9.97: 注文側に渡した版。★'none'(呼ばなかった)と NULL(この列を持たない版)は別物。 */
+  b_variant: string | null;
+  /** ★v0.9.97: 版を選んだ生の根拠('squeeze'/'bulge')。どちらでもない/旧行は NULL。 */
+  squeeze_state: string | null;
+  /** ★v0.9.97: 判定が使えなかった理由('ready_false'/'closed'/'disabled')。使えた回は NULL。 */
+  squeeze_unavailable: string | null;
+  /** ★v0.9.97: 注文側が書いた「どう読んで この価格にしたか」(1行)。旧行/書かなかった回は NULL。 */
+  b_strategy: string | null;
+  /** ★v0.9.97: AI が書いた aWhy/iWhy の結合文。旧行/AI が書かなかった回は NULL。
+   *  ★2026-08-22 訂正: 「見送ったときの理由」限定ではない(見送っていない回にも実測で入る)。
+   *  見送りの理由として読みたいときは none_reason='ai' と組み合わせること。 */
+  ai_why: string | null;
+  /** ★v0.9.97: データツールが実際に呼ばれた回数。★0(数えて0)と NULL(数えていない)は別物。 */
+  tool_calls: number | null;
+  /** ★段5: A(目線)を答えたプロバイダ名。A が一度も答えなかった回/旧行は NULL。 */
+  a_provider: string | null;
+  /** ★段5: A を答えたチャットモデル名。同上。 */
+  a_provider_model: string | null;
+  /** ★段5: B(価格と損切幅)を答えたプロバイダ名。B を呼ばなかった回/答えなかった回/旧行は NULL。 */
+  b_provider: string | null;
+  /** ★段5: B を答えたチャットモデル名。同上。 */
+  b_provider_model: string | null;
+  /** ★段5: A のプロンプトの型の指紋(`pb1:<16桁hex>`)。A が呼ばれなかった回/旧行は NULL。 */
+  a_prompt_build: string | null;
+  /** ★段5: B のプロンプトの型の指紋。B を呼ばなかった回/旧行は NULL。 */
+  b_prompt_build: string | null;
+  /** ★段5続き: 文脈のどのブロックが実際に入ったか(ContextPresence の JSON)。旧行は NULL。 */
+  context_presence_json: string | null;
+  /** ★段6: B が「判断に必要なデータが足りなかった」と自己申告した自由文。旧行/未申告は NULL。 */
+  missing_data: string | null;
+  /** ★段6続き: 分割ON設定なのに、この回だけ旧経路へ落とした理由。旧行/該当なしは NULL。 */
+  split_bypass_reason: string | null;
   /** 根拠文の申告 LC幅 と 実出力の突き合わせ(LcDeclarationCheck[] の JSON)。旧行/観測ゼロは NULL。 */
   lc_audit_json: string | null;
   /** 根拠文の「出さない」表明 と 実際に発注されるレッグの突き合わせ(OmissionClaimCheck[] の JSON)。
@@ -1275,6 +1490,48 @@ export interface SignalPlanInsert {
   appVersion?: string | null;
   /** ★v0.9.93(RECORD-ONLY): その版のプロンプトの型の指紋(`pb1:…`)。取れなかった回は NULL。 */
   promptBuild?: string | null;
+  /** ★v0.9.96(RECORD-ONLY): |refPrice − ARM 時 live|[円]。測れなかった回は未指定=NULL。 */
+  driftYen?: number | null;
+  /** ★v0.9.96(RECORD-ONLY): 通過済みと判定されたレッグの本数。判定を走らせなかった回は未指定=NULL。 */
+  staleLegs?: number | null;
+  /** ★v0.9.97(RECORD-ONLY): 目線を決めた側の答え。目線が出なかった回は未指定=NULL。 */
+  aDirection?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): その目線の理由。同上。 */
+  aWhy?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): 注文側に渡した版。★呼ばないと決めた回は 'none' を **明示的に** 渡す
+   *  (未指定=NULL は「この列を持たない版の記録」を意味するので、混ぜない)。 */
+  bVariant?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): 版を選んだ生の根拠。どちらでもない回は未指定=NULL。 */
+  squeezeState?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): 判定が使えなかった理由。使えた回は未指定=NULL。 */
+  squeezeUnavailable?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): 注文側が書いた1行の読み。書かなかった回は未指定=NULL。 */
+  bStrategy?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): 理由つき見送りの理由の文。見送りでない回は未指定=NULL。 */
+  aiWhy?: string | null;
+  /** ★v0.9.97(RECORD-ONLY): ツールが呼ばれた回数。★数えた回は 0 でも **必ず渡す**
+   *  (未指定=NULL は「数えていない」を意味するので、0 と混ぜない)。 */
+  toolCalls?: number | null;
+  /** ★段5(RECORD-ONLY): A(目線)を答えたプロバイダ名/モデル名。A が一度も答えなかった回は未指定=NULL。 */
+  aProvider?: string | null;
+  aProviderModel?: string | null;
+  /** ★段5(RECORD-ONLY): B(価格と損切幅)を答えたプロバイダ名/モデル名。
+   *  B を呼ばなかった回・答えなかった回は未指定=NULL。★既存の provider/providerModel(単一)とは別列
+   *  (callWithFallback は呼び出しごとにプールを引くため、A と B が別プロバイダで答える組み合わせが起こる)。 */
+  bProvider?: string | null;
+  bProviderModel?: string | null;
+  /** ★段5(RECORD-ONLY): A のプロンプトの型の指紋(`pb1:…`)。A が呼ばれなかった回は未指定=NULL。 */
+  aPromptBuild?: string | null;
+  /** ★段5(RECORD-ONLY): B のプロンプトの型の指紋。B を呼ばなかった回は未指定=NULL。 */
+  bPromptBuild?: string | null;
+  /** ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったか(ContextPresence を JSON 化した文字列)。
+   *  呼び出し側(scalpPlanRunner.ts)が組み立てる。未指定=NULL(この機能を持たない旧版の記録)。 */
+  contextPresenceJson?: string | null;
+  /** ★段6(RECORD-ONLY): B が「判断に必要なデータが足りなかった」と自己申告した自由文。
+   *  ai_why とは別列(見送ったかに関わらず書かれうる)。未申告=NULL。 */
+  missingData?: string | null;
+  /** ★段6続き(RECORD-ONLY): 分割ON設定なのに、この回だけ旧経路へ落とした理由。未該当=NULL。 */
+  splitBypassReason?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1293,8 +1550,12 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       context_at, prompt_fp, lc_audit_json, omission_audit_json,
       provider, provider_model, strategy, strategy_why, limit_level, stop_level,
       direction_why, entry_why_for_limit, entry_why_for_stop, lc_why_for_limit, lc_why_for_stop,
-      trend_dir, app_version, prompt_build
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      trend_dir, app_version, prompt_build, drift_yen, stale_legs,
+      a_direction, a_why, b_variant, squeeze_state, squeeze_unavailable,
+      b_strategy, ai_why, tool_calls,
+      a_provider, a_provider_model, b_provider, b_provider_model, a_prompt_build, b_prompt_build,
+      context_presence_json, missing_data, split_bypass_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1319,6 +1580,22 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     //   ★prompt_build は取れなかった回だけ NULL(捏造しない)。
     p.appVersion ?? currentBuildIdentity().appVersion,
     p.promptBuild ?? currentBuildIdentity().promptBuild,
+    // ★v0.9.96: ARM 直前のゲートの生数値(記録専用)。非有限は NULL(壊れた値で分布を汚さない)。
+    finiteOrNull(p.driftYen), finiteOrNull(p.staleLegs),
+    // ★v0.9.97: A/B 分割の測定台(記録専用)。
+    //   ★b_variant / tool_calls は **?? null で潰さない**: 'none' と NULL、0 と NULL を分けるため
+    //   呼び出し側が明示した値だけをそのまま入れる(undefined のときだけ NULL)。
+    p.aDirection ?? null, p.aWhy ?? null, p.bVariant ?? null,
+    p.squeezeState ?? null, p.squeezeUnavailable ?? null,
+    p.bStrategy ?? null, p.aiWhy ?? null, finiteOrNull(p.toolCalls),
+    // ★段5: A/B それぞれを答えたプロバイダ/モデルと、それぞれのプロンプトの型の指紋(記録専用)。
+    p.aProvider ?? null, p.aProviderModel ?? null,
+    p.bProvider ?? null, p.bProviderModel ?? null,
+    p.aPromptBuild ?? null, p.bPromptBuild ?? null,
+    // ★段5続き: 文脈のどのブロックが実際に入ったか(記録専用)。取れなかった回(旧版)は NULL。
+    p.contextPresenceJson ?? null,
+    p.missingData ?? null,
+    p.splitBypassReason ?? null,
   );
 }
 

@@ -93,8 +93,10 @@ function withoutProvenance(r: unknown): Record<string, unknown> {
   //   フィールドが1つも増えない」は一ビットも緩めていない。
   // ★v0.9.93: appVersion / promptBuild も同じ理由でここへ追加(この行を書いた版とプロンプトの型は
   //   **全経路で** 載る記録。分析用だけの記録ではない)。it の目的は一ビットも緩めていない。
+  // ★段5続き: contextPresence も同じ理由でここへ追加(文脈のどのブロックが実際に入ったかは
+  //   分割の有無・caller に関係なく **全経路で無条件に** 載る記録。分析用だけの記録ではない)。
   const { contextAt: _c, promptFp: _p, chartVision: _v, trendDir: _t,
-    appVersion: _av, promptBuild: _pb, ...rest } = r as Record<string, unknown>;
+    appVersion: _av, promptBuild: _pb, contextPresence: _cp, ...rest } = r as Record<string, unknown>;
   return rest;
 }
 

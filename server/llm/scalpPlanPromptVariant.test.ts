@@ -76,12 +76,26 @@ async function promptsOf(promptVariant?: 'v1' | 'v2'): Promise<{ system: string;
 }
 
 describe('promptVariant — 実際に送る user プロンプト', () => {
+  // ★時刻を止める(v0.9.97): system プロンプトは【市場の現状 <壁時計>】を **秒の粒度** で埋め込む。
+  //   2回の組み立てが秒の境界をまたぐと byte 一致が偶発的に落ちる=このテストは実際に
+  //   ときどき赤くなっていた(私の変更とは無関係の偽陽性)。★偽陽性は「全緑」を無意味にするので止める。
+  //   ★止めるのは時計だけ。比較しているのは依然として **実際に create へ渡った全文** で、
+  //   秒がずれない限りこのテストの検出力は変わらない。
+  //   ★固定値ではなく「いまの時刻をそのまま凍らせる」: 日付を動かすと取引時間の判定が変わり、
+  //     このテストが測りたいもの(プロンプトの byte 一致)と関係ない経路に入ってしまう。
   it('★未指定 と v1 は byte 一致(既定経路は1ミリも動かない)', async () => {
-    const none = await promptsOf(undefined);
-    const v1 = await promptsOf('v1');
-    expect(v1.user).toBe(none.user);
-    expect(v1.system).toBe(none.system);
-    expect(DEFAULT_PROMPT_VARIANT).toBe('v1');
+    // ★止めるのは Date だけ(toFake)。setTimeout まで差し替えると LLM 経路の await が進まず固まる。
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now());
+    try {
+      const none = await promptsOf(undefined);
+      const v1 = await promptsOf('v1');
+      expect(v1.user).toBe(none.user);
+      expect(v1.system).toBe(none.system);
+      expect(DEFAULT_PROMPT_VARIANT).toBe('v1');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('★v2 は質問文が入れ替わり、v1 の JSON 指示文は付かない', async () => {

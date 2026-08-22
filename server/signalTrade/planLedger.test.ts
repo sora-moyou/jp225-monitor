@@ -211,3 +211,210 @@ describe('★答えたプロバイダ/モデル(planLedger)', () => {
     expect(row.provider).toBe('groq');
   });
 });
+
+// ─── ★段5: A/B 分割の測定材料(SplitRecord)が signal_plans の行へ写る ───────────────────
+//
+//  ★否定対照: この describe の前に足した splitRecord の読み取りブロックを削れば、
+//    以下のテストは全て赤になる(旧経路=splitRecord 無しの回は無傷のまま)。
+describe('★段5: splitRecord(A/B 分割の測定材料)が行へ写る', () => {
+  const OK = { ok: true as const, plan: { direction: 'buy' as const, rationale: 'x', refPrice: 38250 } };
+
+  it('★旧経路(splitRecord 無し)は新列が一切乗らない(既存の挙動を壊さない)', () => {
+    const row = buildSignalPlanInsert({ t: 1, system: 'A', result: OK });
+    for (const k of [
+      'aDirection', 'aWhy', 'bVariant', 'squeezeState', 'squeezeUnavailable',
+      'bStrategy', 'aiWhy', 'toolCalls', 'aProvider', 'aProviderModel',
+      'bProvider', 'bProviderModel', 'aPromptBuild', 'bPromptBuild',
+    ] as const) {
+      expect(row[k], `${k} は未指定のはず`).toBeUndefined();
+    }
+  });
+
+  it('分割 ON で B(buy)まで進んだ回: 8列 + プロバイダ2組 + プロンプト型2つが揃って写る', () => {
+    const row = buildSignalPlanInsert({
+      t: 2, system: 'A',
+      result: {
+        ...OK,
+        splitRecord: {
+          aDirection: 'bull', aWhy: '高値切り上げ', bVariant: 'buy',
+          squeezeState: null, bStrategy: '押し目を拾う', toolCalls: 2,
+          aProvider: { name: 'gemini', model: 'gemini-flash' },
+          bProvider: { name: 'groq', model: 'llama-70b' },
+          aPromptBuild: 'pb1:aaaaaaaaaaaaaaaa', bPromptBuild: 'pb1:bbbbbbbbbbbbbbbb',
+        },
+      },
+    });
+    expect(row.aDirection).toBe('bull');
+    expect(row.aWhy).toBe('高値切り上げ');
+    expect(row.bVariant).toBe('buy');
+    expect(row.squeezeState).toBeNull();
+    expect(row.squeezeUnavailable).toBeUndefined();
+    expect(row.bStrategy).toBe('押し目を拾う');
+    expect(row.aiWhy).toBeUndefined();
+    expect(row.toolCalls).toBe(2);
+    // ★これが設計の芯: A と B が別プロバイダで答えても、片方に潰れず両方が残る。
+    expect(row.aProvider).toBe('gemini');
+    expect(row.aProviderModel).toBe('gemini-flash');
+    expect(row.bProvider).toBe('groq');
+    expect(row.bProviderModel).toBe('llama-70b');
+    expect(row.aPromptBuild).toBe('pb1:aaaaaaaaaaaaaaaa');
+    expect(row.bPromptBuild).toBe('pb1:bbbbbbbbbbbbbbbb');
+  });
+
+  it("★b_variant='none'(呼ばないと決めた)回は bProvider/bPromptBuild が乗らない(A だけ残る)", () => {
+    const row = buildSignalPlanInsert({
+      t: 3, system: 'A',
+      result: {
+        ok: true, plan: { direction: 'none', rationale: 'レンジのため見送り', refPrice: 38250 },
+        noneReason: 'rangeDisabled',
+        splitRecord: {
+          aDirection: 'range', aWhy: 'どちらとも言えない', bVariant: 'none',
+          squeezeState: null, aProvider: { name: 'gemini', model: 'gemini-flash' },
+          aPromptBuild: 'pb1:aaaaaaaaaaaaaaaa',
+        },
+      },
+    });
+    expect(row.aDirection).toBe('range');
+    expect(row.bVariant).toBe('none');            // ★NULL ではなく 'none' がそのまま行に乗る
+    expect(row.aProvider).toBe('gemini');
+    expect(row.bProvider).toBeUndefined();
+    expect(row.bPromptBuild).toBeUndefined();
+  });
+
+  it('★squeeze_unavailable(測れなかった理由)がある回は squeeze_state と共存して残る', () => {
+    const row = buildSignalPlanInsert({
+      t: 4, system: 'A',
+      result: {
+        ...OK,
+        splitRecord: {
+          bVariant: 'range-fade', squeezeState: null, squeezeUnavailable: 'closed',
+        },
+      },
+    });
+    expect(row.squeezeState).toBeNull();
+    expect(row.squeezeUnavailable).toBe('closed');
+  });
+
+  it('★ai_why(理由つき見送り)は改行を含む自由文もそのまま残る', () => {
+    const why = 'あ) 上に置ける節目が無い\nい) 下は本日安値まで遠すぎる';
+    const row = buildSignalPlanInsert({
+      t: 5, system: 'A',
+      result: {
+        ok: true, plan: { direction: 'none', rationale: '見送り', refPrice: 38250 }, noneReason: 'ai',
+        splitRecord: { bVariant: 'buy', squeezeState: null, aiWhy: why },
+      },
+    });
+    expect(row.aiWhy).toBe(why);
+  });
+
+  it('★ok:false(B の呼び出し自体が例外で落ちた)回にも splitRecord は残る(A 側の記録が消えない)', () => {
+    const row = buildSignalPlanInsert({
+      t: 6, system: 'A',
+      result: {
+        ok: false, error: 'provider exhausted',
+        splitRecord: {
+          aDirection: 'bear', aWhy: '戻り売り優勢', bVariant: 'sell',
+          squeezeState: null, aProvider: { name: 'gemini', model: 'gemini-flash' },
+        },
+      },
+    });
+    expect(row.error).toBe('provider exhausted');
+    expect(row.aDirection).toBe('bear');
+    expect(row.bVariant).toBe('sell');
+    expect(row.aProvider).toBe('gemini');
+    expect(row.bProvider).toBeUndefined();
+  });
+});
+
+// ─── ★段6: B が「判断に必要なデータが足りなかった」と自己申告した自由文(missingData) ─────
+describe('★段6: missingData(splitRecord)が ai_why と混ざらずに row へ写る', () => {
+  const OK = { ok: true as const, plan: { direction: 'buy' as const, rationale: 'x', refPrice: 38250 } };
+
+  it('★missingData が splitRecord にあれば row.missingData に写る', () => {
+    const row = buildSignalPlanInsert({
+      t: 1, system: 'A',
+      result: {
+        ...OK,
+        splitRecord: { bVariant: 'buy', squeezeState: null, missingData: 'ATRが算出できませんでした' },
+      },
+    });
+    expect(row.missingData).toBe('ATRが算出できませんでした');
+    expect(row.aiWhy).toBeUndefined();   // ★ai_why には混ぜない
+  });
+
+  it('★aiWhy(見送り理由)と missingData が同時にあっても別々に残る', () => {
+    const row = buildSignalPlanInsert({
+      t: 2, system: 'A',
+      result: {
+        ok: true, plan: { direction: 'none', rationale: '見送り', refPrice: 38250 }, noneReason: 'ai',
+        splitRecord: {
+          bVariant: 'buy', squeezeState: null,
+          aiWhy: 'あ) 上に節目が無い / い) 下は遠い',
+          missingData: '基礎データの確定日が古い',
+        },
+      },
+    });
+    expect(row.aiWhy).toBe('あ) 上に節目が無い / い) 下は遠い');
+    expect(row.missingData).toBe('基礎データの確定日が古い');
+  });
+
+  it('★splitRecord が無い(旧経路)回は missingData も未指定のまま(NULL)', () => {
+    const row = buildSignalPlanInsert({ t: 3, system: 'A', result: OK });
+    expect(row.missingData).toBeUndefined();
+  });
+
+  it('★片脚成立(見送りではない)回にも missingData が残る(ai_why の見送り専用フラグと独立)', () => {
+    const row = buildSignalPlanInsert({
+      t: 4, system: 'A',
+      result: {
+        ok: true,
+        plan: { direction: 'buy', rationale: '押し目買い', refPrice: 38250, limitEntry: 38200, stopLossForLimit: 38145 },
+        splitRecord: { bVariant: 'buy', squeezeState: null, missingData: 'い) は判断材料が古い' },
+      },
+    });
+    expect(row.direction).toBe('buy');
+    expect(row.missingData).toBe('い) は判断材料が古い');
+  });
+});
+
+// ─── ★段6続き: split_bypass_reason(分割ON設定なのに、この回だけ旧経路へ落とした理由) ─────
+describe('★段6続き: splitBypassReason(result)が row へ写る', () => {
+  it('★result.splitBypassReason があれば row.splitBypassReason に写る', () => {
+    const row = buildSignalPlanInsert({
+      t: 1, system: 'A',
+      result: {
+        ok: true, plan: { direction: 'buy', rationale: 'x', refPrice: 38250 },
+        splitBypassReason: 'heldPosition',
+      },
+    });
+    expect(row.splitBypassReason).toBe('heldPosition');
+  });
+
+  it('★複数該当のカンマ区切りもそのまま写る', () => {
+    const row = buildSignalPlanInsert({
+      t: 2, system: 'A',
+      result: {
+        ok: true, plan: { direction: 'buy', rationale: 'x', refPrice: 38250 },
+        splitBypassReason: 'heldPosition,promptVariant',
+      },
+    });
+    expect(row.splitBypassReason).toBe('heldPosition,promptVariant');
+  });
+
+  it('★通常回(該当なし)は未指定のまま(NULL・捏造しない)', () => {
+    const row = buildSignalPlanInsert({
+      t: 3, system: 'A',
+      result: { ok: true, plan: { direction: 'buy', rationale: 'x', refPrice: 38250 } },
+    });
+    expect(row.splitBypassReason).toBeUndefined();
+  });
+
+  it('★ok:false(計画が得られなかった)回にも残る(error 分岐より前に載せているため)', () => {
+    const row = buildSignalPlanInsert({
+      t: 4, system: 'A',
+      result: { ok: false, error: 'LLM未設定', splitBypassReason: 'armedContext' },
+    });
+    expect(row.error).toBe('LLM未設定');
+    expect(row.splitBypassReason).toBe('armedContext');
+  });
+});

@@ -55,6 +55,9 @@ import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb, resolveDbPath, setBuildIdentityMeta } from './db/store.js';
 import { allPromptBuildFps, promptBuildFp } from './llm/promptBuild.js';
+// ★段5: A/B 分割の実行時状態と、その版が持つ A/B のプロンプトの型(meta へ載せる)。
+import { allAbPromptBuildFps } from './llm/abPromptBuild.js';
+import { isPlanSplitEnabled } from './llm/planSplitConfig.js';
 // ★版は葉モジュールが唯一の出所(台帳・meta・HTTP 応答が同じ値を使う)。
 import { APP_VERSION } from './appVersion.js';
 
@@ -235,7 +238,12 @@ function recordBuildIdentity(): void {
   let db: DatabaseSync | null = null;
   try {
     db = openDb(resolveDbPath());
-    setBuildIdentityMeta(db, { appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: Date.now() });
+    // ★段5: A/B 分割の実行時状態(行数に関係なく読める「測定の断絶」の記録・meta テーブル参照)。
+    const { aPromptBuild, bPromptBuilds } = allAbPromptBuildFps();
+    setBuildIdentityMeta(db, {
+      appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: Date.now(),
+      planSplit: { enabled: isPlanSplitEnabled(), aPromptBuild, bPromptBuilds },
+    });
     console.log(`[server] prompt build = ${promptBuildFp()}(質問文 v1・pb1)`);
   } catch (e) {
     console.warn('[server] 版/プロンプト指紋の記録に失敗(起動は続行):', e instanceof Error ? e.message : String(e));

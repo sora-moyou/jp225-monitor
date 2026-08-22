@@ -538,6 +538,12 @@ export class SignalEngine {
       let armedSettings: SignalSettingsSnapshot | null = null;
       // ★ARM した回だけ据わる待ち時間の決定内訳(台帳 signal_plans に載せる=なぜこの時間かを後から読める)。
       let armWait: ArmWaitDecision | null = null;
+      // ★v0.9.96(RECORD-ONLY): ARM 直前のゲートの生数値を台帳へ。
+      //   ★A/B 分割の前提条件: 分割すると応答が直列になり「文脈を組んだ時刻 → ARM」の間が伸びるので、
+      //     refPrice のドリフトと 通過済みレッグ が増える。いま console ログにしか出ないので
+      //     **増えたことに気づけない**。先に数えられる形を作る(測定を後から足せない設計にしない)。
+      let driftYen: number | null = null;
+      let staleLegs: number | null = null;
       try {
         // route(/api/scalp-plan・trade2)と同一の共通関数を使う。profile で A/B の設定を解決する
         // (A=グローバル=trade2 と同条件 / B=signalB)。画像未生成/LLM 失敗は result.ok=false → FLAT 維持(見送り)。
@@ -598,6 +604,10 @@ export class SignalEngine {
             //   レッグの通過判定を出す前に丸ごと落としたい(「通過済み」ログが出て原因を取り違えるのを防ぐ)。
             //   live が取れない時は判定しない(=従来どおり先へ進む)。
             const liveForGate = this.livePrice();
+            // ★記録専用: 閾値を超えたかに関わらず、測れたら必ず控える(分布が見たい)。
+            if (liveForGate != null && Number.isFinite(liveForGate) && Number.isFinite(result.plan.refPrice)) {
+              driftYen = Math.abs(result.plan.refPrice - liveForGate);
+            }
             const drift = checkRefDrift(result.plan.refPrice, liveForGate);
             if (!drift.ok) {
               this.planSuppressedAnchor = anchorPrice;
@@ -616,6 +626,8 @@ export class SignalEngine {
             //     ゲート間で値が食い違い、どの価格で落としたのかが記録から追えなくなる)。
             const live = liveForGate;
             const stale = armed0 ? checkStaleLegs(armed0, live) : { armed: null, legs: [] as StaleLegReport[] };
+            // ★記録専用: 判定を走らせた回だけ本数を控える(走らせなかった回は null=「未判定」)。
+            if (armed0) staleLegs = stale.legs.filter(l => l.stale).length;
             if (stale.legs.some(l => l.stale)) {
               this.logStaleLegs('plan-stale', result.plan.direction, result.plan.refPrice, live, stale.legs);
             }
@@ -700,6 +712,8 @@ export class SignalEngine {
           // それ以外は「そのサイクルで有効だった設定」を同じ組み立て関数で解決する。
           settings: armedSettings ?? buildSettingsSnapshot(undefined, this.cfg.profile),
           armWait,
+          driftYen,
+          staleLegs,
         }));
       }
     })();

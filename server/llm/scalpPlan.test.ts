@@ -216,7 +216,7 @@ describe('buildLegNote(片レッグ欠落の理由注記・純関数)', () => {
 
   it('指値なし(現在値の逆側=geometry)も同じ形で書ける', () => {
     expect(buildLegNote({ hasLimit: false, hasStop: true, drops: [{ name: 'limit', reason: 'geometry' }] }))
-      .toBe('（指値は不採用: エントリーが現在値の逆側、または損切り幅の値が不正）');
+      .toBe('（指値は不採用: エントリーが現在値の逆側）');
   });
 
   it('レッグ皆無/理由不明→空文字(追記しない)', () => {
@@ -231,7 +231,7 @@ describe('buildLegNote(片レッグ欠落の理由注記・純関数)', () => {
   });
 
   it('★非公開の決済数値は文面に出ない(数字を一切含まない)', () => {
-    const all = (['missing', 'stopSide', 'geometry', 'lcFloor', 'lc', 'trend', 'bias', 'stale'] as const)
+    const all = (['missing', 'stopSide', 'geometry', 'lcWidthInvalid', 'lcFloor', 'lc', 'trend', 'bias', 'stale'] as const)
       .map(reason => buildLegNote({ hasLimit: true, hasStop: false, drops: [{ name: 'stop', reason }] }));
     for (const s of all) {
       expect(s).not.toMatch(/[0-9０-９]/);
@@ -272,7 +272,7 @@ describe('parseScalpPlan レッグ注記(表示整合)', () => {
       expect(r.plan.stopEntry).toBeUndefined();
       // ★注記は「1回だけ」(部分一致では二重を捕まえられない)。理由は幾何ではなく損切りの向き(stopSide)。
       //   entry 38200 は現在値より下だが、先に stopSideOk(38150<38200 は buy として正)を通るので geometry。
-      expect(countOf(r.plan.rationale, '（逆指値は不採用: エントリーが現在値の逆側、または損切り幅の値が不正）')).toBe(1);
+      expect(countOf(r.plan.rationale, '（逆指値は不採用: エントリーが現在値の逆側）')).toBe(1);
       expect(r.plan.rationale).not.toContain('実際の注文');
     }
   });
@@ -497,9 +497,9 @@ describe('parseScalpPlan 損切りの向き(★v0.9.70: 逆位置は表現不能
       expect(r.plan.stopLossForLimit).toBeUndefined();
       expect(r.plan.stopEntry).toBe(38350);
       expect(r.plan.stopLossForStop).toBe(38295);   // 38350 − 55(コードが下へ置く)
-      // ★落ちた理由は 'geometry'(値が不正)。**'missing' にはしない**: AI は提案しているので
+      // ★v0.9.95: 落ちた理由は 'lcWidthInvalid'(幅の値が不正)。**'missing' にはしない**: AI は提案しているので
       //   「AIが提案せず」と記録するのは虚偽になる。生の値(書いた幅)も残す=後から数えられる。
-      expect(r.legDrops).toEqual([{ name: 'limit', reason: 'geometry', entry: 38200, lcWidth: -55 }]);
+      expect(r.legDrops).toEqual([{ name: 'limit', reason: 'lcWidthInvalid', entry: 38200, lcWidth: -55 }]);
     }
   });
 
@@ -630,7 +630,7 @@ describe('parseScalpPlan 損切りの向き(range・★v0.9.70: 脚の side か�
     if (r.ok) {
       expect(r.plan.range?.upper?.stopLoss).toBe(38455);
       expect(r.plan.range?.lower).toBeUndefined();
-      expect(r.legDrops).toEqual([{ name: 'lower', reason: 'geometry', entry: 38100, lcWidth: 0 }]);
+      expect(r.legDrops).toEqual([{ name: 'lower', reason: 'lcWidthInvalid', entry: 38100, lcWidth: 0 }]);
     }
   });
 
@@ -1264,7 +1264,7 @@ describe('parseScalpPlan range 脚 drop 理由を rationale に明記', () => {
     expect(r.plan.range?.upper).toBeUndefined();
     expect(r.plan.rationale).toContain('上部');
     expect(noteLines(r.plan.rationale)).toHaveLength(1);
-    expect(countOf(r.plan.rationale, '※上部(売り指値)は不採用: エントリーが現在値の逆側、または損切り幅の値が不正')).toBe(1);
+    expect(countOf(r.plan.rationale, '※上部(売り指値)は不採用: 損切り幅の値が不正')).toBe(1);
   });
 
   it('★AI が片側しか出さなかった(upper 欠落)→「AIが提案せず」を明記', () => {
@@ -3584,7 +3584,7 @@ describe('★逆位置は表現不能(stopSide は構造上発火しない)', ()
     }
   });
 
-  it('★1e-12 の幅は geometry(値が不正)で落ち、書いた値が台帳に残る', () => {
+  it('★1e-12 の幅は lcWidthInvalid(値が不正)で落ち、書いた値が台帳に残る', () => {
     const r = parseScalpPlan(JSON.stringify({
       direction: 'buy', rationale: 'x', refPrice: 1,
       limitEntry: 38200, lcWidthForLimit: 1e-12,
@@ -3593,7 +3593,7 @@ describe('★逆位置は表現不能(stopSide は構造上発火しない)', ()
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.plan.limitEntry).toBeUndefined();
-    expect(r.legDrops).toEqual([{ name: 'limit', reason: 'geometry', entry: 38200, lcWidth: 1e-12 }]);
+    expect(r.legDrops).toEqual([{ name: 'limit', reason: 'lcWidthInvalid', entry: 38200, lcWidth: 1e-12 }]);
   });
 
   it('range: 脚の side と逆向きの価格/負の幅を食わせても、逆位置も stopSide も出ない', () => {

@@ -19,7 +19,22 @@ export interface DailyMA {
 }
 
 // 日足MA線の期間(バンドの MA25 とは別・線のみ)。ユーザー指定。
-const DAILY_MA_PERIODS = [5, 20, 50, 75] as const;
+export const DAILY_MA_PERIODS = [5, 20, 50, 75] as const;
+
+// ─── ★取引日足シリーズの取り方(SSOT・v0.9.98) ────────────────────────────────
+// ここに置く理由: この2つは **日足シリーズの仕様** なので、日足を作る本モジュールが持つ。
+//   もともと server/detect/registry.ts のファイル内 const だった(=アラート経路しか読めなかった)。
+//   ★AI 文脈にも同じ日足を渡すことになったので、**2箇所に同じ数字を手書きしない** ためここへ移した。
+//   ★値は移動前と1つも変えていない(アラートの発火条件は不変)。
+
+/** 取引日終値(daily_closes)を何営業日ぶん保持/参照するか。MA75 に足りるだけの余裕。 */
+export const DAILY_CLOSES_KEEP = 80;
+
+/** 取引日終値を組み直すときに bars_1m から読むセッション数(≒カレンダー200日ぶん)。 */
+export const DAILYBAND_FETCH_SESSIONS = 200;
+
+/** 日足バンド(MA25±σ)の算出に必要な終値の本数。これ未満は [] が返る。 */
+export const DAILY_BAND_MIN_CLOSES = 25;
 
 /**
  * 取引日足終値系列から日足MA線(MA5/20/50/75)の各水準を算出する純粋関数。
