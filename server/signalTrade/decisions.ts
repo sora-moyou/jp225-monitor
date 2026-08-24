@@ -713,6 +713,9 @@ export function toSignalTradeState(
   lastExitedSignalId?: number,
   armedTimeout?: ArmedTimeoutView | null,
   waitReason?: WaitReasonView | null,
+  // ★v0.9.97(ADD-ONLY・表示専用): 直近の「ARM しなかった計画サイクル」の目線と理由
+  //   (server/signalTrade/planNote.ts の buildPlanNote が組み立てたもの)。
+  lastNone?: SignalTradeState['lastNone'] | null,
 ): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
@@ -826,6 +829,11 @@ export function toSignalTradeState(
   // ★待機理由(ADD-ONLY): 理由が在るときだけ露出する。無いときは **フィールドごと出さない**
   //   = 既存 JSON は1バイトも変わらない(旧クライアント互換を保つ)。
   if (waitReason) s.waitReason = waitReason;
+  // ★v0.9.97(ADD-ONLY): 直近の見送りサイクルの目線と理由。**phase==='flat' のときだけ** 載せる。
+  //   ★武装中(armed)/保有中(filled)の JSON は1バイトも変えない=ユーザー指示「保有中・武装中の
+  //     表示を変えない」を **型ではなく経路で** 守る(画面側の分岐に依存させない)。
+  //   ★材料が無い回は engine が null を渡す=フィールドごと欠落=既存 JSON 不変(旧クライアント互換)。
+  if (lastNone && st.phase === 'flat') s.lastNone = lastNone;
   return s;
 }
 

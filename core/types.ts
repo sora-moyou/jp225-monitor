@@ -276,6 +276,27 @@ export interface SignalTradeState {
   //   ・level ……… 見送り(none)後の節目クロス待ち(engine ログの「plan-rearm 節目クロス」と同じもの)。
   //   理由が無いとき(通常の間隔待ち等)は **フィールドごと欠落**=既存 SSE JSON 不変。
   waitReason?: { kind: 'closed' } | { kind: 'cooldown'; untilMs: number } | { kind: 'level' };
+  // ★v0.9.97(ADD-ONLY): **直近の計画サイクルで AI が示した目線と、見送った理由**。
+  //   ユーザー指示「目線はあって、その目線のもとでシグナルを見送った ——— この時も AI の目線を表示してください」。
+  //   これまで目線(a_direction)と その理由(a_why)は台帳 signal_plans にしか入っておらず、
+  //   画面へ届く経路が1本も無かった(実測: 2026-08-24 の分割21件はすべて a_direction='range' で
+  //   a_why も 21/21 記入済み。それでも画面は「シグナル待機（節目クロス待ち）」の1行だけだった)。
+  //   ★**ARM しなかったサイクルにだけ** 付く。ARM した回・保有中は付与しない(=既存 SSE JSON 不変)。
+  //   ★phase==='flat' のときだけ載せる(武装中/保有中の JSON は1バイトも変えない)。
+  //   ・bias …… A(目線)の答え 'bull'/'bear'/'range' を **画面の語彙**('buy'/'sell'/'range'=
+  //     armedTimeout.bias と同じ3語)へ写したもの。★分割が走った回にしか無い。
+  //     旧経路(分割OFF/バイパス)は目線が取れないので **フィールドごと欠落**(推測で埋めない)。
+  //   ・why …… その目線の理由。分割の回=A の自由文(a_why)/ 旧経路=directionWhy → rationale。
+  //   ・reason …… 見送りの語(NoneReason の値そのまま。機械の結合キー)。
+  //   ・reasonText …… reason の日本語(server/llm/scalpPlan.ts の legDropReasonText が唯一の出所)。
+  //     ★web は server を import できないので、写しを作らず **文字列そのものを運ぶ**。
+  //   ・suppressed …… ★true = 「AI は計画を出したが、**こちらの検証(エンジンのゲート)で不採用**にした」回。
+  //     欠落 = 計画そのものの中で見送り(none)が決まった回。画面はこの1ビットで「見送り」と「不採用」を
+  //     書き分ける(★どちらも既存の語=`不採用` は既に根拠文の注記で画面に出ている語)。
+  lastNone?: {
+    at: number; bias?: 'buy' | 'sell' | 'range'; why?: string;
+    reason?: string; reasonText?: string; suppressed?: true;
+  };
   updatedAt: number;
 }
 

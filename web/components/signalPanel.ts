@@ -103,6 +103,20 @@ export interface SignalTradeState {
   //   closed=取引時間外 / cooldown=決済後のクールダウン(untilMs=解除時刻の絶対時刻) / level=見送り後の節目クロス待ち。
   //   理由が無いとき(通常の間隔待ち等)はフィールドごと欠落する=従来と同じ「シグナル待機」表示。
   waitReason?: { kind: 'closed' } | { kind: 'cooldown'; untilMs: number } | { kind: 'level' };
+  // ★v0.9.97: 直近の「ARM しなかった計画サイクル」で AI が示した目線と、見送った理由
+  //   (server SignalTradeState.lastNone と同じ ADD-ONLY フィールド)。**待機(flat)のときだけ来る**
+  //   = 武装中/保有中は server が付けない(画面側の分岐に頼らない)。
+  //   ・bias …… 'buy'/'sell'/'range'(armedTimeout.bias と同じ3語)。★分割が走った回にしか来ない。
+  //     旧経路は目線が取れないので欠落する=**ラベルを出さない**(推測で埋めない)。
+  //   ・why …… その目線の理由(AI 生成文字列=必ず cleanAiText を通して textContent で描く)。
+  //   ・reasonText …… 見送りの語の日本語(出所=server/llm/scalpPlan.ts の legDropReasonText)。
+  //     ★web は server を import できないため、写しを作らず **server が文字列そのものを運ぶ**。
+  //   ・suppressed …… ★true = 「AI は計画を出したが、こちらの検証で **不採用** にした」回
+  //     (サニティ／refドリフト／通過済み／再検証／連続失効)。欠落 = 計画の中で見送りが決まった回。
+  lastNone?: {
+    at: number; bias?: 'buy' | 'sell' | 'range'; why?: string;
+    reason?: string; reasonText?: string; suppressed?: true;
+  };
   updatedAt: number;
 }
 
@@ -253,6 +267,99 @@ export function buildWaitMain(
   return `シグナル待機（${parts.join(' / ')}）`;
 }
 
+/** ★v0.9.97(本命): **待機中(シグナル無し)に AI の目線と理由を出す** 行を組み立てる純関数。
+ *
+ *  ■ ユーザー指示(原文)
+ *    「目線はあって、その目線のもとでシグナルを見送った ——— この時も AI の目線を表示してください。」
+ *
+ *  ■ 実測(2026-08-24・prices_kabu.db の複製 / signal_plans 2,485件)
+ *    v0.9.96 で A/B 分割が実走した21件は **全部** a_direction='range'・a_why も 21/21 記入済みで、
+ *    台帳にはこう入っていた:
+ *      「目線はレンジ(…RSI も 50 付近で上昇・下降の明確な勢いが見られない)。レンジの取引は設定で無効なため見送り。」
+ *    それでも画面は「シグナル待機（節目クロス待ち）」の1行だけだった=**画面へ届く経路が無かった**。
+ *
+ *  ■ 出す形(3行のうち在るものだけ)
+ *      シグナル待機（節目クロス待ち）        ← buildWaitMain(従来どおり・1バイトも変えない)
+ *      レンジ目線 ／ 横ばいで RSI も 50 付近   ← ここ(目線ラベル ＋ その理由)
+ *      見送り: レンジ設定が無効               ← ここ(見送りの理由)
+ *
+ *  ■ ★「無い」の扱い(既存の規約をそのまま踏襲する)
+ *    ・目線が分からない回(旧経路=分割が走っていない回)は **ラベルの部分ごと出さない**。
+ *      ★rationale の本文から「目線はレンジ」を読み取って復元することは **しない**
+ *      (推測で断定しない)。理由だけが在るなら理由だけを1行出す。
+ *    ・理由が無い回も同じ=その部分ごと出さない。★`（理由の記載なし）` は **出さない**
+ *      (ユーザーが一度消させた形。待機表示で復活させない)。
+ *    ・3行目も同じ(見送りの語が無ければ行ごと出さない)。
+ *    ・**1行も出ない**なら空配列 → 呼び出し側は rationale が '' のまま=従来表示と byte 一致。
+ *
+ *  ■ ★新しい語彙を作らない
+ *    目線ラベル=BIAS_JA(既存) / 区切り=BASIS_SEP(既存) / 「見送り」=設定画面と取扱説明書で
+ *    既に使っている語 / 見送りの理由の日本語=server の legDropReasonText(SSOT)が運んできた文字列。
+ *  ■ ★AI 生成文は必ず cleanAiText を通す(LC 検算だけの理由をそのまま出さないため=既存の作法)。 */
+export function buildWaitNoteLines(n?: SignalTradeState['lastNone'] | null): string[] {
+  if (!n) return [];
+  const lines: string[] = [];
+  const bias = n.bias ? BIAS_JA[n.bias] : '';
+  const why = cleanAiText(n.why);
+  if (bias && why) lines.push(bias + BASIS_SEP + why);
+  else if (bias) lines.push(bias);
+  else if (why) lines.push(why);
+  // ── 3行目: 誰が止めたか ───────────────────────────────────────────────────
+  //  ★① 「不採用」= **こちらの検証で落とした**(AI は計画を出している)。
+  //     語は新しくない: 根拠文の注記(`（指値は不採用: エントリーが現在値の逆側）`)で **既に画面に出ている**。
+  //     ★理由の日本語が既存語彙に無いゲート(サニティ/refドリフト/再検証)でも `不採用` の1語は必ず出す
+  //       = 黙って消えない(無言の失敗を作らない)。文言はリーダーへ報告済み。
+  //  ★② `reason === 'ai'` のときは **行ごと出さない**(リーダー裁定 2026-08-24)。
+  //     `none_reason='ai'` は「AI が理由を書いて見送った」という意味で、その理由は **すぐ上の行に既に出ている**。
+  //     実測(8/19以降の見送り120件のうち98件)でこうなっていた:
+  //         明確なエントリー機会が無いため見送り。   ← AI 自身の理由
+  //         見送り: AIが提案せず                     ← ★同じことを別の言葉で言い直しているだけ
+  //     ★SSOT(server/llm/scalpPlan.ts の LEG_DROP_REASON_TEXT)には触らない。**表示側で出し分ける**。
+  //  ★それ以外(rangeDisabled / aiSilent / geometry 等)は従来どおり出す
+  //     = そちらは **コードが落とした** ので AI の理由文には書かれていない。
+  //  ★④ 語の階層(2026-08-24・エバリュエーター指摘): 3行目の主語は **計画** であって脚ではない。
+  //     直前の理由の行には、コードが足す **脚1本ぶん** の注記が入りうる:
+  //         売り目線 ／ （指値は不採用: エントリーが現在値の逆側、…）   ← 脚1本の話
+  //         不採用: エントリーが現在値から遠い                          ← サイクル全体の話
+  //     ★同じ語が隣り合う2行で違う階層を指す=memory の「『外側』の語の衝突」と同じ型
+  //       (この案件で最も高くついた型)。
+  //     ★対処: **主語を書く**。脚の注記が `指値は不採用` と主語を言っているのと同じ形で、
+  //       こちらは `計画は不採用` と言う。★新しい語は1つも作っていない:
+  //       「不採用」= 既に画面に出ている語 / 「計画」= 設定画面のヒント
+  //       (「…より狭い計画は出しません」)で既に使っている語。
+  //     ★エバリュエーター案は `検証で不採用:` だったが、ゲート文言の1つが「再検証で落ちた」
+  //       なので `検証で不採用: 再検証で落ちた` と同じ語が2度出る。主語で分けるほうが
+  //       脚の注記と **同じ形** になり、読み手が階層を1回で掴める。
+  const SUPPRESSED_HEAD = '計画は不採用';
+  if (n.suppressed) lines.push(n.reasonText ? `${SUPPRESSED_HEAD}: ${n.reasonText}` : SUPPRESSED_HEAD);
+  else if (n.reasonText && n.reason !== 'ai') lines.push(`見送り: ${n.reasonText}`);
+  // ── ★③ いつの目線か(2026-08-24・エバリュエーター指摘) ────────────────────────
+  //  取引時間外(15:45〜17:00 / 06:00〜08:45)は計画サイクルが走らないので、**数時間前の目線が
+  //  出続ける**。場中でも見送り後の抑止は最長で安全弁ぶん残る。時刻が無いと「いまの目線」に見える。
+  //  ★消さない(リーダー裁定): 消すと「なぜ止まっているか」が読めなくなり、今回の目的に逆行する。
+  //  ★語彙を増やさず、既存の fmtJstHm(待機表示のクールダウン時刻と同じ関数)で **先頭に時刻を置く**。
+  //    行を1本増やさないのは、待機枠が縦に伸びると主役(なぜ止まっているか)が押し下がるため。
+  //  ★時刻が読めない回は **付けない**(「Invalid Date」や空の括弧を絶対に作らない)。
+  if (lines.length > 0 && isDisplayableTime(n.at)) {
+    lines[0] = `${fmtJstHm(n.at)} ${lines[0]}`;
+  }
+  return lines;
+}
+
+/** ★JS の Date が表せる時刻の上限[ms](±8.64e15)。これを超えると toLocaleTimeString は
+ *  文字列 `Invalid Date` を返す=画面に壊れた語が出る。★これは相場のしきい値ではなく
+ *  **JS の仕様の定数**(ECMA-262: time value の範囲)。 */
+const MAX_TIME_MS = 8.64e15;
+
+/** ★その値を時刻として画面に出してよいか(純関数)。
+ *  ★2026-08-24(エバリュエーター指摘③): 従来のガードは `Number.isFinite` だけで **上限が無く**、
+ *    `at = 8640000000000001` で `Invalid Date` が画面に出た。テストは「絶対に作らない」と
+ *    書いていたのに、コードがそれを保証していなかった(=主張と実装のずれ)。実装を主張に合わせる。
+ *  ★同じ穴は待機理由のクールダウン時刻にも在ったので、**両方でこの1つを使う**。 */
+export function isDisplayableTime(ms?: number | null): ms is number {
+  return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 && Math.abs(ms) <= MAX_TIME_MS;
+}
+
 /** 純関数: 時刻[ms] を JST の HH:MM にする(表示は常に日本時間=取引時間の語彙に揃える)。 */
 export function fmtJstHm(ms: number): string {
   return new Date(ms).toLocaleTimeString('ja-JP', {
@@ -269,8 +376,9 @@ export function waitReasonLabel(r?: SignalTradeState['waitReason'] | null): stri
   if (!r) return '';
   if (r.kind === 'closed') return '取引時間外';
   if (r.kind === 'cooldown') {
+    // ★2026-08-24: 同じ穴(上限なし)がここにも在った。判定を1つに寄せる=`Invalid Date までクールダウン` を作らない。
     const until = r.untilMs;
-    if (typeof until !== 'number' || !Number.isFinite(until)) return '';
+    if (!isDisplayableTime(until)) return '';
     return `${fmtJstHm(until)}までクールダウン`;
   }
   if (r.kind === 'level') return '節目クロス待ち';
@@ -1115,15 +1223,22 @@ export function buildRationaleView(rationale?: string, strategyWhy?: string): st
  *  それも無ければ「シグナル待機」。★保有(filled)でも s.signal がある限りシグナルを描き続ける。 */
 export function buildSignalView(s: SignalTradeState | null): PanelView {
   const waitMain = (): string => buildWaitMain(s?.armedTimeout, s?.waitReason);
+  // ★v0.9.97: 待機(シグナル無し)の枠。**ここだけ** に AI の目線と見送りの理由を足す。
+  //   ★行が1つも無い回は rationale が '' のまま=従来の PanelView と byte 一致(否定対照)。
+  //   ★武装中/保有中は s.lastNone が **そもそも来ない**(server が phase==='flat' でしか載せない)ので、
+  //     この関数の他の分岐は1バイトも変わらない。
+  const flatView = (): PanelView => ({
+    cls: 'flat', main: waitMain(), rationale: buildWaitNoteLines(s?.lastNone).join('\n'),
+  });
   const sig: SignalCurrent | undefined = s?.signal ?? (s?.entry ? { ...s.entry } : undefined);
-  if (!sig) return { cls: 'flat', main: waitMain(), rationale: '' };
+  if (!sig) return flatView();
 
   // ★A案: 決済で即クリア。直近決済(lastExit)がこのシグナル発生後(sig.at <= lastExit.at)なら、
   //   その建玉は既に決済済み=シグナルは役目を終えたので「シグナル待機」に戻す。
   //   armed/filled 中は lastExit が前トレードの古いもの(sig.at > lastExit.at)なので描き続ける。
   //   決済後に来る新シグナル(sig.at > lastExit.at)は再び描く。sig.at 欠落時は抑制しない(安全側=表示)。
   if (s?.lastExit && sig.at != null && s.lastExit.at != null && sig.at <= s.lastExit.at) {
-    return { cls: 'flat', main: waitMain(), rationale: '' };
+    return flatView();
   }
 
   // ★レンジ両面ストラドル: 上下の各レッグを side/type/entry で明示表示。
@@ -1131,7 +1246,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
     const parts: string[] = [];
     if (sig.range.upper) parts.push(rangeLegText(sig.range.upper, '上'));
     if (sig.range.lower) parts.push(rangeLegText(sig.range.lower, '下'));
-    if (parts.length === 0) return { cls: 'flat', main: waitMain(), rationale: '' };
+    if (parts.length === 0) return flatView();
     const rangeView: PanelView = {
       cls: 'armed',
       bias: withStrategyLabel('レンジ', sig.strategy),
@@ -1148,7 +1263,7 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   const legs: string[] = [];
   if (sig.limitEntry != null) legs.push(legMainText(sig.direction, '指値', sig.limitEntry, sig.stopLossForLimit));
   if (sig.stopEntry != null) legs.push(legMainText(sig.direction, '逆指値', sig.stopEntry, sig.stopLossForStop));
-  if (legs.length === 0) return { cls: 'flat', main: waitMain(), rationale: '' };
+  if (legs.length === 0) return flatView();
   // ★ドテン(反転)シグナルは目線行に明示(通常の決済→別の新規と区別できるように)。
   const dirBias = sig.direction === 'buy' ? '買い目線' : '売り目線';
   const bias = sig.doten ? `🔃 ドテン(反転)・${dirBias}` : dirBias;

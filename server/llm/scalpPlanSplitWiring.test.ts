@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { Price } from '../types.js';
+import { A_ANSWER_HEADING } from './trendPrompt.js';
 
+
+/** ★A(目線)のプロンプトの目印。★**SSOT(server/llm/trendPrompt.ts)から import する。**
+ *  ここに literal を書くと、本文が変わったときにこのファイルだけが古い文字列を指したまま赤くなる
+ *  (2026-08-24 に実際に起きた: 問いの文面を目印にしていた3箇所が、問いの反転で赤くなった)。 */
+const A_PROMPT_MARK = A_ANSWER_HEADING;
 // ★段4(v0.9.100): **buildScalpPlan を実プロセスで走らせて** 経路の切り替えを確かめる。
 //   LLM は呼ばず、provider の create だけを差し替える(= 実際に API へ渡る params を見る)。
 //
@@ -92,7 +98,7 @@ describe('① ★分割 OFF(env=0)= 旧経路がそのまま走る', () => {
     // ★旧経路の目印(分割版のプロンプトには存在しない文)
     expect(sys).toContain('【最優先: 価格の向き');
     expect(sys).toContain('利用可能なデータツール');
-    expect(sys).not.toContain('いまトレンドがあるか');
+    expect(sys).not.toContain(A_PROMPT_MARK);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.plan.direction).toBe('buy');
   });
@@ -110,7 +116,7 @@ describe('②③ ★分割 ON = A→B の2回。A にツールが1つも付か�
   it('★呼び出しは2回。1回目=A・2回目=B', async () => {
     const r = await run();
     expect(createMock.mock.calls.length).toBe(2);
-    expect(textOf(paramsOf(0), 'system')).toContain('いまトレンドがあるか');
+    expect(textOf(paramsOf(0), 'system')).toContain(A_PROMPT_MARK);
     expect(textOf(paramsOf(1), 'system')).toContain('スキャルピングを行うトレーダー');
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -229,7 +235,7 @@ describe('⑤ ★既定(env 未設定)= 分割 ON', () => {
     await run();
     expect(createMock.mock.calls.length).toBe(2);
     // A には注文の話もツールも無い(分割の芯)
-    expect(textOf(paramsOf(0), 'system')).toContain('いまトレンドがあるか');
+    expect(textOf(paramsOf(0), 'system')).toContain(A_PROMPT_MARK);
     expect((paramsOf(0).tools ?? []).length).toBe(0);
   });
 });

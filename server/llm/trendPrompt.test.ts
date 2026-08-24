@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer } from './trendPrompt.js';
+import { buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer, A_ANSWER_HEADING } from './trendPrompt.js';
 import { buildTrendContext, buildOrderContext, TREND_CONTEXT_FORBIDDEN } from './abContext.js';
 import type { AlertRow } from '../db/store.js';
 import type { LevelsResult } from '../levels.js';
@@ -188,5 +188,189 @@ describe('★エバリュエーター指摘E: 位置語と方向語の衝突を�
   it('「下降トレンド」という語自体は残っている(3択の説明として必要)', () => {
     const sys = buildTrendSystemPrompt('【データ】ダミー');
     expect(sys).toContain('下降トレンド');
+  });
+});
+
+// ★2026-08-24(ユーザー指示): range の扱いを **反転** した。
+//   旧「トレンドに確信が持てないときは range としてください」= 迷ったら range。
+//   新「range は…形がはっきり見えているときに選びます / それ以外は bull か bear」。
+//   ■ 反転の理由(実測): v0.9.96 で分割が実走した21件は **A が21件すべて range**(100%)で、
+//     レンジ不許可の運用なので B を1度も呼ばず全件見送りになっていた。
+//   ■ ★このブロックが守るのは「書き方の規約」であって、AI の答えの分布ではない
+//     (分布は実運用でしか測れない=いまは未測定)。
+describe('★2026-08-24: range を「確信できるとき限定」へ反転', () => {
+  const sys = (): string => buildTrendSystemPrompt('【データ】ダミー');
+
+  it('★「迷ったら range」の文が消えている(反転が実際に入っている)', () => {
+    expect(sys()).not.toContain('確信が持てないとき');
+  });
+
+  it('★range を選ぶ条件が **肯定形で1つだけ** 書かれている', () => {
+    expect(sys()).toContain('range を選ぶのは、同じ値段の範囲を行き来する形がはっきり見えているときだけです。');
+    // 「レンジにしすぎるな」のような否定形の指示は書かない(否定文の中の語を AI が拾う実測がある)。
+    expect(sys()).not.toContain('しすぎ');
+    expect(sys()).not.toContain('range にしないで');
+  });
+
+  it('★それ以外は必ず bull か bear を出させる(A は見送れない性質は不変)', () => {
+    expect(sys()).toContain('それ以外は、直近の値動きが向かっているほうを bull か bear で答えてください。');
+    expect(sys()).not.toContain('none');
+    expect(sys()).not.toContain('見送');
+  });
+
+  it('★「確信度」の自己申告を求めていない(別の固着を作らない)', () => {
+    const t = PROMPT();
+    for (const w of ['確信度', '確率', '自信', 'confidence', 'スコア', '%']) expect(t).not.toContain(w);
+  });
+
+  it('★新しい数値(しきい値)を1つも足していない(裸の数字は反転前と同じ3つだけ)', () => {
+    const nums = new Set((PROMPT().match(/\d+/g) ?? []));
+    expect([...nums].sort()).toEqual(['1', '225', '3'].sort());
+  });
+
+  it('★「幅」は A の禁止語なので使っていない(語彙の衝突を作らない)', () => {
+    expect(sys()).not.toContain('幅');
+    expect(sys()).toContain('範囲');
+  });
+});
+
+// ★2026-08-24(第2版・エバリュエーター指摘): **選択肢の語釈が旧の定義のまま残っていた。**
+//   実運用の a_why 41件は例外なく「トレンドが明確ではない → range」の形で、
+//   `トレンドが無いと判断した` という **語釈そのままの文字列** が繰り返し現れていた(実例3件)。
+//   モデルは語釈を逐語で反復するので、条件文だけ直しても反転は効かない。
+describe('★2026-08-24(第2版): 選択肢の語釈も反転させる', () => {
+  const sys = (): string => buildTrendSystemPrompt('【データ】ダミー');
+
+  it('★range の語釈から「トレンドが無い」が消えている(旧の逃げ道を残さない)', () => {
+    expect(sys()).not.toContain('トレンドが無い');
+    expect(sys()).toContain('range … 同じ値段の範囲を行き来している(レンジ)');
+  });
+
+  it('★条件文が排他形(「〜ときだけです」)である(許可形では慎重寄りのモデルが range を選び続けられる)', () => {
+    expect(sys()).toContain('だけです。');
+    expect(sys()).not.toContain('ときに選びます。');
+  });
+
+  it('★bull / bear の語釈は変えていない(直したのは range の側だけ)', () => {
+    expect(sys()).toContain('bull  … 上昇トレンド(ブル)がある');
+    expect(sys()).toContain('bear  … 下降トレンド(ベア)がある');
+  });
+
+  it('★第2版でも 裸の数字は 225 / 3 / 1 のまま・注文の語0件・確信を測らせる語0件', () => {
+    const t = PROMPT();
+    expect([...new Set(t.match(/\d+/g) ?? [])].sort()).toEqual(['1', '225', '3'].sort());
+    for (const w of FORBIDDEN) expect(t.split(w).length - 1, `禁止語「${w}」が出ている`).toBe(0);
+    for (const w of ['確信', '確率', '自信', 'confidence', 'スコア', '%']) expect(t).not.toContain(w);
+  });
+});
+
+// ★2026-08-24(第3版): **問いの立て方** も反転させる。
+//
+// ■ なぜ(語釈と同じ根)
+//   語釈を `range … 同じ値段の範囲を行き来している(レンジ)` に直しても、問いが
+//   「トレンドが **あるか・無いか**」の二分のままなら、モデルは「無い → range」という
+//   旧い経路に戻れる。★実データの a_why 41件は例外なくその形だった
+//   (「トレンドが明確ではない → よって range」)。
+//   逃げ道を1つ塞いで隣にもう1つ開けたままにしない。
+//
+// ■ ★表を持つ設計は項目を足すと無言で漏れる(この案件で繰り返し出ている型)
+//   ここは **逆向き** に使う: 「有無の二分に戻す語」を表(BINARY_FRAMING)に列挙し、
+//   1語でも本文に現れたら赤くする。問いが旧に戻れば必ず気づける。
+//   ★語を足すのは1行なので、将来の言い回しにも追随しやすい。
+describe('★2026-08-24(第3版): 問いを「有無の二分」から「どう動いているか」へ', () => {
+  /** ★range を「無い・弱い・読めない」の受け皿にする語の表。1語でも本文に現れたら赤。
+   *
+   *  ■ ★表の作り方(2026-08-24・エバリュエーター指摘②)
+   *    最初の表は「私が消したばかりの文字列」だけを並べており、**1字違いが素通りした**
+   *    (`トレンドなし` / `明確なトレンドが見られない` / `不明瞭` / `確認できなければ` /
+   *     `トレンドが弱い` / `方向感が乏しい` の6本)。
+   *    ★とくに深刻なのは、素通りした語彙が **モデル自身が書いた語彙** だという点:
+   *      次に文面を書き直す人は a_why を読んでから書くので、最も再導入されやすい。
+   *    ★よって表は **実運用の a_why を読んで作る**。
+   *
+   *  ■ 実測(2026-08-24・prices_kabu.db の複製 / signal_plans 2,511件 / a_why 47件)
+   *      明確ではない 8件 / 見られな 8件 / 確認できな 7件 / トレンドが無い 7件 /
+   *      明確なトレンド 6件 / 不明瞭 5件 / トレンドがない 3件 / 明確な方向 3件 /
+   *      方向感 2件 / 明確でない 1件 / トレンドが形成され 1件
+   *      「トレンドを否定して消去する形」を含む a_why … 37件 / 47件
+   *    ★`レンジ`(33件)・`横ばい`(25件)は **肯定的な状態の記述** なので表に入れない
+   *      (`横ばい` は range を肯定形で書くときに使える語=禁じると直しようがなくなる)。 */
+  const BINARY_FRAMING = [
+    // ① 旧の問い(2026-08-24 に消した形)
+    'トレンドがあるか', 'トレンドはありますか', 'トレンドはあるか', 'あるならどちら',
+    'トレンドの有無', 'あるかないか', 'あるか無いか',
+    // ② 旧の語釈と、その1字違い
+    'トレンドが無い', 'トレンドがない', 'トレンドなし', 'トレンドは無い', 'トレンドはない',
+    // ③ ★モデルが実際に使った「消去」の語彙(a_why 47件から)
+    '明確ではない', '明確でない', '明確な方向', '見られな', '見当たらな', '確認できな',
+    '不明瞭', '方向感', '乏しい', 'トレンドが弱い', 'トレンドは弱い',
+    '形成されていない', '形成されな',
+    // ④ 同じ型の言い回し(未出現だが再導入されやすい)
+    '判断できな', '定まらな', 'はっきりしない', 'はっきりせず', '読み取れな',
+    'どちらとも言えな', '中立', '決め手に欠け',
+  ] as const;
+
+  /** ★表を「攻撃する」ための退行候補。★**表を読むだけでは穴は見つからない**(実証済み)。
+   *  ①〜⑥ は実際に素通りした6本、⑦⑧ は 2026-08-24 に消した旧の2行。 */
+  const REGRESSION_CANDIDATES = [
+    'range … トレンドなし(レンジ)',
+    '明確なトレンドが見られない場合は range としてください。',
+    'トレンドが不明瞭なら range を選んでください。',
+    'トレンドが確認できなければ range。',
+    'トレンドが弱い場合は range です。',
+    'range … 方向感が乏しい(レンジ)',
+    '次に与えたデータだけを見て、いまトレンドがあるか、あるならどちらかを答えてください。',
+    'いまトレンドはありますか。あるならどちらですか。理由も教えてください。',
+  ] as const;
+
+  it('★有無の二分に戻す語が1つも無い(system + user 全文)', () => {
+    const t = PROMPT();
+    const hits = BINARY_FRAMING.map(w => [w, t.split(w).length - 1] as const).filter(([, n]) => n > 0);
+    expect(hits).toEqual([]);
+  });
+
+  it('★★表を攻撃する: 退行候補が1本残らず捕まる(この検査が穴を見つけた)', () => {
+    const missed = REGRESSION_CANDIDATES.filter(c => !BINARY_FRAMING.some(w => c.includes(w)));
+    expect(missed).toEqual([]);
+  });
+
+  it('★検査が恒真に化けていない(表が空でない・候補が空でない)', () => {
+    expect(BINARY_FRAMING.length).toBeGreaterThan(0);
+    expect(REGRESSION_CANDIDATES.length).toBeGreaterThan(0);
+    // ★いまの本文は候補のどれとも一致しない=候補が「常に捕まる無害な文字列」ではないことの確認。
+    const t = PROMPT();
+    for (const c of REGRESSION_CANDIDATES) expect(t).not.toContain(c);
+  });
+
+  it('★肯定的な状態の記述は禁じていない(range を書き直す余地を残す)', () => {
+    for (const w of ['横ばい', 'レンジ', '行き来', '範囲']) {
+      expect(BINARY_FRAMING.some(b => w.includes(b) || b.includes(w)), `「${w}」を禁じている`).toBe(false);
+    }
+  });
+
+  it('★新しい問いの形になっている(system / user の両方)', () => {
+    expect(buildTrendSystemPrompt('【データ】ダミー')).toContain('いまの相場がどう動いているかを答えてください。');
+    expect(buildTrendUserPrompt()).toContain('いまの相場はどう動いていますか。');
+  });
+
+  it('★第3版でも 裸の数字は 225 / 3 / 1 のまま・注文の語0件・確信を測らせる語0件・否定文ゼロ', () => {
+    const t = PROMPT();
+    expect([...new Set(t.match(/\d+/g) ?? [])].sort()).toEqual(['1', '225', '3'].sort());
+    for (const w of FORBIDDEN) expect(t.split(w).length - 1, `禁止語「${w}」が出ている`).toBe(0);
+    for (const w of ['確信', '確率', '自信', 'confidence', 'スコア', '%']) expect(t).not.toContain(w);
+    for (const w of ['ないとき', 'ないなら', 'しないで', 'ではない']) expect(t).not.toContain(w);
+  });
+
+  it('★選択肢(bull/bear)の語釈は触っていない(直したのは range 側と問いだけ)', () => {
+    const sys = buildTrendSystemPrompt('【データ】ダミー');
+    expect(sys).toContain('bull  … 上昇トレンド(ブル)がある');
+    expect(sys).toContain('bear  … 下降トレンド(ベア)がある');
+    expect(sys).toContain('range … 同じ値段の範囲を行き来している(レンジ)');
+  });
+
+  // ★④(エバリュエーター指摘): A のプロンプトの目印は SSOT 側で固定する。
+  it('★A_ANSWER_HEADING が本文に必ず現れる(他ファイルの目印がずれない)', () => {
+    expect(buildTrendSystemPrompt('【データ】ダミー')).toContain(A_ANSWER_HEADING);
+    expect(A_ANSWER_HEADING.length).toBeGreaterThan(0);
   });
 });

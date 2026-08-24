@@ -46,6 +46,8 @@ import type { ScalpPlanResult } from '../llm/openai.js';
 import { checkRefDrift, recheckArmedSanity } from './armGate.js';
 import { buildSignalTradeInsert, buildSettingsSnapshot, buildExitStopRecord, type ExitStopTracker } from './persist.js';
 import { buildSignalPlanInsert } from './planLedger.js';
+// ★v0.9.97(表示専用): 待機中の画面に出す「AI の目線と、見送った理由」の純関数。
+import { buildPlanNote, type PlanGate } from './planNote.js';
 import { exitConfigStamp, warmExitConfigHash } from './exitConfigVersion.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 
@@ -144,6 +146,10 @@ export class SignalEngine {
   // ★(d) 歯止め: 同じ価格の計画が連続で失効し続けるのを止める(armRepeat.ts)。in-memory
   //   (再起動でクリア=許容。ブロックは最長1時間の一時的なものなので永続する価値が無い)。
   private armRepeat: ArmRepeatState = { ...EMPTY_ARM_REPEAT };
+  // ★v0.9.97(表示専用): 直近の「ARM しなかった計画サイクル」の目線と理由(planNote.ts)。
+  //   ARM した回に null へ戻す=画面が古い見送りの理由を出し続けない。in-memory(再起動でクリア=許容:
+  //   起動直後は「まだ1度も計画していない」ので出す材料が無いのが正しい)。
+  private lastPlanNote: SignalTradeState['lastNone'] | null = null;
 
   constructor(private readonly cfg: EngineConfig) {}
 
@@ -380,7 +386,7 @@ export class SignalEngine {
   getState(now = Date.now()): SignalTradeState {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
     return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts,
-      this.currentWaitReason(now, price));
+      this.currentWaitReason(now, price), this.lastPlanNote);
   }
 
   /** 現在シグナル(trade2 追従用)。A のみ。B は常に null(=露出しない)。 */
@@ -544,6 +550,11 @@ export class SignalEngine {
       //     **増えたことに気づけない**。先に数えられる形を作る(測定を後から足せない設計にしない)。
       let driftYen: number | null = null;
       let staleLegs: number | null = null;
+      // ★v0.9.97(表示専用): **AI ではなく こちらの検証** がこの計画を止めた場所。
+      //   計画が buy/sell として成立していても ARM しなかった回は、必ずこのどれかで止まっている。
+      //   画面は「見送り(AI の判断)」と「不採用(こちらの検証)」をこの1語で書き分ける。
+      //   ★採否・価格・台帳には一切影響しない(値を控えるだけ)。
+      let gate: PlanGate | null = null;
       try {
         // route(/api/scalp-plan・trade2)と同一の共通関数を使う。profile で A/B の設定を解決する
         // (A=グローバル=trade2 と同条件 / B=signalB)。画像未生成/LLM 失敗は result.ok=false → FLAT 維持(見送り)。
@@ -597,6 +608,7 @@ export class SignalEngine {
           } else if (sanity && !sanity.ok) {
             // サニティ不通過=見送り(none)と同じ扱い: アンカーを記録し節目まで抑止する。
             this.planSuppressedAnchor = anchorPrice;
+            gate = 'sanity';
             const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
             console.log(`${this.logTag} plan-suppress サニティ不通過(${sanity.reason})→ 正規シグナルにしない anchor=${Math.round(anchorPrice)} 根拠=${why || '(なし)'}`);
           } else {
@@ -611,6 +623,7 @@ export class SignalEngine {
             const drift = checkRefDrift(result.plan.refPrice, liveForGate);
             if (!drift.ok) {
               this.planSuppressedAnchor = anchorPrice;
+              gate = 'refDrift';
               console.log(`${this.logTag} plan-suppress ${drift.reason} → 正規シグナルにしない `
                 + `anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=refstale`);
               return;   // ★finally で planning=false に戻る(この IIFE を抜けるだけ)。
@@ -635,6 +648,7 @@ export class SignalEngine {
             if (armed0 && !armed) {
               // 全レッグ通過済み → 見送り(none)と同じ扱い: アンカーを記録し節目まで再計画を抑止する。
               this.planSuppressedAnchor = anchorPrice;
+              gate = 'stale';
               const why = (result.plan.rationale ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
               console.log(`${this.logTag} plan-suppress 見送り(none) anchor=${Math.round(anchorPrice)} `
                 + `ref=${Math.round(result.plan.refPrice)} reason=stale veto=${result.vetoFired ? 'y' : 'n'} 根拠=${why || '(なし)'}`);
@@ -656,6 +670,7 @@ export class SignalEngine {
               const recheck = recheckArmedSanity(armed, result.plan.refPrice, live);
               if (!recheck.ok) {
                 this.planSuppressedAnchor = anchorPrice;
+                gate = 'recheck';
                 console.log(`${this.logTag} plan-suppress ${recheck.reason} → 正規シグナルにしない `
                   + `anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=recheck`);
                 return;   // ★finally で planning=false に戻る。
@@ -665,6 +680,7 @@ export class SignalEngine {
               // ★(d) 歯止め: 同じ価格が連続で失効し続けている → 見送り(none)と同じ扱いにして節目まで抑止する。
               //   エンジン全体は止まらない(価格が節目を跨げば別の計画は普通に出る)。
               this.planSuppressedAnchor = anchorPrice;
+              gate = 'armBlocked';
               return;   // ★finally で planning=false に戻る。
             }
             if (armed) {
@@ -703,6 +719,18 @@ export class SignalEngine {
         // ★1計画サイクル=1行(ARM でも見送りでも不成立でも)。記録の失敗は取引の判断を止めない。
         //   planResult は try が値を入れるか catch が ok:false を入れるかのどちらかなので、
         //   ここで null になる経路は無い(型の絞り込みのためのガード)。
+        // ★v0.9.97(表示専用): **ARM しなかったサイクル** の目線と理由を画面へ運ぶ材料に据える。
+        //   ARM した回(armedSignalId != null)は null に戻す=シグナルが出た後に古い見送りの理由が残らない。
+        //   ★buildPlanNote は純関数で、目線も理由も見送りの語も取れない回は null を返す(=何も出さない)。
+        //   ★採否・価格・台帳には一切影響しない(この行より上の判断は既に終わっている)。
+        if (planResult) {
+          this.lastPlanNote = armedSignalId != null ? null : buildPlanNote(planResult, Date.now(), gate);
+          // ★見送った瞬間に画面へ出す。次の tick を待つと、価格ループ1周ぶん(取得失敗時は
+          //   PRICE_BACKOFF_MS ぶん)遅れて理由が出る=「なぜ止まっているか」を一番知りたい瞬間に無い。
+          //   ★遅れの実測はしていない(周期は priceLoop の設定と成否で変わる)。ここは待たせない側に倒す。
+          //   broadcastSignalState は現在の state を読んで組み立て直すだけ(state は1バイトも変えない)。
+          this.broadcastSignalState(Date.now());
+        }
         if (planResult) this.persistPlanRecord(buildSignalPlanInsert({
           t: Date.now(),
           system: this.counterKey,
@@ -995,7 +1023,7 @@ export class SignalEngine {
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
     const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts,
-      this.currentWaitReason(now, price));
+      this.currentWaitReason(now, price), this.lastPlanNote);
     const json = JSON.stringify(s);
     if (json !== this.lastBroadcastJson) {
       this.lastBroadcastJson = json;
