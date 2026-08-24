@@ -64,6 +64,77 @@
 //   ★とくにツールは、A の全文にツールの語が1つも無い以上 呼ばれない前提のものに
 //   毎回 約1,088字を払うことになる(explain_move は内部で更に LLM を1回呼ぶ)。
 
+// ─── ★A に出てはいけない語の SSOT(2026-08-24 第3次) ────────────────────────────
+//
+// ■ なぜ **ここ**(trendPrompt.ts)に置くか
+//   ① A のプロンプトを持つ唯一のモジュールで、文面を書き換える人が **同じ画面で** 表を見る。
+//   ② テストは2本ある(このファイルの trendPrompt.test.ts=テンプレート側 /
+//      aFullTextForbidden.test.ts=実際に送る全文側)。★表を2つ持つと片方だけ育ってズレる——
+//      **実際にズレた**: 全文側の表を新設したとき、テンプレート側の27語から16語を落として作り、
+//      アラート・ニュース・仮想取引の成績・ツール・買い/売り の混入を **全部素通り** させた
+//      (エバリュエーターが実文を注入して実証: 破壊3で4本ともグリーン / 破壊5で28本ともグリーン)。
+//      ★「表を持つ設計は項目を足すと無言で漏れる」を、表を作り直すときに **項目を減らして** 再現した。
+//   ③ 実装の隣に置く前例がある(server/llm/abContext.ts の TREND_CONTEXT_FORBIDDEN)。
+// ■ ★依存を増やさない: この表は文字列だけで、他モジュールを import しない
+//   (trendPrompt.ts は scalpPlanSplit.ts が読む軽いモジュールのまま)。
+//   abContext.ts の TREND_CONTEXT_FORBIDDEN を包含していることは **テストで固定** する。
+
+/** ★A の全文(system + **データ部** + user)に1文字も出てはいけない語。
+ *
+ *  6つの禁止カテゴリを全部見る:
+ *    ① 注文・執行(指値/逆指値/注文/建玉/発注/ロット/枚/買い/売り/buy/sell/limit/stop/side …)
+ *    ② こちらの作業(丸め/刻み/aPrice/iPrice/lcWidth/stopEntry/limitEntry …)
+ *    ③ 戦略・行動指針(順張り/逆張り/戦略/計画/見送り/veto/fade/breakout/ストラドル/両側/バックテスト …)
+ *    ④ ★A に渡さない材料(節目/主要節目/長期高安/アラート/ニュース/仮想取引の成績/チャート画像)
+ *    ⑤ ★A に付けないデータツール(ツール/explain_move/query_alerts/price_history/web_search)
+ *    ⑥ ★A の契約に無い答えの形(none/regime/confidence/directional)
+ *  ★`direction` / `range` は A 自身の契約の語なのでここには入れない(A_CONTRACT_WORDS を参照)。 */
+export const A_FORBIDDEN_WORDS: readonly string[] = [
+  // ① 注文・執行
+  '指値', '逆指値', '注文', 'エントリー', '新規', '建玉', '発注', 'ロット', '枚', '約定', 'ポジション', 'ドテン',
+  '損切', '利幅', '幅', '両側', '建値', '買い', '売り', 'buy', 'sell', 'limit', 'stop', 'side', 'ロング', 'ショート',
+  // ② こちらの作業(価格の調整はコードの仕事)
+  '丸め', '刻み', 'stopEntry', 'limitEntry', 'lcWidth', 'aPrice', 'iPrice',
+  // ③ 戦略・行動指針
+  '順張り', '逆張り', '戦略', '計画', '見送り', 'veto', 'fade', 'breakout', 'ストラドル', 'バックテスト',
+  // ④ A に渡さない材料(振り分け表 server/llm/abContext.ts の A×)
+  '節目', '主要節目', '長期高安', 'アラート', 'ニュース', '仮想取引', '成績', '勝率', '純損益', 'pnl',
+  'チャート', '画像',
+  // ⑤ A に付けないデータツール
+  'ツール', 'explain_move', 'query_alerts', 'price_history', 'web_search',
+  // ⑥ A の契約に無い答えの形
+  'none', 'regime', 'confidence', 'directional',
+];
+
+/** ★テンプレート(system/user の固定文)**だけ** で数える語。
+ *
+ *  ★`5円` は「5円ずらし」「+5円ではない」というこちらの作業の語だが、**価格文字列と部分一致する**
+ *  (実データの勢い1行「10分-45円」/ADR「下555円」)。データ部を含む全文で数えると偽陽性になるので、
+ *  文面が固定のテンプレート側でだけ数える。★落とすのではなく、数える場所を分ける。 */
+export const A_FORBIDDEN_TEMPLATE_ONLY: readonly string[] = ['5円'];
+
+/** ★A 自身の契約の語。**テンプレートには出てよい / データ部には出てはいけない**。
+ *  system の選択肢(`range …`)と user の JSON(`"direction": … "range"`)に必ず出るので、
+ *  全文で 0件 を求めると恒偽になる。★禁じたいのは「選択肢を持つこと」ではなく
+ *  「答えを **こちらが指定する** こと」(A_DIRECTIVE_FORM_RE)。 */
+export const A_CONTRACT_WORDS: readonly string[] = ['direction', 'range'];
+
+/** ★「答えをこちらが指定する形」(`direction` : `"`)の出現回数。
+ *
+ *  ■ 使い方: **データ部は 0 / テンプレートはちょうど 1**(user プロンプトの JSON 雛形
+ *    `"direction": "bull" | "bear" | "range"` がその1つ)。
+ *    ★「全文で 0」にはできない——雛形と `"direction": "none"` は **形が同一** で、
+ *    違うのは値だけだから。★形で禁じ、場所で分ける。
+ *  ■ ★以前は literal 4本(`direction:"` / `direction: "` / `"direction":"` / `direction："`)で持っており、
+ *    ★**`"direction": "none"`(コロンの後に空白)が4本のどれにも当たらなかった**
+ *    (合算では `none` が捕まえていたので赤にはならなかったが、この検査自体は素通りしていた)。
+ *    空白・全角コロン・引用符の種類を吸収する1本にする。
+ *  ■ ★正規表現をここで閉じ込める理由: `g` フラグ付きの RegExp を export すると `lastIndex` が
+ *    呼び出し間で持ち越されて、2回目の検査が黙って通る(無言の失敗)。関数にして毎回作る。 */
+export function countDirectiveForms(text: string): number {
+  return (text.match(/"?direction"?\s*[:：]\s*["'\u201C\u201D]/g) ?? []).length;
+}
+
 /** A の答え。★注文の語ではない。 */
 export type TrendAnswerDirection = 'bull' | 'bear' | 'range';
 

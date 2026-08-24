@@ -10,7 +10,7 @@ import {
 } from '../configStore.js';
 import { buildBandwalkSamples, evaluateBandwalk, DEFAULT_BANDWALK, type Bandwalk } from '../bandwalk.js';
 import { getRealtimeOHLCBars } from '../feedBars.js';
-import { computeRegime, formatMomentumLine } from '../signalTrade/regime.js';
+import { computeRegime, formatMomentumLine, formatMomentumLineForTrend, type Regime } from '../signalTrade/regime.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades, getDailyCloses } from '../db/store.js';
 import { collectRecentBars } from '../barsSource.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
@@ -53,6 +53,54 @@ const RICH_BARS_WINDOW_MS = 6 * 60 * 60_000;
  *    代償(提案が A の見るものと更に違う)は承知の上で、記録に残して1年後の分析者へ渡す。
  *  ★A/B(caller='default'・実取引につながる経路)では **一切外さない**(従来どおり履歴を入れる)。 */
 export const GENERATOR_OMITTED_CONTEXT: readonly string[] = ['paper-trade-history'];
+
+/** ★A(目線)に渡す技術文脈=**A の全文のデータ部** を組み立てる純関数。
+ *
+ *  ■ なぜ export するか(2026-08-24・真因はここ)
+ *    「A に注文の語0件」の検査は これまで **プロンプトのテンプレートだけ** を数えており、
+ *    データ部を数えていなかったので、勢い1行に混ざった注文・戦略・執行の語を素通りさせた。
+ *    ★検査が「実際に送る全文」を組めるように、組み立てをここに1本化して export する。
+ *
+ *  ■ ★baseTech(buildNikkeiTechnical)は **渡さない**(2026-08-24・第2次)
+ *    ■ 主目的は振り分け表(server/llm/abContext.ts)の履行:
+ *        節目 … A × / B ○   ・   基礎データ長期高安 … A × / B ○(価格の候補=節目の一種)
+ *      buildTrendContext が `levels:null` で外した当のものを、baseTech が
+ *      「上値メド/下値メド/上昇目途候補(節目)」として **先頭で渡していた**(実測: 節目×2〜4)。
+ *    ■ ★ただしこれは「表の履行」だけでは **ない**。★表に無い項目まで巻き添えで落としている。
+ *      ★実測(本番の経路1・実データ): **8行 / 765字 / −28.5%** が A から消える。
+ *        ① 見出し ② 上値メド ③ 下値メド … 表で A × と決めていたもの(意図どおり)
+ *        ④ フィボ戻し「…転換目安は未達」… ★価格ではなく **方向転換の判断**。A に代替なし
+ *        ⑤ ― 予測(ADR/シーズナリティ) ― の見出し
+ *        ⑥ ADR(直近13セッション中央値): 上580円/下555円 … ★**ボラ/レンジ=表では A ○ の側**
+ *        ⑦ 本日ADR予測メド: 上限/下限 … 価格の候補なので落として妥当
+ *        ⑧ 時間帯傾向(05:00台,19日): 平均-0.05%/上昇37% … ★**方向の事前確率**。A に代替なし
+ *      ★④⑥⑧ は表に無い項目の巻き添え。**承知の上で落としている**(意図と事故を混同しないこと)。
+ *      ⑥⑦⑧ が実データで実際に埋まることは DB複製で確認済み(ADR samples=13 / seasonality samples=19)。
+ *      ★戻すかどうかは別途の判断で、ここでは「落ちている」ことを記録に残すに留める。
+ *    ■ ★なぜ「節目だけ外す」(b) にしなかったか
+ *      ★(b) は **技術的には成立する**(buildBasedataContext の `scope` と同じ形で分けられる)。
+ *      採らなかったのは、chatContext.ts に **A 専用の第2の整形器** を持つことになり、
+ *      abContext.ts 冒頭が警告する「2つ持つと片方だけ直してズレる」に正面から反するため。
+ *      ★「3経路すべてが節目を含むので (b) は作れない」ではない(前の版のコメントは誤り)。
+ *    ■ ★向きの材料の重複について(前の版のコメントは母集団違いだった)
+ *      「向きの材料は全部重複している」は **経路2(levels 無し)の話**。★本番は経路1で、
+ *      `15分平均`/`60分平均` の水準も `傾向` ラベルも **そもそも出ていない**(=失っていない)。
+ *      経路1で失う向きの材料は上の ④⑧ で、これは A のどこにも代替が無い。
+ *
+ *  ■ ★現値の1行だけは付ける(振り分け表の「現在価格 ○(呼び出し側が別ブロックで付ける)」)
+ *    buildTrendContext は現在価格を **相対値でしか** 書かない(「本日高安…内50%」「1時間-244円」)。
+ *    絶対値は実測で1文字も出ない。★baseTech を丸ごと外すと A から現値が消えるので、
+ *    表どおり呼び出し側が付ける。★文言は baseTech の見出しと **同じ形**(新しい語彙を作らない)。
+ *
+ *  ■ ★書き忘れで節目が戻らない形(formatMomentumLineForTrend と同じ流儀)
+ *    この関数は **baseTech を引数に取らない**。渡す口が無いので、呼び出し側が
+ *    「A にも基礎テクニカルを付けよう」と書き戻す事故が構造的に起きない。 */
+export function buildTechnicalForTrend(currentPrice: number | undefined, regime: Regime, trendText: string): string {
+  const head = typeof currentPrice === 'number' && Number.isFinite(currentPrice) && currentPrice > 0
+    ? `現値 ${Math.round(currentPrice).toLocaleString('en-US')}円\n`
+    : '';
+  return `${head}${formatMomentumLineForTrend(regime)}\n\n${trendText}`;
+}
 
 /** ★BB スクイーズ判定の解決結果。★state(判定できた) と unavailable(判定できなかった理由) は **別物**。
  *  これを分けないと「スクイーズでなかった」と「測れなかった」が同じ NULL に潰れる(段1 の設計)。 */
@@ -409,10 +457,12 @@ async function runScalpPlanWithChartInner(
     //   AI 文脈(ブロックG)に書いたものと **同じ判定結果** を渡す(画面/文脈/プロンプトで食い違わせない)。
     bandwalk: richResult.bandwalk,
     // ★A/B 分割(段4): A に渡す文脈(節目・アラート・長期高安ぬき)。分割が無効なら undefined=使われない。
-    //   ★勢い1行と基礎テクニカルは B と同じものを付ける(A も「いまの勢い」は判断に要る)。
+    //   ★勢い1行は **事実だけ**(formatMomentumLineForTrend)・★baseTech は **渡さない**
+    //     (baseTech の上値メド/下値メド/上昇目途候補が節目そのものだった。振り分け表の履行)。
+    //     現値の1行だけ buildTechnicalForTrend が付ける。B と旧経路の technical は従来どおり baseTech 入り。
     technicalForTrend: richResult.trendText === undefined
       ? undefined
-      : `${baseTech ? `${baseTech}\n` : ''}${formatMomentumLine(regime, rangeEnabled)}\n\n${richResult.trendText}`,
+      : buildTechnicalForTrend(price, regime, richResult.trendText),
     // ★版の選択に使う BB スクイーズ判定の生値と、使えなかった理由(段5 で台帳に残す)。
     squeezeState: squeeze.state,
     ...(squeeze.unavailable ? { squeezeUnavailable: squeeze.unavailable } : {}),

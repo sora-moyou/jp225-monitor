@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer, A_ANSWER_HEADING } from './trendPrompt.js';
+import {
+  buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer, A_ANSWER_HEADING,
+  A_FORBIDDEN_WORDS, A_FORBIDDEN_TEMPLATE_ONLY, A_CONTRACT_WORDS, countDirectiveForms,
+} from './trendPrompt.js';
 import { buildTrendContext, buildOrderContext, TREND_CONTEXT_FORBIDDEN } from './abContext.js';
 import type { AlertRow } from '../db/store.js';
 import type { LevelsResult } from '../levels.js';
@@ -15,14 +18,58 @@ import type { LevelsResult } from '../levels.js';
 
 const PROMPT = (): string => buildTrendSystemPrompt('【ここにデータが入る】') + buildTrendUserPrompt();
 
-/** ★A に出てはいけない語(注文・価格・こちらの作業)。 */
-const FORBIDDEN = [
-  '指値', '逆指値', '損切', '幅', 'エントリー', '注文', '丸め', '5円', '刻み',
-  'stopEntry', 'limitEntry', 'lcWidth', 'none', 'aPrice', 'iPrice',
-  'アラート', 'ニュース', 'ツール', '節目', '建玉', '発注', 'ロット', '枚',
-  // ★v0.9.90(ユーザー指示): A では 買い/売り の用語を用いない
-  '買い', '売り', 'buy', 'sell',
-] as const;
+/** ★A に出てはいけない語。★**表は trendPrompt.ts の SSOT を見る**(2026-08-24 第3次)。
+ *
+ *  ■ なぜ SSOT にしたか(実際にズレた)
+ *    aFullTextForbidden.test.ts(実際に送る全文を数える検査)を新設したとき、ここの27語から
+ *    16語を落とした表を作ってしまい、アラート・ニュース・仮想取引の成績・ツール・買い/売り の
+ *    混入を **全部素通り** させた(エバリュエーターが実文を注入して実証)。
+ *    ★表を2つ持つと片方だけ育つ。1つにして両方のテストが同じものを見る。
+ *  ■ ここ(テンプレート側)は `A_FORBIDDEN_TEMPLATE_ONLY`(=`5円`)も足して数える。
+ *    価格文字列と部分一致する語は全文側では数えられないが、文面が固定のここでは数えられる。 */
+const FORBIDDEN = [...A_FORBIDDEN_WORDS, ...A_FORBIDDEN_TEMPLATE_ONLY] as const;
+
+describe('★語の表は SSOT を見る(2つ持たない)', () => {
+  it('★旧27語がすべて表に残っている(作り直しで項目を減らしていない)', () => {
+    const LEGACY_27 = [
+      '指値', '逆指値', '損切', '幅', 'エントリー', '注文', '丸め', '5円', '刻み',
+      'stopEntry', 'limitEntry', 'lcWidth', 'none', 'aPrice', 'iPrice',
+      'アラート', 'ニュース', 'ツール', '節目', '建玉', '発注', 'ロット', '枚',
+      '買い', '売り', 'buy', 'sell',
+    ];
+    const missing = LEGACY_27.filter(w => !FORBIDDEN.includes(w));
+    expect(missing).toEqual([]);
+  });
+
+  it('★A/B 振り分け表の禁止語(TREND_CONTEXT_FORBIDDEN)も包含している', () => {
+    const notCovered = TREND_CONTEXT_FORBIDDEN.filter(
+      w => !FORBIDDEN.some(f => w.includes(f) || f === w));
+    expect(notCovered).toEqual([]);
+  });
+
+  it('★契約の語(direction/range)は表に入っていない(入れると恒偽になる)', () => {
+    for (const w of A_CONTRACT_WORDS) expect(A_FORBIDDEN_WORDS).not.toContain(w);
+  });
+
+  it('★表が空でない(検査が恒真に化けていない)', () => {
+    expect(A_FORBIDDEN_WORDS.length).toBeGreaterThanOrEqual(27);
+  });
+});
+
+// ★答えを指定する形: テンプレートは JSON 雛形の **ちょうど1回** だけ(0 にはできない)。
+describe('★「答えをこちらが指定する形」の数え方', () => {
+  it('テンプレートにはちょうど1回(user の JSON 雛形)', () => {
+    expect(countDirectiveForms(PROMPT())).toBe(1);
+  });
+
+  it('★コロンの後に空白がある形も数える(旧 literal 4本が取り逃していた穴)', () => {
+    expect(countDirectiveForms('{"direction": "none"}')).toBe(1);
+    expect(countDirectiveForms('direction:"none"')).toBe(1);
+    expect(countDirectiveForms('direction："none"')).toBe(1);
+    expect(countDirectiveForms('direction : \u201Cnone\u201D')).toBe(1);
+    expect(countDirectiveForms('方向の話は一切していない')).toBe(0);
+  });
+});
 
 describe('① ★A のプロンプトに注文の語が1文字も無い', () => {
   it('禁止語がすべて 0 回', () => {

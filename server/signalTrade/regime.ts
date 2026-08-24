@@ -201,8 +201,32 @@ export function computeRegime(bars: RegimeBar[], now: number, thresholdYen = 100
  *  ★rangeEnabled: レンジ両面(direction:"range")が許可されている設定かどうか。横ばい判定のときだけ
  *    「レンジ両面を出してよい」旨を添える(トレンド/競合のときは決して添えない=レンジへ誘導しない)。
  *    純関数を保つため config は読まず引数で受ける。既定 false=安全側(レンジへ誘導しない)。
- *    呼び出し側は system prompt の rangeLine と同じ実効値を渡すこと(食い違うと AI が混乱する)。 */
-export function formatMomentumLine(r: Regime, rangeEnabled = false): string {
+ *    呼び出し側は system prompt の rangeLine と同じ実効値を渡すこと(食い違うと AI が混乱する)。
+ *
+ *  ★opts.factsOnly(2026-08-24・ユーザー指示「A に戦略を語らせてはだめです」):
+ *    A(目線だけを尋ねる呼び出し)へ渡すときは true。**行動指針の注記3つ**
+ *    (conflictNote / staleGuide / rangeNote)を落とし、**数値とラベルと強弱だけ**にする。
+ *    ■ なぜ落とすか(実測)
+ *      3つの注記には `direction:"none"` / `fade` / `breakout` / `ストラドル` / `veto` / `順張り` /
+ *      `節目` / `バックテスト` といった **注文・戦略・執行の語** が入っており、A の全文に
+ *      1文字も入れないという分割の芯を破っていた(競合211字 / 判定保留290字 / 横ばい221字)。
+ *      ★とくに `direction:"none"` は **A の契約に存在しない**(A の答えは bull/bear/range の3択)。
+ *      答える場所が無いものを指示している=委任ノートで起きた事故(契約に無いフィールドを要求し、
+ *      正当な答えが故障として記録される)と同じ型。
+ *      ★`fade`/`breakout` の使い分けは **コードが BB スクイーズで決める**設計で、A には説明しない
+ *      のが分割の芯だった。それを A に説明していた。
+ *    ■ ★staleNote(※比較先は N分前の足=寄り付きギャップ/欠測)は **残す**。
+ *      これは「この数値は何と何を比べたものか」という **データの但し書き** であって行動指針ではない。
+ *      外すと A が前セッション終値との差(=寄り付きギャップ)を「直近10分の勢い」と誤読する。
+ *      ★注文・戦略・執行の語を1つも含まない(検査で固定)。
+ *    ■ ★B と旧経路(factsOnly 未指定)は 1バイトも変わらない(既定 false)。 */
+export interface MomentumLineOptions {
+  /** true=A(目線)向け。行動指針の注記3つを出さない(数値・ラベル・強弱・データの但し書きだけ)。 */
+  factsOnly?: boolean;
+}
+
+export function formatMomentumLine(r: Regime, rangeEnabled = false, opts: MomentumLineOptions = {}): string {
+  const factsOnly = opts.factsOnly === true;
   const yen = (v: number | null): string =>
     v === null || !Number.isFinite(v) ? '—' : `${v >= 0 ? '+' : ''}${Math.round(v)}円`;
   const slope = r.ma20Slope === null || !Number.isFinite(r.ma20Slope)
@@ -229,7 +253,7 @@ export function formatMomentumLine(r: Regime, rangeEnabled = false): string {
   const strength = r.trendDir === 'stale' ? '' : `(${r.trendStrong ? '強' : '弱'})`;
   // 競合の行動指針: veto は「dir に逆行する側」=ちょうど長期方向の順張り側を落とす。つまり長期に乗る新規は
   // そもそも通らず、通るのは長期に逆らう側だけ。よって見送りが最も整合的である旨を明示する。
-  const conflictNote = r.trendDir === 'conflict'
+  const conflictNote = r.trendDir === 'conflict' && !factsOnly
     ? ' ※直近10分と長い時間軸が逆向きです。どちらのトレンドとも断定できません。'
       + 'コード側の見送り判定(veto)は直近10分に逆行する新規=長い時間軸に順張りする側を落とすため、'
       + '長期方向へ乗る計画は通りません。direction:"none"(見送り)が最も整合的です'
@@ -240,17 +264,28 @@ export function formatMomentumLine(r: Regime, rangeEnabled = false): string {
   //   逆張りの利幅が損切り幅を上回らないため breakout が正しい(幅の具体的な基準は system prompt 側)。
   //   ★SSOT: 語彙と使い分けは system prompt の rangeLine と揃える(食い違うと AI が矛盾した指示を受ける)。
   // ★競合(conflict)は横ばいではないので、ここには入らない=レンジを勧めない。
-  const rangeNote = r.trendDir === 'flat' && rangeEnabled
+  const rangeNote = r.trendDir === 'flat' && rangeEnabled && !factsOnly
     ? ' ※レンジ両面が有効な設定です。上下に反応帯(節目)があるレンジだと判断できるなら direction:"range"(両面ストラドル)を出してよい局面'
       + '(上下幅が広ければ fade=両側指値の組 / 狭い横這いなら breakout=両側ブレイク新規の組。組は混ぜない。幅の基準は上の制約を参照)'
     : '';
   // ギャップ由来の行動指針。system prompt の【検証済みの知見】(9年バックテストでギャップ戦略3種を全否定)と
   // 同じ向きの指示にする(勢い行が「ギャップ由来のトレンド」を注入して禁止条項と食い違う状態を作らない)。
-  const staleGuide = r.trendDir === 'stale'
+  const staleGuide = r.trendDir === 'stale' && !factsOnly
     ? ' ※「10分」の比較先が古い足(前セッション終値)のため、この値は直近10分の勢いではなく寄り付きギャップです。'
       + '本プロジェクトの9年バックテストでギャップの大小に方向のエッジは無いと確認済みのため、この値を根拠に方向を決めないこと。'
       + '方向は『長い時間軸』の数値・節目・アラートで判断し、それらに明確な根拠が無ければ direction:"none"(見送り)にすること'
     : '';
   return `直近の勢い: 10分${yen(r.ret10)}${staleNote} / 30分${yen(r.ret30)} / MA20傾き${slope} / `
     + `直近30分高安[${lo}-${hi}]内${pos}% → ${label}${strength}${conflictNote}${staleGuide}${rangeNote}`;
+}
+
+/** ★A(目線だけを尋ねる呼び出し)へ渡す勢いの1行。**事実だけ**(数値・ラベル・強弱・データの但し書き)。
+ *
+ *  ■ なぜ専用の関数にするか
+ *    formatMomentumLine(r, rangeEnabled, { factsOnly:true }) と書けるが、呼び出し側が
+ *    rangeEnabled を渡したまま factsOnly を書き忘れると **黙って戦略の語が A に戻る**。
+ *    ★rangeEnabled を受け取らない関数にしておけば、書き忘れようがない。
+ *  ■ B と旧経路はこの関数を使わない(formatMomentumLine のまま=1バイトも変わらない)。 */
+export function formatMomentumLineForTrend(r: Regime): string {
+  return formatMomentumLine(r, false, { factsOnly: true });
 }
