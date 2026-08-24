@@ -20,7 +20,7 @@ import type { LevelsResult } from '../levels.js';
 //     競合   211字 … 新規 順張り 計画 見送り veto direction none
 //     判定保留 290字 … 見送り direction none 節目 バックテスト
 //     横ばい  221字 … 指値 新規 direction range fade breakout ストラドル 節目 両側
-//   ★とくに `direction:"none"` は **A の契約に存在しない**(A の答えは bull/bear/range の3択)。
+//   ★とくに `direction:"none"` は **A の契約に存在しない**(A の答えは buy/sell/range の3択)。
 //     答える場所が無いものを指示していた=委任ノートで起きた事故と同じ型。
 //   ★`fade`/`breakout` の使い分けは **コードが BB スクイーズで決める** 設計で、A には説明しない
 //     のが分割の芯。それを A に説明していた。
@@ -32,7 +32,7 @@ import type { LevelsResult } from '../levels.js';
 // ■ ★`direction` / `range` の扱い(切り分け)
 //   この2語は **A 自身の契約の語** で、テンプレートに必ず出る:
 //     system … `range … 同じ値段の範囲を行き来している(レンジ)` / `range を選ぶのは…`
-//     user   … `"direction": "bull" | "bear" | "range"`
+//     user   … `"direction": "buy" | "sell" | "range"`
 //   ★よって全文で 0件 を求めると恒偽になる。**データ部でだけ 0件** を求め、
 //     さらに `direction:"…"`(値を指定する形)は **全文のどこにも出ない** ことを別に固定する。
 //     ——A に禁じたいのは「答えの選択肢を持つこと」ではなく「答えを **こちらが指定する** こと」。
@@ -84,7 +84,7 @@ const SCENARIOS: ReadonlyArray<readonly [string, Regime, boolean]> = [
 /** ★A の全文(system + データ部 + user)。★データ部の組み立ては本番と同じ関数を通す。 */
 const trendCtx = (): string => buildTrendContext(AB_INPUT);
 const dataPartOf = (r: Regime): string => buildTechnicalForTrend(39100, r, trendCtx());
-const fullTextOf = (r: Regime): string => buildTrendSystemPrompt(dataPartOf(r)) + buildTrendUserPrompt();
+const fullTextOf = (r: Regime): string => buildTrendSystemPrompt(dataPartOf(r), true) + buildTrendUserPrompt(true);
 
 const countHits = (text: string, words: readonly string[]): Array<readonly [string, number]> =>
   words.map(w => [w, text.split(w).length - 1] as const).filter(([, n]) => n > 0);
@@ -116,7 +116,7 @@ describe('★A の全文(データ部を含む)に注文・戦略・執行の語
     });
 
     it(`${name}: 答えを指定する形(direction:"…")がデータ部に0件`, () => {
-      // ★全文では 0 にできない: user の JSON 雛形 `"direction": "bull" | …` と
+      // ★全文では 0 にできない: user の JSON 雛形 `"direction": "buy" | …` と
       //   `"direction": "none"` は **形が同一** で、違うのは値だけ。★形で禁じ、場所で分ける。
       expect(countDirectiveForms(dataPartOf(r))).toBe(0);
       expect(countDirectiveForms(fullTextOf(r))).toBe(1);   // 雛形のちょうど1回
@@ -161,7 +161,7 @@ describe('★★表を攻撃する: 注記3つの実文が A の全文に混ざ�
 
   it('★3本とも、混ぜたら検査に捕まる(1本でも素通りしたら赤)', () => {
     const missed = NOTES.filter(n => {
-      const injected = buildTrendSystemPrompt(`${dataPartOf(SCENARIOS[0]![1])}${n}`) + buildTrendUserPrompt();
+      const injected = buildTrendSystemPrompt(`${dataPartOf(SCENARIOS[0]![1])}${n}`, true) + buildTrendUserPrompt(true);
       return countHits(injected, ORDER_WORDS).length === 0;
     });
     expect(missed).toEqual([]);
@@ -180,7 +180,7 @@ describe('★★表を攻撃する: 注記3つの実文が A の全文に混ざ�
   it('★否定対照: B/旧経路の勢い行(注記あり)をデータ部に入れると 競合/判定保留/横ばい は必ず捕まる', () => {
     for (const [name, r] of SCENARIOS.filter(([n]) => n !== '通常(下降トレンド)')) {
       const withNotes = `${formatMomentumLine(r, true)}\n\n${trendCtx()}`;
-      const full = buildTrendSystemPrompt(withNotes) + buildTrendUserPrompt();
+      const full = buildTrendSystemPrompt(withNotes, true) + buildTrendUserPrompt(true);
       expect(countHits(full, ORDER_WORDS).length, `${name} が素通りした`).toBeGreaterThan(0);
     }
   });
@@ -291,7 +291,7 @@ describe('★baseTech は A に渡らない(渡す口が無い)/現値の1行だ
 
   it('★3経路とも、混ぜたら検査に捕まる(1本でも素通りしたら赤)', () => {
     const missed = BASE_TECH_SAMPLES.filter(b => {
-      const injected = buildTrendSystemPrompt(`${b}\n${dataPartOf(SCENARIOS[0]![1])}`) + buildTrendUserPrompt();
+      const injected = buildTrendSystemPrompt(`${b}\n${dataPartOf(SCENARIOS[0]![1])}`, true) + buildTrendUserPrompt(true);
       return countHits(injected, ORDER_WORDS).length === 0;
     });
     expect(missed).toEqual([]);
@@ -350,7 +350,7 @@ describe('★★破壊: 6カテゴリの実文を A に混ぜたら必ず落ち�
   for (const where of ['head', 'tail', 'inside'] as const) {
     it(`★${where} に注入: 8本すべて捕まる(1本でも素通りしたら赤)`, () => {
       const missed = ATTACKS.filter(([, payload]) => {
-        const full = buildTrendSystemPrompt(inject(payload, where)) + buildTrendUserPrompt();
+        const full = buildTrendSystemPrompt(inject(payload, where), true) + buildTrendUserPrompt(true);
         return countHits(full, ORDER_WORDS).length === 0;
       }).map(([name]) => name);
       expect(missed, `${where} で素通りした: ${missed.join(' / ')}`).toEqual([]);

@@ -93,7 +93,7 @@ describe('signal_plans.split_bypass_reason(実ファイル SQLite)', () => {
   it('★通常の分割ON(該当なし)・分割OFFの回は NULL のまま(捏造しない)', () => {
     const db = oldDb();
     initSchema(db);
-    insertSignalPlan(db, { t: 4, system: 'A', direction: 'buy', aDirection: 'bull', bVariant: 'buy' });   // 分割ON・該当なし
+    insertSignalPlan(db, { t: 4, system: 'A', direction: 'buy', aDirection: 'buy', bVariant: 'buy' });   // 分割ON・該当なし
     insertSignalPlan(db, { t: 5, system: 'A', direction: 'buy' });   // 分割OFF
     const rows = db.prepare('SELECT split_bypass_reason FROM signal_plans WHERE t >= 4 ORDER BY t')
       .all() as Array<{ split_bypass_reason: string | null }>;

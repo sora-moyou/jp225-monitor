@@ -360,10 +360,16 @@ export function initSchema(db: DatabaseSync): void {
   //     「列を先に用意しておく」ことの意味は、分割を実装した瞬間から同じスキーマで書き込めること
   //     (=分割の前後でスキーマ変更を挟まない)であって、分割前から値が入り始めるという意味ではない。
   //   ■ 値の意味(すべて NULL 可。★埋められない回は捏造せず NULL)
-  //     a_direction         … A(目線)の答え('bull'/'bear'/'range')。★注文の side(buy/sell)ではない。
-  //                           (2026-08-22 訂正: ここが 'buy'/'sell'/'range' と書いていたのは
-  //                            仕様修正(2026-08-22・A の語を bull/bear/range へ変更)前の古い記述のまま
-  //                            残っていた=宣言だけ残る事故。実装は trendPrompt.ts の TrendAnswerDirection)。
+  //     a_direction         … A(目線)の答え。★★**語彙が版で切り替わる列**(分析する人へ):
+  //                             ・`bull` / `bear` / `range` … **v0.9.98 まで**(2026-08-22〜08-24)
+  //                             ・`buy`  / `sell` / `range` … **次版から**(2026-08-25・ユーザーが
+  //                               A のプロンプト文面で `buy(ブル) / sell(ベア)` と明示したため)
+  //                           ★過去行は **変換していない**(書き換えない)。混ぜて数えないこと。
+  //                             切り分けは `app_version` と `a_prompt_build` で行う
+  //                             (a_prompt_build は文面が1文字でも変われば必ず動く=語彙の変更も必ず動く)。
+  //                           ★`buy`/`sell` は注文の side と **同じ綴り** になったが意味は別物
+  //                             (こちらは「相場の方向」・side を決めるのは B_VARIANTS の表だけ)。
+  //                           ★実装の SSOT は trendPrompt.ts の TrendAnswerDirection。
   //                           ★分割 OFF(旧経路)ではこの列は埋めない(A/B 分割を通った回だけ書く)= NULL。
   //     a_why               … その目線の理由(自由文)。
   //     b_variant           … 注文側に渡した版('buy'/'sell'/'range-fade'/'range-breakout'/'none'=呼ばなかった)。
@@ -879,6 +885,38 @@ export function setMeta(db: DatabaseSync, key: string, value: string): void {
 export const BUILD_IDENTITY_KEY = 'app_build';
 export const BUILD_IDENTITY_STATUS_KEY = 'app_build_status';
 
+/** ★2026-08-25(エバリュエーター指摘③): **DB を開いた人に語彙の版境界が届く場所**。
+ *
+ *  ■ なぜ要るか
+ *    `a_direction` は ALTER TABLE で足した列なので `sqlite_master` の CREATE TABLE 文に注釈が無く、
+ *    ★**ソースのコメントは DB を開いた分析者に1文字も届かない**。
+ *    語彙が版で切り替わったことを知らずに `GROUP BY a_direction` すると、
+ *    bull/bear の行と buy/sell の行が別カテゴリとして並び、「目線の分布が激変した」と誤読する。
+ *  ■ ★新しい表は作らない(既存の meta の枠組みに1行足すだけ)。共有DBの meta は
+ *    trade2 の `VACUUM INTO` にそのまま乗るので、**別PCの書き出しからでも読める**。 */
+export const COLUMN_VOCAB_KEY = 'column_vocab';
+
+/** ★列の値の語彙が版で切り替わったことを、DB の中だけで読める形で残す(記録専用)。
+ *  ★中身は「人が読む1文」。機械の結合キーにはしない(切り分けは app_version / a_prompt_build で行う)。
+ *  ★★**まだ出していない版番号を書かない**(2026-08-25・リーダー裁定)。
+ *    この文字列は DB に焼かれ、**後から直せない**。確定しているのは
+ *    「bull/bear は v0.9.98 で終わり」だけで、新しい語彙が何番から出るかは出荷まで確定しない
+ *    (実際この作業ツリーでは v0.9.99 / v0.9.100 / v0.9.101 の3つが混在していた)。
+ *    ★「v0.9.98 より後」と書けば、出荷版が何番になっても嘘にならない。 */
+export const COLUMN_VOCAB_NOTE =
+  'signal_plans.a_direction: A(目線)の答えの語彙は版で切り替わります。'
+  + '(1) bull / bear / range … v0.9.98 まで(2026-08-22〜08-24) '
+  + '(2) buy / sell / range … v0.9.98 より後(2026-08-25・A のプロンプト文面がユーザー指定で buy(ブル)/sell(ベア) になったため)。'
+  + '★過去行は変換していません(書き換えていません)。混ぜて数えないこと。'
+  + '切り分けは app_version と a_prompt_build で行ってください'
+  + '(a_prompt_build は文面が1文字でも変われば必ず動くので、語彙の変更も必ず動きます)。'
+  + '★buy/sell は注文の side と同じ綴りですが意味は別物(こちらは相場の方向。side を決めるのは注文側の対応表だけ)。';
+
+/** meta に語彙の版境界を1行書く。★冪等(毎起動で同じ内容を上書き)。失敗は呼び出し側が握りつぶす。 */
+export function setColumnVocabMeta(db: DatabaseSync): void {
+  setMeta(db, COLUMN_VOCAB_KEY, COLUMN_VOCAB_NOTE);
+}
+
 /** meta に書く中身。★本文は入らない(pb1 は一方向ダイジェスト)。 */
 export interface BuildIdentityMeta {
   /** 実行中のアプリの版。 */
@@ -1363,9 +1401,11 @@ export interface SignalPlanRow {
   drift_yen: number | null;
   /** ★v0.9.96: ARM 時 live で「もう通過している」と判定されたレッグの本数(0/1/2)。未判定は NULL。 */
   stale_legs: number | null;
-  /** ★v0.9.97: A(目線)の答え('bull'/'bear'/'range')。旧行/A が呼ばれなかった回は NULL。
-   *  ★注文の side(buy/sell)ではない(2026-08-22 訂正: 'buy'/'sell'/'range' としていたのは仕様修正前の
-   *  古い記述のまま残っていたもの=宣言だけ残る事故。実装は trendPrompt.ts の TrendAnswerDirection)。 */
+  /** ★v0.9.97: A(目線)の答え。旧行/A が呼ばれなかった回は NULL。
+   *  ★★**語彙が版で切り替わる**: `bull`/`bear`/`range` は **v0.9.98 まで** /
+   *    `buy`/`sell`/`range` は **次版から**(2026-08-25・ユーザー指定文面)。
+   *  ★過去行は変換していない。混ぜて数えず app_version / a_prompt_build で切ること。
+   *  ★実装の SSOT は trendPrompt.ts の TrendAnswerDirection。 */
   a_direction: string | null;
   /** ★v0.9.97: その目線の理由(自由文)。同上。 */
   a_why: string | null;

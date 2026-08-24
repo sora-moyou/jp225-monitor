@@ -120,7 +120,7 @@ describe('§旧経路(splitRecord 無し)= 実ファイルの新6+8列が NULL �
 });
 
 describe('§分割 ON = 実ファイルに新列が実際に埋まる', () => {
-  it('A=bull → B(buy) まで進んだ回: 8列 + プロバイダ2組 + プロンプト型2つが実ファイルに入る', async () => {
+  it('A=buy(ブル) → B(buy) まで進んだ回: 8列 + プロバイダ2組 + プロンプト型2つが実ファイルに入る', async () => {
     const eng = await runCycle({
       ok: true,
       plan: {
@@ -129,7 +129,7 @@ describe('§分割 ON = 実ファイルに新列が実際に埋まる', () => {
         stopEntry: REF + 50, stopLossForStop: REF,
       },
       splitRecord: {
-        aDirection: 'bull', aWhy: '高値切り上げが3本続いている', bVariant: 'buy',
+        aDirection: 'buy', aWhy: '高値切り上げが3本続いている', bVariant: 'buy',
         squeezeState: 'squeeze', bStrategy: '押し目を節目手前で拾う', toolCalls: 2,
         aProvider: { name: 'gemini', model: 'gemini-flash' },
         bProvider: { name: 'groq', model: 'llama-70b' },
@@ -140,7 +140,9 @@ describe('§分割 ON = 実ファイルに新列が実際に埋まる', () => {
     console.info(`[実測/分割ON] a_direction=${r.a_direction} b_variant=${r.b_variant} `
       + `a_provider=${r.a_provider} b_provider=${r.b_provider} `
       + `a_prompt_build=${r.a_prompt_build} b_prompt_build=${r.b_prompt_build}`);
-    expect(r.a_direction).toBe('bull');
+    // ★2026-08-25: A の語彙が bull/bear → buy/sell に変わった(ユーザー指定文面)。
+    //   ★台帳の実ファイルに **buy** が入ることをここで実証する(過去行の bull は変換しない)。
+    expect(r.a_direction).toBe('buy');
     expect(r.a_why).toBe('高値切り上げが3本続いている');
     expect(r.b_variant).toBe('buy');
     expect(r.squeeze_state).toBe('squeeze');
@@ -172,7 +174,7 @@ describe('§設計の芯: ①②③④が SQL で別々に数えられる(実フ
     eng = await runCycle({
       ok: true, plan: { direction: 'none', rationale: 'B見送り', refPrice: REF }, noneReason: 'ai',
       splitRecord: {
-        aDirection: 'bull', bVariant: 'buy', squeezeState: null,
+        aDirection: 'buy', bVariant: 'buy', squeezeState: null,
         aiWhy: 'あ) 上に節目が無い / い) 下は遠すぎる',
       },
     }, 2);
@@ -181,7 +183,7 @@ describe('§設計の芯: ①②③④が SQL で別々に数えられる(実フ
     // ④ B は答えたがコードの検証(geometry)で落ちた。
     eng = await runCycle({
       ok: true, plan: { direction: 'none', rationale: '検証で不採用', refPrice: REF }, noneReason: 'geometry',
-      splitRecord: { aDirection: 'bear', bVariant: 'sell', squeezeState: 'bulge' },
+      splitRecord: { aDirection: 'sell', bVariant: 'sell', squeezeState: 'bulge' },
     }, 3);
     eng.stop();
 

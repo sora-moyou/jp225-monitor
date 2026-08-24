@@ -87,11 +87,13 @@ const GATE_TEXT: Record<PlanGate, string> = {
   armBlocked: '連続失効',
 };
 
-/** ★A の答え('bull'/'bear'/'range')→ 画面の語彙('buy'/'sell'/'range')の対応づけ。
- *  ★**この1箇所だけ**。A は「相場の向き」を答えるので bull/bear、画面は注文の語彙に揃えた
- *  「買い目線/売り目線/レンジ目線」(web/components/signalPanel.ts の BIAS_JA)を出すため、
- *  どこかで必ず1回写す必要がある。pickBVariant(bull→'buy' / bear→'sell')と同じ対応。 */
-const A_TREND_TO_BIAS = { bull: 'buy', bear: 'sell', range: 'range' } as const;
+/** ★A の答え('buy'/'sell'/'range')→ 画面の語彙('buy'/'sell'/'range')の対応づけ。
+ *  ★**この1箇所だけ**。★2026-08-25 に A の語彙が bull/bear → buy/sell へ変わったので、
+ *    この表は **恒等写像になった**(以前は bull→buy / bear→sell を写していた)。
+ *  ★それでも表を残す理由: (a) 型 `Record<ATrend, …>` なので、A の語彙が次に変わったら
+ *    **ここが型エラーで止まる**(無言でズレない) (b) 「A の語彙と画面の語彙は別物」という
+ *    線引きを1箇所に残しておく。pickBVariant(buy→'buy' / sell→'sell')と同じ対応。 */
+const A_TREND_TO_BIAS = { buy: 'buy', sell: 'sell', range: 'range' } as const;
 
 /** ★計画自身の向き(AiPlan.direction)→ 画面の語彙。★'none' は **入れない**(目線が無い回だから)。
  *  ★写しではなく素通し(buy→buy / sell→sell / range→range)。表を置くのは

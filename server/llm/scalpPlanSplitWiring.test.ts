@@ -7,7 +7,7 @@ import { A_ANSWER_HEADING } from './trendPrompt.js';
  *  ここに literal を書くと、本文が変わったときにこのファイルだけが古い文字列を指したまま赤くなる
  *  (2026-08-24 に実際に起きた: 問いの文面を目印にしていた3箇所が、問いの反転で赤くなった)。 */
 const A_PROMPT_MARK = A_ANSWER_HEADING;
-// ★段4(v0.9.100): **buildScalpPlan を実プロセスで走らせて** 経路の切り替えを確かめる。
+// ★段4(v0.9.99): **buildScalpPlan を実プロセスで走らせて** 経路の切り替えを確かめる。
 //   LLM は呼ばず、provider の create だけを差し替える(= 実際に API へ渡る params を見る)。
 //
 // 何を守っているか:
@@ -55,11 +55,13 @@ const OLD_JSON = JSON.stringify({
   direction: 'buy', limitEntry: REF - 20, stopEntry: REF + 20,
   lcWidthForLimit: 60, lcWidthForStop: 58, rationale: 'テスト', refPrice: REF,
 });
-const A_JSON = '{"direction":"bull","why":"高値切り上げ"}';
-const B_JSON = JSON.stringify({
-  strategy: '押し目', aPrice: REF + 20, aLcWidth: 60, aWhy: '節目手前',
-  iPrice: REF - 20, iLcWidth: 58, iWhy: '押し目',
-});
+const A_JSON = '{"direction":"buy","why":"高値切り上げ"}';
+// ★2026-08-25: B の応答は **自由文**(ユーザーが形式を指定)。A=buy(ブル) → 版は 'buy' なので
+//   （上）=逆指値買い /（下）=指値買い。★strategy の欄は形式に無いので b_strategy は NULL になる。
+const B_JSON = [
+  `逆指値買い${REF + 20}円（LC幅60円）節目手前`,
+  `指値買い${REF - 20}円（LC幅58円）押し目`,
+].join('\n');
 
 type Msg = { role: string; content: string | Array<{ text?: string }> };
 type Params = { messages: Msg[]; tools?: unknown[]; max_tokens?: number };
@@ -117,13 +119,18 @@ describe('②③ ★分割 ON = A→B の2回。A にツールが1つも付か�
     const r = await run();
     expect(createMock.mock.calls.length).toBe(2);
     expect(textOf(paramsOf(0), 'system')).toContain(A_PROMPT_MARK);
-    expect(textOf(paramsOf(1), 'system')).toContain('スキャルピングを行うトレーダー');
+    // ★2026-08-25: B の1行目はユーザー指定文面で A と共通。B だけに在る行で判別する。
+    expect(textOf(paramsOf(1), 'system')).toContain('を同時に出し、先に約定した方でエントリーし他方はキャンセルします。');
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.plan.direction).toBe('buy');
       expect(r.plan.stopEntry).toBe(REF + 20);
       expect(r.plan.limitEntry).toBe(REF - 20);
-      expect(r.plan.strategy).toBe('押し目');
+      // ★2026-08-25: 自由文の形式に strategy の欄が無いので plan.strategy は付かない(捏造しない)。
+      expect(r.plan.strategy).toBeUndefined();
+      // ★脚ごとの理由は入る(価格と同じ脚に対応)。
+      expect(r.plan.entryWhyForStop).toBe('節目手前');
+      expect(r.plan.entryWhyForLimit).toBe('押し目');
     }
   });
 
@@ -145,7 +152,7 @@ describe('②③ ★分割 ON = A→B の2回。A にツールが1つも付か�
 
   it('③ ★A の max_tokens は小さく、B は従来どおり 8000', async () => {
     await run();
-    expect(paramsOf(0).max_tokens).toBe(256);
+    expect(paramsOf(0).max_tokens).toBe(384);   // ★2026-08-25: a_why の実測(最大172字)を見て 256→384
     expect(paramsOf(1).max_tokens).toBe(8000);
   });
 
@@ -185,9 +192,11 @@ describe('②③ ★分割 ON = A→B の2回。A にツールが1つも付か�
       onSplitRecord: (r) => { rec = r; },
     });
     expect(rec).toMatchObject({
-      aDirection: 'bull', bVariant: 'buy', squeezeState: null,
-      squeezeUnavailable: 'closed', bStrategy: '押し目', toolCalls: 0,
+      aDirection: 'buy', bVariant: 'buy', squeezeState: null,
+      squeezeUnavailable: 'closed', toolCalls: 0,
     });
+    // ★2026-08-25: 自由文の形式に strategy の欄が無いので b_strategy は入らない(捏造しない)。
+    expect((rec as { bStrategy?: string } | null)?.bStrategy).toBeUndefined();
   });
 });
 
@@ -230,12 +239,80 @@ describe('⑤ ★既定(env 未設定)= 分割 ON', () => {
     setSplit(undefined);   // ★何も置かない=既定
     createMock.mockReset();
     createMock
-      .mockResolvedValueOnce({ choices: [{ message: { content: '{"direction":"bull","why":"高値切り上げ"}' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{"direction":"buy","why":"高値切り上げ"}' } }] })
       .mockResolvedValue({ choices: [{ message: { content: OLD_JSON } }] });
     await run();
     expect(createMock.mock.calls.length).toBe(2);
     // A には注文の話もツールも無い(分割の芯)
     expect(textOf(paramsOf(0), 'system')).toContain(A_PROMPT_MARK);
     expect((paramsOf(0).tools ?? []).length).toBe(0);
+  });
+});
+
+// ═══ ⑥ ★★2026-08-25: 読み取れなかったことが **台帳の枠組み** まで届く ══════════
+//
+// ■ なぜここで測るか(単体テストでは足りない)
+//   parseBFreeText / buildPlanFromBAnswer の単体テストは「LegDrop が作られる」までしか見ない。
+//   ★知りたいのは「それが buildScalpPlan の戻り値の legDrops に載るか」=
+//   台帳(signal_plans.leg_drops_json)へ流れる経路が実際に繋がっているか。
+//   ★ここが切れていると「読めなかった率」を **後から一件も数えられない**(無言の失敗)。
+describe('⑥ ★読み取り失敗が legDrops(→ leg_drops_json)まで届く', () => {
+  beforeEach(() => { setSplit(true); createMock.mockReset(); });
+
+  it('★B が形式を外した(旧 JSON をそのまま返した)回: 両脚が落ち、理由が legDrops に残る', async () => {
+    createMock
+      .mockResolvedValueOnce({ choices: [{ message: { content: A_JSON } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ aPrice: 1, aLcWidth: 2 }) } }] });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.direction).toBe('none');
+    expect(r.noneReason).toBe('aiSilent');          // ★AI の判断ではなく B の故障として残る
+    expect(r.legDrops?.map(d => `${d.name}:${d.reason}:${d.parseIssue ?? ''}`)).toEqual([
+      'stop:missing:「逆指値買い」の行が無い',
+      'limit:missing:「指値買い」の行が無い',
+    ]);
+  });
+
+  it('★片脚だけ読めなかった回: 立った脚は残り、落ちた脚だけが理由つきで残る', async () => {
+    createMock
+      .mockResolvedValueOnce({ choices: [{ message: { content: A_JSON } }] })
+      .mockResolvedValueOnce({ choices: [{ message: {
+        content: `逆指値買い${REF + 20}円（LC幅60円）節目手前\n指値買い${REF - 20}円 押し目`,
+      } }] });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.direction).toBe('buy');
+    expect(r.plan.stopEntry).toBe(REF + 20);
+    expect(r.plan.limitEntry).toBeUndefined();
+    expect(r.legDrops).toContainEqual({
+      name: 'limit', reason: 'missing', entry: REF - 20, parseIssue: '「指値買い」のLC幅を読めなかった',
+    });
+  });
+
+  it('★★否定対照: 期待外の注文タイプで返された回は、その脚に入らず捨てられる', async () => {
+    createMock
+      .mockResolvedValueOnce({ choices: [{ message: { content: A_JSON } }] })
+      .mockResolvedValueOnce({ choices: [{ message: {
+        content: `指値売り${REF + 20}円（LC幅60円）戻り売り\n逆指値売り${REF - 20}円（LC幅58円）下抜け`,
+      } }] });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // ★売りの価格が買いの脚へ紛れ込んでいない(=即約定する不正注文が作られない)
+    expect(r.plan.direction).toBe('none');
+    expect(r.plan.stopEntry).toBeUndefined();
+    expect(r.plan.limitEntry).toBeUndefined();
+    expect(r.legDrops?.every(d => d.reason === 'missing')).toBe(true);
+  });
+
+  it('★両脚とも読めた回は legDrops が付かない(この検査が恒真でない)', async () => {
+    createMock
+      .mockResolvedValueOnce({ choices: [{ message: { content: A_JSON } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: B_JSON } }] });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.legDrops).toBeUndefined();
   });
 });

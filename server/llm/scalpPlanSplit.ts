@@ -22,12 +22,13 @@
 
 import type { AiPlan, AnsweringProvider, NoneReason, ScalpPlanResult } from './scalpPlan.js';
 import {
-  B_VARIANTS, buildBSystemPrompt, buildBUserPrompt, buildPlanFromBAnswer, parseBAnswer,
+  B_VARIANTS, buildBSystemPrompt, buildBUserPrompt, buildPlanFromBAnswer, parseBFreeText,
   pickBVariant, type BVariant, type SqueezeState, type TrendDirection,
 } from './planVariants.js';
-import { buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer } from './trendPrompt.js';
+import { buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer, rawDirectionOf } from './trendPrompt.js';
 
-/** A の答え(bull/bear/range)→ 台帳と下流で使う語。★注文の side ではない。 */
+/** A の答え(buy/sell/range)→ 台帳と下流で使う語。
+ *  ★2026-08-25: 語が bull/bear → buy/sell に変わった(ユーザー指定文面)。台帳 a_direction もこの値。 */
 export type ATrend = TrendDirection;
 
 /** ★1回の LLM 呼び出しの結果(転送層が返すもの)。 */
@@ -62,7 +63,7 @@ export interface SplitPlanOptions {
   //   「regime」「confidence」など、B には存在しないブロック/フィールドへの参照を大量に含み、
   //   分割の芯(side は AI に返させない・返す場所を作らない)と正面衝突する。実測で
   //   B が {"direction":"none","regime":"range","confidence":0.3,...} のような契約外の JSON を
-  //   返し、parseBAnswer が拾えず none_reason='aiSilent'(B の故障)に化けることを確認した
+  //   返し、読み取りが拾えず none_reason='aiSilent'(B の故障)に化けることを確認した
   //   (正当な見送りが故障に化かる=aiSilent を作った目的の裏返し)。詳細は設計書を参照。
 }
 
@@ -142,7 +143,12 @@ export async function runSplitPlan(
   // ── ① A(目線) ────────────────────────────────────────────────────────────
   let aRes: SplitCallResult;
   try {
-    aRes = await deps.callTrend(buildTrendSystemPrompt(opts.trendContext), buildTrendUserPrompt());
+    // ★2026-08-25: A のプロンプトは **設定(rangeEnabled)の関数**。レンジ無効のときは
+    //   range という選択肢そのものを出さない(=下の ② はほぼ死に条項になるが、防御として残す)。
+    aRes = await deps.callTrend(
+      buildTrendSystemPrompt(opts.trendContext, opts.rangeEnabled),
+      buildTrendUserPrompt(opts.rangeEnabled),
+    );
   } catch (e) {
     // ★A の失敗は「相場が悪かった」ではない。★**B を投げず・再試行せず**に見送る。
     console.warn('[scalp-plan] A(目線)の呼び出しに失敗 — B は呼ばず見送り:', e instanceof Error ? e.message : String(e));
@@ -154,9 +160,17 @@ export async function runSplitPlan(
   const answer = parseTrendAnswer(aRes.text);
   if (!answer) {
     // 3語のどれでもない/読めない。★これも aFailed(相場のせいではない)。
-    console.warn('[scalp-plan] A(目線)の答えが3語のどれでもない — B は呼ばず見送り');
+    // ★2026-08-25(エバリュエーター指摘(h)): **何と答えたのか** を残す。
+    //   この経路は aRecord を作る前なので a_direction も a_why も NULL になり、従来は
+    //   aFailed の件数が増えることでしか気づけなかった。★語彙を bull/bear → buy/sell に
+    //   切り替えた直後は「先祖返り」と「別の壊れ方」を区別できる必要がある。
+    //   ★列は増やさない: 既に台帳へ落ちている rationale に、**direction の値だけ** を足す
+    //   (自由文は持ち出さない=モデルの生出力を台帳へ運ばない既存の方針)。
+    const raw = rawDirectionOf(aRes.text);
+    console.warn(`[scalp-plan] A(目線)の答えが3語のどれでもない — B は呼ばず見送り${raw ? ` (答え: "${raw}")` : ''}`);
     return {
-      parsed: withReason(nonePlan(refPrice, '目線の判断が得られませんでした(答えが規定の3語でない)。'), 'aFailed'),
+      parsed: withReason(nonePlan(refPrice,
+        `目線の判断が得られませんでした(答えが規定の3語でない${raw ? `: "${raw}"` : ''})。`), 'aFailed'),
       record: {
         ...baseRecord, bVariant: 'none', toolCalls: aRes.toolCalls,
         ...(aRes.provider ? { aProvider: aRes.provider } : {}),
@@ -199,9 +213,11 @@ export async function runSplitPlan(
     ...(bRes.provider ? { bProvider: bRes.provider } : {}),
   };
 
-  const bAnswer = parseBAnswer(bRes.text);
+  // ★2026-08-25: B の応答は **自由文**。読み取りは注文タイプの語だけで脚を決め、
+  //   読めなかった脚は理由を残す(黙って別の脚へ入れない)。
+  const bAnswer = parseBFreeText(bRes.text, variant);
   if (!bAnswer) {
-    // ★契約に無い形/空。**B の故障** であって相場ではない。
+    // ★空応答。**B の故障** であって相場ではない。
     return {
       parsed: withReason(nonePlan(refPrice, 'AI が規定の形で答えませんでした。'), 'aiSilent'),
       record: rec,
@@ -234,22 +250,27 @@ export async function runSplitPlan(
     ...(bAnswer.missingData ? { missingData: bAnswer.missingData } : {}),
   };
 
+  // ★2026-08-25(記録専用): 読み取り段で立たなかった脚を legDrops として運ぶ。
+  //   ★下流(scalpPlan.ts)は `[...(parsed.legDrops ?? []), ...(enforced.legDrops ?? [])]` で
+  //     そのまま leg_drops_json へ落とす=**配線を1行も足さずに** 「読めなかった」が台帳に残る。
+  const legDropsField = built.legDrops.length ? { legDrops: built.legDrops } : {};
+
   if (built.bothDropped) {
     // ★理由が有る=AI の判断('ai') / 理由も無い=無言の故障('aiSilent')。
     const reason: NoneReason = aiWhy ? 'ai' : 'aiSilent';
     return {
-      parsed: withReason(built.plan, reason),
+      parsed: { ...withReason(built.plan, reason), ...legDropsField },
       record, ...(provider ? { provider } : {}),
     };
   }
   return {
-    parsed: { ok: true, plan: built.plan },
+    parsed: { ok: true, plan: built.plan, ...legDropsField },
     record, ...(provider ? { provider } : {}),
   };
 }
 
 /** 画面と台帳に出す根拠文。★機械生成の注記は下流(buildLegNote)が足すので、ここは AI の言葉だけ。 */
-export function buildRationale(a: ReturnType<typeof parseBAnswer>, variant: BVariant): string {
+export function buildRationale(a: ReturnType<typeof parseBFreeText>, variant: BVariant): string {
   if (!a) return '';
   const parts: string[] = [];
   if (a.strategy) parts.push(a.strategy);

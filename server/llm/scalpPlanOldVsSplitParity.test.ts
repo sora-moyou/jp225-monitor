@@ -53,11 +53,13 @@ const OLD_JSON = JSON.stringify({
   direction: 'buy', limitEntry: REF - 20, stopEntry: REF + 20,
   lcWidthForLimit: 60, lcWidthForStop: 58, rationale: 'テスト', refPrice: REF,
 });
-const A_JSON = '{"direction":"bull","why":"高値切り上げ"}';
-const B_JSON = JSON.stringify({
-  strategy: '押し目', aPrice: REF + 20, aLcWidth: 60, aWhy: '節目手前',
-  iPrice: REF - 20, iLcWidth: 58, iWhy: '押し目',
-});
+const A_JSON = '{"direction":"buy","why":"高値切り上げ"}';
+// ★2026-08-25: B の応答は **自由文**(ユーザーが形式を指定)。A=buy(ブル) → 版は 'buy' なので
+//   （上）=逆指値買い /（下）=指値買い。★strategy の欄は形式に無いので b_strategy は NULL になる。
+const B_JSON = [
+  `逆指値買い${REF + 20}円（LC幅60円）節目手前`,
+  `指値買い${REF - 20}円（LC幅58円）押し目`,
+].join('\n');
 
 type Msg = { role: string; content: string | Array<{ text?: string }> };
 type Params = { messages: Msg[]; tools?: unknown[]; max_tokens?: number };
@@ -177,6 +179,6 @@ describe('★旧経路(1回呼び出し)の全文 vs 分割経路(A+B)の全文�
     expect(old).toContain('初期LC(損切り)幅');
     // ★B にも損切幅の帯(下限〜上限)は残る(制約として)。
     expect(b).toContain('損切幅は');
-    expect(b).toContain('円以上');
+    expect(b).toContain('円<=損切幅<');   // ★2026-08-25: 帯は半開区間の表記になった
   });
 });

@@ -27,7 +27,7 @@ import { DEFAULT_PROMPT_VARIANT, type PromptVariant } from './promptVariant.js';
 import { isWebSearchEnabled, webSearch } from './webSearch.js';
 // ★RECORD-ONLY: 送るプロンプトの一方向指紋だけを作る純関数(本文はこのファイルの外へ出さない)。
 import { promptFingerprint } from './promptFingerprint.js';
-// ★v0.9.100(A/B 分割・段4): 切り替えは planSplitConfig の1箇所。
+// ★v0.9.99(A/B 分割・段4): 切り替えは planSplitConfig の1箇所。
 import { isPlanSplitEnabled } from './planSplitConfig.js';
 import { runSplitPlan, type SplitRecord } from './scalpPlanSplit.js';
 import type { ContextPresence } from './contextPresence.js';
@@ -308,6 +308,12 @@ export interface LegDrop {
    *  ★これが無いと「根拠文には −55 と書いてあるのに台帳には何も残らない」= 件数すら数えられなかった。
    *  既存の読み手は知らないキーを無視するだけ(leg_drops_json の形は互換)。 */
   lcWidth?: number;
+  /** ★2026-08-25(記録専用): **応答を読み取れなかった** ときの理由(A/B 分割の B が自由文になったため)。
+   *  例: 「「逆指値買い」の行が無い」/「「指値買い」のLC幅を読めなかった」。
+   *  ★これが無いと「AI が価格を出さなかった」と「出したがこちらが読めなかった」が
+   *    どちらも reason='missing' に潰れて区別できない(=読めなかった率を数えられない)。
+   *  ★数え方: `leg_drops_json LIKE '%parseIssue%'`。既存の読み手は知らないキーを無視するだけ。 */
+  parseIssue?: string;
 }
 
 // vetoFired(v0.7.54): buildScalpPlan が enforcePlanConstraints のトレンド veto が発火したかを surface する
@@ -2309,12 +2315,12 @@ export interface ScalpPlanInput {
    *  'v2' のとき user プロンプト(質問文＋JSON契約)だけが差し替わる。system プロンプト・parse・enforce・
    *  実際の決済計算には一切影響しない。★ExitVariant とは **別の軸** なので、同時に指定してよい。 */
   promptVariant?: PromptVariant;
-  /** ★v0.9.100(A/B 分割): **A(目線)に渡す文脈**。節目・アラート・長期高安を外したもの(abContext.buildTrendContext)。
+  /** ★v0.9.99(A/B 分割): **A(目線)に渡す文脈**。節目・アラート・長期高安を外したもの(abContext.buildTrendContext)。
    *  ★分割が無効なときは使われない。有効なのに未指定なら A は文脈なしで走る(嘘の文脈を渡さない)。 */
   technicalForTrend?: string | null;
-  /** ★v0.9.100(記録専用): A/B 分割で得た測定材料を呼び出し側へ返す。段5 で台帳へ落とす。 */
+  /** ★v0.9.99(記録専用): A/B 分割で得た測定材料を呼び出し側へ返す。段5 で台帳へ落とす。 */
   onSplitRecord?: (r: SplitRecord) => void;
-  /** ★v0.9.100(A/B 分割): BB スクイーズ判定の生値と、使えなかった理由。版の選択に使う。 */
+  /** ★v0.9.99(A/B 分割): BB スクイーズ判定の生値と、使えなかった理由。版の選択に使う。 */
   squeezeState?: SqueezeState;
   squeezeUnavailable?: string;
   /** ★v0.9.61: バンドウォークの判定結果(server/bandwalk.ts)。runner が算出して渡す。
@@ -3087,7 +3093,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   採否ロジックは parse も enforce も一切変えていない(注記の連結回数だけが 2→1 に戻る)。
     let planResult: Extract<ScalpPlanResult, { ok: true }> | null = null;
 
-    // ═══ ★A/B 分割(段4・v0.9.100) ═══════════════════════════════════════════════
+    // ═══ ★A/B 分割(段4・v0.9.99) ═══════════════════════════════════════════════
     //   ★切り替えは planSplitConfig.ts の1箇所だけ(PLAN_SPLIT_DEFAULT / 環境変数 JP225_PLAN_SPLIT)。
     //   ★ここが false のとき、下の従来経路は **1バイトも変わらずに** 走る(この if の外は無改造)。
     //   ★分割経路も、得た plan を planResult に入れるだけ = **下流(enforce/veto/legDrops/台帳/SSE)は共通**。

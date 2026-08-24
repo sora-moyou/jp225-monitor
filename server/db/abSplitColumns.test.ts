@@ -238,7 +238,7 @@ describe('signal_plans: ★段5の測定台6列(A/B それぞれのプロバイ�
     initSchema(db);
     insertSignalPlan(db, {
       t: 2, system: 'A', direction: 'buy',
-      aDirection: 'bull', bVariant: 'buy',
+      aDirection: 'buy', bVariant: 'buy',
       aProvider: 'gemini', aProviderModel: 'gemini-flash',
       bProvider: 'groq', bProviderModel: 'llama-70b',
       aPromptBuild: 'pb1:aaaaaaaaaaaaaaaa', bPromptBuild: 'pb1:bbbbbbbbbbbbbbbb',

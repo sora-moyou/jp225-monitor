@@ -93,7 +93,7 @@ describe('§実ファイルの台帳に split_bypass_reason が入る', () => {
     const eng = await runCycle({
       ok: true,
       plan: { direction: 'buy', rationale: '通常の押し目買い', refPrice: REF, limitEntry: REF - 50, stopLossForLimit: REF - 100 },
-      splitRecord: { aDirection: 'bull', bVariant: 'buy', squeezeState: null },
+      splitRecord: { aDirection: 'buy', bVariant: 'buy', squeezeState: null },
     });
     const r = readPlans()[0]!;
     expect(r.split_bypass_reason).toBeNull();
@@ -109,7 +109,7 @@ describe('§実ファイルの台帳に split_bypass_reason が入る', () => {
     eng.stop();
     eng = await runCycle({
       ok: true, plan: { direction: 'buy', rationale: 'y', refPrice: REF, limitEntry: REF - 50, stopLossForLimit: REF - 100 },
-      splitRecord: { aDirection: 'bull', bVariant: 'buy', squeezeState: null },
+      splitRecord: { aDirection: 'buy', bVariant: 'buy', squeezeState: null },
     }, 2);
     eng.stop();
 

@@ -71,7 +71,7 @@ describe('§実ファイルの台帳に missing_data が入る', () => {
       plan: { direction: 'none', rationale: '見送り', refPrice: REF },
       noneReason: 'ai',
       splitRecord: {
-        aDirection: 'bull', bVariant: 'buy', squeezeState: null,
+        aDirection: 'buy', bVariant: 'buy', squeezeState: null,
         aiWhy: 'あ) 上に節目が無い / い) 下は遠すぎる',
         missingData: 'ATRが算出できず、節目データも0件でした',
       },

@@ -283,7 +283,8 @@ export interface SignalTradeState {
   //   a_why も 21/21 記入済み。それでも画面は「シグナル待機（節目クロス待ち）」の1行だけだった)。
   //   ★**ARM しなかったサイクルにだけ** 付く。ARM した回・保有中は付与しない(=既存 SSE JSON 不変)。
   //   ★phase==='flat' のときだけ載せる(武装中/保有中の JSON は1バイトも変えない)。
-  //   ・bias …… A(目線)の答え 'bull'/'bear'/'range' を **画面の語彙**('buy'/'sell'/'range'=
+  //   ・bias …… A(目線)の答え(★v0.9.98 まで 'bull'/'bear'/'range' / 次版から 'buy'/'sell'/'range')を
+  //     **画面の語彙**('buy'/'sell'/'range'=
   //     armedTimeout.bias と同じ3語)へ写したもの。★分割が走った回にしか無い。
   //     旧経路(分割OFF/バイパス)は目線が取れないので **フィールドごと欠落**(推測で埋めない)。
   //   ・why …… その目線の理由。分割の回=A の自由文(a_why)/ 旧経路=directionWhy → rationale。

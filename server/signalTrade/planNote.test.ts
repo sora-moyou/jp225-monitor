@@ -126,20 +126,22 @@ describe('§目線は A の答えからしか取らない(推測で復元しな�
     expect(n?.bias).toBeUndefined();
   });
 
-  it('bull/bear/range を画面の語彙(buy/sell/range)へ写す', () => {
-    const of = (aDirection: 'bull' | 'bear' | 'range'): string | undefined => buildPlanNote({
+  // ★2026-08-25: A の語彙が bull/bear → buy/sell になったので、この対応づけは **恒等写像** になった。
+  //   ★表を残す意味は「A の語彙が次に変わったら型で止まる」こと(planNote.ts のコメント参照)。
+  it('A の答え(buy/sell/range)を画面の語彙(buy/sell/range)へ写す', () => {
+    const of = (aDirection: 'buy' | 'sell' | 'range'): string | undefined => buildPlanNote({
       ok: true, plan: { direction: 'none', rationale: 'x', refPrice: REF }, noneReason: 'ai',
       splitRecord: { aDirection, aWhy: 'w', bVariant: 'none', squeezeState: null },
     }, AT)?.bias;
-    expect(of('bull')).toBe('buy');
-    expect(of('bear')).toBe('sell');
+    expect(of('buy')).toBe('buy');
+    expect(of('sell')).toBe('sell');
     expect(of('range')).toBe('range');
   });
 
   it('A は答えたが B の呼び出しで落ちた回(ok:false)でも、目線と理由だけは残る', () => {
     const n = buildPlanNote({
       ok: false, error: 'B timeout',
-      splitRecord: { aDirection: 'bull', aWhy: '高値切り上げが続く', bVariant: 'buy', squeezeState: null },
+      splitRecord: { aDirection: 'buy', aWhy: '高値切り上げが続く', bVariant: 'buy', squeezeState: null },
     }, AT);
     expect(n?.bias).toBe('buy');
     expect(n?.why).toBe('高値切り上げが続く');
@@ -173,7 +175,7 @@ describe('§engine → SSE state(配線の実証)', () => {
         direction: 'buy', rationale: '押し目買い', refPrice: REF,
         limitEntry: REF - 50, stopLossForLimit: REF - 100,
       },
-      splitRecord: { aDirection: 'bull', aWhy: '高値切り上げ', bVariant: 'buy', squeezeState: null },
+      splitRecord: { aDirection: 'buy', aWhy: '高値切り上げ', bVariant: 'buy', squeezeState: null },
     });
     const s = eng.getState(NOW);
     expect(s.phase).toBe('armed');
@@ -242,7 +244,7 @@ describe('§コードが抑止した回(direction が buy/sell のまま ARM し
   it('★A の答え(aDirection)は plan.direction より優先する', () => {
     const n = buildPlanNote({
       ok: true, plan: { direction: 'sell', rationale: 'x', refPrice: 1 },
-      splitRecord: { aDirection: 'bear', aWhy: 'w', bVariant: 'sell', squeezeState: null },
+      splitRecord: { aDirection: 'sell', aWhy: 'w', bVariant: 'sell', squeezeState: null },
     }, AT, 'sanity');
     expect(n?.bias).toBe('sell');
     expect(n?.why).toBe('w');
@@ -354,7 +356,7 @@ describe('§分割の回は合成文へ落ちない(A が理由を返さなか�
       ok: true,
       plan: { direction: 'none', rationale: '合成文', refPrice: 65000, directionWhy: '高値切り上げが続く' },
       noneReason: 'ai',
-      splitRecord: { aDirection: 'bull', bVariant: 'buy', squeezeState: null },
+      splitRecord: { aDirection: 'buy', bVariant: 'buy', squeezeState: null },
     }, AT);
     expect(n?.why).toBe('高値切り上げが続く');
   });
@@ -377,7 +379,7 @@ describe('§分割の回の理由: 合成文だけを避け、B の本物の理�
     ok: true as const,
     plan: { direction: 'none' as const, rationale: '節目が近すぎて置けないため見送り。', refPrice: 65000 },
     noneReason: 'ai' as const,
-    splitRecord: { aDirection: 'bull' as const, bVariant: 'buy' as const, squeezeState: null },
+    splitRecord: { aDirection: 'buy' as const, bVariant: 'buy' as const, squeezeState: null },
   };
 
   it('★退行の再発防止: A に why 無し × B に本物の理由 → **理由が出る**', () => {
@@ -404,7 +406,7 @@ describe('§分割の回の理由: 合成文だけを避け、B の本物の理�
     const base = {
       ok: true as const, noneReason: 'ai' as const,
       plan: { direction: 'none' as const, rationale: 'R', refPrice: 65000, directionWhy: 'D' },
-      splitRecord: { aDirection: 'bull' as const, aWhy: 'A', bVariant: 'buy' as const, squeezeState: null },
+      splitRecord: { aDirection: 'buy' as const, aWhy: 'A', bVariant: 'buy' as const, squeezeState: null },
     };
     expect(buildPlanNote(base, AT)?.why).toBe('A');
     expect(buildPlanNote({ ...base, splitRecord: { ...base.splitRecord, aWhy: undefined } }, AT)?.why).toBe('D');

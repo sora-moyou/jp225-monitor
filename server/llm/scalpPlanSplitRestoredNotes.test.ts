@@ -49,11 +49,13 @@ const REF = 38250;
 const PRICES: Price[] = [
   { symbol: 'NIY=F', price: REF, changePercent: 0, timestamp: Date.now(), stale: false } as Price,
 ];
-const A_JSON = '{"direction":"bull","why":"高値切り上げ"}';
-const B_JSON = JSON.stringify({
-  strategy: '押し目', aPrice: REF + 20, aLcWidth: 60, aWhy: '節目手前',
-  iPrice: REF - 20, iLcWidth: 58, iWhy: '押し目',
-});
+const A_JSON = '{"direction":"buy","why":"高値切り上げ"}';
+// ★2026-08-25: B の応答は **自由文**(ユーザーが形式を指定)。A=buy(ブル) → 版は 'buy' なので
+//   （上）=逆指値買い /（下）=指値買い。★strategy の欄は形式に無いので b_strategy は NULL になる。
+const B_JSON = [
+  `逆指値買い${REF + 20}円（LC幅60円）節目手前`,
+  `指値買い${REF - 20}円（LC幅58円）押し目`,
+].join('\n');
 // 1x1 PNG(data URL)。isVisionCapableProvider を true にした試行だけ画像として送られる想定。
 const PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -195,7 +197,7 @@ describe('★LC委任の実効が B に届くか(帯の数値を実測)', () => 
       .mockResolvedValueOnce({ choices: [{ message: { content: B_JSON } }] });
     await run();
     const manualSys = textOf(paramsOf(1), 'system');
-    expect(manualSys).toContain('55円以上 65円以下');
+    expect(manualSys).toContain('55円<=損切幅<66円');   // ★半開表記(閉区間の上限65 と同じ集合)
 
     // AI委任(安全上限=159円・テストのモック設定 resolveScalpLcHardMax の value)。
     ceilingModeMock.mockReturnValue({ mode: 'ai' });
@@ -204,7 +206,7 @@ describe('★LC委任の実効が B に届くか(帯の数値を実測)', () => 
       .mockResolvedValueOnce({ choices: [{ message: { content: B_JSON } }] });
     await run();
     const aiSys = textOf(paramsOf(1), 'system');
-    expect(aiSys).toContain('55円以上 159円以下');   // ★実測: 上限の数値が実際に変わって B に届く
-    expect(aiSys).not.toContain('65円以下');          // ★保存値(65)はどこにも現れない
+    expect(aiSys).toContain('55円<=損切幅<160円');   // ★実測: 上限の数値が実際に変わって B に届く
+    expect(aiSys).not.toContain('66円');              // ★保存値(65)由来の上端はどこにも現れない
   });
 });

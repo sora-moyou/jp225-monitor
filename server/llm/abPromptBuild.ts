@@ -9,7 +9,7 @@
 // ■ ★pb1 と同じ3条件を守る(promptBuild.ts 冒頭を参照)
 //   ① データ(現在値・時刻・足・ニュース・画像)を含めない → 合成の固定プレースホルダで描く。
 //   ② 文面(テンプレート)が1文字でも変われば必ず動く。
-//   ③ 版(A は単一・B は4種)ごとに違う値になる。
+//   ③ 版(★A は2種=レンジ有効/無効・B は4種)ごとに違う値になる。
 //   ★設定(floorYen/ceilingYen)を含めない理由も pb1 と同じ:「今の設定」ではなく「型」を測るため。
 //     固定の合成値(SYN_FLOOR/SYN_CEILING)で描く。
 //
@@ -32,12 +32,14 @@ const SYN_REF_PRICE = 12345;
 export const AB_B_VARIANTS: readonly BVariant[] = ['buy', 'sell', 'range-fade', 'range-breakout'];
 
 /** A(目線)の pb 指紋を計算する純関数(キャッシュしない実体)。
- *  ★A は版が1つだけ(bull/bear/range を選ぶ問いは常に同じ文面。B と違い pickBVariant のような
- *  分岐が無い)。 */
-export function computeATrendPromptBuildFp(): string {
-  const system = buildTrendSystemPrompt(SYN_MARKET_DATA);
-  const user = buildTrendUserPrompt();
-  return promptBuildFingerprint(['a-trend', system, user]);
+ *  ★2026-08-25: A は **2版になった**(レンジ有効=3択 / レンジ無効=2択で range の行ごと消える)。
+ *    ★従来は「A は版が1つだけ」と書いてあったが、それは文面が rangeEnabled に依存していなかった頃の話。
+ *    版を1つのままにすると、レンジ設定を切り替えても a_prompt_build が同じ値になり、
+ *    **文面が変わったのに指紋が変わらない**(pb の3条件②に反する)。 */
+export function computeATrendPromptBuildFp(rangeEnabled: boolean): string {
+  const system = buildTrendSystemPrompt(SYN_MARKET_DATA, rangeEnabled);
+  const user = buildTrendUserPrompt(rangeEnabled);
+  return promptBuildFingerprint([rangeEnabled ? 'a-trend-range' : 'a-trend-norange', system, user]);
 }
 
 /** B(価格と損切幅)の pb 指紋を計算する純関数。版(buy/sell/range-fade/range-breakout)ごとに別の値。 */
@@ -49,13 +51,16 @@ export function computeBOrderPromptBuildFp(variant: BVariant): string {
 
 // ★起動時に1回だけ計算して使い回す(pb1 と同じキャッシュ作法)。合成コンテキストは固定なので
 //   プロセス生存中に値が変わることはない。
-let aCache: string | null = null;
+const aCache = new Map<boolean, string>();
 const bCache = new Map<BVariant, string>();
 
-/** A の pb 指紋(初回だけ計算・以降はキャッシュ)。 */
-export function aTrendPromptBuildFp(): string {
-  if (aCache === null) aCache = computeATrendPromptBuildFp();
-  return aCache;
+/** A の pb 指紋(初回だけ計算・以降はキャッシュ)。★レンジ設定ごとに別の値。 */
+export function aTrendPromptBuildFp(rangeEnabled: boolean): string {
+  const hit = aCache.get(rangeEnabled);
+  if (hit !== undefined) return hit;
+  const fp = computeATrendPromptBuildFp(rangeEnabled);
+  aCache.set(rangeEnabled, fp);
+  return fp;
 }
 
 /** その B 版の pb 指紋(初回だけ計算・以降はキャッシュ)。 */
@@ -69,8 +74,8 @@ export function bOrderPromptBuildFp(variant: BVariant): string {
 
 /** ★meta(行数によらず読める記録・server/db/store.ts の meta テーブル)へ載せる用の一括計算。
  *  「この版が持つ A/B のプロンプトの型」を、行が1件も無い日でも読めるようにする。 */
-export function allAbPromptBuildFps(): { aPromptBuild: string; bPromptBuilds: Record<BVariant, string> } {
+export function allAbPromptBuildFps(rangeEnabled: boolean): { aPromptBuild: string; bPromptBuilds: Record<BVariant, string> } {
   const bPromptBuilds = {} as Record<BVariant, string>;
   for (const v of AB_B_VARIANTS) bPromptBuilds[v] = bOrderPromptBuildFp(v);
-  return { aPromptBuild: aTrendPromptBuildFp(), bPromptBuilds };
+  return { aPromptBuild: aTrendPromptBuildFp(rangeEnabled), bPromptBuilds };
 }

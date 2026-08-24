@@ -1,29 +1,33 @@
 import { describe, it, expect } from 'vitest';
 import {
-  B_VARIANTS, pickBVariant, parseBAnswer, buildPlanFromBAnswer,
-  buildBSystemPrompt, buildBUserPrompt,
+  B_VARIANTS, pickBVariant, parseBFreeText, readLegCandidates, normalizeBText, buildPlanFromBAnswer,
+  buildBSystemPrompt, buildBUserPrompt, lcBandPhrase, orderShortJa,
   type BVariant, type SqueezeState, type TrendDirection,
 } from './planVariants.js';
 import { stopLossFromWidth, stopSideOk } from '../../core/stopGeometry.js';
 
-// ★段3(v0.9.99): B の4種と対応表。
+// ★段3(v0.9.99)＋★2026-08-25(v0.9.99・応答が JSON → 自由文): B の4種と対応表・読み取り。
 //
 // 何を守っているか:
 //   ① ★版は **コードが選ぶ**(AI は選ばない)。range のときだけスクイーズ判定を見る
-//   ② ★side / type は **表が埋める**。AI が返しても届かない(契約に無いキーは parse で落ちる)
+//   ② ★side / type は **表が埋める**。AI が何を書いても届かない
 //   ③ ★損切りの向きは stopLossFromWidth 一箇所だけが決める(逆側の損切りが作れない)
 //   ④ ★片方だけ見送れる(「片方が置けなかった」が「計画ごと見送り」に潰れない)
 //   ⑤ ★B(buy) に売り系・B(sell) に買い系の語が1文字も出ない
 //   ⑥ ★新しい閾値をプロンプトに書かない(数値は 現在価格 と 設定の帯 だけ)
+//   ⑦ ★★自由文の読み取り: **注文タイプの語だけ** で脚を決め、読めない形は落として記録する
 
 const ALL: BVariant[] = ['buy', 'sell', 'range-fade', 'range-breakout'];
 const REF = 38250;
+/** ★指定文面の帯「55円<=損切幅<160円」を出す設定値(閉区間の上限=159)。 */
+const FLOOR = 55;
+const CEIL = 159;
 
 describe('① 版はコードが選ぶ(AI は選ばない)', () => {
-  it('目線 bull/bear は スクイーズ判定を見ない', () => {
+  it('目線 buy/sell(ブル/ベア)は スクイーズ判定を見ない', () => {
     for (const sq of ['squeeze', 'bulge', null] as SqueezeState[]) {
-      expect(pickBVariant('bull', sq)).toBe('buy');
-      expect(pickBVariant('bear', sq)).toBe('sell');
+      expect(pickBVariant('buy', sq)).toBe('buy');
+      expect(pickBVariant('sell', sq)).toBe('sell');
     }
   });
 
@@ -34,7 +38,7 @@ describe('① 版はコードが選ぶ(AI は選ばない)', () => {
   });
 
   it('★選ぶ入力は「目線」と「スクイーズ判定」の2つだけ(AI の自由文は入らない)', () => {
-    const dirs: TrendDirection[] = ['bull', 'bear', 'range'];
+    const dirs: TrendDirection[] = ['buy', 'sell', 'range'];
     const got = new Set<string>();
     for (const d of dirs) for (const sq of ['squeeze', 'bulge', null] as SqueezeState[]) got.add(pickBVariant(d, sq));
     expect([...got].sort()).toEqual(ALL.slice().sort());   // 4種すべてに到達し、それ以上は無い
@@ -69,27 +73,24 @@ describe('② ★side / type は表が埋める(AI には返させない)', () =
     }
   });
 
-  it('★AI が side / type / direction / stopLoss を返しても、parse が拾わない', () => {
-    const text = JSON.stringify({
-      direction: 'sell', side: 'sell', type: 'stop',
-      aPrice: 38400, aLcWidth: 80, aWhy: 'あ', aSide: 'sell', aStopLoss: 99999,
-      iPrice: 38100, iLcWidth: 70, iWhy: 'い', entry: 12345,
-      strategy: '押し目',
-    });
-    const ans = parseBAnswer(text)!;
-    expect(Object.keys(ans).sort()).toEqual(
-      ['aLcWidth', 'aPrice', 'aWhy', 'iLcWidth', 'iPrice', 'iWhy', 'strategy'].sort(),
-    );
-    // ★契約に無いキーは1つも残らない
-    for (const k of ['direction', 'side', 'type', 'aSide', 'aStopLoss', 'entry']) {
+  it('★4版とも「あ」と「い」の注文タイプの組が互いに違う(語だけで脚を判別できる前提)', () => {
+    for (const v of ALL) {
+      const { a, i } = B_VARIANTS[v].legs;
+      expect(`${a.type}/${a.side}`).not.toBe(`${i.type}/${i.side}`);
+    }
+  });
+
+  it('★AI が side / type / direction を書いても、読み取りに入る場所が無い', () => {
+    // ★自由文なので「フィールドが無い」ではなく「読み取りが写す先が無い」。
+    const ans = parseBFreeText('direction: sell / side: sell\n逆指値買い38400円（LC幅80円）あ', 'buy')!;
+    expect(Object.keys(ans).sort()).toEqual(['aLcWidth', 'aPrice', 'aWhy', 'readIssues'].sort());
+    for (const k of ['direction', 'side', 'type', 'stopLoss', 'entry']) {
       expect(Object.prototype.hasOwnProperty.call(ans, k)).toBe(false);
     }
   });
 
-  it('★AI が sell を主張しても、buy 版に渡せば buy の側が入る(表が勝つ)', () => {
-    const ans = parseBAnswer(JSON.stringify({
-      direction: 'sell', side: 'sell', aPrice: 38400, aLcWidth: 80, iPrice: 38100, iLcWidth: 70,
-    }))!;
+  it('★buy 版に渡せば buy の側が入る(表が勝つ)', () => {
+    const ans = parseBFreeText('逆指値買い38400円（LC幅80円）上\n指値買い38100円（LC幅70円）下', 'buy')!;
     const { plan } = buildPlanFromBAnswer('buy', ans, REF);
     expect(plan.direction).toBe('buy');
     expect(plan.stopEntry).toBe(38400);                      // あ)=上=逆指値買い
@@ -175,18 +176,48 @@ describe('④ ★片方だけ見送れる / 両方なら見送り', () => {
     expect([brk.range!.upper!.type, brk.range!.lower!.type]).toEqual(['stop', 'stop']);
   });
 
-  it('strategy は1行としてそのまま載る(欠落なら付かない)', () => {
+  // ★2026-08-25: 落とした脚は **必ず** LegDrop に残る(黙って消えない)。
+  describe('★落とした脚は leg_drops_json に残る(記録専用)', () => {
+    it('片脚だけ落ちた回にも 1件だけ残る(名前は limit/stop)', () => {
+      const r = buildPlanFromBAnswer('buy', { aPrice: 38400, aLcWidth: 80 }, REF);
+      expect(r.legDrops).toEqual([{ name: 'limit', reason: 'missing' }]);
+    });
+
+    it('レンジ2版では名前が upper/lower になる', () => {
+      const r = buildPlanFromBAnswer('range-fade', { iPrice: 38100, iLcWidth: 70 }, REF);
+      expect(r.legDrops).toEqual([{ name: 'upper', reason: 'missing' }]);
+    });
+
+    it('★読めた生の値と読み取り失敗の理由も一緒に残る(件数すら数えられない状態を作らない)', () => {
+      const r = buildPlanFromBAnswer('buy', {
+        aPrice: 38400, readIssues: { a: '「逆指値買い」のLC幅を読めなかった' },
+      }, REF);
+      expect(r.legDrops[0]).toEqual({
+        name: 'stop', reason: 'missing', entry: 38400, parseIssue: '「逆指値買い」のLC幅を読めなかった',
+      });
+    });
+
+    it('両脚とも立った回は1件も残らない', () => {
+      const r = buildPlanFromBAnswer('buy', { aPrice: 38400, aLcWidth: 80, iPrice: 38100, iLcWidth: 70 }, REF);
+      expect(r.legDrops).toEqual([]);
+    });
+  });
+
+  it('strategy は載る欄が残っている(自由文の形式には無いので通常は undefined)', () => {
     const withS = buildPlanFromBAnswer('buy', { strategy: '押し目を節目手前で拾う', aPrice: 38400, aLcWidth: 80 }, REF);
     expect(withS.plan.strategy).toBe('押し目を節目手前で拾う');
     const noS = buildPlanFromBAnswer('buy', { aPrice: 38400, aLcWidth: 80 }, REF);
     expect(Object.prototype.hasOwnProperty.call(noS.plan, 'strategy')).toBe(false);
     // ★strategyWhy は作らない(1フィールドに寄せた)
     expect(Object.prototype.hasOwnProperty.call(withS.plan, 'strategyWhy')).toBe(false);
+    // ★自由文の読み取りは strategy を作らない(捏造しない)
+    expect(parseBFreeText('逆指値買い38400円（LC幅80円）あ', 'buy')!.strategy).toBeUndefined();
   });
 });
 
-describe('⑤⑥ ★プロンプトの検算', () => {
-  const full = (v: BVariant): string => buildBSystemPrompt(v, 55, 160, '【データ】') + buildBUserPrompt(v, REF, 55, 160);
+describe('⑤⑥ ★プロンプトの検算(2026-08-25・ユーザー指定文面)', () => {
+  const full = (v: BVariant): string =>
+    buildBSystemPrompt(v, FLOOR, CEIL, '【データ】') + buildBUserPrompt(v, REF, FLOOR, CEIL);
 
   it('★B(buy) に売り系の語が1文字も無い', () => {
     const t = full('buy');
@@ -201,8 +232,8 @@ describe('⑤⑥ ★プロンプトの検算', () => {
   it('★どの版にも「どちらの組を選べ」という指示が無い(コードが選ぶので説明しない)', () => {
     for (const v of ALL) {
       const t = full(v);
-      for (const w of ['スクイーズ', 'バンド幅', '選んでください', '2択', '組を混ぜ']) {
-        expect(t.split(w).length - 1).toBe(0);
+      for (const w of ['スクイーズ', 'バンド幅', '選んでください', '選択', '2択', 'どちらか', '組を混ぜ']) {
+        expect(t.split(w).length - 1, `「${w}」が ${v} に出ている`).toBe(0);
       }
     }
   });
@@ -210,110 +241,582 @@ describe('⑤⑥ ★プロンプトの検算', () => {
   it('⑥ ★規則の数値をプロンプトに書かない(裸の数字を全部数える)', () => {
     // 出てよい数字はこの5種だけ。★どれも **判定のしきい値ではない**:
     //   225   … 銘柄名(日経225先物)
-    //   2     … 問いの数(「次の2つに答えてください」)
-    //   ★「1行」は **外した**(2026-08-22): 字数を指定すると理由が短くなる実測(47%減)があり、
-    //      「字数でなく問いで縛る」という設計と矛盾していた。長すぎたら測ってから対処する。
+    //   2     … 問いの数(「2つに分けて返してください」)
     //   38250 … 現在価格(データが入る場所)
     //   55/160… 損切幅の帯。★設定から解決した値が埋まる(固定値ではない=下のテストで実証)
+    // ★「1行」は書かない(2026-08-22 の実測: 行数/字数の指定で理由が 47% 短くなった)。
     for (const v of ALL) {
       const nums = new Set((full(v).match(/\d+/g) ?? []));
       expect([...nums].sort()).toEqual(['160', '2', '225', '38250', '55'].sort());
     }
   });
 
-  it('★損切幅の帯は設定から埋まる(固定値ではない)', () => {
-    const t = buildBSystemPrompt('buy', 40, 200, '') + buildBUserPrompt('buy', REF, 40, 200);
-    expect(t).toContain('40円以上 200円以下');
-    expect(t).toContain('40円以上200円以下');
-    expect(t).not.toContain('55');
-    expect(t).not.toContain('160');
+  it('★損切幅の帯は **半開区間** で、設定から埋まる(固定値ではない)', () => {
+    for (const v of ALL) expect(full(v)).toContain('- 55円<=損切幅<160円とする。');
+    const t = buildBSystemPrompt('buy', 40, 199, '') + buildBUserPrompt('buy', REF, 40, 199);
+    expect(t).toContain('40円<=損切幅<200円');
+    expect(t).not.toContain('55円');
+    expect(t).not.toContain('160円');
   });
 
-  it('★あ)=上 / い)=下 と、版ごとの注文名が本文に出る', () => {
-    expect(full('buy')).toContain('あ)(現在価格の)上の価格に逆指値買い注文を入れるとしたとき、逆指値価格と損切幅');
-    expect(full('buy')).toContain('い)(現在価格の)下の価格に指値買い注文を入れるとしたとき、指値価格と損切幅');
-    expect(full('sell')).toContain('あ)(現在価格の)上の価格に指値売り注文を入れるとしたとき、指値価格と損切幅');
-    expect(full('sell')).toContain('い)(現在価格の)下の価格に逆指値売り注文を入れるとしたとき、逆指値価格と損切幅');
+  it('★半開表記の上端 = 実際に受理される上限 + 1(印字と受理が一致する)', () => {
+    // ★コード側(lcLegExceeds)は `w > ceilingYen` で落とす=ちょうど ceilingYen は許可(閉区間)。
+    //   円は整数なので `w <= C` と `w < C+1` は同じ集合。★だから上端は C+1 でなければ嘘になる。
+    expect(lcBandPhrase(55, 159)).toBe('55円<=損切幅<160円');
+    expect(lcBandPhrase(55, 65)).toBe('55円<=損切幅<66円');
+    expect(lcBandPhrase(20, 20)).toBe('20円<=損切幅<21円');
   });
 
-  it('★strategy に字数の指定が無い(「1行」を書かない)', () => {
+  it('★4版の system が ユーザー指定文面と1行ずつ一致する', () => {
+    const head = 'あなたは日経225先物(NIY=F)のスキャルピング/デイトレードを専門とするトレーダーです。';
+    const tools = '渡されたデータと、利用可能なデータツール(explain_move / query_alerts / price_history / web_search)'
+      + 'を必要に応じて使い、それぞれについて適切な注文価格と損切幅を教えてください。';
+    const tail = '- 渡されたデータやテクニカル指標と、それから得られる事柄のみを根拠にする。';
+    const expected: Record<BVariant, readonly string[]> = {
+      buy: [
+        '現在価格より上の価格の逆指値買い注文、下の価格の指値買い注文を同時に出し、先に約定した方でエントリーし他方はキャンセルします。',
+        '（上）現在価格より上の買いエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「逆指値買い○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+        '（下）現在価格より下の買いエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「指値買い○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+      ],
+      sell: [
+        '現在価格より上の価格の指値売り注文、下の価格の逆指値売り注文を同時に出し、先に約定した方でエントリーし他方はキャンセルします。',
+        '（上）現在価格より上の売りエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「指値売り○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+        '（下）現在価格より下の売りエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「逆指値売り○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+      ],
+      'range-breakout': [
+        '現在価格より上の価格の逆指値買い注文、下の価格の逆指値売り注文を同時に出し、先に約定した方でエントリーし他方はキャンセルします。',
+        '（上）現在価格より上の買いエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「逆指値買い○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+        '（下）現在価格より下の売りエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「逆指値売り○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+      ],
+      'range-fade': [
+        '現在価格より上の価格の指値売り注文、下の価格の指値買い注文を同時に出し、先に約定した方でエントリーし他方はキャンセルします。',
+        '（上）現在価格より上の売りエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「指値売り○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+        '（下）現在価格より下の買いエントリー価格とその理由。それに対応した損切幅とその理由。',
+        '形式は「指値買い○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+      ],
+    };
     for (const v of ALL) {
-      const t = full(v);
-      expect(t).toContain('"strategy": string,  // この相場をどう読んで この価格にしたか');
-      for (const w of ['1行', '一行', '短く', '簡潔']) expect(t).not.toContain(w);
+      const sys = buildBSystemPrompt(v, FLOOR, CEIL, '<<D>>');
+      expect(sys.split('\n')).toEqual([
+        head, expected[v][0]!, tools, '', '制約:', '- 55円<=損切幅<160円とする。', '- 2つに分けて返してください。',
+        expected[v][1]!, expected[v][2]!, expected[v][3]!, expected[v][4]!, tail, '', '【データ】', '<<D>>',
+      ]);
     }
   });
 
-  it('★出力契約に side / type / direction のフィールドが無い(返す場所が存在しない)', () => {
+  it('★JSON の契約を1つも書かない(自由文だけを求める)', () => {
     for (const v of ALL) {
       const t = full(v);
-      for (const k of ['"side"', '"type"', '"direction"', '"stopLoss"', '"entry"']) expect(t).not.toContain(k);
-      for (const k of ['"aPrice"', '"aLcWidth"', '"aWhy"', '"iPrice"', '"iLcWidth"', '"iWhy"', '"strategy"']) {
-        expect(t).toContain(k);
+      for (const k of ['JSON', '"aPrice"', '"aLcWidth"', '"strategy"', 'コードフェンス', 'マークダウン']) {
+        expect(t.split(k).length - 1, `${v} に「${k}」が出ている`).toBe(0);
       }
     }
   });
 
-  it('★range 2版の system は同じ文字列(どちらを渡すかはコードが決めるので説明しない)', () => {
-    expect(buildBSystemPrompt('range-fade', 55, 160, 'X'))
-      .toBe(buildBSystemPrompt('range-breakout', 55, 160, 'X'));
+  it('★「5円刻み」「丸め」「不等式」など こちらの作業は書かない', () => {
+    // ★`5円` 単体では数えない: 帯の `55円<=…` と **部分一致** するため恒偽になる
+    //   (A 側の A_FORBIDDEN_TEMPLATE_ONLY で踏んだのと同じ罠。数える場所ではなく語を精密にする)。
+    for (const v of ALL) {
+      const t = full(v);
+      for (const w of ['5円刻み', '刻み', '丸め', '不等式', '検算', 'ティック']) expect(t).not.toContain(w);
+    }
   });
 
-  it('★壊れた応答は null(捏造しない)', () => {
-    for (const bad of ['', 'こんにちは', '{壊れ', 'null']) expect(parseBAnswer(bad)).toBeNull();
-    // 前後に説明文やコードフェンスが付いていても拾える
-    expect(parseBAnswer('```json\n{"aPrice":1,"aLcWidth":2}\n```')).toEqual({ aPrice: 1, aLcWidth: 2 });
+  it('★range 2版の system は互いに違う(注文の形が違うので)', () => {
+    expect(buildBSystemPrompt('range-fade', FLOOR, CEIL, 'X'))
+      .not.toBe(buildBSystemPrompt('range-breakout', FLOOR, CEIL, 'X'));
+  });
+
+  it('★user プロンプトは現在価格と書き出しの語だけを補う', () => {
+    const u = buildBUserPrompt('buy', REF, FLOOR, CEIL);
+    expect(u).toContain(`現在価格は ${REF} です。`);
+    expect(u).toContain('（上）は「逆指値買い」、（下）は「指値買い」で書き始めてください。');
+    expect(u).toContain('判断に必要なデータが足りなかったときは、最後に「不足データ: …」と書いてください。');
+    for (const w of ['1行', '一行', '短く', '簡潔']) expect(u).not.toContain(w);
+  });
+
+  it('★orderShortJa は「注文」を落とすだけ(4版8脚すべて)', () => {
+    for (const v of ALL) {
+      for (const k of ['a', 'i'] as const) {
+        const c = B_VARIANTS[v].legs[k];
+        expect(orderShortJa(c)).toBe(c.orderJa.replace('注文', ''));
+        expect(orderShortJa(c)).not.toContain('注文');
+      }
+    }
   });
 });
 
-// ★段6(2026-08-22): B の user プロンプトに「判断に必要なデータが足りなかったときは、
-//   何が足りなかったかも書いてください」を1文足した。新しい数値/語彙は無い(自由文のみ)。
-describe('★段6: 「足りなかったデータ」の1文と自由文フィールド', () => {
-  const full = (v: BVariant): string => buildBSystemPrompt(v, 55, 160, '【データ】') + buildBUserPrompt(v, REF, 55, 160);
+// ═══ ⑦ ★★自由文の読み取り ══════════════════════════════════════════════════
+//
+// ■ ★この節がこの改訂で **いちばん壊れやすい場所**。実際の応答らしい揺れを並べて殴る。
+describe('⑦ ★自由文の読み取り: 実際に来そうな形が全部読める', () => {
+  /** ★あ)=逆指値買い / い)=指値買い(版 'buy')。上下の語は識別に使わない。 */
+  const READ = (text: string) => parseBFreeText(text, 'buy')!;
 
-  it('★B の4種すべてに、指定どおりの1文がそのまま入る', () => {
+  const CASES: ReadonlyArray<readonly [string, string]> = [
+    ['①指定どおり(全角括弧)', '逆指値買い65780円（LC幅60円）節目を抜けたら追随するため5円上。'],
+    ['②カンマ区切り', '逆指値買い65,780円（LC幅60円）65,775の節目を抜けたら追随するため5円上。'],
+    ['③全角数字・全角LC', '逆指値買い６５，７８０円（ＬＣ幅６０円）節目の外側。'],
+    ['④半角括弧と空白', '逆指値買い 65780 円 (LC幅 60 円) 節目の外側。'],
+    ['⑤行頭に位置の見出し', '（上）逆指値買い65,780円（LC幅60円）節目の外側。'],
+    ['⑥太字の飾り', '**（上）**逆指値買い65,780円（LC幅60円）節目の外側。'],
+    ['⑦カギ括弧つき', '「逆指値買い65,780円（LC幅60円）節目の外側。'],
+    ['⑧「注文」の語つき', '逆指値買い注文 65,780円（LC幅60円）節目の外側。'],
+    ['⑨損切幅という表記', '逆指値買い65780円（損切幅60円）節目の外側。'],
+    ['⑩コロン区切り', '逆指値買い: 65,780円（LC幅: 60円）節目の外側。'],
+    ['⑪箇条書き記号', '- 逆指値買い65,780円（LC幅60円）節目の外側。'],
+    ['⑫番号つき', '1. 逆指値買い65,780円（LC幅60円）節目の外側。'],
+    ['⑬小数', '逆指値買い65780.0円（LC幅60.0円）節目の外側。'],
+    ['⑭全角コロン＋全角スペース', '逆指値買い：　65,780円（ＬＣ幅　60円）節目の外側。'],
+  ] as const;
+
+  for (const [name, line] of CASES) {
+    it(`${name}: 価格65780 / LC幅60 / 理由が あ) に入る`, () => {
+      const r = READ(line);
+      expect(r.aPrice, name).toBe(65780);
+      expect(r.aLcWidth, name).toBe(60);
+      expect(r.aWhy, name).toContain('節目');
+      // ★い) は来ていないので価格は入らない(勝手に埋めない)
+      expect(r.iPrice).toBeUndefined();
+      expect(r.readIssues?.i).toBe('「指値買い」の行が無い');
+    });
+  }
+
+  it('★両脚そろった標準形(ユーザーが書いた例そのもの)', () => {
+    const r = READ([
+      '逆指値買い65,780円（LC幅60円）65,775の節目を抜けたら追随するため5円上。幅は直近スイング安値まで。',
+      '指値買い65,650円（LC幅55円）押し目の節目手前。',
+    ].join('\n'));
+    expect(r.aPrice).toBe(65780);
+    expect(r.aLcWidth).toBe(60);
+    expect(r.aWhy).toBe('65,775の節目を抜けたら追随するため5円上。幅は直近スイング安値まで。');
+    expect(r.iPrice).toBe(65650);
+    expect(r.iLcWidth).toBe(55);
+    expect(r.iWhy).toBe('押し目の節目手前。');
+    expect(r.readIssues).toBeUndefined();   // ★1つも問題が無い回は記録も付かない
+  });
+
+  it('★理由が次の行に続いても拾う(「1行」を強制していないので起こりうる)', () => {
+    const r = READ('逆指値買い65,780円（LC幅60円）節目の外側。\n  直近30分の高値を上抜けたら追随する。');
+    expect(r.aWhy).toBe('節目の外側。 直近30分の高値を上抜けたら追随する。');
+  });
+
+  it('★理由の中の「値幅が200円」を LC幅として拾わない(近傍だけを見る)', () => {
+    const r = READ('逆指値買い65,780円（LC幅60円）30分の値幅が200円なので上抜けに追随。');
+    expect(r.aLcWidth).toBe(60);
+  });
+
+  it('★LC幅が無い行は 価格だけ読めて 脚は立たない(理由を記録する)', () => {
+    const r = READ('逆指値買い65,780円 節目の外側。');
+    expect(r.aPrice).toBe(65780);
+    expect(r.aLcWidth).toBeUndefined();
+    expect(r.readIssues?.a).toBe('「逆指値買い」のLC幅を読めなかった');
+    const built = buildPlanFromBAnswer('buy', r, REF);
+    expect(built.plan.stopEntry).toBeUndefined();
+    expect(built.legDrops).toContainEqual({
+      name: 'stop', reason: 'missing', entry: 65780, parseIssue: '「逆指値買い」のLC幅を読めなかった',
+    });
+  });
+
+  it('★「見送ります」の文中の数字を価格として読まない(句点をまたがない)', () => {
+    const r = READ('逆指値買いは見送ります。65,780円は節目から遠いため。');
+    expect(r.aPrice).toBeUndefined();
+    expect(r.aLcWidth).toBeUndefined();
+    // ★2026-08-25: 「置けない」と述べている脚は **表明** として記録する(価格を中途半端に拾わない)。
+    expect(r.readIssues?.a).toBe('「逆指値買い」「置けない」と述べている');
+    expect(r.aWhy).toContain('見送ります');
+  });
+
+  it('★不足データの申告を拾う(あ/い の理由とは別)', () => {
+    const r = READ('逆指値買い65,780円（LC幅60円）節目の外側。\n不足データ: ATR が算出できず、節目データも0件でした');
+    expect(r.missingData).toBe('ATR が算出できず、節目データも0件でした');
+    expect(r.aWhy).toBe('節目の外側。');
+  });
+
+  it('★空応答だけが null(それ以外は必ず読み取り結果を返して理由を残す)', () => {
+    for (const bad of ['', '   ', '\n\n']) expect(parseBFreeText(bad, 'buy')).toBeNull();
+    const r = parseBFreeText('こんにちは。相場は難しいですね。', 'buy')!;
+    expect(r.aPrice).toBeUndefined();
+    expect(r.readIssues).toEqual({ a: '「逆指値買い」の行が無い', i: '「指値買い」の行が無い' });
+  });
+
+  it('★normalizeBText は全角を半角に潰す(この関数だけが揺れを吸収する)', () => {
+    expect(normalizeBText('６５，７８０円（ＬＣ幅６０円）')).toBe('65,780円(LC幅60円)');
+    expect(normalizeBText('−50')).toBe('-50');
+  });
+});
+
+// ─── ★★否定対照: 期待した注文タイプでない行は「落ちる」 ───────────────────────
+describe('⑦ ★★否定対照: 脚は注文タイプの語だけで決まる(上/下では決めない)', () => {
+  it('★buy 版に「指値売り」が来たら、どちらの脚にも入らず記録に残る', () => {
+    const r = parseBFreeText('指値売り65,900円（LC幅60円）戻り売り。', 'buy')!;
+    expect(r.aPrice).toBeUndefined();
+    expect(r.iPrice).toBeUndefined();
+    expect(r.readIssues?.unmatched?.[0]).toContain('期待外の注文タイプ(指値売り)');
+    expect(r.readIssues?.a).toBe('「逆指値買い」の行が無い');
+    expect(r.readIssues?.i).toBe('「指値買い」の行が無い');
+    // ★黙って別の脚に入っていない=注文が1本も作られない
+    expect(buildPlanFromBAnswer('buy', r, REF).plan.direction).toBe('none');
+  });
+
+  it('★sell 版に「逆指値買い」が来たら落ちる(4版すべてで対称に効く)', () => {
+    const r = parseBFreeText('逆指値買い65,900円（LC幅60円）上抜け。', 'sell')!;
+    expect(r.aPrice).toBeUndefined();
+    expect(r.iPrice).toBeUndefined();
+    expect(r.readIssues?.unmatched?.[0]).toContain('期待外の注文タイプ(逆指値買い)');
+  });
+
+  it('★range-fade に「逆指値」系が来たら落ちる(組を混ぜない)', () => {
+    const r = parseBFreeText([
+      '逆指値買い65,900円（LC幅60円）上抜け。',
+      '逆指値売り65,500円（LC幅60円）下抜け。',
+    ].join('\n'), 'range-fade')!;
+    expect(r.aPrice).toBeUndefined();
+    expect(r.iPrice).toBeUndefined();
+    expect(r.readIssues?.unmatched).toHaveLength(2);
+  });
+
+  it('★★位置の語が逆でも、注文タイプが正しければ その脚に入る(上/下で判定していない証明)', () => {
+    // ★（下）と書いてある行に「逆指値買い」= あ)の注文タイプ。★あ) に入るのが正しい。
+    const r = parseBFreeText('（下）逆指値買い65,780円（LC幅60円）節目の外側。', 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.iPrice).toBeUndefined();
+  });
+
+  it('★同じ注文タイプが2回来たら、2本目は捨てて記録する(上書きしない)', () => {
+    const r = parseBFreeText([
+      '逆指値買い65,780円（LC幅60円）1本目。',
+      '逆指値買い65,900円（LC幅70円）2本目。',
+    ].join('\n'), 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.aLcWidth).toBe(60);
+    expect(r.readIssues?.unmatched?.[0]).toContain('重複した見出し(逆指値買い)');
+  });
+
+  it('★見送りの理由は 位置の行から **理由としてだけ** 引き取る(価格は絶対に入らない)', () => {
+    const r = parseBFreeText([
+      '逆指値買い65,780円（LC幅60円）節目の外側。',
+      '（下）見送り。押し目の節目が65,000円まで無く、損切幅が帯に収まらない。',
+    ].join('\n'), 'buy')!;
+    expect(r.iPrice).toBeUndefined();      // ★65,000 を価格として入れない
+    expect(r.iLcWidth).toBeUndefined();
+    expect(r.iWhy).toContain('損切幅が帯に収まらない');
+    expect(r.readIssues?.i).toBe('「指値買い」の行が無い(位置の行の文章を理由として記録)');
+  });
+
+  it('★「上昇トレンドなので…」は位置の行に化けない(閉じ記号を必須にしてある)', () => {
+    const { positionReasons } = readLegCandidates('上昇トレンドなので買い有利。\n下値は堅い。');
+    expect(positionReasons).toEqual({});
+  });
+
+  it('★★「修正の逆側」: 旧契約の JSON はもう読めない(=読めないことが記録に残る)', () => {
+    // ★旧実装(parseBAnswer)はこれを問題なく読み、両脚を立てていた。
+    //   新実装は自由文しか読まないので **落ちる**。★これは意図した非互換で、
+    //   黙って落ちるのではなく readIssues → leg_drops_json(parseIssue) に残る。
+    const legacy = '{"strategy":"押し目","aPrice":38400,"aLcWidth":80,"iPrice":38100,"iLcWidth":70}';
+    const r = parseBFreeText(legacy, 'buy')!;
+    expect(r.aPrice).toBeUndefined();
+    expect(r.iPrice).toBeUndefined();
+    expect(r.readIssues).toEqual({ a: '「逆指値買い」の行が無い', i: '「指値買い」の行が無い' });
+    const built = buildPlanFromBAnswer('buy', r, REF);
+    expect(built.bothDropped).toBe(true);
+    expect(built.legDrops.map(d => d.parseIssue)).toEqual([
+      '「逆指値買い」の行が無い', '「指値買い」の行が無い',
+    ]);
+  });
+});
+
+// ─── ★モデルが「形式の行」を復唱したときに本物の行が捨てられない ──────────────
+describe('⑦ ★形式行の復唱に本物の脚を殺されない', () => {
+  it('★system の形式行をそのまま復唱してから本物を書いても、本物が採られる', () => {
+    const r = parseBFreeText([
+      '形式は「逆指値買い○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+      '逆指値買い65,780円（LC幅60円）節目の外側。',
+    ].join('\n'), 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.aLcWidth).toBe(60);
+    // ★捨てた行は黙って消さない
+    expect(r.readIssues?.unmatched?.[0]).toContain('価格の無い見出しを差し替え');
+  });
+
+  it('★逆順(本物が先)なら差し替えは起きず、復唱のほうが捨てられる', () => {
+    const r = parseBFreeText([
+      '逆指値買い65,780円（LC幅60円）節目の外側。',
+      '形式は「逆指値買い○○円（LC幅○○円）その後に理由を日本語で自由表記）',
+    ].join('\n'), 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.readIssues?.unmatched?.[0]).toContain('重複した見出し');
+  });
+
+  it('★価格つきが2本来たときは先着優先のまま(後から来た値で上書きしない)', () => {
+    const r = parseBFreeText([
+      '逆指値買い65,780円（LC幅60円）1本目。',
+      '逆指値買い65,900円（LC幅70円）2本目。',
+    ].join('\n'), 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.readIssues?.unmatched?.[0]).toContain('重複した見出し');
+  });
+});
+
+// ═══ ★★① LC幅の曖昧な照合(2026-08-25・エバリュエーターが実測で見つけた無言の誤読) ══════
+//
+// ■ 何が起きていたか
+//     `指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。`
+//   → 実測 lcWidth=80(意図は60) / stopLossForLimit=65520(正しくは65540)。
+//   ★80 は帯の中なので下流も通し、readIssues にも legDrops にも残らない=**無言で数値を間違える**。
+//   ★原因は WIDTH_RE の選択肢に **裸の `幅`** が入っていて、最左一致が `値幅80` を取ったこと。
+//   ★「近傍の語を拾う曖昧な照合」は、この案件で最も高くついた事故(損切りの向きが逆・
+//     「外側」の語の衝突)と同じ根。
+// ■ 直し方(両方入れた・理由は planVariants.ts のコメント参照)
+//   (a) 裸の `幅` を外す(`LC幅|損切幅|損切り幅|ロスカット幅|LC` の明示ラベルだけ)
+//   (b) 近傍の候補が **食い違ったら** 脚を立てず readIssues に残す(=残った曖昧さを無言にしない)
+describe('★★① LC幅の曖昧な照合: 明示ラベルだけを読み、食い違いは記録に残す', () => {
+  const READ = (t: string) => parseBFreeText(t, 'buy')!;
+
+  /** [名前, 本文, 期待する lcWidth(undefined=脚を立てない), 期待する issue の断片] */
+  const CASES: ReadonlyArray<readonly [string, string, number | undefined, string | undefined]> = [
+    ['①★実測の誤読ケース(値幅80 → LC幅60)',
+      '指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。', 60, undefined],
+    ['②値幅が先・LC幅が後(括弧つき)',
+      '指値買い65,600円（値幅80円のためLC幅60円）', 60, undefined],
+    ['③理由の中の「30分の値幅が200円」',
+      '指値買い65,600円（LC幅60円）30分の値幅が200円なので浅めにする。', 60, undefined],
+    ['④A の文面をなぞった理由(値幅200円以内)',
+      '指値買い65,600円（LC幅55円）30分間の値幅が200円以内でレンジ気味。', 55, undefined],
+    ['⑤「幅」だけで LC を名乗らない形 → 読まない(記録に残す)',
+      '指値買い65,600円（幅60円）節目手前。', undefined, 'のLC幅を読めなかった'],
+    ['⑥損切幅ラベルは読む',
+      '指値買い65,600円（損切幅60円）節目手前。', 60, undefined],
+    ['⑦損切り幅ラベルも読む',
+      '指値買い65,600円（損切り幅60円）節目手前。', 60, undefined],
+    ['⑧ロスカット幅も読む',
+      '指値買い65,600円（ロスカット幅60円）節目手前。', 60, undefined],
+    ['⑨LC だけ(幅なし)も読む',
+      '指値買い65,600円（LC60円）節目手前。', 60, undefined],
+    ['⑩★候補が食い違う(LC幅55 と 損切幅60)→ 脚を立てない',
+      '指値買い65,600円（LC幅55円 / 損切幅60円）', undefined, 'LC幅の候補が複数'],
+    ['⑪★同じ値が2回なら曖昧ではない(採る)',
+      '指値買い65,600円（LC幅60円・損切幅60円）', 60, undefined],
+    ['⑫全角ラベル＋全角数字',
+      '指値買い６５，６００円（ＬＣ幅６０円）節目手前。', 60, undefined],
+    ['⑬★非整数は読まない(半開表記が整数前提だから)',
+      '指値買い65,600円（LC幅62.5円）節目手前。', undefined, 'LC幅が整数ではない(62.5)'],
+    ['⑭★159.5 も読まない(印字「可」・コード「不可」の穴を塞ぐ)',
+      '指値買い65,600円（LC幅159.5円）節目手前。', undefined, 'LC幅が整数ではない(159.5)'],
+    ['⑮ラベルが窓(20字)の外 → 採らない。★何が在ったかまで記録に残す',
+      '指値買い65,600円 直近30分のレンジは狭く上値も重い地合いのためLC幅は60円とする。',
+      undefined, 'LC幅が近傍(20字)に無い(窓外に 60円の記述)'],
+    ['⑯「値幅」しか書いていない → 読まない(★これが旧実装で 80 を拾っていた形)',
+      '指値買い65,600円 直近の値幅80円。', undefined, 'のLC幅を読めなかった'],
+  ] as const;
+
+  for (const [name, text, width, issue] of CASES) {
+    it(`${name}`, () => {
+      const r = READ(text);
+      expect(r.iPrice, name).toBe(65600);
+      expect(r.iLcWidth, name).toBe(width);
+      if (issue === undefined) expect(r.readIssues?.i, name).toBeUndefined();
+      else expect(r.readIssues?.i ?? '', name).toContain(issue);
+    });
+  }
+
+  it('★★否定対照(直す前なら壊れる): 旧の照合(裸の `幅` を含む)は「値幅80」を拾ってしまう', () => {
+    // ★直す前の WIDTH_RE を **この場で再現** して、同じ入力で違う答えになることを示す。
+    const OLD_WIDTH_RE = /(?:LC幅|損切り幅|損切幅|ロスカット幅|幅|LC)\s*(?:は|[:：=])?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/;
+    const line = '指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。';
+    const after = line.slice('指値買い65,600円'.length);
+    expect(after.match(OLD_WIDTH_RE)?.[1]).toBe('80');          // ★旧: 誤って 80
+    // 新: 明示ラベルだけなので 60
+    expect(parseBFreeText(line, 'buy')!.iLcWidth).toBe(60);
+    // ★旧は誤りが記録に残らなかった(帯の中なので下流も通る)。新は正しい値を読み、issue も出ない。
+    expect(parseBFreeText(line, 'buy')!.readIssues?.i).toBeUndefined();
+  });
+
+  it('★誤読していた値で損切り価格が20円ずれていたことを、正しい値と並べて固定する', () => {
+    const r = parseBFreeText('指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。', 'buy')!;
+    const { plan } = buildPlanFromBAnswer('buy', r, 65700);
+    expect(plan.limitEntry).toBe(65600);
+    expect(plan.stopLossForLimit).toBe(65540);   // ★60円幅。旧実装は 65520(80円幅)だった
+  });
+});
+
+// ═══ ★★② 価格の「側」の検査(分割経路にも入れた) ═══════════════════════════
+//
+// ■ ★直す前の事実(エバリュエーターが実測): entryPositionOk(=entrySideOk)は parseScalpPlan の
+//   中にしかなく、★分割経路は parseScalpPlan を通らない。enforcePlanConstraintsReport の本体にも
+//   1回も出てこない。→ **買いの逆指値が現在値の下(=即約定)** のまま plan に入り、legDrops も空だった。
+// ■ ★新しい判定は書かず、core/entryLabel.ts の entryPositionOk を呼ぶ。
+//   落ちた脚は既存の理由の語 'geometry' で記録する(新しい語彙を作らない)。
+describe('★★② 価格の側の検査: 現在値の逆側に置かれた脚は落ちて記録に残る', () => {
+  const REF2 = 65700;
+
+  it('★実例: 買いの逆指値が現在値の下 → 脚が落ち、legDrops に geometry で残る', () => {
+    const a = parseBFreeText('逆指値買い65,600円（LC幅60円）上抜けを狙う', 'buy')!;
+    expect(a.aPrice).toBe(65600);        // 読み取り自体は成功している(読めないのとは別)
+    const built = buildPlanFromBAnswer('buy', a, REF2);
+    expect(built.plan.stopEntry).toBeUndefined();   // ★即約定する注文は作られない
+    // ★逆側で落ちた脚は 'geometry'。★もう片方(指値買い)は そもそも来ていないので 'missing'。
+    expect(built.legDrops).toContainEqual({
+      name: 'stop', reason: 'geometry', entry: 65600, lcWidth: 60,
+      parseIssue: `逆指値買いが現在価格(${REF2})の逆側にある`,
+    });
+    expect(built.legDrops.map(d => `${d.name}:${d.reason}`)).toEqual(['stop:geometry', 'limit:missing']);
+  });
+
+  it('★★否定対照(直す前なら通る): 側の検査を外すと、その脚は plan に入ってしまう', () => {
+    // ★直す前の実装 = 「価格と幅が揃っていれば立てる」だけ。それをこの場で再現して差を示す。
+    const a = parseBFreeText('逆指値買い65,600円（LC幅60円）上抜けを狙う', 'buy')!;
+    const oldWouldStand = a.aPrice !== undefined && a.aLcWidth !== undefined && a.aLcWidth > 0;
+    expect(oldWouldStand).toBe(true);                       // ★旧: 立ってしまう
+    expect(buildPlanFromBAnswer('buy', a, REF2).plan.stopEntry).toBeUndefined();  // ★新: 立たない
+  });
+
+  it('★4版8脚すべてで、逆側の価格は落ちる(表の側と一致しない価格を作れない)', () => {
     for (const v of ALL) {
-      expect(buildBUserPrompt(v, REF, 55, 160))
-        .toContain('判断に必要なデータが足りなかったときは、何が足りなかったかも書いてください。');
+      const spec = B_VARIANTS[v];
+      // あ)=上の脚に「現在値より下」/ い)=下の脚に「現在値より上」を与える(必ず逆側)。
+      const bad = { aPrice: REF2 - 100, aLcWidth: 60, iPrice: REF2 + 100, iLcWidth: 60 };
+      const built = buildPlanFromBAnswer(v, bad, REF2);
+      expect(built.plan.direction, v).toBe('none');
+      expect(built.legDrops.map(d => d.reason), v).toEqual(['geometry', 'geometry']);
+      expect(built.legDrops.map(d => d.name), v)
+        .toEqual(spec.shape === 'range' ? ['upper', 'lower'] : [spec.legs.a.type, spec.legs.i.type]);
     }
   });
 
-  it('★JSON 契約に missingData が入り、選択肢(語彙候補)を作っていない(自由文 string のみ)', () => {
+  it('★正しい側なら1本も落ちない(この検査が恒真でない)', () => {
     for (const v of ALL) {
-      const t = buildBUserPrompt(v, REF, 55, 160);
-      expect(t).toContain('"missingData": string');
-      // ★選択肢を作らない = 語彙候補(ATR/節目/BB 等の固有名)をプロンプト本文に書いていない。
-      for (const w of ['ATR', 'BB', '節目', 'スイング', 'enum', 'choice']) expect(t).not.toContain(w);
+      const good = { aPrice: REF2 + 100, aLcWidth: 60, iPrice: REF2 - 100, iLcWidth: 60 };
+      const built = buildPlanFromBAnswer(v, good, REF2);
+      expect(built.legDrops, v).toEqual([]);
+      expect(built.bothDropped, v).toBe(false);
     }
   });
 
-  it('⑥の検算をここでも壊さない(新しい裸の数字を1つも増やしていない)', () => {
-    for (const v of ALL) {
-      const nums = new Set((full(v).match(/\d+/g) ?? []));
-      expect([...nums].sort()).toEqual(['160', '2', '225', '38250', '55'].sort());
-    }
+  it('★片脚だけ逆側なら、正しいほうは残る(片脚成立の性質を壊さない)', () => {
+    const built = buildPlanFromBAnswer('buy', { aPrice: REF2 - 100, aLcWidth: 60, iPrice: REF2 - 50, iLcWidth: 55 }, REF2);
+    expect(built.plan.direction).toBe('buy');
+    expect(built.plan.stopEntry).toBeUndefined();       // 上の脚(逆指値買い)は逆側で落ちた
+    expect(built.plan.limitEntry).toBe(REF2 - 50);      // 下の脚(指値買い)は正しい側なので残る
+    expect(built.legDrops.map(d => d.reason)).toEqual(['geometry']);
   });
 
-  it('★parseBAnswer が missingData を拾う(あ/い の理由 aWhy/iWhy とは別フィールド)', () => {
-    const ans = parseBAnswer(JSON.stringify({
-      aPrice: 100, aLcWidth: 60, missingData: 'ATR が算出できず、節目データも0件でした',
-    }));
-    expect(ans?.missingData).toBe('ATR が算出できず、節目データも0件でした');
-    expect(ans?.aWhy).toBeUndefined();
+  it('★refPrice が有限でないときは側の検査をしない(既存の権威 entryPositionOk の性質そのまま)', () => {
+    const built = buildPlanFromBAnswer('buy', { aPrice: 100, aLcWidth: 60 }, Number.NaN);
+    expect(built.plan.stopEntry).toBe(100);
+  });
+});
+
+// ═══ ★④ 細かいもの(c)(e)(g) ════════════════════════════════════════════════
+describe('★④ 1行2脚 / 装飾記号 / 網羅検査', () => {
+  it('(c) ★1行に2脚: 区切り記号の後ろの見出しも拾う(理由も混ざらない)', () => {
+    const r = parseBFreeText('逆指値買い65,780円（LC幅60円）、指値買い65,600円（LC幅55円）', 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.aLcWidth).toBe(60);
+    expect(r.iPrice).toBe(65600);
+    expect(r.iLcWidth).toBe(55);
+    expect(r.readIssues).toBeUndefined();
   });
 
-  it('★missingData が無い/空文字/空白のみは undefined(捏造しない)', () => {
-    expect(parseBAnswer(JSON.stringify({ aPrice: 1, aLcWidth: 2 }))?.missingData).toBeUndefined();
-    expect(parseBAnswer(JSON.stringify({ missingData: '' }))?.missingData).toBeUndefined();
-    expect(parseBAnswer(JSON.stringify({ missingData: '   ' }))?.missingData).toBeUndefined();
+  it('(c) ★文中の「指値」は見出しに化けない(区切り記号の直後だけを見出しにする)', () => {
+    const r = parseBFreeText('逆指値買い65,780円（LC幅60円）節目を抜けたら追随する 指値買いは置かない', 'buy')!;
+    expect(r.aPrice).toBe(65780);
+    expect(r.iPrice).toBeUndefined();          // ★2本目は見出しにならない
+    expect(r.aWhy).toContain('指値買いは置かない');
   });
 
-  it('★見送りでない回(片脚成立)にも missingData は書ける(ai_why の見送り専用フラグとは独立)', () => {
-    const ans = parseBAnswer(JSON.stringify({
-      aPrice: 38400, aLcWidth: 80, aWhy: '節目手前',
-      missingData: 'い) は基礎データが古く判断を保留',
-    }));
-    expect(ans?.aPrice).toBe(38400);
-    expect(ans?.missingData).toBe('い) は基礎データが古く判断を保留');
+  it('(e) ★装飾記号は理由に残らない(画面と台帳にそのまま出るため)', () => {
+    const r = parseBFreeText('**（上）**逆指値買い65,780円（LC幅60円）** 節目抜け。**', 'buy')!;
+    expect(r.aWhy).toBe('節目抜け。');
+    const r2 = parseBFreeText('逆指値買い65,780円（LC幅60円）> ## __節目抜け。__', 'buy')!;
+    expect(r2.aWhy).toBe('節目抜け。');
+  });
+
+  it('(g) ★pickBVariant は網羅を型で止める(未知の目線は投げる)', () => {
+    expect(pickBVariant('buy', null)).toBe('buy');
+    expect(pickBVariant('sell', null)).toBe('sell');
+    expect(pickBVariant('range', 'squeeze')).toBe('range-breakout');
+    // ★型を外した値を渡すと **黙って range-fade に落ちず** 投げる(以前は落ちていた)。
+    expect(() => pickBVariant('bull' as unknown as TrendDirection, null)).toThrow(/未知の目線/);
+  });
+});
+
+// ═══ ★★①(第2次) 窓を 40 → 20 に戻した(2026-08-25・エバリュエーターの反例) ═══════
+//
+// ■ ★私が拡大の根拠にした実例は、そもそも拡大を必要としていなかった(検算し直した):
+//     `指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。`
+//   → 価格直後の残り `円 直近の値幅80円を考慮しLC幅は60円とする。` で `LC幅` は **index 14**。
+//     ★14 <= 20 = 旧の窓に余裕で収まる。「前置きが入るから広げる」は誤りだった。
+// ■ ★そして 40 でだけ **無言で誤読する形** が生まれた(下の否定対照)。
+//   窓が広いほど「間違ったほうの候補**だけ**が単独で入る」確率が上がる
+//   (候補が2つ揃えば食い違い検出で止まるが、1つだけ入ると止まらない)。
+// ■ ★20 に戻したうえで **窓の外のラベルも数える** ようにした=採用はしないが、必ず記録に残す。
+//   目的は「窓の最適化」ではなく **無言で採らないこと**。
+describe('★★①(第2次) 採用は窓20だけ。窓外のラベルは採らずに記録する', () => {
+  /** ★エバリュエーターの反例。窓40 では lc=55(意図は80)を無言採用していた。 */
+  const COUNTER = '逆指値買い65,780円 直近高値65,775円の少し上に置く。LC幅55円が制度上の最小値なので、実際にはLC幅80円。';
+
+  it('★窓の位置を算術で固定する(実例=14 / 反例=21 と 43)', () => {
+    const idx = (line: string, headLen: number): number[] => {
+      const after = line.slice(headLen);
+      const priceEnd = after.match(/^(.{0,8}?)([0-9][0-9,]*(?:\.[0-9]+)?)/)![0].length;
+      const rest = after.slice(priceEnd);
+      const re = /(?:LC幅|損切り幅|損切幅|ロスカット幅|LC)\s*(?:は|[:：=])?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/g;
+      const out: number[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(rest)) !== null) out.push(m.index);
+      return out;
+    };
+    // ★1周目の実例: 唯一のラベルが 14 = 窓20 の中(拡大は不要だった)
+    expect(idx('指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。', '指値買い'.length)).toEqual([14]);
+    // ★反例: 21(値55) と 43(値80)。窓40 は 21 だけを拾ってしまう
+    expect(idx(COUNTER, '逆指値買い'.length)).toEqual([21, 43]);
+  });
+
+  it('★★否定対照: 窓40 なら lc=55 を **無言で** 採っていた(その場で再現する)', () => {
+    // ★直す前(2周目)の判定をこの場で再現: 「窓40以内の候補だけを見て、1つなら採る」。
+    const after = COUNTER.slice('逆指値買い'.length);
+    const priceEnd = after.match(/^(.{0,8}?)([0-9][0-9,]*(?:\.[0-9]+)?)/)![0].length;
+    const rest = after.slice(priceEnd);
+    const re = /(?:LC幅|損切り幅|損切幅|ロスカット幅|LC)\s*(?:は|[:：=])?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/g;
+    const within40: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(rest)) !== null) if (m.index <= 40) within40.push(Number(m[1]));
+    expect(within40).toEqual([55]);          // ★窓40: 候補が1つだけ=食い違い検出も効かない → 無言採用
+
+    // ★いま(窓20): どちらも窓外なので採らず、**何が在ったか** を記録に残す。
+    const r = parseBFreeText(COUNTER, 'buy')!;
+    expect(r.aLcWidth).toBeUndefined();
+    expect(r.readIssues?.a).toBe('「逆指値買い」LC幅が近傍(20字)に無い(窓外に 55 / 80円の記述)');
+    const built = buildPlanFromBAnswer('buy', r, 65700);
+    expect(built.plan.stopEntry).toBeUndefined();            // ★脚は立たない
+    expect(built.legDrops).toContainEqual({
+      name: 'stop', reason: 'missing', entry: 65780,
+      parseIssue: '「逆指値買い」LC幅が近傍(20字)に無い(窓外に 55 / 80円の記述)',
+    });
+  });
+
+  it('★窓内と窓外が食い違うときも採らない(窓を狭めた副作用を埋める)', () => {
+    const r = parseBFreeText('逆指値買い65,780円（LC幅55円）が下限だが、実際にはLC幅80円とする。', 'buy')!;
+    expect(r.aLcWidth).toBeUndefined();
+    expect(r.readIssues?.a).toBe('「逆指値買い」LC幅の候補が複数(55 / 80円)');
+  });
+
+  it('★窓内だけにあれば従来どおり読める(この検査が恒真でない)', () => {
+    expect(parseBFreeText('逆指値買い65,780円（LC幅60円）節目抜け。', 'buy')!.aLcWidth).toBe(60);
+    expect(parseBFreeText('指値買い65,600円 直近の値幅80円を考慮しLC幅は60円とする。', 'buy')!.iLcWidth).toBe(60);
+  });
+
+  it('★窓内に1つ・窓外に同じ値なら食い違いではない(無用な取りこぼしを作らない)', () => {
+    const r = parseBFreeText('逆指値買い65,780円（LC幅60円）節目抜け。LC幅60円は直近スイングまで。', 'buy')!;
+    expect(r.aLcWidth).toBe(60);
+    expect(r.readIssues?.a).toBeUndefined();
   });
 });

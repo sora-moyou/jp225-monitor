@@ -94,7 +94,7 @@ describe('§実ファイルの台帳に contextPresence が入る(A/B 分割の�
       ok: true,
       plan: { direction: 'none', rationale: 'B見送り', refPrice: REF },
       noneReason: 'ai',
-      splitRecord: { aDirection: 'bull', bVariant: 'buy', squeezeState: null, aiWhy: '節目が無い' },
+      splitRecord: { aDirection: 'buy', bVariant: 'buy', squeezeState: null, aiWhy: '節目が無い' },
       contextPresence: presence,
     });
     const r = readPlans()[0]!;

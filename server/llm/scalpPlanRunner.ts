@@ -17,7 +17,7 @@ import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
 // ★v0.9.98: 基礎データ(日足)ブロック。純関数 + 既存の取得だけ(新しい計算・新しい閾値は無し)。
 import { buildBasedataContext, type DailyBar } from './basedataContext.js';
-// ★v0.9.100(段4): A/B 分割が有効なときだけ、A 用(節目・アラート・長期高安ぬき)の文脈も作る。
+// ★v0.9.99(段4): A/B 分割が有効なときだけ、A 用(節目・アラート・長期高安ぬき)の文脈も作る。
 import { buildTrendContext } from './abContext.js';
 import { isPlanSplitEnabled } from './planSplitConfig.js';
 import { getIndicatorsSnapshot } from '../loops/indicatorsLoop.js';
@@ -470,7 +470,7 @@ async function runScalpPlanWithChartInner(
     onSplitRecord: (r) => { splitRecord = r; },
     // ★RECORD-ONLY: 送るプロンプトの指紋を1回だけ受け取る(本文は渡ってこない)。
     onPromptFingerprint: (fp) => { promptFp = fp; },
-  }), contextAt, () => promptFp), splitRecord), caller, chartShot), visionDecision), regime.trendDir),
+  }), contextAt, () => promptFp), splitRecord, rangeEnabled), caller, chartShot), visionDecision), regime.trendDir),
     overrides.promptVariant), contextPresence);
 }
 
@@ -486,9 +486,13 @@ async function runScalpPlanWithChartInner(
  *  ■ aPromptBuild は record がある回(=A が実際に呼ばれた回)には必ず載せる。
  *    bPromptBuild は bVariant が実際の版(buy/sell/range-fade/range-breakout)のときだけ載せる
  *    (bVariant='none'=B を呼んでいない回に「B の型」を捏造しない)。 */
-function attachSplitRecord(result: ScalpPlanResult, record: SplitRecord | null): ScalpPlanResult {
+function attachSplitRecord(
+  result: ScalpPlanResult, record: SplitRecord | null, rangeEnabled: boolean,
+): ScalpPlanResult {
   if (!record) return result;
-  const withA: SplitRecord = { ...record, aPromptBuild: aTrendPromptBuildFp() };
+  // ★2026-08-25: A の文面は rangeEnabled で2版に分かれる(レンジ無効では range の選択肢ごと消える)。
+  //   ★同じ値を buildScalpPlan も使う(runner の rangeEnabled は resolveEffectiveRangeEnabled の同値)。
+  const withA: SplitRecord = { ...record, aPromptBuild: aTrendPromptBuildFp(rangeEnabled) };
   const withB: SplitRecord = record.bVariant === 'none'
     ? withA
     : { ...withA, bPromptBuild: bOrderPromptBuildFp(record.bVariant) };

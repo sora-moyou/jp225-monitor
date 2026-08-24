@@ -236,7 +236,7 @@ describe('★段5: splitRecord(A/B 分割の測定材料)が行へ写る', () =>
       result: {
         ...OK,
         splitRecord: {
-          aDirection: 'bull', aWhy: '高値切り上げ', bVariant: 'buy',
+          aDirection: 'buy', aWhy: '高値切り上げ', bVariant: 'buy',
           squeezeState: null, bStrategy: '押し目を拾う', toolCalls: 2,
           aProvider: { name: 'gemini', model: 'gemini-flash' },
           bProvider: { name: 'groq', model: 'llama-70b' },
@@ -244,7 +244,7 @@ describe('★段5: splitRecord(A/B 分割の測定材料)が行へ写る', () =>
         },
       },
     });
-    expect(row.aDirection).toBe('bull');
+    expect(row.aDirection).toBe('buy');
     expect(row.aWhy).toBe('高値切り上げ');
     expect(row.bVariant).toBe('buy');
     expect(row.squeezeState).toBeNull();
@@ -313,13 +313,13 @@ describe('★段5: splitRecord(A/B 分割の測定材料)が行へ写る', () =>
       result: {
         ok: false, error: 'provider exhausted',
         splitRecord: {
-          aDirection: 'bear', aWhy: '戻り売り優勢', bVariant: 'sell',
+          aDirection: 'sell', aWhy: '戻り売り優勢', bVariant: 'sell',
           squeezeState: null, aProvider: { name: 'gemini', model: 'gemini-flash' },
         },
       },
     });
     expect(row.error).toBe('provider exhausted');
-    expect(row.aDirection).toBe('bear');
+    expect(row.aDirection).toBe('sell');
     expect(row.bVariant).toBe('sell');
     expect(row.aProvider).toBe('gemini');
     expect(row.bProvider).toBeUndefined();

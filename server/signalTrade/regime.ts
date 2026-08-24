@@ -210,7 +210,7 @@ export function computeRegime(bars: RegimeBar[], now: number, thresholdYen = 100
  *      3つの注記には `direction:"none"` / `fade` / `breakout` / `ストラドル` / `veto` / `順張り` /
  *      `節目` / `バックテスト` といった **注文・戦略・執行の語** が入っており、A の全文に
  *      1文字も入れないという分割の芯を破っていた(競合211字 / 判定保留290字 / 横ばい221字)。
- *      ★とくに `direction:"none"` は **A の契約に存在しない**(A の答えは bull/bear/range の3択)。
+ *      ★とくに `direction:"none"` は **A の契約に存在しない**(A の答えは buy/sell/range の3択。★2026-08-25 に bull/bear から改称)。
  *      答える場所が無いものを指示している=委任ノートで起きた事故(契約に無いフィールドを要求し、
  *      正当な答えが故障として記録される)と同じ型。
  *      ★`fade`/`breakout` の使い分けは **コードが BB スクイーズで決める**設計で、A には説明しない

@@ -44,7 +44,7 @@ import { startIndicatorsLoop } from './loops/indicatorsLoop.js';
 import { startForecastLoop } from './loops/forecastLoop.js';
 import { startAlertHistoryLoop } from './alertHistory.js';
 import { warmFromDb } from './warmup.js';
-import { isLLMEnabled } from './llm/openai.js';
+import { isLLMEnabled, resolveEffectiveRangeEnabled } from './llm/openai.js';
 import { resolvePort, ensureDefaults, resolveCooldownMin } from './configStore.js';
 import { setCooldownMs } from './alertCooldown.js';
 import { resolveVariant } from './variant.js';
@@ -53,7 +53,7 @@ import { normalizeCorsPath } from './corsPolicy.js';
 import { startGeneratorHeartbeat, stopGeneratorHeartbeat } from './db/generatorHeartbeat.js';
 import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, setBuildIdentityMeta } from './db/store.js';
+import { openDb, resolveDbPath, setBuildIdentityMeta, setColumnVocabMeta } from './db/store.js';
 import { allPromptBuildFps, promptBuildFp } from './llm/promptBuild.js';
 // ★段5: A/B 分割の実行時状態と、その版が持つ A/B のプロンプトの型(meta へ載せる)。
 import { allAbPromptBuildFps } from './llm/abPromptBuild.js';
@@ -239,7 +239,11 @@ function recordBuildIdentity(): void {
   try {
     db = openDb(resolveDbPath());
     // ★段5: A/B 分割の実行時状態(行数に関係なく読める「測定の断絶」の記録・meta テーブル参照)。
-    const { aPromptBuild, bPromptBuilds } = allAbPromptBuildFps();
+    // ★2026-08-25: A のプロンプトはレンジ設定で2版に分かれる。起動時の実効値で描く。
+    const { aPromptBuild, bPromptBuilds } = allAbPromptBuildFps(resolveEffectiveRangeEnabled());
+    // ★2026-08-25: 列の値の語彙が版で切り替わったことを **DB の中** に残す(meta 1行・記録専用)。
+    //   ソースのコメントは DB を開いた分析者に届かないため(エバリュエーター指摘③)。
+    setColumnVocabMeta(db);
     setBuildIdentityMeta(db, {
       appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: Date.now(),
       planSplit: { enabled: isPlanSplitEnabled(), aPromptBuild, bPromptBuilds },
