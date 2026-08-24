@@ -222,15 +222,22 @@ describe('★段5: A/B それぞれのプロバイダが別々に記録へ残る
 });
 
 describe('⑦ ★旧経路に戻せる(スイッチ1箇所)', () => {
-  it('既定は false = 旧経路(1回呼び出し)', () => {
-    expect(PLAN_SPLIT_DEFAULT).toBe(false);
-    expect(resolvePlanSplit(undefined)).toBe(false);
+  // ★v0.9.96 で既定を false → true に反転した(ユーザーの判断)。
+  //   このテストは「通すため」に書き換えたのではなく、**既定が変わったことの表明**である。
+  //   ★反転で失われる安全は1つだけ: 「出荷しても既定の挙動は変わらない」が使えなくなった。
+  //   代わりに守っているのは **戻し口が1箇所であること**(下の it)。ここが壊れたら反転は成立しない。
+  it('★既定は true = A/B 分割(2回呼び出し)。v0.9.96 で反転', () => {
+    expect(PLAN_SPLIT_DEFAULT).toBe(true);
+    expect(resolvePlanSplit(undefined)).toBe(true);
   });
 
-  it('環境変数で切り替わる / 読めない値では黙って有効化しない', () => {
-    for (const v of ['1', 'true', 'on', 'YES']) expect(resolvePlanSplit(v)).toBe(true);
+  // ★戻し口の実証。既定が true になった今、**これが唯一の退避路**なので、
+  //   綴りの揺れ('0'/'false'/'off'/'no')を全部通ることまで固定する。
+  it('★env=0 で旧経路に戻る / 読めない値は既定に落ちる(=黙って無効化もしない)', () => {
     for (const v of ['0', 'false', 'off', 'no']) expect(resolvePlanSplit(v)).toBe(false);
-    for (const v of ['', 'maybe', 'ON!', '2']) expect(resolvePlanSplit(v)).toBe(PLAN_SPLIT_DEFAULT);
+    for (const v of ['1', 'true', 'on', 'YES']) expect(resolvePlanSplit(v)).toBe(true);
+    // ★読めない値は既定(true)。★戻したいときは必ず 0/false/off/no を書くこと(綴り違いは戻らない)。
+    for (const v of ['', 'maybe', 'ON!', '2']) expect(resolvePlanSplit(v)).toBe(true);
   });
 });
 
@@ -246,5 +253,79 @@ describe('★A の max_tokens', () => {
     expect(parseTrendAnswer('{"direction":"range"')).toEqual({ direction: 'range' });
     // 閉じ引用符まで揃っていれば理由も採る
     expect(parseTrendAnswer('{"direction":"bear","why":"戻り売り優勢"')).toEqual({ direction: 'bear', why: '戻り売り優勢' });
+  });
+});
+
+// ─── ★v0.9.96(リーダー裁定): A と B の理由を **画面の5つの箱** へ繋ぐ ────────────
+// 依頼(逐語)「分割ONのとき、A と B の理由を画面の箱へ繋ぐ」。
+//   ★繋ぐ前は 6つの箱(directionWhy / strategyWhy / entryWhyFor* / lcWhyFor*)が **全部空** で、
+//     画面は rationale(連結文字列)を目線の欄に出していた=「なぜこの目線か」が読めなかった。
+//     ★実際に HEAD の実装を取り出して走らせ、6箱すべてが undefined であることを確認した
+//       (scratchpad の否定対照。ここでは新しい契約だけを固定する)。
+describe('★v0.9.96: 分割ON で A/B の理由が箱に入る', () => {
+  it('★A の理由が directionWhy へ / B の脚の理由が entryWhyFor* へ(表が決めた脚に対応)', async () => {
+    const r = await runSplitPlan(deps(A_BULL, B_BOTH), OPTS);
+    const plan = r.parsed.plan;
+    // A(目線)の理由 = 「なぜこの目線か」
+    expect(plan.directionWhy).toBe('高値切り上げが3本続き、5分足がMA上');
+    // ★buy 版は あ)=上=逆指値 / い)=下=指値。理由も **価格と同じ脚** に入る。
+    expect(plan.stopEntry).toBe(38400);
+    expect(plan.entryWhyForStop).toBe('節目手前');
+    expect(plan.limitEntry).toBe(38100);
+    expect(plan.entryWhyForLimit).toBe('押し目');
+    // ★A の理由は台帳の a_why にも従来どおり残る(二重に持つ=生値と配った先の両方が要る)。
+    expect(r.record.aWhy).toBe('高値切り上げが3本続き、5分足がMA上');
+  });
+
+  it('★sell 版は あ)=指値 / い)=逆指値 に入れ替わる(理由も一緒に入れ替わる)', async () => {
+    const A_BEAR = '{"direction":"bear","why":"戻り売りが続き高値を切り下げ"}';
+    const r = await runSplitPlan(deps(A_BEAR, B_BOTH), OPTS);
+    const plan = r.parsed.plan;
+    expect(plan.direction).toBe('sell');
+    expect(plan.limitEntry).toBe(38400);            // あ)=上=売りの指値
+    expect(plan.entryWhyForLimit).toBe('節目手前');
+    expect(plan.stopEntry).toBe(38100);             // い)=下=売りの逆指値
+    expect(plan.entryWhyForStop).toBe('押し目');
+  });
+
+  it('★B が返していない箱は埋めない(lcWhyFor* / strategyWhy は空のまま)', async () => {
+    const r = await runSplitPlan(deps(A_BULL, B_BOTH), OPTS);
+    const plan = r.parsed.plan as unknown as Record<string, unknown>;
+    // ★B の契約(BAnswer)に「損切り幅だけの理由」の欄が無い(aWhy/iWhy は脚1本ぶんの提案理由)。
+    //   AI が書いていない理由を画面が名乗らないよう、複写しない。
+    expect(plan.lcWhyForLimit).toBeUndefined();
+    expect(plan.lcWhyForStop).toBeUndefined();
+    // ★strategyWhy も B に対応する欄が無い(strategy 1本に寄せた既存の決定)=**意図して空**。
+    expect(plan.strategyWhy).toBeUndefined();
+  });
+
+  it('★立たなかった脚には理由を入れない(価格の無い箱に理由だけ在る形を作らない)', async () => {
+    const B_ONLY_A = '{"strategy":"押し目","aPrice":38400,"aLcWidth":80,"aWhy":"節目手前","iWhy":"下は節目が遠い"}';
+    const r = await runSplitPlan(deps(A_BULL, B_ONLY_A), OPTS);
+    const plan = r.parsed.plan as unknown as Record<string, unknown>;
+    expect(plan.stopEntry).toBe(38400);
+    expect(plan.entryWhyForStop).toBe('節目手前');
+    expect(plan.limitEntry).toBeUndefined();
+    expect(plan.entryWhyForLimit).toBeUndefined();   // ★理由だけ残さない
+    // 落ちた脚の理由は従来どおり ai_why 側に残る(消えていない)。
+    expect(r.record.aiWhy).toContain('下は節目が遠い');
+  });
+
+  it('★A の理由が無い回は directionWhy を作らない(空文字を入れない)', async () => {
+    const r = await runSplitPlan(deps('{"direction":"bull"}', B_BOTH), OPTS);
+    expect(Object.prototype.hasOwnProperty.call(r.parsed.plan, 'directionWhy')).toBe(false);
+  });
+
+  it('★rationale は1バイトも変えない(旧経路との互換・監査が生文字列を読む)', async () => {
+    const r = await runSplitPlan(deps(A_BULL, B_BOTH), OPTS);
+    expect(r.parsed.plan.rationale)
+      .toBe('押し目を節目手前で拾う / 逆指値買い注文: 節目手前 / 指値買い注文: 押し目');
+  });
+
+  it('★A の理由を B へ渡す経路は増えていない(分割の芯を壊さない)', async () => {
+    const d = deps(A_BULL, B_BOTH);
+    await runSplitPlan(d, OPTS);
+    const b = d.calls.find(c => c.who === 'B')!;
+    expect(b.system + b.user).not.toContain('高値切り上げ');
   });
 });

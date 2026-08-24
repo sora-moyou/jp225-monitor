@@ -75,9 +75,13 @@ beforeEach(() => { createMock.mockReset(); });
 const run = (): ReturnType<typeof buildScalpPlan> =>
   buildScalpPlan({ symbol: 'NIY=F', prices: PRICES, news: [], technical: '【B文脈】主要節目 39500', technicalForTrend: '【A文脈】足だけ' });
 
-describe('① ★分割 OFF(既定)= 旧経路がそのまま走る', () => {
+describe('① ★分割 OFF(env=0)= 旧経路がそのまま走る', () => {
+  // ★v0.9.96 で既定が true に反転した。以前この it は setSplit(undefined) で「既定=OFF」を
+  //   前提にしていたが、それは **既定値に寄りかかったテスト** だった。
+  //   反転で落ちたので、env を明示する形に直した(=既定が今後どちらに動いても、この it は
+  //   「旧経路そのもの」を測り続ける)。既定の値そのものは下の ⑤ が測る。
   it('LLM は1回だけ・ツール3本つき・旧の全文(【最優先: 価格の向き】)が出る', async () => {
-    setSplit(undefined);   // ★環境変数を外す=既定(false)
+    setSplit(false);   // ★明示的に無効化(既定に依存しない)
     createMock.mockResolvedValue({ choices: [{ message: { content: OLD_JSON } }] });
     const r = await run();
     expect(createMock.mock.calls.length).toBe(1);
@@ -193,7 +197,9 @@ describe('④ ★スイッチ1箇所で旧経路に戻る', () => {
   });
 
   it('★戻したあとの全文が、分割を一度も有効にしなかった場合と同じ(残留しない)', async () => {
-    setSplit(undefined);
+    // ★基準は「このプロセスで一度も ON にしていない旧経路」。v0.9.96 で既定が true に
+    //   なったので undefined では基準にならない(分割側になる)。明示的に false を置く。
+    setSplit(false);
     createMock.mockReset();
     createMock.mockResolvedValue({ choices: [{ message: { content: OLD_JSON } }] });
     await run();
@@ -206,5 +212,24 @@ describe('④ ★スイッチ1箇所で旧経路に戻る', () => {
     // 壁時計(秒)だけは動きうるので、その行を除いて比較する
     const strip = (s: string): string => s.replace(/【市場の現状 [^】]*】/, '【市場の現状 —】');
     expect(strip(afterToggle)).toBe(strip(never));
+  });
+});
+
+// ★v0.9.96: 既定が true に反転したことを、**配線の側から**固定する。
+//   planSplitConfig.test 側は純関数(resolvePlanSplit)を測るが、ここは
+//   「env を何も置かずにアプリを動かすと、実際に A/B の2回呼び出しになるか」を測る。
+//   ★この it が赤くなったら、既定の反転が実際の呼び出しに届いていない。
+describe('⑤ ★既定(env 未設定)= 分割 ON', () => {
+  it('環境変数を置かないと A→B の2回になる(v0.9.96 の反転が配線に届いている)', async () => {
+    setSplit(undefined);   // ★何も置かない=既定
+    createMock.mockReset();
+    createMock
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{"direction":"bull","why":"高値切り上げ"}' } }] })
+      .mockResolvedValue({ choices: [{ message: { content: OLD_JSON } }] });
+    await run();
+    expect(createMock.mock.calls.length).toBe(2);
+    // A には注文の話もツールも無い(分割の芯)
+    expect(textOf(paramsOf(0), 'system')).toContain('いまトレンドがあるか');
+    expect((paramsOf(0).tools ?? []).length).toBe(0);
   });
 });

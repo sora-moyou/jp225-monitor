@@ -211,6 +211,20 @@ export async function runSplitPlan(
 
   // ── ⑤ 既存の AiPlan に組み立てる(side と損切りの向きはコードが埋める) ──────────
   const built = buildPlanFromBAnswer(variant, bAnswer, refPrice, buildRationale(bAnswer, variant));
+  // ★v0.9.96(リーダー裁定): **A の理由を目線の箱へ繋ぐ**。
+  //
+  //  ■ なぜ(この案件のゴール): 依頼の本体は「なぜ買い目線なのか／なぜこの価格なのか の理由の表示」。
+  //    分割ONの回は A が目線を、B が価格を答えるので、**A の理由こそが「なぜこの目線か」** に当たる。
+  //    それが `SplitRecord.aWhy` → 台帳 `a_why` にしか入っていなかった(画面へ届く経路が無かった)。
+  //    ★これは「意図して空」ではない: 設計書(2026-08-21-ab-split-prompts.md)は理由の5つの箱に
+  //      一度も触れておらず、**誰も決めていなかった**(配線漏れ)。ここで繋ぐ。
+  //  ■ ★A の理由を B へ渡さない規約は **1バイトも変えていない**(渡すのは画面と台帳の側だけ)。
+  //  ■ 置く先は `built.plan` ひとつ。A 失敗 / レンジ不許可 / B 無言 の3経路は **計画そのものが無い**
+  //    (画面にも出ない)ので触らない。それらの回でも A の理由は従来どおり台帳 `a_why` に残る。
+  //  ■ ★両脚落ち(direction:'none')の plan にも入る: 「なぜこの目線か」は B が価格を置けたかに
+  //    依らない。旧経路にも `direction='none'` で `direction_why` だけが在る回は既に存在する
+  //    (実測: 2026-08-19〜24 で85件)ので、台帳の形も新しくならない。
+  if (answer.why) built.plan.directionWhy = answer.why;
   const aiWhy = joinWhy(built.aWhy, built.iWhy);
   const record: SplitRecord = {
     ...rec,

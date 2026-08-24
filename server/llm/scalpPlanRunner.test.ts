@@ -160,9 +160,14 @@ describe('runScalpPlanWithChart — shared on-demand chart-generation gate', () 
 
     await runScalpPlanWithChart();
 
-    expect(marketDataMock).toHaveBeenCalledTimes(1);
-    const input = marketDataMock.mock.calls[0]![0];
-    expect(input.bars.length).toBeGreaterThan(0);   // DB 無しでも足が渡る
+    // ★v0.9.96(既定が A/B 分割に反転): 文脈の組み立ては **1サイクルに2回** 走る(A用・B用)。
+    //   ここで測りたいのは回数ではなく「DB が落ちてもライブ足が渡るか」なので、
+    //   回数の固定をやめ、**毎回 足が入っていること** を測る(=分割でも旧経路でも通る主張)。
+    //   ★回数そのものは費用・遅延の話で、scalpPlanSplitWiring.test.ts が LLM 呼び出し回数として測る。
+    expect(marketDataMock.mock.calls.length).toBeGreaterThan(0);
+    for (const call of marketDataMock.mock.calls) {
+      expect(call[0]!.bars.length).toBeGreaterThan(0);   // DB 無しでも足が渡る
+    }
   });
 
   it('★fallback ON(既定): capture 2回失敗 → リトライ後テキストのみで AI 継続(画像なし)', async () => {

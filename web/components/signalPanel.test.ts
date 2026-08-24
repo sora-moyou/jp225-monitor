@@ -319,7 +319,8 @@ describe('buildSignalView: 相場の読み(strategy / strategyWhy)', () => {
   // ② ラベルあり × why なし
   it('why が無ければ理由の行は従来どおり(rationale の残り or 「（理由の記載なし）」)', () => {
     const v = buildSignalView(sig({ rationale: `68700の節目を上抜けて押し目待ち。${LC_ONLY}`, strategy: 'ブレイク順張り' }));
-    expect(v.bias).toBe('買い目線・ブレイク順張り');
+    // ★v0.9.96: 順張り/逆張りを含むラベルは目線行に出さない(trendDir を見ない)。rationale は不変。
+    expect(v.bias).toBe('買い目線');
     expect(v.rationale).toBe('68700の節目を上抜けて押し目待ち。');
     const v2 = buildSignalView(sig({ rationale: LC_ONLY, strategy: 'ブレイク順張り' }));
     expect(v2.rationale).toBe('（理由の記載なし）');
@@ -381,8 +382,11 @@ describe('buildSignalView: 相場の読み(strategy / strategyWhy)', () => {
     expect(v.bias).toBe('🔃 ドテン(反転)・買い目線');
     expect(v.rationale).toBe('上昇転換で保有の売りを畳む');
     // ドテンでも「ドテン」以外のラベルは従来どおり後ろに足す。
+    expect(buildSignalView(sig({ rationale: LC_ONLY, doten: true, strategy: 'トレンド押し目・戻り' })).bias)
+      .toBe('🔃 ドテン(反転)・買い目線・トレンド押し目・戻り');
+    // ★v0.9.96: 順張り/逆張りを含むラベルはドテンでも足さない(規約は1つ)。
     expect(buildSignalView(sig({ rationale: LC_ONLY, doten: true, strategy: 'ブレイク順張り' })).bias)
-      .toBe('🔃 ドテン(反転)・買い目線・ブレイク順張り');
+      .toBe('🔃 ドテン(反転)・買い目線');
     // ラベルが無いドテンは従来どおり。
     expect(buildSignalView(sig({ rationale: LC_ONLY, doten: true })).bias).toBe('🔃 ドテン(反転)・買い目線');
   });
@@ -416,7 +420,8 @@ describe('buildSignalView: 相場の読み(strategy / strategyWhy)', () => {
       },
     };
     const v = buildSignalView(s);
-    expect(v.bias).toBe('売り目線・節目の逆張り');
+    // ★v0.9.96: 「節目の逆張り」は語を含むので目線行には出ない。why は従来どおり出る。
+    expect(v.bias).toBe('売り目線');
     expect(v.rationale).toBe('68900の戻り売り');
   });
 });
@@ -424,7 +429,8 @@ describe('buildSignalView: 相場の読み(strategy / strategyWhy)', () => {
 // ─── 純関数そのもの(組み立ての境界を直接固定する) ───
 describe('withStrategyLabel / buildRationaleView', () => {
   it('withStrategyLabel: 無い/空白は目線行を1バイトも変えない', () => {
-    expect(withStrategyLabel('買い目線', 'ブレイク順張り')).toBe('買い目線・ブレイク順張り');
+    // ★v0.9.96: 語を含むラベルは常に落ちるので、ここは語を含まないラベルで固定する。
+    expect(withStrategyLabel('買い目線', 'トレンド押し目・戻り')).toBe('買い目線・トレンド押し目・戻り');
     expect(withStrategyLabel('買い目線', undefined)).toBe('買い目線');
     expect(withStrategyLabel('買い目線', '')).toBe('買い目線');
     expect(withStrategyLabel('買い目線', ' \n ')).toBe('買い目線');
@@ -622,7 +628,8 @@ describe('★ドテンの重複表示(直前のコミットのバグ)', () => {
   });
 
   it('別のラベルなら従来どおり添える(ドテンの書式は壊さない)', () => {
-    expect(doten('ブレイク順張り')).toBe('🔃 ドテン(反転)・買い目線・ブレイク順張り');
+    expect(doten('トレンド押し目・戻り')).toBe('🔃 ドテン(反転)・買い目線・トレンド押し目・戻り');
+    expect(doten('ブレイク順張り')).toBe('🔃 ドテン(反転)・買い目線');   // ★v0.9.96: 語を含むラベルは落ちる
     expect(doten()).toBe('🔃 ドテン(反転)・買い目線');
   });
 
@@ -853,41 +860,42 @@ describe('★cleanAiText: strategyWhy の穴を塞ぐ', () => {
 //   最初の版は trendDir を見ずに落としていたため、矛盾しようがない回でも落ちて
 //   「順張り/逆張り」の情報が画面から **純減** していた(下の反例の it がそれを固定する)。
 describe('★withStrategyLabel: AI の strategy ラベルの扱い', () => {
-  it('★stance 確定 × 語を含む → 落とす(画面に矛盾/重複を並べない)', () => {
+  it('★語を含む → 落とす(画面に矛盾/重複を並べない)', () => {
     // 直したかった形: 目線行「買い目線・節目の逆張り」(AI の自己申告) と
     //                 脚の行「指値 押し目買い・順張り」(コード導出) が同じパネルに並んでいた。
-    expect(withStrategyLabel('買い目線', 'ブレイク順張り', true)).toBe('買い目線');
-    expect(withStrategyLabel('売り目線', '節目の逆張り', true)).toBe('売り目線');
+    expect(withStrategyLabel('買い目線', 'ブレイク順張り')).toBe('買い目線');
+    expect(withStrategyLabel('売り目線', '節目の逆張り')).toBe('売り目線');
     // ★一覧外の生値でも同じ規約(語を含むかだけで判定=ラベル一覧に依存しない)。
-    expect(withStrategyLabel('買い目線', '強い上昇の順張りで攻める', true)).toBe('買い目線');
+    expect(withStrategyLabel('買い目線', '強い上昇の順張りで攻める')).toBe('買い目線');
   });
 
-  it('★反例: stance 未確定なら落とさない(情報が純減しないこと)', () => {
-    // trendDir='flat' 等では脚の行も順張り/逆張りを出さない。ここでラベルまで落とすと、
-    // 画面から順張り/逆張りの情報が完全に消える(=矛盾しようがない回で情報だけを失う)。
-    expect(withStrategyLabel('買い目線', 'ブレイク順張り', false)).toBe('買い目線・ブレイク順張り');
-    expect(withStrategyLabel('売り目線', '節目の逆張り')).toBe('売り目線・節目の逆張り');   // 既定=未確定
+  it('★v0.9.96: trendDir を見ない=コードが断定できない回も落とす(自己申告を画面に出さない)', () => {
+    // ★v0.9.88 の2周目は「stance 未確定なら残す」だった。v0.9.96 でその条件を撤回した。
+    //   実測(prices_kabu.db の複製・340件): コード未断定 157件のうち AI が名乗るのは 40件で
+    //   **全て trendDir='flat'**。ユーザーが見た回(id=2423)は flat で「ブレイク順張り」と名乗り、
+    //   自分の文では「下降トレンド」と書いていた(自己矛盾)。
+    //   ★純減の補償: 未断定の回には目線の欄に `横ばい` 等が出て、strategyWhy(なぜその読みか)も残る。
+    expect(withStrategyLabel('買い目線', 'ブレイク順張り')).toBe('買い目線');
+    expect(withStrategyLabel('売り目線', '節目の逆張り')).toBe('売り目線');
   });
 
-  it('語を含まないラベルは stance の確定によらず常に出る(機能そのものは残す)', () => {
+  it('語を含まないラベルは常に出る(機能そのものは残す)', () => {
     for (const label of ['トレンド押し目・戻り', 'レンジ内', 'バンドウォーク追随', 'ドテン', 'その他']) {
-      expect(withStrategyLabel('買い目線', label, true)).toBe(`買い目線・${label}`);
-      expect(withStrategyLabel('買い目線', label, false)).toBe(`買い目線・${label}`);
+      expect(withStrategyLabel('買い目線', label)).toBe(`買い目線・${label}`);
     }
   });
 
   it('★strategy も stripLcArithmetic を通る(LC検算が目線行に出る経路を塞ぐ)', () => {
     // parseAiStrategy は一覧外の語も丸めずそのまま残す仕様なので、AI が
     // "strategy":"LC幅は60円" と書けば、従来はそのまま目線行に出ていた。
-    // ★これは stance の確定と無関係に常に塞ぐ(検算は相場の読みではない)。
+    // ★これは trendDir と無関係に常に塞ぐ(検算は相場の読みではない)。
     expect(withStrategyLabel('買い目線', 'LC幅は60円')).toBe('買い目線');
-    expect(withStrategyLabel('買い目線', 'LC幅は60円', true)).toBe('買い目線');
     expect(withStrategyLabel('買い目線', '指値レッグ 68725 と 68665 の引き算 → LC幅は60円。')).toBe('買い目線');
     // 理由が混ざっていれば従来どおり残る(判定を保守側に倒している既存の規約と同じ)。
     expect(withStrategyLabel('買い目線', '21日線の上でLC幅は60円')).toBe('買い目線・21日線の上でLC幅は60円');
   });
 
-  it('★buildSignalView 経由: trendDir=up では落ち、flat では残る(実際の配線)', () => {
+  it('★buildSignalView 経由: trendDir が up でも flat でも欠落でも落ちる(実際の配線)', () => {
     const mk = (trendDir?: 'up' | 'flat') => buildSignalView({
       phase: 'armed', updatedAt: 0,
       signal: {
@@ -895,14 +903,15 @@ describe('★withStrategyLabel: AI の strategy ラベルの扱い', () => {
         rationale: '押し目', at: 10, refPrice: 68_700, strategy: 'ブレイク順張り', trendDir,
       },
     });
-    expect(mk('up').bias).toBe('買い目線');                       // stance 確定 → 落とす
+    expect(mk('up').bias).toBe('買い目線');                       // 落とす
     expect(mk('up').stance).toBe('指値 押し目買い・順張り');       // 情報は脚の行が持つ
-    expect(mk('flat').bias).toBe('買い目線・ブレイク順張り');      // stance 未確定 → 残す
+    // ★v0.9.96: 未断定でも落とす。順張り/逆張りの語はコードが測った trendDir からしか出ない。
+    expect(mk('flat').bias).toBe('買い目線');
     expect(mk('flat').stance).toBe('指値 押し目買い （順張り/逆張りなし: 横ばい）');   // 語の代わりに理由
-    expect(mk(undefined).bias).toBe('買い目線・ブレイク順張り');   // 欠落も未確定と同じ
+    expect(mk(undefined).bias).toBe('買い目線');                   // 欠落も同じ
   });
 
-  it('レンジ両面は脚のラベル行が無いので常に残す', () => {
+  it('★v0.9.96: レンジ両面でも語を含むラベルは落ちる(方向プランと同じ規約)', () => {
     const v = buildSignalView({
       phase: 'armed', updatedAt: 0,
       signal: {
@@ -910,8 +919,17 @@ describe('★withStrategyLabel: AI の strategy ラベルの扱い', () => {
         range: { lower: { side: 'buy', type: 'limit', entry: 68_600, stopLoss: 68_540 } },
       },
     });
-    expect(v.bias).toBe('レンジ・節目の逆張り');
+    expect(v.bias).toBe('レンジ');
     expect(v.stance).toBeUndefined();
+    // 語を含まないラベルはレンジでも従来どおり出る。
+    const v2 = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'buy', mode: 'range', at: 10, rationale: 'r', strategy: 'レンジ内', trendDir: 'up',
+        range: { lower: { side: 'buy', type: 'limit', entry: 68_600, stopLoss: 68_540 } },
+      },
+    });
+    expect(v2.bias).toBe('レンジ・レンジ内');
   });
 });
 
@@ -934,9 +952,11 @@ describe('★buildSignalSections: 目線 / 上 / 下 の3欄', () => {
   it('①全部そろった回: 買いは 上=逆指値 / 下=指値 で、素材が欄ごとに分かれる', () => {
     const s = sections(FULL);
     // ★v0.9.90: 基準価格の行(上/下 ← ARM時 …)と節目の行(指値 ← … )は **画面に出さない**。
+    // ★v0.9.96: 目線の箱(directionWhy)が在るので、計画全体の本文(rationale)は目線の欄に積まない
+    //   (この回は strategyWhy が無いので、残るのは `目線: …` の1行だけ)。
     expect(s.bias).toEqual({
       head: '目線', main: '買い目線・トレンド押し目・戻り',
-      lines: ['上昇トレンド中、押し目を拾う', '目線: 直近安値を切り上げ、21日線を上抜けた'],
+      lines: ['目線: 直近安値を切り上げ、21日線を上抜けた'],
     });
     expect(s.above).toEqual({
       head: '上', main: '🎯 買い 68,780 逆指値 (LC 68,720)',
@@ -1020,8 +1040,10 @@ describe('★buildSignalSections: 目線 / 上 / 下 の3欄', () => {
       ...FULL, stopEntry: undefined, stopLossForStop: undefined, stopLevel: undefined,
       rationale: '押し目を拾う\n※上部(買い逆指値)は不採用: 損切り幅が設定の上限より広い',
     });
+    // ★v0.9.96: 本文(押し目を拾う)は目線の欄から外れるが、**引き取り手の無い注記は残る**
+    //   (この回の注記は `※上部` = 持ち主 'above' で、方向プランの空き欄は 'stop' なので移せない)。
     expect(s.bias.lines).toContain('※上部(買い逆指値)は不採用: 損切り幅が設定の上限より広い');
-    expect(s.bias.lines[0]).toBe('押し目を拾う');
+    expect(s.bias.lines).not.toContain('押し目を拾う');
     expect(s.above.main).toBe('逆指値なし');
   });
 
@@ -1073,7 +1095,10 @@ describe('★buildSignalSections: 目線 / 上 / 下 の3欄', () => {
       .flatMap(s => [s.main, ...s.lines]).join('\n');
     expect(all).toContain(v.bias!);                                    // 目線行
     for (const leg of v.main.replace('🎯 シグナル：', '').split(' / ')) expect(all).toContain(leg);
-    expect(all).toContain(v.rationale);                                // 理由の本文
+    // ★v0.9.96: 計画全体の本文(PanelView.rationale)は **意図して欄に入れない**。
+    //   ここは「消えた先の証明」= 記録側には在り、画面には無い(basis と同じ扱い)。
+    expect(v.rationale).toBe('上昇トレンド中、押し目を拾う');
+    expect(all).not.toContain(v.rationale);
     for (const w of v.whys!) expect(all).toContain(w);                 // レッグごとの理由
     for (const p of v.stance!.split(' ／ ')) expect(all).toContain(p);  // 脚のラベル
     // ★v0.9.90: 節目の行(v.basis)は **画面に出さない**(ユーザー指示)。記録側には従来どおり残る
@@ -1089,7 +1114,13 @@ describe('★buildSignalSections: 目線 / 上 / 下 の3欄', () => {
         entryWhyForStop: 'D', lcWhyForStop: 'E' },
       { bias: '買い目線', rationale: '本文' },
     );
-    expect(s.bias.lines).toEqual(['本文', '目線: A']);
+    // ★v0.9.96: 目線の箱(A)が在る回は「本文」を積まない。
+    expect(s.bias.lines).toEqual(['目線: A']);
+    // ★箱が空の回は従来どおり本文を出す(画面を無言にしない)。
+    expect(buildSignalSections(
+      { direction: 'buy', limitEntry: 68_675, stopEntry: 68_780, at: 10 },
+      { bias: '買い目線', rationale: '本文' },
+    ).bias.lines).toEqual(['本文']);
     expect(s.above.lines[0]).toBe('逆指値: D ／ LC: E');
     expect(s.below.lines[0]).toBe('指値: B ／ LC: C');
   });
@@ -1156,7 +1187,9 @@ describe('★v0.9.90: 画面から外したもの(記録は1バイトも変え�
     expect(t).toContain('逆指値 ブレイク新規・順張り');       // 脚のラベル
     expect(t).toContain('指値 押し目買い・順張り');
     expect(t).toContain('目線: 安値を切り上げた');            // 中身のある理由
-    expect(t).toContain('押し目を拾う');                      // rationale の本文
+    // ★v0.9.96: rationale の本文は目線の欄から外した(箱が在る回)。箱が無ければ従来どおり出る。
+    expect(t).not.toContain('押し目を拾う');
+    expect(flat(sections({ ...BASE, strategy: 'トレンド押し目・戻り' }))).toContain('押し目を拾う');
   });
 
   it('★残すもの: コード注記(※…は不採用) と 順張り/逆張りが出ない理由(相場の事実)', () => {
@@ -1298,8 +1331,8 @@ describe('★v0.9.92: 脚落ちの注記を空いている欄へ', () => {
   it('①依頼の例そのもの: 注記が「上」の欄へ移り、目線の欄からは消える', () => {
     const s = sections(SELL_LIMIT_DROPPED);
     expect(s.above).toEqual({ head: '上', main: GEOM, lines: [], empty: true });
+    // ★v0.9.96: 本文は外れ、目線の箱だけが残る(注記は上の欄へ移ったまま=消えていない)。
     expect(s.bias.lines).toEqual([
-      '下降トレンドの中で、サポートを下抜けたため。',
       '目線: 下降トレンドが続いており、サポートを割ったため、売りのエントリーが適切と判断した。',
     ]);
     expect(s.below.main).toBe('🎯 売り 65,740 逆指値 (LC 65,800)');
@@ -1432,5 +1465,188 @@ describe('★extractLegDropNotes: 注記の切り出し(純関数)', () => {
     expect(extractLegDropNotes('※上部(売り指値)は不採用: トレンドに逆行', all).claimed[0]?.owner).toBe('above');
     const mid = 'AI が ※上部 と書いた本文';
     expect(extractLegDropNotes(mid, all).rest).toBe(mid);
+  });
+});
+
+// ─── ★v0.9.96: 目線の欄から「計画全体の本文」を外す ────────────────────────────
+// 依頼(逐語)「A はエントリーについて何も尋ねていないはずですが？」
+//   = 目線の欄に rationale(計画全体の本文)が積まれ、エントリー価格の話で埋まっていた。
+//   ★実測(prices_kabu.db の複製・signal_plans・2026-08-19〜08-24・direction<>'none' 405件):
+//     目線の欄の本文は strategyWhy 由来 340行 / rationale 由来 100行(100件=29.4%・
+//     そのうち価格の数字 50% ・注文の語 80%) / 脚落ちの注記 61行。外すのは rationale 由来だけ。
+describe('★v0.9.96: 目線の欄は「なぜこの目線か」だけにする', () => {
+  const sections = (signal: Record<string, unknown>): SignalSections =>
+    buildSignalView({ phase: 'armed', updatedAt: 0, signal: signal as never }).sections!;
+  /** ユーザーが見た回(2026-08-24 00:03・実データ id=2423)と同じ形。 */
+  const SEEN = {
+    direction: 'buy' as const, at: 10, refPrice: 66_100, trendDir: 'flat' as const,
+    limitEntry: 66_070, stopLossForLimit: 66_010, stopEntry: 66_125, stopLossForStop: 66_065,
+    strategy: 'ブレイク順張り',
+    strategyWhy: '現在の価格が下降トレンドにあり、直近の高値をブレイクする可能性がある。',
+    rationale: '66070での反発を狙い、66125をブレイクした場合にエントリーする。',
+    directionWhy: '下降トレンドからの反発を狙い、ブレイク新規でエントリーする。',
+    entryWhyForLimit: '66,070 の支持で反発を待つ', lcWhyForLimit: '直近安値の外側',
+    entryWhyForStop: '66,125 を抜けたら追随', lcWhyForStop: '節目の内側に戻る幅',
+  };
+
+  it('★依頼の例そのもの: 計画全体の本文が目線の欄から消え、strategyWhy と目線の理由は残る', () => {
+    const s = sections(SEEN);
+    expect(s.bias.lines).toEqual([
+      '現在の価格が下降トレンドにあり、直近の高値をブレイクする可能性がある。',   // strategyWhy(残す)
+      '目線: 下降トレンドからの反発を狙い、ブレイク新規でエントリーする。',       // directionWhy
+      '横ばい',                                                                   // trendDir='flat' の事実
+    ]);
+    // ★エントリー価格の話は目線の欄から消え、脚の欄に在る(消滅ではなく置き場所の問題)。
+    expect(s.bias.lines.join()).not.toContain('66070での反発');
+    expect(s.above.lines[0]).toBe('逆指値: 66,125 を抜けたら追随 ／ LC: 節目の内側に戻る幅');
+    expect(s.below.lines[0]).toBe('指値: 66,070 の支持で反発を待つ ／ LC: 直近安値の外側');
+    // ★②: コードが断定できない回(flat)でも AI の「ブレイク順張り」は目線行に出さない。
+    expect(s.bias.main).toBe('買い目線');
+  });
+
+  it('★条件は「目線の箱に中身が在るか」= 箱が空なら従来どおり本文を出す(画面を無言にしない)', () => {
+    const empty = sections({ ...SEEN, directionWhy: undefined, strategyWhy: undefined,
+      entryWhyForLimit: undefined, lcWhyForLimit: undefined,
+      entryWhyForStop: undefined, lcWhyForStop: undefined });
+    expect(empty.bias.lines).toContain('66070での反発を狙い、66125をブレイクした場合にエントリーする。');
+    // 目線の箱が **LC の検算しか書いていない** 回も「空」と数える(既存の cleanAiText の規約)。
+    const lcOnly = sections({ ...SEEN, directionWhy: 'LC幅は60円' });
+    expect(lcOnly.bias.lines).toContain('66070での反発を狙い、66125をブレイクした場合にエントリーする。');
+  });
+
+  it('★脚の箱だけが欠けた回でも本文は外す(条件は目線の箱ひとつ)', () => {
+    const s = sections({ ...SEEN, entryWhyForStop: undefined, lcWhyForStop: undefined });
+    expect(s.bias.lines.join()).not.toContain('66070での反発');
+    expect(s.above.lines).toEqual(['逆指値 ブレイク新規']);   // 脚の理由は無い(欠測はそのまま見える)
+  });
+
+  it('★落としても脚落ちの注記は消えない(引き取り手が在れば欄へ / 無ければ目線に残る)', () => {
+    const claimed = sections({
+      ...SEEN, stopEntry: undefined, stopLossForStop: undefined,
+      rationale: `66070での反発を狙う。 （逆指値は不採用: 損切り幅が設定の上限より広い）`,
+    });
+    expect(claimed.above.main).toBe('（逆指値は不採用: 損切り幅が設定の上限より広い）');
+    expect(claimed.bias.lines.join()).not.toContain('66070での反発');
+    // 引き取り手が無い注記(方向プランに `※上部` が来た回)は目線の欄に残す=嘘の欄に置かない。
+    const unclaimed = sections({
+      ...SEEN, rationale: '66070での反発を狙う。\n※上部(買い逆指値)は不採用: 損切り幅が設定の上限より広い',
+    });
+    expect(unclaimed.bias.lines).toContain('※上部(買い逆指値)は不採用: 損切り幅が設定の上限より広い');
+    expect(unclaimed.bias.lines.join()).not.toContain('66070での反発');
+  });
+
+  it('★記録は変えない: PanelView.rationale / whys は従来どおり本文を持つ(捨てた先の証明)', () => {
+    const v = buildSignalView({ phase: 'armed', updatedAt: 0, signal: SEEN as never });
+    expect(v.rationale).toBe(
+      '現在の価格が下降トレンドにあり、直近の高値をブレイクする可能性がある。\n'
+      + '66070での反発を狙い、66125をブレイクした場合にエントリーする。');
+    expect(v.whys?.[0]).toBe('目線: 下降トレンドからの反発を狙い、ブレイク新規でエントリーする。');
+  });
+
+  it('★箱が1つも来ていない回(旧い記録・分割の配線前)は従来どおり rationale が目線の欄に出る', () => {
+    // ★★訂正(2026-08-24): この it は元々「★分割ONの形: 5つの箱が空」という題で、コメントに
+    //   「分割ONで組み立てられる plan は directionWhy / entryWhyFor* を持たない」と書いていた。
+    //   ★同じ作業ツリーで server/llm/planVariants.ts と scalpPlanSplit.ts を直して
+    //     **箱に入れるようにした** ので、その記述は嘘になっていた(テストは通るが証拠として偽)。
+    //   ⇒ 題とコメントを事実に直す。ここが固定しているのは「箱が1つも無い回の縮退」で、
+    //     分割ONの実際の形は下の describe(★分割ONの3通り)が **実走の値** で固定する。
+    const s = sections({
+      direction: 'buy', at: 10, refPrice: 66_100, trendDir: 'flat',
+      limitEntry: 66_070, stopLossForLimit: 66_010, stopEntry: 66_125, stopLossForStop: 66_065,
+      strategy: 'ブレイク順張り',
+      rationale: 'ブレイク順張り / 指値: 66,070 の支持で反発を待つ / 逆指値: 66,125 を抜けたら追随',
+    });
+    expect(s.bias.lines[0]).toBe('ブレイク順張り / 指値: 66,070 の支持で反発を待つ / 逆指値: 66,125 を抜けたら追随');
+    expect(s.above.lines).toEqual(['逆指値 ブレイク新規']);   // 脚ごとの理由の箱が無い回
+  });
+});
+
+// ★v0.9.96 の実装の穴を塞いだ回帰テスト(改行入りの strategyWhy)。
+//   AI 生成文は改行を含みうる。keepOnly を丸ごと1本の文字列として比べると、
+//   改行入りの strategyWhy が **どの行とも一致せずに落ちる**(=残すと決めたものが消える)。
+describe('★v0.9.96: 改行を含む strategyWhy も行ごとに残る', () => {
+  it('2行の strategyWhy は2行とも残り、rationale の本文だけが落ちる', () => {
+    const s = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'buy', at: 10, limitEntry: 68_675, stopLossForLimit: 68_615,
+        strategyWhy: '上段の読み。\n下段の読み。',
+        rationale: '68,675 で拾い、68,780 を抜けたら追随する計画。',
+        directionWhy: '安値を切り上げた',
+      } as never,
+    }).sections!;
+    expect(s.bias.lines).toEqual(['上段の読み。', '下段の読み。', '目線: 安値を切り上げた']);
+  });
+});
+
+// ─── ★v0.9.96(2周目): 分割ON の3通り。★値は **runSplitPlan の実走** から採った ──────────
+// エバリュエーターが実走で見つけた2つの純減を固定する。
+//   ① レンジ両面で本文を落とすと、B の理由も strategy も **どこにも出ない**(受け皿が無い)
+//   ② A が理由を返さなかった回に本文を残すと、**同じ理由が目線の欄と脚の欄に2回** 出る
+describe('★v0.9.96(2周目): 分割ON の3通りで純減も二重も作らない', () => {
+  const sections = (signal: Record<string, unknown>): SignalSections =>
+    buildSignalView({ phase: 'armed', updatedAt: 0, signal: signal as never }).sections!;
+  /** 分割ON・方向プラン(A も B も理由を返した回)。 */
+  const SPLIT_DIR = {
+    direction: 'sell' as const, at: 10, refPrice: 66_100, trendDir: 'flat' as const,
+    limitEntry: 66_140, stopLossForLimit: 66_200, stopEntry: 66_060, stopLossForStop: 66_120,
+    strategy: 'ブレイク順張り',
+    rationale: 'ブレイク順張り / 指値売り注文: 66,135 のレジスタンスの5円上に戻り売りの指値を置いた。'
+      + ' / 逆指値売り注文: 66,065 のサポートを抜けたら追随するため5円下。',
+    directionWhy: '直近1時間で高値を切り下げ、21日線の下に居るため。',
+    entryWhyForLimit: '66,135 のレジスタンスの5円上に戻り売りの指値を置いた。',
+    entryWhyForStop: '66,065 のサポートを抜けたら追随するため5円下。',
+  };
+
+  it('①分割ON・両方の理由が在る回: 目線の欄は A の理由だけ / 脚の理由は上下の欄', () => {
+    const s = sections(SPLIT_DIR);
+    expect(s.bias.lines).toEqual(['目線: 直近1時間で高値を切り下げ、21日線の下に居るため。', '横ばい']);
+    expect(s.above.lines[0]).toBe('指値: 66,135 のレジスタンスの5円上に戻り売りの指値を置いた。');
+    expect(s.below.lines[0]).toBe('逆指値: 66,065 のサポートを抜けたら追随するため5円下。');
+  });
+
+  it('★②A が理由を返さなかった回: 同じ理由を2箇所に出さない(脚の箱が在れば本文を落とす)', () => {
+    const s = sections({ ...SPLIT_DIR, directionWhy: undefined });
+    // 直す前はここに `ブレイク順張り / 指値売り注文: … / 逆指値売り注文: …` が残り、
+    // 上/下の欄にも同じ2本が出ていた(実走で再現した)。
+    expect(s.bias.lines.join('\n')).not.toContain('指値売り注文');
+    expect(s.bias.lines).toEqual(['横ばい']);
+    expect(s.above.lines[0]).toBe('指値: 66,135 のレジスタンスの5円上に戻り売りの指値を置いた。');
+    expect(s.below.lines[0]).toBe('逆指値: 66,065 のサポートを抜けたら追随するため5円下。');
+  });
+
+  it('★③レンジ両面では本文を落とさない(上下の欄が理由の受け皿を持たないため)', () => {
+    const s = sections({
+      direction: 'buy', mode: 'range', at: 10, refPrice: 66_100, trendDir: 'flat',
+      range: { upper: { side: 'sell', type: 'limit', entry: 66_180, stopLoss: 66_240 },
+               lower: { side: 'buy', type: 'limit', entry: 66_020, stopLoss: 65_960 } },
+      strategy: 'レンジの逆張り',
+      rationale: 'レンジの逆張り / 指値売り注文: 上限の手前で売る / 指値買い注文: 下限の手前で買う',
+      directionWhy: '高安が重なりトレンドが無い',
+    });
+    // ★本文(B の理由と読み)が残っていること。落とすと画面のどこにも出ない=純減。
+    expect(s.bias.lines).toEqual([
+      'レンジの逆張り / 指値売り注文: 上限の手前で売る / 指値買い注文: 下限の手前で買う',
+      '目線: 高安が重なりトレンドが無い',
+    ]);
+    expect(s.above.lines).toEqual([]);   // レンジの欄は理由の行を持たない(既存の線引き)
+    expect(s.below.lines).toEqual([]);
+  });
+
+  it('★B の strategy は語を含まなければ目線行に出る(消えない)', () => {
+    // ★「分割ONでは B の strategy が必ず消える」ではない。消えるのは
+    //   順張り/逆張りを含む回だけで、それは②の裁定(コードが測った trendDir だけを権威にする)の帰結。
+    expect(sections({ ...SPLIT_DIR, strategy: '押し目を節目手前で拾う' }).bias.main)
+      .toBe('売り目線・押し目を節目手前で拾う');
+    expect(sections(SPLIT_DIR).bias.main).toBe('売り目線');
+  });
+
+  it('★LC の箱だけでは本文を落とさない(本文が語る「目線と価格」を引き受けないため)', () => {
+    const s = sections({
+      direction: 'sell', at: 10, refPrice: 66_100, limitEntry: 66_140, stopLossForLimit: 66_200,
+      rationale: '戻り売りを狙う。', lcWhyForLimit: '直近高値の外側',
+    });
+    expect(s.bias.lines).toEqual(['戻り売りを狙う。']);
+    expect(s.above.lines[0]).toBe('LC: 直近高値の外側');
   });
 });

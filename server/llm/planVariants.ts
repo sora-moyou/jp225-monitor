@@ -192,6 +192,10 @@ export function buildPlanFromBAnswer(
         ...(iOk ? { lower: legOf(spec.legs.i, answer.iPrice!, answer.iLcWidth!) } : {}),
       },
     };
+    // ★v0.9.96: レンジ2版の脚には理由の箱が無い(AiPlan.range の RangeLeg は
+    //   side/type/entry/stopLoss だけ)。画面もレンジでは脚ごとの理由の行を出さない
+    //   (既存の線引き)。★**意図して空**であって、配線漏れではない。理由は従来どおり
+    //   rationale に載り、台帳では ai_why/b_strategy で追える。
     return { plan, aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: false };
   }
 
@@ -202,12 +206,23 @@ export function buildPlanFromBAnswer(
     if (!ok) continue;
     const price = (c.key === 'a' ? answer.aPrice : answer.iPrice)!;
     const width = (c.key === 'a' ? answer.aLcWidth : answer.iLcWidth)!;
+    // ★v0.9.96(リーダー裁定): B の脚ごとの理由を **画面の箱** へ入れる。
+    //   ■ どの箱に入るかは **表(LegContract)が決める**(あ/い のどちらが指値かは版ごとに逆)。
+    //     価格と同じ分岐に乗せてあるので、「価格を入れた脚」と「理由を入れた箱」は必ず一致する。
+    //   ■ ★立たなかった脚には理由も入れない(価格の無い箱に理由だけ在る形を作らない)。
+    //     その回の理由は従来どおり aWhy/iWhy として返り、見送りの理由(ai_why)として台帳に残る。
+    //   ■ ★lcWhyForLimit / lcWhyForStop は **入れない**: B の契約(BAnswer)に
+    //     損切り幅だけの理由を書く欄が無い(aWhy/iWhy は「その脚の提案理由」1本)。
+    //     aWhy を LC の箱にも複写すると、AI が書いていない理由を画面が名乗ることになる。
+    const why = c.key === 'a' ? answer.aWhy : answer.iWhy;
     if (c.type === 'limit') {
       plan.limitEntry = price;
       plan.stopLossForLimit = stopLossFromWidth(c.side, price, width);   // ★向きはここだけ
+      if (why) plan.entryWhyForLimit = why;
     } else {
       plan.stopEntry = price;
       plan.stopLossForStop = stopLossFromWidth(c.side, price, width);
+      if (why) plan.entryWhyForStop = why;
     }
   }
   return { plan, aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: false };
