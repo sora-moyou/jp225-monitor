@@ -256,12 +256,32 @@ describe('buildWaitMain: 待機理由(waitReason)', () => {
   // 2026-08-17 10:30 JST = 2026-08-17T01:30:00Z
   const UNTIL = Date.UTC(2026, 7, 17, 1, 30, 0);
 
-  it('クールダウンは解除時刻(JST HH:MM)を出す', () => {
-    expect(buildWaitMain(null, { kind: 'cooldown', untilMs: UNTIL })).toBe('シグナル待機（10:30までクールダウン）');
+  // ★2026-08-25(ユーザー指示): 「その後にかっこで囲んで理由/状況を書く」。
+  //   解除条件が読み取れる形へ変えた(旧「10:30までクールダウン」→ 新「クールダウンで残り45秒待機」)。
+  it('★クールダウンは **残り秒** を出す', () => {
+    expect(buildWaitMain(null, { kind: 'cooldown', untilMs: UNTIL }, UNTIL - 45_000))
+      .toBe('シグナル待機（クールダウンで残り45秒待機）');
+    // 秒未満は切り上げ(0秒と表示して「まだ待つ」を隠さない)
+    expect(buildWaitMain(null, { kind: 'cooldown', untilMs: UNTIL }, UNTIL - 1))
+      .toBe('シグナル待機（クールダウンで残り1秒待機）');
   });
 
-  it('節目クロス待ち', () => {
+  it('★level は **再武装の価格** を出す(境界が無ければ従来の語に縮退)', () => {
+    expect(buildWaitMain(null, { kind: 'level', upperTrigger: 70_000, lowerTrigger: 69_950 }))
+      .toBe('シグナル待機（現在価格が70,000以上、または69,950以下になるまで待機）');
+    // ★境界が来ない回(古い server / 節目も価格も読めない)は嘘の数値を作らず従来の語へ
     expect(buildWaitMain(null, { kind: 'level' })).toBe('シグナル待機（節目クロス待ち）');
+  });
+
+  it('★armBlocked は 連続失効の回数と残り分を出す', () => {
+    const U = UNTIL;
+    expect(buildWaitMain(null, { kind: 'armBlocked', untilMs: U, streak: 3 }, U - 12 * 60_000))
+      .toBe('シグナル待機（同じ計画が3回続けて失効したため残り12分待機）');
+    // 回数が読めない回は回数の部分ごと出さない(0回 と書かない)
+    expect(buildWaitMain(null, { kind: 'armBlocked', untilMs: U, streak: 0 }, U - 60_000))
+      .toBe('シグナル待機（同じ計画が続けて失効したため残り1分待機）');
+    // 解除時刻が壊れていれば その部分ごと出さない
+    expect(buildWaitMain(null, { kind: 'armBlocked', untilMs: Number.NaN, streak: 3 })).toBe('シグナル待機');
   });
 
   // ★取引時間外。語彙は画面の他所(価格ボード/指標パネル/API状態)と同じ「取引時間外」を使う=新語を作らない。
@@ -276,8 +296,8 @@ describe('buildWaitMain: 待機理由(waitReason)', () => {
     // 理由なし=従来と1バイトも同じ
     expect(buildWaitMain({ count: 27, streak: 2, lastAt: 1, waitMin: 15, bias: 'buy' }))
       .toBe('シグナル待機（連続失効 15分2回 / 現在買い目線）');
-    expect(buildWaitMain({ count: 27, streak: 2, lastAt: 1, waitMin: 15, bias: 'buy' }, { kind: 'cooldown', untilMs: UNTIL }))
-      .toBe('シグナル待機（10:30までクールダウン / 連続失効 15分2回 / 現在買い目線）');
+    expect(buildWaitMain({ count: 27, streak: 2, lastAt: 1, waitMin: 15, bias: 'buy' }, { kind: 'cooldown', untilMs: UNTIL }, UNTIL - 30_000))
+      .toBe('シグナル待機（クールダウンで残り30秒待機 / 連続失効 15分2回 / 現在買い目線）');
   });
 
   it('理由も失効も無ければ従来どおり「シグナル待機」', () => {
@@ -288,8 +308,11 @@ describe('buildWaitMain: 待機理由(waitReason)', () => {
   });
 
   it('buildSignalView(シグナル無し)から waitReason が配線されている', () => {
-    expect(buildSignalView({ phase: 'flat', updatedAt: 0, waitReason: { kind: 'cooldown', untilMs: UNTIL } }).main)
-      .toBe('シグナル待機（10:30までクールダウン）');
+    // ★buildSignalView は now を取らない(現在時刻を使う)。残り秒は実時計で変わるので形で固定する。
+    expect(buildSignalView({ phase: 'flat', updatedAt: 0, waitReason: { kind: 'cooldown', untilMs: Date.now() + 45_000 } }).main)
+      .toMatch(/^シグナル待機（クールダウンで残り[0-9]+秒待機）$/);
+    expect(buildSignalView({ phase: 'flat', updatedAt: 0, waitReason: { kind: 'level', upperTrigger: 70_000, lowerTrigger: 69_950 } }).main)
+      .toBe('シグナル待機（現在価格が70,000以上、または69,950以下になるまで待機）');
   });
 });
 

@@ -100,9 +100,20 @@ export interface SignalTradeState {
   //   bias   = 直前に失効したブラケットの向き(=いまどっち向きで待っているか)。不明なら欠落。
   armedTimeout?: { count: number; streak?: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' };
   // ★待機理由(なぜいまシグナルが無いのか)。server(engine)の抑止ゲートをそのまま載せたもの。
-  //   closed=取引時間外 / cooldown=決済後のクールダウン(untilMs=解除時刻の絶対時刻) / level=見送り後の節目クロス待ち。
+  //   closed=取引時間外 / cooldown=決済後のクールダウン(untilMs=解除時刻の絶対時刻) / level=見送り後の節目クロス待ち /
+  //   armBlocked=同じ計画が連続失効してブロック中(armRepeat)。
   //   理由が無いとき(通常の間隔待ち等)はフィールドごと欠落する=従来と同じ「シグナル待機」表示。
-  waitReason?: { kind: 'closed' } | { kind: 'cooldown'; untilMs: number } | { kind: 'level' };
+  //   ★2026-08-25(ユーザー指示): 括弧の中に **解除条件を具体値で** 出すため、
+  //     level は再武装の価格(upperTrigger/lowerTrigger)を、armBlocked は解除時刻と連続回数を運ぶ。
+  //     ★level の境界は **任意**: 価格や節目が読めず境界を出せない回があるので、
+  //       そのときは従来の「節目クロス待ち」に縮退する(嘘の数値を作らない)。
+  //   ★この型は core/types.ts の SignalTradeState と **同じ形**(web は server を import できないので写し)。
+  //     ★片方だけ直すと画面が新しい情報を読み落とす。必ず両方そろえる。
+  waitReason?:
+    | { kind: 'closed' }
+    | { kind: 'cooldown'; untilMs: number }
+    | { kind: 'level'; upperTrigger?: number; lowerTrigger?: number }
+    | { kind: 'armBlocked'; untilMs: number; streak: number };
   // ★v0.9.97: 直近の「ARM しなかった計画サイクル」で AI が示した目線と、見送った理由
   //   (server SignalTradeState.lastNone と同じ ADD-ONLY フィールド)。**待機(flat)のときだけ来る**
   //   = 武装中/保有中は server が付けない(画面側の分岐に頼らない)。
@@ -250,10 +261,12 @@ const BIAS_JA: Record<'buy' | 'sell' | 'range', string> = { buy: '買い目線',
 export function buildWaitMain(
   at?: { count: number; streak?: number; lastAt: number; waitMin?: number; bias?: 'buy' | 'sell' | 'range' } | null,
   waitReason?: SignalTradeState['waitReason'] | null,
+  now: number = Date.now(),
 ): string {
   const parts: string[] = [];
   // ★待機理由(server の抑止ゲート)を先頭に置く。ユーザーが最初に知りたいのは「なぜ止まっているか」。
-  const reason = waitReasonLabel(waitReason);
+  //   ★2026-08-25: 残り秒/残り分を出すので now を渡す(既定は現在時刻=呼び出し側は変えなくてよい)。
+  const reason = waitReasonLabel(waitReason, now);
   if (reason) parts.push(reason);
   const n = at?.streak ?? 0;
   if (n > 0) {
@@ -367,21 +380,46 @@ export function fmtJstHm(ms: number): string {
   });
 }
 
-/** 純関数: 待機理由の表示文。語彙は既存に揃える(新しい言い回しを作らない)。
- *  ・closed ……「取引時間外」= 価格ボード/指標パネル/API状態が既に使っている語をそのまま使う。
- *  ・cooldown …「(engine) cooldown 決済後の再ARM抑止」→ 解除時刻を添えて「HH:MMまでクールダウン」。
- *  ・level ………「(engine) plan-rearm 節目クロス」→「節目クロス待ち」。
- *  理由が無い/解除時刻が読めないときは空文字(=その部分ごと出さない。空括弧や「不明」を作らない)。 */
-export function waitReasonLabel(r?: SignalTradeState['waitReason'] | null): string {
+/** 純関数: 待機理由の表示文。
+ *
+ *  ■ ★2026-08-25(ユーザー指示・逐語)
+ *    「シグナル待機の項目は、その後にかっこで囲んで理由/状況を書く。
+ *      -クールダウンで○○秒待機 / -現在価格が70000以上、または69950以下になるまで待機 /
+ *      -AIシグナルが不正のため○○分待機」
+ *    ★**「何を待っているか」ではなく「何がどうなれば動くか」** を書く形に変えた。
+ *    旧: 「10:30までクールダウン」「節目クロス待ち」 ← 解除条件が読み取れない
+ *    新: 「クールダウンで残り45秒待機」「現在価格が70,000以上、または69,950以下になるまで待機」
+ *
+ *  ・closed ……… 「取引時間外」(既存の語のまま。解除条件は時刻表ではなく市場なので数値を足さない)
+ *  ・cooldown … 残り秒。★秒は **画面側で now から計算** する(SSE は絶対時刻のまま=tick で揺れない)。
+ *  ・level ……… 再武装の価格そのもの。境界が来ていない回は従来の「節目クロス待ち」に縮退する。
+ *  ・armBlocked … 同じ計画が連続失効してブロック中(armRepeat)。残り分と連続回数。
+ *  ★価格の書式は既存の fmtPrice(カンマ区切り)に揃える。ボードの他の価格と見た目を割らないため。
+ *  ★読めない値のときは空文字(=その部分ごと出さない。空括弧や「不明」を作らない)。 */
+export function waitReasonLabel(r?: SignalTradeState['waitReason'] | null, now: number = Date.now()): string {
   if (!r) return '';
   if (r.kind === 'closed') return '取引時間外';
   if (r.kind === 'cooldown') {
-    // ★2026-08-24: 同じ穴(上限なし)がここにも在った。判定を1つに寄せる=`Invalid Date までクールダウン` を作らない。
+    // ★2026-08-24: 同じ穴(上限なし)がここにも在った。判定を1つに寄せる=`Invalid Date` を作らない。
     const until = r.untilMs;
     if (!isDisplayableTime(until)) return '';
-    return `${fmtJstHm(until)}までクールダウン`;
+    const sec = Math.max(0, Math.ceil((until - now) / 1000));
+    return `クールダウンで残り${sec}秒待機`;
   }
-  if (r.kind === 'level') return '節目クロス待ち';
+  if (r.kind === 'level') {
+    const up = r.upperTrigger, lo = r.lowerTrigger;
+    if (typeof up === 'number' && Number.isFinite(up) && typeof lo === 'number' && Number.isFinite(lo)) {
+      return `現在価格が${fmtPrice(up)}以上、または${fmtPrice(lo)}以下になるまで待機`;
+    }
+    return '節目クロス待ち';   // ★境界が読めない回(古い server / 節目が無い)は従来の語に縮退
+  }
+  if (r.kind === 'armBlocked') {
+    const until = r.untilMs;
+    if (!isDisplayableTime(until)) return '';
+    const min = Math.max(0, Math.ceil((until - now) / 60_000));
+    const n = r.streak > 0 ? `同じ計画が${r.streak}回続けて失効したため` : '同じ計画が続けて失効したため';
+    return `${n}残り${min}分待機`;
+  }
   return '';
 }
 

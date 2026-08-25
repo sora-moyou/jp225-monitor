@@ -369,6 +369,9 @@ export class SignalEngine {
     const levelRearmReady = anchor !== null && priceKnown
       ? shouldRearmOnLevel(anchor, price!, getLevelsSnapshot())
       : false;
+    // ★2026-08-25(ユーザー指示): 「○円以上、または○円以下になるまで待機」を出すための境界。
+    //   ★shouldRearmOnLevel と **同じ関数・同じ引数** から取る(判定と表示で別の数を作らない)。
+    const bounds = anchor !== null ? rearmBounds(anchor, getLevelsSnapshot()) : null;
     return computeWaitReason({
       phase: this.state.phase,
       planning: this.planning,
@@ -378,6 +381,9 @@ export class SignalEngine {
       priceKnown,
       levelRearmReady,
       safetyValveElapsed: now - this.lastPlanAt >= SUPPRESS_SAFETY_MS,
+      ...(bounds ? { rearmUpper: bounds.upperTrigger, rearmLower: bounds.lowerTrigger } : {}),
+      armBlockedUntilMs: this.armRepeat.blockedUntil || null,
+      armBlockedStreak: this.armRepeat.streak,
       now,
     });
   }
@@ -724,7 +730,14 @@ export class SignalEngine {
         //   ★buildPlanNote は純関数で、目線も理由も見送りの語も取れない回は null を返す(=何も出さない)。
         //   ★採否・価格・台帳には一切影響しない(この行より上の判断は既に終わっている)。
         if (planResult) {
-          this.lastPlanNote = armedSignalId != null ? null : buildPlanNote(planResult, Date.now(), gate);
+          // ★2026-08-25(ユーザー指示): 「目線の項目は、**次の新しい目線が出るまで消さない**」。
+          //   旧: ARM した回に null へ戻していた → 武装→失効→flat に戻ると目線が消え、
+          //       次の計画サイクル(既定3分間隔)まで画面が無言になっていた。
+          //   新: **新しい目線が取れた回だけ差し替える**(取れなければ前の目線を残す)。
+          //   ★ARM した回も buildPlanNote は目線を返す(plan.direction から)ので、ここで更新される
+          //     =「シグナルが出た後に古い見送りの理由が残る」ことは無い(中身が新しくなる)。
+          const note = buildPlanNote(planResult, Date.now(), gate);
+          if (note) this.lastPlanNote = note;
           // ★見送った瞬間に画面へ出す。次の tick を待つと、価格ループ1周ぶん(取得失敗時は
           //   PRICE_BACKOFF_MS ぶん)遅れて理由が出る=「なぜ止まっているか」を一番知りたい瞬間に無い。
           //   ★遅れの実測はしていない(周期は priceLoop の設定と成否で変わる)。ここは待たせない側に倒す。

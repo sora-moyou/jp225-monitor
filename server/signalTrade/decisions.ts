@@ -658,7 +658,8 @@ export interface ArmedTimeoutView {
 export type WaitReasonView =
   | { kind: 'closed' }
   | { kind: 'cooldown'; untilMs: number }
-  | { kind: 'level' };
+  | { kind: 'level'; upperTrigger?: number; lowerTrigger?: number }
+  | { kind: 'armBlocked'; untilMs: number; streak: number };
 
 /** 待機理由を決める純関数。★engine の maybeRequestPlan と **同じ材料・同じ順序** で読む
  *  (画面に出す理由と、実際に再計画を止めている理由をずらさない)。maybeRequestPlan の early return を
@@ -687,6 +688,12 @@ export function computeWaitReason(input: {
   levelRearmReady: boolean;
   /** 安全弁(SUPPRESS_SAFETY_MS 経過)。true なら抑止中でも1本要求へ進むので理由にしない。 */
   safetyValveElapsed: boolean;
+  /** ★2026-08-25: 再武装の価格(levelGate.rearmBounds)。読めない回は undefined=従来の語に縮退。 */
+  rearmUpper?: number;
+  rearmLower?: number;
+  /** ★2026-08-25: 同じ計画が連続失効してブロック中(armRepeat)。解除時刻と連続回数。 */
+  armBlockedUntilMs?: number | null;
+  armBlockedStreak?: number;
   now: number;
 }): WaitReasonView | null {
   const { phase, planning, inPollWindow, cooldownUntilMs, planSuppressedAnchor, priceKnown, levelRearmReady, safetyValveElapsed, now } = input;
@@ -700,7 +707,21 @@ export function computeWaitReason(input: {
   //   確かめていないことの断定になる。実際に止めているのは価格が来ていないこと。
   //   ★フィード断用の新しい種別は作らない: 接続状態は別の表示(フィード接続状態 / SSE ハートビート)が
   //     既に担当しており、ここに二重に持つと同じ事実を指す語彙が2つに割れる。黙って理由を落とすだけでよい。
-  if (planSuppressedAnchor != null && priceKnown && !levelRearmReady && !safetyValveElapsed) return { kind: 'level' };
+  if (planSuppressedAnchor != null && priceKnown && !levelRearmReady && !safetyValveElapsed) {
+    // ★境界の価格が読めていれば一緒に運ぶ(画面が「○円以上/○円以下になるまで待機」と出せる)。
+    //   読めない回は kind だけ=従来の「節目クロス待ち」に縮退する(嘘の数値を作らない)。
+    const up = input.rearmUpper, lo = input.rearmLower;
+    return Number.isFinite(up) && Number.isFinite(lo)
+      ? { kind: 'level', upperTrigger: up, lowerTrigger: lo }
+      : { kind: 'level' };
+  }
+  // ★2026-08-25: 上の抑止ゲートが全て外れていても、**同じ計画が連続失効してブロック中** なら
+  //   AI が同じブラケットを返す限り武装しない。★最後に見るのは、これが「計画を止めるゲート」ではなく
+  //   「武装を止めるゲート」だから(上の4つが実際に計画要求を止めている理由で、そちらが優先)。
+  const ab = input.armBlockedUntilMs;
+  if (ab != null && Number.isFinite(ab) && ab > now) {
+    return { kind: 'armBlocked', untilMs: ab, streak: input.armBlockedStreak ?? 0 };
+  }
   return null;
 }
 

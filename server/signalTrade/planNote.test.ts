@@ -168,7 +168,10 @@ describe('§engine → SSE state(配線の実証)', () => {
     eng.stop();
   });
 
-  it('★ARM した回は lastNone を付けない(古い見送りの理由を残さない)', async () => {
+  // ★2026-08-25: 実装は「ARM した回に null へ戻す」から「新しい目線で差し替える」に変わったが、
+  //   **武装中に lastNone を出さない**(toSignalTradeState が phase==='flat' でしか載せない)ので
+  //   ここの期待値は不変。★古い見送りの理由が武装中の画面に出ないことを引き続き固定する。
+  it('★ARM した回は lastNone を付けない(武装中の画面に見送りの理由を出さない)', async () => {
     const eng = await runCycle({
       ok: true,
       plan: {
@@ -180,6 +183,47 @@ describe('§engine → SSE state(配線の実証)', () => {
     const s = eng.getState(NOW);
     expect(s.phase).toBe('armed');
     expect(s.lastNone).toBeUndefined();
+    eng.stop();
+  });
+
+  // ★2026-08-25(ユーザー指示・逐語):「目線の項目は、次の新しい目線が出るまで消さない。」
+  //
+  //  ■ 旧実装の穴(これが依頼の症状)
+  //    engine は **計画サイクルのたびに** lastPlanNote を差し替えており、目線が1つも取れない回
+  //    (LLM 全滅・例外など)は **null で上書き** していた。その瞬間から次に目線が出るまで
+  //    画面の目線の欄が無言になる。ARM した回も null に戻していた。
+  //  ■ 新実装: **新しい目線が取れた回だけ差し替える**(取れなければ前の目線を残す)。
+  it('★目線は「次の新しい目線が出るまで」消えない(目線が取れない回で上書きしない)', async () => {
+    const eng = await runCycle(rangeDisabledResult);
+    expect(eng.getState(NOW).lastNone?.bias).toBe('range');          // ① 目線が載った
+
+    // ② 次のサイクルは **目線も理由も1つも取れない**(計画そのものが得られなかった回)。
+    //    ★buildPlanNote は null を返す=旧実装はここで lastPlanNote を null にしていた。
+    canned = { ok: false, error: 'LLM 全滅' };
+    eng.feed(REF + 60, NOW + 10 * 60_000);                           // ★節目(±50)を跨いで抑止を解く
+    await vi.waitFor(() => expect(plans()).toBe(2), { timeout: 3000 });
+
+    // ★前の目線が残っている(旧実装ならここで undefined になり赤くなる)。
+    const s2 = eng.getState(NOW);
+    expect(s2.lastNone?.bias).toBe('range');
+    expect(s2.lastNone?.why).toBe(REAL_A_WHY);
+    eng.stop();
+  });
+
+  it('★新しい目線が出たら **差し替わる**(古いものが残り続けない=この直しが恒真でない)', async () => {
+    const eng = await runCycle(rangeDisabledResult);
+    expect(eng.getState(NOW).lastNone?.bias).toBe('range');
+    canned = {
+      ok: true,
+      plan: { direction: 'none', rationale: '買い目線だが節目が遠い', refPrice: REF },
+      noneReason: 'ai',
+      splitRecord: { aDirection: 'buy', aWhy: '高値切り上げが続く', bVariant: 'buy', squeezeState: null },
+    };
+    eng.feed(REF + 60, NOW + 10 * 60_000);
+    await vi.waitFor(() => expect(plans()).toBe(2), { timeout: 3000 });
+    const s2 = eng.getState(NOW);
+    expect(s2.lastNone?.bias).toBe('buy');                            // ★新しい目線に入れ替わった
+    expect(s2.lastNone?.why).toBe('高値切り上げが続く');
     eng.stop();
   });
 

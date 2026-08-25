@@ -275,7 +275,16 @@ export interface SignalTradeState {
   //       (broadcast の dedupe のためではない。dedupe は下の updatedAt が毎回変わるので **実測で効いていない**)
   //   ・level ……… 見送り(none)後の節目クロス待ち(engine ログの「plan-rearm 節目クロス」と同じもの)。
   //   理由が無いとき(通常の間隔待ち等)は **フィールドごと欠落**=既存 SSE JSON 不変。
-  waitReason?: { kind: 'closed' } | { kind: 'cooldown'; untilMs: number } | { kind: 'level' };
+  //   ★2026-08-25(ユーザー指示): 「シグナル待機」の括弧に **理由/状況を具体値で** 出す。
+  //     ・cooldown … untilMs から **残り秒** を画面が計算する(絶対時刻のまま運ぶ=SSE は tick で揺れない)。
+  //     ・level ……… **再武装の価格そのもの**(upperTrigger/lowerTrigger)。levelGate.rearmBounds の値。
+  //       ★任意にしてあるのは、価格や節目が読めず境界を出せない回があるため(そのときは従来の語に縮退)。
+  //     ・armBlocked … 同じ計画が連続失効してブロック中(armRepeat.ts)。untilMs=解除時刻 / streak=連続回数。
+  waitReason?:
+    | { kind: 'closed' }
+    | { kind: 'cooldown'; untilMs: number }
+    | { kind: 'level'; upperTrigger?: number; lowerTrigger?: number }
+    | { kind: 'armBlocked'; untilMs: number; streak: number };
   // ★v0.9.97(ADD-ONLY): **直近の計画サイクルで AI が示した目線と、見送った理由**。
   //   ユーザー指示「目線はあって、その目線のもとでシグナルを見送った ——— この時も AI の目線を表示してください」。
   //   これまで目線(a_direction)と その理由(a_why)は台帳 signal_plans にしか入っておらず、

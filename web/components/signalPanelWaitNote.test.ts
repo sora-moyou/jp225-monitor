@@ -111,8 +111,10 @@ describe('§いつの目線かが読める', () => {
   it('★同じ穴が待機理由のクールダウン時刻にも在ったので、判定を1つに寄せた', () => {
     expect(waitReasonLabel({ kind: 'cooldown', untilMs: 8_640_000_000_000_001 })).toBe('');
     expect(waitReasonLabel({ kind: 'cooldown', untilMs: Number.NaN })).toBe('');
+    expect(waitReasonLabel({ kind: 'armBlocked', untilMs: Number.NaN, streak: 3 })).toBe('');
     // ★正常値は従来どおり(1バイトも変えていない)。
-    expect(waitReasonLabel({ kind: 'cooldown', untilMs: AT })).toBe(`${HM}までクールダウン`);
+    // ★2026-08-25: 表示は「残り秒」になった(now を渡して固定する)。
+    expect(waitReasonLabel({ kind: 'cooldown', untilMs: AT }, AT - 30_000)).toBe('クールダウンで残り30秒待機');
   });
 
   it('★1行も出ない回に時刻だけが残らない', () => {

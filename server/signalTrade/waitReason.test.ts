@@ -156,7 +156,11 @@ describe('SignalEngine: 見送り後の state に載る待機理由(場中/引�
     expect(eng.getState(DAY).waitReason).toBeUndefined();   // まだ何も抑止していない
     eng.feed(REF, DAY);
     // 見送りが返るとアンカーが据わる=場中は「節目クロス待ち」。
-    await vi.waitFor(() => expect(eng.getState(DAY).waitReason).toEqual({ kind: 'level' }), { timeout: 3000 });
+    // ★2026-08-25(ユーザー指示): 「○円以上、または○円以下になるまで待機」を出すため、
+    //   level には **再武装の価格** が載る。この試験は節目スナップショットが無いので
+    //   levelGate の ±50円フォールバックがそのまま出る(=判定に使う値と同じもの)。
+    await vi.waitFor(() => expect(eng.getState(DAY).waitReason)
+      .toEqual({ kind: 'level', upperTrigger: REF + 50, lowerTrigger: REF - 50 }), { timeout: 3000 });
     // ★同じアンカーのまま時計だけ進める。実際に止めているのは「取引時間外」なので、そう出なければ嘘になる。
     expect(eng.getState(AFTER_CLOSE).waitReason).toEqual({ kind: 'closed' });
     expect(eng.getState(WEEKEND).waitReason).toEqual({ kind: 'closed' });
@@ -173,12 +177,13 @@ describe('SignalEngine: 見送り後の state に載る待機理由(場中/引�
     const eng = new SignalEngine(A_CFG);
     await eng.start();
     eng.feed(REF, DAY);
-    await vi.waitFor(() => expect(eng.getState(DAY).waitReason).toEqual({ kind: 'level' }), { timeout: 3000 });
+    const LEVEL = { kind: 'level', upperTrigger: REF + 50, lowerTrigger: REF - 50 };
+    await vi.waitFor(() => expect(eng.getState(DAY).waitReason).toEqual(LEVEL), { timeout: 3000 });
     putPrice(null);                                             // ★フィードが落ちた
     expect(eng.getState(DAY).waitReason).toBeUndefined();        // 嘘をつかない(理由を出さない)
     expect(eng.getState(AFTER_CLOSE).waitReason).toEqual({ kind: 'closed' });   // 時間外は価格に依らない事実
     putPrice(REF);                                              // 復旧したら元に戻る
-    expect(eng.getState(DAY).waitReason).toEqual({ kind: 'level' });
+    expect(eng.getState(DAY).waitReason).toEqual(LEVEL);
     eng.stop();
   });
 });
