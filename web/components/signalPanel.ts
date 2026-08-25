@@ -892,10 +892,16 @@ function rangeLegText(leg: SignalRangeLeg, pos: '上' | '下'): string {
 
 /** 脚1本ぶんの理由の行を組み立てる(純関数)。**中身のある項目だけ** を並べる。
  *
- *      逆指値: 68,775 を抜けたら追随 ／ LC: 節目の内側に戻る幅   … 両方ある
- *      逆指値: 68,775 を抜けたら追随                            … LC の理由が空(★片方だけ落とす)
- *      LC: 節目の内側に戻る幅                                    … 脚の理由が空
- *      (行そのものが出ない)                                      … 両方空
+ *      68,775 を抜けたら追随 ／ LC: 節目の内側に戻る幅   … 両方ある
+ *      68,775 を抜けたら追随                            … LC の理由が空(★片方だけ落とす)
+ *      LC: 節目の内側に戻る幅                            … 脚の理由が空
+ *      (行そのものが出ない)                              … 両方空
+ *
+ *  ■ ★2026-08-25(ユーザー指示): **脚の名前の見出し(`指値: ` / `逆指値: `)を外した**。
+ *    ★同じ欄のメイン行が既に `🎯 買い 68,725 指値 (LC 68,665)` と名乗っている。
+ *      見出しは同じことの2回目で、トレーダーが読む情報を1ビットも足していない。
+ *    ★`LC: ` は残す: 1行に脚の理由と LC の理由が並ぶので、**どこからが LC の話か** の
+ *      区切りが要る(こちらは重複ではなく識別)。
  *
  *  ■ ★v0.9.90(ユーザー指示): 「空なら項目ごと出さない」。従来は空の枠を
  *    `（理由の記載なし）` で埋めていたが、それは **画面に診断をさせていた** もの。
@@ -908,11 +914,11 @@ function rangeLegText(leg: SignalRangeLeg, pos: '上' | '下'): string {
  *    そちらの既存フィールドも値は変えていないが、それは「記録が不変」という意味ではない。
  *  ■ 語彙は既存のまま(WHY_LABEL の脚名と `LC`、区切りは BASIS_SEP)。新しい語は作っていない。
  *  ■ AI 生成文は例外なく cleanAiText を通す(LC検算を落とし、検算しか無い枠は空として扱う)。 */
-function legWhyLine(name: string, entryWhy?: string, lcWhy?: string): string {
+function legWhyLine(entryWhy?: string, lcWhy?: string): string {
   const parts: string[] = [];
   const e = cleanAiText(entryWhy);
   const l = cleanAiText(lcWhy);
-  if (e) parts.push(`${name}: ${e}`);
+  if (e) parts.push(e);                                    // ★見出し(指値:/逆指値:)は付けない
   if (l) parts.push(`${WHY_LABEL.lc}: ${l}`);
   return parts.join(BASIS_SEP);
 }
@@ -940,8 +946,8 @@ function buildLegSection(sig: SignalCurrent, kind: EntryKind, dropNote?: string)
   if (entry == null) return { head, main: dropNote ?? legAbsentText(name), lines: [], empty: true };
   const lines: string[] = [];
   const why = isLimit
-    ? legWhyLine(name, sig.entryWhyForLimit, sig.lcWhyForLimit)
-    : legWhyLine(name, sig.entryWhyForStop, sig.lcWhyForStop);
+    ? legWhyLine(sig.entryWhyForLimit, sig.lcWhyForLimit)
+    : legWhyLine(sig.entryWhyForStop, sig.lcWhyForStop);
   if (why) lines.push(why);
   const stance = legStanceText(sig.direction, kind, name, entry, sig.refPrice, sig.trendDir);
   if (stance) lines.push(stance);
@@ -1143,7 +1149,11 @@ export function buildSignalSections(
     return legWhys.some(w => line.includes(w));             // 脚の欄に逐語で出ている行だけ
   };
   if (parts.rationale) pushUnique(parts.rationale, dropLine);
-  if (directionWhy) pushUnique(`${WHY_LABEL.bias}: ${directionWhy}`);
+  // ★2026-08-25(ユーザー指示): **`目線: ` の見出しを外した**。
+  //   ★この行が出るのは目線の欄の中だけで、欄の見出し(`目線`)が左に付いている。
+  //     さらに1行上のメイン行も `買い目線・…` と名乗っている=同じ語の3回目だった。
+  //   ★中身(directionWhy)は1文字も変えない。落としたのは見出しだけ。
+  if (directionWhy) pushUnique(directionWhy);
 
   if (isRange && sig.range) {
     const rangeSec = (leg: SignalRangeLeg | undefined, pos: '上' | '下', owner: LegNoteOwner): SignalSection =>
