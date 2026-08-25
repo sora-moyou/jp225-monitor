@@ -183,7 +183,6 @@ export interface SettingsElements {
   selectTrendVetoMode: HTMLSelectElement;
   selectCooldownMode: HTMLSelectElement;
   selectBiasMode: HTMLSelectElement;
-  selectRangeMode: HTMLSelectElement;
   checkScalpLcHardMaxEnabled: HTMLInputElement;
   inputScalpLcHardMax: HTMLInputElement;
   // ★v0.8.2: System B(仮想取引専用)の設定入力。B の value 系は空欄=A追従 / mode/tri-state は ''=A追従。
@@ -197,7 +196,6 @@ export interface SettingsElements {
   selectTrendVetoModeB: HTMLSelectElement;
   selectCooldownModeB: HTMLSelectElement;
   selectBiasModeB: HTMLSelectElement;
-  selectRangeModeB: HTMLSelectElement;
   selectHardMaxEnabledB: HTMLSelectElement;    // tri-state('' A追従/'true'/'false')
   inputScalpLcHardMaxB: HTMLInputElement;
   statusArea: HTMLElement;

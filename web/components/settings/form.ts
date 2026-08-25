@@ -88,7 +88,13 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   if (current?.generatorDailyBudgetMax !== undefined) el.inputGeneratorBudget.max = String(current.generatorDailyBudgetMax);
   // AIエントリー: 現値を反映(可視フィールド)。
   el.inputScalpLcCeiling.value = current ? String(current.scalpLcCeilingYen) : '';
-  el.selectScalpBias.value = current?.scalpBias ?? 'none';
+  // ★2026-08-25(ユーザー指示 + エバリュエーター指摘): 目線の選択肢から 'none'(両方向)を外したので、
+  //   保存値が 'none'/未設定 のまま代入すると **selectedIndex=-1(空欄)** になる。
+  //   ★これは「bias を一度も触っていない全ユーザー」に当たる(既定は未設定)。実Chrome で再現済み。
+  //   ★倒し先は **AI委任**: 新しい UI に「両方向」は無く、「固定しない」は AI委任が担う。
+  //     挙動も同じ(手動+none も AI委任も bias='none' で veto 無し・A を呼ぶ)＝**振る舞いを変えずに**
+  //     第6のルート(手動なのに A を呼ぶ)を消せる。
+  applyBiasSelect(el.selectScalpBias, el.selectBiasMode, current?.scalpBias, current?.scalpBiasSource);
   el.inputScalpCooldown.value = current ? String(current.scalpCooldownSec) : '';
   el.inputScalpTrendVeto.value = current ? String(current.scalpTrendVetoYen) : '';
   el.checkScalpRangeEnabled.checked = current ? current.scalpRangeEnabled : false;   // ★実験終了=既定OFF
@@ -104,8 +110,7 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.selectLcCeilingMode.value = current?.scalpLcCeilingSource ?? 'manual';
   el.selectTrendVetoMode.value = current?.scalpTrendVetoSource ?? 'manual';
   el.selectCooldownMode.value = current?.scalpCooldownSource ?? 'manual';
-  el.selectBiasMode.value = current?.scalpBiasSource ?? 'manual';
-  el.selectRangeMode.value = current?.scalpRangeSource ?? 'manual';
+
   el.checkScalpLcHardMaxEnabled.checked = current ? current.scalpLcHardMaxEnabled : true;   // 既定=有効(安全網ON)
   el.inputScalpLcHardMax.value = current ? String(current.scalpLcHardMaxYen) : '';
   // ★v0.8.2: System B(仮想取引専用)を反映。value 系は raw(未設定=空欄=A追従)/ mode/tri-state は raw ?? ''(A追従)。
@@ -125,14 +130,14 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
   el.inputScalpCooldownB.placeholder = ph(be?.scalpCooldownSec);
   el.inputScalpLcHardMaxB.value = rawNum(b.scalpLcHardMaxYen);
   el.inputScalpLcHardMaxB.placeholder = ph(be?.scalpLcHardMaxYen);
-  el.selectScalpBiasB.value = b.scalpBias ?? '';
+  // ★B も同じ。B の目線 select は '' (A追従) が実在の option なので、そこへ倒す。
+  applyBiasSelectB(el.selectScalpBiasB, el.selectBiasModeB, b.scalpBias, b.scalpBiasSource);
   el.selectRangeEnabledB.value = rawBoolSel(b.scalpRangeEnabled);
   el.selectHardMaxEnabledB.value = rawBoolSel(b.scalpLcHardMaxEnabled);
   el.selectLcCeilingModeB.value = b.scalpLcCeilingSource ?? '';
   el.selectTrendVetoModeB.value = b.scalpTrendVetoSource ?? '';
   el.selectCooldownModeB.value = b.scalpCooldownSource ?? '';
-  el.selectBiasModeB.value = b.scalpBiasSource ?? '';
-  el.selectRangeModeB.value = b.scalpRangeSource ?? '';
+
   syncKnobDisabled(el);
   syncKnobDisabledB(el);
 }
@@ -145,7 +150,6 @@ export function syncKnobDisabledB(el: SettingsElements): void {
     [el.selectTrendVetoModeB, el.inputScalpTrendVetoB],
     [el.selectCooldownModeB, el.inputScalpCooldownB],
     [el.selectBiasModeB, el.selectScalpBiasB],
-    [el.selectRangeModeB, el.selectRangeEnabledB],
   ];
   for (const [mode, input] of pairs) {
     const off = mode.value === 'ai' || mode.value === '';   // AI委任 or A追従 は値入力不要
@@ -169,7 +173,6 @@ export function syncKnobDisabled(el: SettingsElements): void {
     [el.selectTrendVetoMode, el.inputScalpTrendVeto],
     [el.selectCooldownMode, el.inputScalpCooldown],
     [el.selectBiasMode, el.selectScalpBias],
-    [el.selectRangeMode, el.checkScalpRangeEnabled],
   ];
   for (const [mode, input] of pairs) {
     const ai = mode.value === 'ai';
@@ -269,7 +272,6 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.scalpTrendVetoSource = el.selectTrendVetoMode.value as KnobSource;
   body.scalpCooldownSource = el.selectCooldownMode.value as KnobSource;
   body.scalpBiasSource = el.selectBiasMode.value as KnobSource;
-  body.scalpRangeSource = el.selectRangeMode.value as KnobSource;
   // 初期LC下限: 可視フィールド。空欄=既定(55)に戻す(null)。数値なら上書き。
   const lcFloorRaw = el.inputScalpLcFloor.value.trim();
   body.scalpLcFloorYen = lcFloorRaw === '' ? null : Number(lcFloorRaw);
@@ -294,7 +296,39 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
     scalpTrendVetoSource: el.selectTrendVetoModeB.value,
     scalpCooldownSource: el.selectCooldownModeB.value,
     scalpBiasSource: el.selectBiasModeB.value,
-    scalpRangeSource: el.selectRangeModeB.value,
   };
   return body;
+}
+
+/** ★2026-08-25: 目線 select に **実在しない値** を入れて空欄にしないための反映(A系統)。
+ *
+ *  ■ 何が起きていたか(エバリュエーターが実Chrome で再現)
+ *    `<option value="none">` を消したのに `select.value = 'none'` を代入していたため、
+ *    **selectedIndex = -1** になり目線欄が空欄で開いた。既定は「未設定」なので
+ *    **bias を一度も触っていない全ユーザー** が該当した。
+ *    そのまま保存すると '' が送られ 'none' として保存され、手動なのに A を呼ぶ
+ *    「第6のルート」に居続ける。
+ *  ■ ★倒し先を AI委任にする理由
+ *    新しい UI に「両方向」は無く、「目線を固定しない」は AI委任が担う。
+ *    ★挙動は同じ(手動+none も AI委任も bias='none'・veto 無し・A を呼ぶ)なので、
+ *    **振る舞いを変えずに** 空欄と第6ルートだけを消せる。 */
+export function applyBiasSelect(
+  select: HTMLSelectElement, mode: HTMLSelectElement,
+  bias: string | undefined, source: string | undefined,
+): void {
+  const fixed = bias === 'long' || bias === 'short' || bias === 'range';
+  select.value = fixed ? bias : 'long';        // ★実在の option へ倒す(空欄を作らない)
+  mode.value = fixed ? (source ?? 'manual') : 'ai';   // 固定していない = AI委任
+}
+
+/** ★B系統。B の目線 select は `''`(A追従)が実在の option なので、そこへ倒す。
+ *  ★B の mode も同じ規則: 固定値でなければ、明示 manual を AI委任へ倒して空欄を作らない。
+ *    ただし **元から A追従('')なら触らない**(A追従は正常な状態で、AI委任に変えると意味が変わる)。 */
+export function applyBiasSelectB(
+  select: HTMLSelectElement, mode: HTMLSelectElement,
+  bias: string | undefined, source: string | undefined,
+): void {
+  const fixed = bias === 'long' || bias === 'short' || bias === 'range';
+  select.value = fixed ? bias : '';
+  mode.value = fixed ? (source ?? '') : (source === 'manual' ? 'ai' : (source ?? ''));
 }

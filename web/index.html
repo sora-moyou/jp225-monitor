@@ -348,16 +348,16 @@
           </span>
         </div>
         <div class="setting-row ab-row" data-lite="1">
-          <label>バイアス</label>
+          <label>目線</label>
           <span class="ab-col"><span class="ab-tag">A</span>
             <select id="scalp-bias-mode" class="knob-mode">
               <option value="manual">手動</option>
               <option value="ai">AI委任</option>
             </select>
             <select id="scalp-bias">
-              <option value="none">両方向（既定）</option>
-              <option value="long">買い中心（売り新規を見送り）</option>
-              <option value="short">売り中心（買い新規を見送り）</option>
+              <option value="long">買い目線</option>
+              <option value="short">売り目線</option>
+              <option value="range">レンジ</option>
             </select>
           </span>
           <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
@@ -368,28 +368,19 @@
             </select>
             <select id="scalp-bias-b">
               <option value="">A追従</option>
-              <option value="none">両方向</option>
-              <option value="long">買い中心</option>
-              <option value="short">売り中心</option>
+              <option value="long">買い目線</option>
+              <option value="short">売り目線</option>
+              <option value="range">レンジ</option>
             </select>
           </span>
-          <div class="exit-hint lite-hint" hidden>買い/売りのどちらを中心に狙うか。「買い中心」なら売りの新規を見送ります(完全に片側)。既定は「両方向」。</div>
+          <div class="exit-hint lite-hint" hidden><b>AI委任</b>＝相場の方向をAIが判断します（買い/売り。下の「レンジを許可」がONならレンジも）。<br><b>手動</b>＝あなたが決めた目線で固定します。<b>AIには方向を尋ねず</b>、その目線に応じた注文の相談だけをします（AIの呼び出しが2回→1回に減ります）。目線の理由は表示されません（AIが判断していないため）。<br>★変更して「保存」を押すと<b>次のサイクルから</b>反映されます。</div>
         </div>
         <div class="setting-row ab-row">
-          <label>レンジ両面(実験)</label>
+          <label>目線がAI委任の場合、レンジを許可</label>
           <span class="ab-col"><span class="ab-tag">A</span>
-            <select id="scalp-range-mode" class="knob-mode">
-              <option value="manual">手動</option>
-              <option value="ai">AI委任</option>
-            </select>
             <input type="checkbox" id="scalp-range-enabled" />
           </span>
           <span class="ab-col ab-col-b"><span class="ab-tag">B</span>
-            <select id="scalp-range-mode-b" class="knob-mode">
-              <option value="">A追従</option>
-              <option value="manual">手動</option>
-              <option value="ai">AI委任</option>
-            </select>
             <select id="scalp-range-enabled-b">
               <option value="">A追従</option>
               <option value="true">ON</option>

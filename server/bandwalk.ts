@@ -192,6 +192,15 @@ export function buildBandwalkSamples(
  *  値の解決は呼び出し側(config の scalpBias・委任 'ai' は 'none' 扱い)。ここは受け取るだけ=純関数。 */
 export type BandwalkBias = 'long' | 'short' | 'none';
 
+/** ★2026-08-25: 設定の目線(ScalpBias)を バンドウォークの目線へ写す。
+ *  ★**'range'(レンジ目線)は 'none' に写す**: レンジは「どちらへ抜けるか決めていない」ので、
+ *    上下どちらのバンドウォークも成立させてよい(片側だけに絞る理由が無い)。
+ *  ★ここに写しを1つだけ置く: 呼び出し側(detect/registry.ts と scalpPlanRunner.ts)で
+ *    別々に三項演算子を書くと、片方だけ直す事故が生まれる。 */
+export function toBandwalkBias(bias: 'long' | 'short' | 'range' | 'none'): BandwalkBias {
+  return bias === 'range' ? 'none' : bias;
+}
+
 /** 目線と向きが一致するか(純関数・SSOT)。'none' は方向一致を問わないので常に true。 */
 export function bandwalkBiasAllows(bias: BandwalkBias, dir: 'up' | 'down'): boolean {
   if (bias === 'none') return true;

@@ -86,7 +86,7 @@ export interface UserConfig {
   breakScore?: number;               // break 単独スコア。既定 0.9(minScore=1未満→単独breakは出さず、コンフルエンス時のみ生きる)。
   slopeConfluenceBonus?: number;     // slope と同方向の直近モメンタムに一致したクラスタへの加点。既定 0.5。
   scalpLcCeilingYen?: number;        // AIエントリー: 最大初期LC(損切り)幅[円]。未設定は 65。buildScalpPlan の上限既定。
-  scalpBias?: ScalpBias;             // AIエントリー: バイアス。'long'=買い中心 / 'short'=売り中心 / 'none'=両方向(既定)。
+  scalpBias?: ScalpBias;             // AIエントリー: **目線**。'long'=買い目線 / 'short'=売り目線 / 'range'=レンジ目線 / 'none'=固定しない(レガシー既定)。
   scalpCooldownSec?: number;         // AIエントリー: 決済(filled→flat)後に再ARMを抑止する秒数。未設定は 90。0で無効。
   scalpRangeEnabled?: boolean;       // AIエントリー: レンジ判断時の両面ストラドル(実験)。★v0.7.53で実験終了=未設定は false(OFF)。true で再有効化可。
   scalpTrendVetoYen?: number;        // AIエントリー: 直近10分でこの円以上動いたらトレンドと見なし逆行フェード新規を禁止。未設定は 100。0で無効。
@@ -110,7 +110,10 @@ export interface UserConfig {
   scalpTrendVetoSource?: KnobSource;   // トレンドveto: manual→数値veto / ai→数値veto無効(AI自己判断)
   scalpCooldownSource?: KnobSource;    // クールダウン: manual→ゲート / ai→ゲート無効
   scalpBiasSource?: KnobSource;        // バイアス: manual→方向veto / ai→veto無効(自由方向)
-  scalpRangeSource?: KnobSource;       // レンジ両面: manual→on/off設定どおり / ai→AIが採用可否(range許可)
+  // ★2026-08-25(ユーザー指示): レンジは **ON/OFF だけ** になった(AI委任/手動の選択を廃止)。
+  //   この列は **読まない**(古い設定ファイルに残っていても無視する)。消さないのは、書き戻したときに
+  //   知らないキーとして落ちるより、意味を失った事実をここに残すほうが後から読めるため。
+  scalpRangeSource?: KnobSource;       // ★廃止(2026-08-25)。resolveEffectiveRangeEnabled は参照しない。
   // ★v0.7.56: LC安全上限(実取引暴走防止・policy の scalpLcCeiling とは独立の安全系)。
   //   有効時は手動でもAIでも |entry−SL| がこの円超のレッグを必ず落とす(最後の安全網)。無効時はハード上限なし。
   scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 159。
@@ -173,7 +176,14 @@ export interface SignalBConfig {
 export type SignalProfile = 'A' | 'B';
 
 // AIエントリーのバイアス。'none'(両方向)が既定。
-export type ScalpBias = 'long' | 'short' | 'none';
+// ★2026-08-25(ユーザー指示): 「バイアス」→「**目線**」。意味が「片側を veto するフィルタ」から
+//   「**AI に代わってこちらが目線を決める**」に変わった。
+//   ★保存値の語彙は **変えていない**('long'/'short'/'none')。'range' を1つ足しただけ:
+//     ・既存の設定ファイルをそのまま読める(移行が要らない)
+//     ・bandwalk.ts(BandwalkBias)と enforcePlanConstraints の veto が 'long'/'short' に依存している
+//   'long'=買い目線 / 'short'=売り目線 / 'range'=レンジ目線 / 'none'=目線を固定しない(レガシー既定・
+//   ★UI からは選べない。「固定しない」は「AI委任」が担う)。
+export type ScalpBias = 'long' | 'short' | 'range' | 'none';
 
 // ★v0.7.56: 委任可能な knob の source。'manual'=数値/enum を強制 / 'ai'=AI に委任(該当制約を課さない)。
 export type KnobSource = 'manual' | 'ai';
@@ -573,7 +583,7 @@ export {
   resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled,
   parseKnobSource,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
-  resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
+  resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective, resolveForcedTrend, forcedTrendFrom,
   resolveScalpLcHardMax,
 } from './config/scalpResolvers.js';
 export type { KnobDirective } from './config/scalpResolvers.js';

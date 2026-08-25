@@ -88,10 +88,14 @@ function applySourceField(existing: KnobSource | undefined, incoming: unknown): 
   return parseKnobSource(incoming) === 'ai' ? 'ai' : undefined;
 }
 
-// AIエントリー バイアスの受理値。
-const BIAS_VALUES = ['long', 'short', 'none'] as const;
+// AIエントリー **目線** の受理値。
+// ★2026-08-25(ユーザー指示): 'range'(レンジ目線)を追加。これが無いと画面で「レンジ」を選んでも
+//   保存が 400 で落ち、**その保存全体が捨てられる**(postSettingsHandler は all-or-nothing)。
+//   ★エバリュエーターが実HTTPで再現: status=400 / 同時に変えた LC下限やクールダウンも保存されない。
+const BIAS_VALUES = ['long', 'short', 'range', 'none'] as const;
 
-// bias フィールドの適用: undefined=変更なし / null・''・'none'=既定(両方向=未設定) / 'long'|'short'=採用 / それ以外=エラー。
+// 目線フィールドの適用: undefined=変更なし / null・''・'none'=未設定(目線を固定しない) /
+// 'long'|'short'|'range'=採用 / それ以外=エラー。
 function applyBiasField(
   existing: ScalpBias | undefined,
   incoming: unknown,
@@ -101,7 +105,7 @@ function applyBiasField(
   if (typeof incoming !== 'string') return { value: existing, error: null };
   const t = incoming.trim();
   if (t === '' || t === 'none') return { value: undefined, error: null };   // 既定(両方向)= 未設定で保存
-  if (t === 'long' || t === 'short') return { value: t, error: null };
+  if (t === 'long' || t === 'short' || t === 'range') return { value: t, error: null };
   return { value: existing, error: `scalpBias must be one of ${BIAS_VALUES.join('|')}` };
 }
 
@@ -337,12 +341,12 @@ function buildSignalB(
     if (r.error) errors.push(`signalB.${r.error}`);
     if (r.value !== undefined) next[key] = r.value;
   }
-  // バイアスは B 専用に3値をそのまま扱う(''=A追従で unset / 'none'|'long'|'short'=明示保存=A から独立)。
+  // 目線は B 専用に値をそのまま扱う(''=A追従で unset / 'none'|'long'|'short'|'range'=明示保存=A から独立)。
   const biasIn = incoming.scalpBias;
   if (typeof biasIn === 'string') {
     const t = biasIn.trim();
-    if (t === 'none' || t === 'long' || t === 'short') next.scalpBias = t;
-    else if (t !== '') errors.push(`signalB.scalpBias must be one of none|long|short`);
+    if (t === 'none' || t === 'long' || t === 'short' || t === 'range') next.scalpBias = t;
+    else if (t !== '') errors.push(`signalB.scalpBias must be one of none|long|short|range`);
   }
   // 真偽(レンジ両面/LC安全上限有効)は tri-state セレクト('true'|'false'=明示 / それ以外=''=A追従で unset)。
   const range = triBool(incoming.scalpRangeEnabled);
@@ -380,7 +384,7 @@ function buildLiteConfig(existing: LiteConfig | undefined, body: Record<string, 
     if (ex.scalpBias !== undefined) next.scalpBias = ex.scalpBias;
   } else if (typeof biasIn === 'string') {
     const t = biasIn.trim();
-    if (t === 'none' || t === 'long' || t === 'short') next.scalpBias = t;
+    if (t === 'none' || t === 'long' || t === 'short' || t === 'range') next.scalpBias = t;
   }
   // LC安全上限の有効/無効: false も明示保存(null は unset=フォールバック)。
   const enabled = applyBoolField(ex.scalpLcHardMaxEnabled, body.scalpLcHardMaxEnabled);

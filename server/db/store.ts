@@ -910,7 +910,11 @@ export const COLUMN_VOCAB_NOTE =
   + '★過去行は変換していません(書き換えていません)。混ぜて数えないこと。'
   + '切り分けは app_version と a_prompt_build で行ってください'
   + '(a_prompt_build は文面が1文字でも変われば必ず動くので、語彙の変更も必ず動きます)。'
-  + '★buy/sell は注文の side と同じ綴りですが意味は別物(こちらは相場の方向。side を決めるのは注文側の対応表だけ)。';
+  + '★buy/sell は注文の side と同じ綴りですが意味は別物(こちらは相場の方向。side を決めるのは注文側の対応表だけ)。'
+  + '★2026-08-25 以降: 目線を「手動」で固定した回は AI に方向を尋ねないため、'
+  + 'a_direction は入るが a_provider と a_prompt_build が NULL になります。'
+  + '「AI が答えた目線」と「こちらが決めた目線」を分けるときは a_provider の有無で切ってください'
+  + '(専用の列は作っていません)。設定そのものは settings_json.bias.{mode,value} に毎サイクル入ります。';
 
 /** meta に語彙の版境界を1行書く。★冪等(毎起動で同じ内容を上書き)。失敗は呼び出し側が握りつぶす。 */
 export function setColumnVocabMeta(db: DatabaseSync): void {

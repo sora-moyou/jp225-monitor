@@ -22,7 +22,40 @@ export function resolveScalpTrendVetoYen(profile?: SignalProfile): number { retu
 // AIエントリー: バイアス。未設定/不正値は 'none'(両方向)。
 export function resolveScalpBias(profile?: SignalProfile): ScalpBias {
   const v = readKnobRaw(profile, 'scalpBias');
-  return v === 'long' || v === 'short' ? v : 'none';
+  // ★2026-08-25: 'range'(レンジ目線)を選べるようにした。未知/未設定は 'none'(=目線を固定しない)。
+  return v === 'long' || v === 'short' || v === 'range' ? v : 'none';
+}
+
+/** ★2026-08-25(ユーザー指示): **こちらが決めた目線**(A の答えの語彙 buy/sell/range)。null=決めていない。
+ *
+ *  ■ ユーザー指示(逐語)
+ *    「『手動』については、『買い目線』『売り目線』『レンジ』の3つを選択肢とし、
+ *      プロンプトAはAIに渡さず、表示は理由なしで、選択された目線を表示してください。
+ *      目線に応じた、プロンプトBのみをAIに渡します。」
+ *  ■ これが null でないとき、A(目線を尋ねる呼び出し)は **1度も行われない**。
+ *    ★AI の呼び出しが2回→1回になる(課金と待ち時間は減るはずだが、実測は運用後)。
+ *  ■ ★★レンジ目線は ①「目線がAI委任の場合、レンジを許可」に **依存しない**(2026-08-25 ユーザー訂正)。
+ *    ①は「**AI に** range という選択肢を見せるか」の設定。手動目線では A を1度も呼ばないので、
+ *    ①は関係がない。★私は一度 ①に依存させ、①OFF のとき手動レンジが常に見送りになる穴を作った。
+ *  ■ ★プロンプトのルートは5つ(ユーザー確定):
+ *      ①AI委任+レンジON → A(3択)+B / ②AI委任+レンジOFF → A(2択)+B
+ *      ③手動+買い目線 → B(buy)のみ / ④手動+売り目線 → B(sell)のみ
+ *      ⑤手動+レンジ目線 → B(range-*)のみ(★レンジON/OFFに依存しない) */
+export function resolveForcedTrend(profile?: SignalProfile): 'buy' | 'sell' | 'range' | null {
+  const d = resolveScalpBiasDirective(profile);
+  return forcedTrendFrom(d.mode, d.value);
+}
+
+/** ★判定の本体(純関数・**唯一の実装**)。設定を読む側(resolveForcedTrend)と、
+ *  既に解決済みの値を持っている側(buildScalpPlan は override 適用後の bias と実効 rangeEnabled を持つ)の
+ *  両方から呼ぶ。★2つ書くと片方だけ直す事故になるのでここに1つだけ置く。 */
+export function forcedTrendFrom(mode: KnobSource, bias: ScalpBias): 'buy' | 'sell' | 'range' | null {
+  if (mode !== 'manual') return null;
+  if (bias === 'long') return 'buy';
+  if (bias === 'short') return 'sell';
+  // ★レンジ目線は「目線がAI委任の場合、レンジを許可」に依存しない(A を呼ばないので①は無関係)。
+  if (bias === 'range') return 'range';
+  return null;   // 'none' = 目線を固定しない(レガシー既定)
 }
 
 /** ★実効の売買バイアス(=画面で言う「買い目線 / 売り目線」)。
@@ -135,14 +168,18 @@ export function resolveScalpCooldownDirective(profile?: SignalProfile): KnobDire
   return { mode: parseKnobSource(readKnobRaw(profile, 'scalpCooldownSource')), value: resolveScalpCooldownSec(profile) };
 }
 
-/** バイアス directive。value='long'|'short'|'none'。ai=方向veto無効(自由方向)。 */
+/** 目線 directive。value='long'(買い)|'short'(売り)|'range'|'none'(固定しない)。ai=AI が目線を決める。 */
 export function resolveScalpBiasDirective(profile?: SignalProfile): KnobDirective<ScalpBias> {
   return { mode: parseKnobSource(readKnobRaw(profile, 'scalpBiasSource')), value: resolveScalpBias(profile) };
 }
 
-/** レンジ両面 directive。value=on/off(bool)。ai=range 採用可否を AI が決める(range許可)。 */
+/** ★「目線がAI委任の場合、レンジを許可」(2026-08-25 にタイトルと意味を変更)。
+ *  ★**ON/OFF だけ**。AI委任/手動の選択は廃止した(ユーザー指示)ので mode は常に 'manual'。
+ *    ★KnobDirective の形自体は残す: buildStrategySpec / persist.ts / settings.ts が
+ *      この形で受け取っており、ここだけ形を変えると呼び出し側に分岐が散る。
+ *    ★意味は1つ=「ON なら AI に range を渡す / OFF なら range という語ごと出さない」。 */
 export function resolveScalpRangeDirective(profile?: SignalProfile): KnobDirective<boolean> {
-  return { mode: parseKnobSource(readKnobRaw(profile, 'scalpRangeSource')), value: resolveScalpRangeEnabled(profile) };
+  return { mode: 'manual', value: resolveScalpRangeEnabled(profile) };
 }
 
 /** ★LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。

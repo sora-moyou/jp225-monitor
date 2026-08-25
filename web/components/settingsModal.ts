@@ -69,14 +69,15 @@ export function initSettingsModal(el: SettingsElements): SettingsController {
 
   // ★v0.7.56: 委任モード select / LC安全上限チェックを変えたら即座に入力の有効/無効を同期。
   //   ★初期LC下限は委任対象外=モード select が無い(index.html)ので、この配線にも入らない。
+  // ★2026-08-25: レンジは ON/OFF だけになった(モード select を廃止)ので、この配列から外した。
   for (const s of [el.selectLcCeilingMode, el.selectTrendVetoMode,
-                   el.selectCooldownMode, el.selectBiasMode, el.selectRangeMode]) {
+                   el.selectCooldownMode, el.selectBiasMode]) {
     s.addEventListener('change', () => syncKnobDisabled(el));
   }
   el.checkScalpLcHardMaxEnabled.addEventListener('change', () => syncKnobDisabled(el));
   // ★v0.8.2: System B の mode/tri-state を変えたら B の入力有効/無効を同期。
   for (const s of [el.selectLcCeilingModeB, el.selectTrendVetoModeB,
-                   el.selectCooldownModeB, el.selectBiasModeB, el.selectRangeModeB, el.selectHardMaxEnabledB]) {
+                   el.selectCooldownModeB, el.selectBiasModeB, el.selectHardMaxEnabledB]) {
     s.addEventListener('change', () => syncKnobDisabledB(el));
   }
 

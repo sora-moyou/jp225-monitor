@@ -1,7 +1,7 @@
 import type { NewsItem, Price } from '../types.js';
 import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
-  resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective,
+  resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective, forcedTrendFrom,
   resolveScalpAiTechnicalEnabled,
   type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
@@ -1315,7 +1315,10 @@ export interface KnobModes {
 
 /** エントリー方向の制約(手動バイアス時のみ)。'none' は '' = 注入なし。 */
 export function buildBiasNote(bias: ScalpBias): string {
-  return bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
+  // ★2026-08-25: 'range'(レンジ目線)を追加。'long'/'short' の文面は **1文字も変えない**
+  //   (旧経路のプロンプトの型の指紋 pb1 を無用に動かさないため。旧経路の veto の意味も不変)。
+  return bias === 'range' ? '\n\n【エントリー方向の制約】レンジ目線。上下どちらかへ抜ける方向は決めず、direction:"range"(両面)だけを提案すること。'
+       : bias === 'long'  ? '\n\n【エントリー方向の制約】買い中心。売り(sell)の新規は原則見送り(direction:"none")とし、買い(buy)の好機のみ提案すること。'
        : bias === 'short' ? '\n\n【エントリー方向の制約】売り中心。買い(buy)の新規は原則見送り(direction:"none")とし、売り(sell)の好機のみ提案すること。'
        : '';
 }
@@ -2390,7 +2393,10 @@ const LC_FLOOR_TAG = '【最優先・厳守=あなたが必ず満たす(AI委任
  *  プロンプトになる(実測)。委任時に実際に効いている値は 'none'(方向veto なし)なので、保存値は宛先が無い。 */
 export function biasSpecLabel(bias: ScalpBias, mode: KnobSource): string {
   if (mode === 'ai') return 'あなたが決める(買い/売り/両方向のどれでもよい)';
-  return bias === 'long' ? '買い中心(売り新規は見送り)' : bias === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
+  // ★2026-08-25: 'range' を追加。既存2つの文言は変えない(pb1 指紋を動かさない)。
+  return bias === 'range' ? 'レンジ目線(両面のみ)'
+       : bias === 'long' ? '買い中心(売り新規は見送り)'
+       : bias === 'short' ? '売り中心(買い新規は見送り)' : '両方向';
 }
 export function buildStrategySpec(i: StrategySpecInput): string {
   const cap = i.hardMax.enabled ? `安全上限 ${i.hardMax.value}円(有効=手動でもAIでも絶対に超えない)` : '安全上限 無効';
@@ -2960,6 +2966,18 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // バイアス/レンジ: manual は設定(override 優先)を適用 / ai は制約なし(bias='none'・range 許可)。
   const bias: ScalpBias = biasD.mode === 'manual' ? (input.bias ?? biasD.value) : 'none';
   const rangeEnabled = resolveEffectiveRangeEnabled(profile, input.rangeEnabled);
+  // ★2026-08-25(ユーザー指示): **こちらが目線を決めている**なら A を呼ばない。
+  //   ★この解決は **毎サイクル** ここで行う(=ユーザーがその都度 目線を変えられる)。
+  //     設定は loadConfig が mtime を見て読み直すので、保存した次のサイクルから効く。
+  //   ★判定は forcedTrendFrom(唯一の実装)に委ねる。ここでは既に override 適用後の bias と
+  //     実効 rangeEnabled を持っているので、設定を二度読みしない。
+  const forcedTrend = forcedTrendFrom(biasD.mode, bias);
+  // ★★手動レンジ目線は ①(レンジ許可)に依存しない(ユーザー訂正 2026-08-25)。
+  //   ①は「A に range という選択肢を見せるか」の設定で、手動では A を呼ばない。
+  //   ★ここで実効値を広げておかないと、下の2つの門が **手動レンジを常に見送りに潰す**:
+  //     ・scalpPlanSplit の「② レンジ不許可なら B を呼ばない」(rangeDisabled)
+  //     ・enforceRangeEnabled(防御多重化: range → none)
+  const rangeAllowed = rangeEnabled || forcedTrend === 'range';
   // ★LC下限は【強制=委任対象外】= 設定値が絶対の床。外部要求(HTTP body/query)で **緩める(下げる)ことは許さない**。
   //   厳しくする(上げる)方向だけ受理する(clampRequestedLcFloor の注記に根拠)。
   const { floorYen, ceilingYen } = resolveLcRange(clampRequestedLcFloor(input.lcFloorYen, floorD.value), ceilingInput);
@@ -2977,7 +2995,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const delegationNote = buildDelegationNote(
     { lcFloor: floorD.mode, lcCeiling: ceilingD.mode, trendVeto: trendD.mode,
       cooldown: cooldownD.mode, bias: biasD.mode, range: rangeD.mode },
-    { floorYen, ceilingYen, hardMax, rangeEnabled },
+    { floorYen, ceilingYen, hardMax, rangeEnabled: rangeAllowed },
   );
   const biasNote = buildBiasNote(bias);
   // ★v0.9.75: 質問文の変種。**未指定/'v1' は従来と byte 一致**(実取引につながる全経路はここを通っても変わらない)。
@@ -3003,7 +3021,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     trendVeto: { mode: trendD.mode, value: trendD.value },
     cooldown: { mode: cooldownD.mode, value: cooldownD.value },
     bias: { mode: biasD.mode, value: biasD.value },
-    range: { mode: rangeD.mode, value: rangeEnabled },
+    range: { mode: rangeD.mode, value: rangeAllowed },
     hardMax,
     // ★決済仕様: 変種 **未指定なら従来の describeExitLogic() をそのまま**(この経路は byte 不変)。
     //   指定時だけ名前 → 非公開定義から説明文を解決する(数値はプロセス内に留まる)。
@@ -3023,13 +3041,19 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   //   ★v1e: 「距離の上限は変わらない」の参照も、本則(200/400円)が消えると宛先を失うので、同じフラグで整合させる。
   const bandwalkNote = buildBandwalkNote(input.bandwalk, omitMinDistance, omitMaxDistance);
   const monitorCtx = buildMonitorContext(now);
+  // ★2026-08-25(エバリュエーター指摘S1): 旧経路(分割OFF)にも rangeAllowed を渡す。
+  //   ★手動レンジ目線のとき、旧の system prompt は range を禁止し JSON の書き方も教えないのに
+  //     biasNote だけが range を要求する **自己矛盾** になっていた(実測で direction=range が通った)。
+  //   ★rangeAllowed は forcedTrend==='range' のときだけ rangeEnabled より広い=それ以外は byte 不変。
+  //   ★コメントは三項演算子の **外** に置く: scalpQuestionV2.test.ts が
+  //     「v2 を呼ぶ行の直前3行に判定がある」形をソースで固定している(呼び出しは1箇所だけ)。
   const scalpQuestion = promptVariant === 'v2'
-    ? buildScalpQuestionV2({ floorYen, ceilYen: promptCeilingYen, rangeEnabled, refPrice })
-    : buildScalpQuestion(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, lcCeil, omitMinDistance, omitMaxDistance);
+    ? buildScalpQuestionV2({ floorYen, ceilYen: promptCeilingYen, rangeEnabled: rangeAllowed, refPrice })
+    : buildScalpQuestion(floorYen, promptCeilingYen, rangeAllowed, trendVetoYen, lcCeil, omitMinDistance, omitMaxDistance);
   const systemPrompt =
     // ★bandwalkNote は strategySpec / delegationNote の **後ろ**(= 距離50円・節目起点を書いている
     //   ブロックより後)に置く。緩和は「直前の指示を上書きする」形なので、読み順で後に来る必要がある。
-    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeEnabled, trendVetoYen, aiTechnicalEnabled, lcCeil, omitMaxDistance)}${biasNote}${strategySpec}${delegationNote}${bandwalkNote}${heldNote}${armedNote}\n\n` +
+    `${buildScalpSystemPrompt(floorYen, promptCeilingYen, rangeAllowed, trendVetoYen, aiTechnicalEnabled, lcCeil, omitMaxDistance)}${biasNote}${strategySpec}${delegationNote}${bandwalkNote}${heldNote}${armedNote}\n\n` +
     // ★ここは **壁時計を秒の粒度で** system プロンプトに埋める(唯一の箇所)。
     //   ■ 副作用: 同じ入力で2回組み立てても、**秒の境界をまたぐと byte 一致しない**。
     //     scalpPlanPromptVariant.test.ts の「未指定 と v1 は byte 一致」が ときどき赤くなるのは
@@ -3066,7 +3090,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     ? input.chartImageDataUrl : null;
   // ★v1f(2026-08-20): 候補腕。lcWhyFor* の注記 **だけ** を差し替える(質問文・system・strategySpec は v1 と同一)。
   const jsonInstruction = scalpJsonInstruction(
-    refPrice, floorYen, promptCeilingYen, rangeEnabled, lcCeil, promptVariant === 'v1f',
+    refPrice, floorYen, promptCeilingYen, rangeAllowed, lcCeil, promptVariant === 'v1f',
   );
   const userPromptFor = (withImage: boolean): string =>
     promptVariant === 'v2'
@@ -3160,9 +3184,14 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
         //   旧経路の scalpQuestion も汎用の指示文で bigram 一致はほぼ無く、実質 news.slice(0,15) に
         //   フォールバックしていたため、空文字でも挙動はほぼ同値)。
         orderContext: buildOrderContextExtras(input.technical, prices, news, now),
-        floorYen, ceilingYen: promptCeilingYen, rangeEnabled,
+        floorYen, ceilingYen: promptCeilingYen,
+        // ★A に range の選択肢を見せるかは rangeEnabled(=①)。
+        //   B を呼ぶかどうかの門は rangeAllowed(=手動レンジは①に依存しない)。
+        rangeEnabled: rangeAllowed,
         squeezeState: input.squeezeState ?? null,
         ...(input.squeezeUnavailable ? { squeezeUnavailable: input.squeezeUnavailable } : {}),
+        // ★2026-08-25: 手動目線なら A を呼ばず、この目線で B だけを呼ぶ。
+        forcedTrend,
         // ★2026-08-22 訂正(リーダー指摘): delegationNote を B へ渡す配線はここに一度あったが、取り消した。
         //   理由: buildDelegationNote の文面は「上のロジック」「上の2択」「direction」「regime」
         //   「confidence」など B に存在しないブロック/フィールドへの参照を含み、分割の芯(side は
@@ -3240,7 +3269,7 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
       ceilingYen, bias, trend, ceilingMode, lcHardMax: hardMax, floorYen,
     });
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
-    const guarded = enforceRangeEnabled(enforced.plan, rangeEnabled);
+    const guarded = enforceRangeEnabled(enforced.plan, rangeAllowed);
     const finalPlan = guarded.plan;
     // AI 自己レジーム/確信度(記録のみ)を最終 plan に保持する。enforce/none 化で新規オブジェクトになり
     // 落ちることがあるため parsed.plan から再付与する(ゲートには使わない=挙動不変)。

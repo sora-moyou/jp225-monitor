@@ -236,7 +236,9 @@ describe('AIエントリー設定 resolvers (scalpLcCeiling / scalpBias)', () =>
     expect(resolveScalpTrendVetoDirective().mode).toBe('ai');
     expect(resolveScalpCooldownDirective().mode).toBe('ai');
     expect(resolveScalpBiasDirective()).toEqual({ mode: 'ai', value: 'long' });
-    expect(resolveScalpRangeDirective().mode).toBe('ai');
+    // ★2026-08-25(ユーザー指示): レンジは **ON/OFF だけ** になり、AI委任/手動の選択を廃止した。
+    //   scalpRangeSource が 'ai' でも mode は常に 'manual'(=設定の ON/OFF がそのまま効く)。
+    expect(resolveScalpRangeDirective().mode).toBe('manual');
     expect(resolveScalpLcFloorDirective().mode).toBe('ai');
   });
 

@@ -47,6 +47,7 @@ import {
 import {
   buildBandwalkSamples, evaluateBandwalk, describeBandwalk, shouldFireBandwalk,
   createBandwalkFireState, DEFAULT_BANDWALK, type BandwalkFireState,
+  toBandwalkBias,
 } from '../bandwalk.js';
 import {
   aggregate5m, aggregateBars, buildBarBandLookup, buildSqueezeSnapshot,
@@ -676,7 +677,7 @@ export function runLevelDetectors(
   //    ・目線(scalpBias): 'long'=上のみ / 'short'=下のみ / 'none'(未設定/AI委任)=上下とも(ユーザー確定仕様)。
   try {
     if (resolveBandwalkEnabled()) {
-      const bias = resolveEffectiveScalpBias();
+      const bias = toBandwalkBias(resolveEffectiveScalpBias());   // ★'range' は上下とも見る(='none')
       const bars1m = collectRecentBars(db, SYMBOL, now - BANDWALK_BARS_WINDOW_MS);
       const samples = buildBandwalkSamples(bars1m, DEFAULT_BANDWALK.windowBars, resolveShockParams());
       const lastT = samples.length > 0 ? samples[samples.length - 1]!.t : 0;

@@ -30,12 +30,18 @@ vi.mock('../configStore.js', async (orig) => ({
   resolveScalpLcCeilingDirective: () => ({ mode: 'manual', value: 65 }),
   resolveScalpTrendVetoDirective: () => ({ mode: 'manual', value: 100 }),
   resolveScalpCooldownDirective: () => ({ mode: 'manual', value: 90 }),
-  // ★bias を 'long' にする: 旧経路にしか無い buildBiasNote の文言が実際に出ることを確認するため。
-  resolveScalpBiasDirective: () => ({ mode: 'manual', value: 'long' }),
+  // ★2026-08-25: 目線のモックは **可変** にした。
+  //   ユーザー指示で「手動目線 = A を呼ばない」になったため、固定で manual にすると
+  //   分割経路が B の1回だけになり、A/B の全文突き合わせができない。
+  //   既定は AI委任(=A を呼ぶ)。buildBiasNote を見るテストだけ manual に切り替える。
+  resolveScalpBiasDirective: () => biasDir,
   resolveScalpRangeDirective: () => ({ mode: 'manual', value: false }),
   resolveScalpLcHardMax: () => ({ enabled: true, value: 159 }),
   resolveScalpAiTechnicalEnabled: () => true,
 }));
+
+/** ★目線のモック(可変)。既定=AI委任(A を呼ぶ)。 */
+let biasDir: { mode: 'manual' | 'ai'; value: string } = { mode: 'ai', value: 'none' };
 
 const { buildScalpPlan } = await import('./scalpPlan.js');
 const { resetPlanSplitForTest, PLAN_SPLIT_ENV } = await import('./planSplitConfig.js');
@@ -167,10 +173,32 @@ describe('★旧経路(1回呼び出し)の全文 vs 分割経路(A+B)の全文�
   });
 
   it('★バイアス指示(buildBiasNote): 旧にはあるが B には無い(★仕様書で意図的に削ったと明記済み・新しい発見ではない)', async () => {
+    biasDir = { mode: 'manual', value: 'long' };     // ★旧経路にだけ出る文言を見るため
     const old = await renderOld();
+    biasDir = { mode: 'ai', value: 'none' };         // ★分割は A を呼ばせる(手動だと A が飛ぶ)
     const { b } = await renderSplit();
     expect(old).toContain('【エントリー方向の制約】買い中心');
     expect(b).not.toContain('【エントリー方向の制約】');
+  });
+
+  // ★2026-08-25(ユーザー指示): 「手動」で目線を決めた回は **プロンプトAをAIに渡さない**。
+  //   ★実プロセスで「呼び出しが1回だけ」「その1回が B」を確かめる(仕様の文ではなく実測)。
+  it('★★手動で目線を決めた回は A を呼ばない(呼び出しは B の1回だけ)', async () => {
+    biasDir = { mode: 'manual', value: 'long' };
+    setSplit(true);
+    createMock.mockReset().mockResolvedValueOnce({ choices: [{ message: { content: B_JSON } }] });
+    await run();
+    expect(createMock.mock.calls.length).toBe(1);                     // ★2回 → 1回
+    const only = fullText(paramsOf(0));
+    expect(only).toContain('を同時に出し、先に約定した方でエントリーし他方はキャンセルします。');   // B の文面
+    expect(only).not.toContain('現在の相場の方向を判断し');                                        // A の文面は無い
+    biasDir = { mode: 'ai', value: 'none' };
+  });
+
+  it('★AI委任に戻せば A は従来どおり呼ばれる(この検査が恒真でない)', async () => {
+    biasDir = { mode: 'ai', value: 'none' };
+    const { a } = await renderSplit();
+    expect(a).toContain('現在の相場の方向を判断し');
   });
 
   it('★戦略仕様(buildStrategySpec)の全文: 旧にはあるが B には帯の1行だけ残る(★仕様書で意図的に圧縮と明記済み)', async () => {

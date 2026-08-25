@@ -8,7 +8,7 @@ import {
   resolveBandwalkEnabled, resolveEffectiveScalpBias, resolveShockParams, resolveScalpChartVisionMode,
   type SignalProfile, type ChartVisionMode,
 } from '../configStore.js';
-import { buildBandwalkSamples, evaluateBandwalk, DEFAULT_BANDWALK, type Bandwalk } from '../bandwalk.js';
+import { buildBandwalkSamples, evaluateBandwalk, toBandwalkBias, DEFAULT_BANDWALK, type Bandwalk } from '../bandwalk.js';
 import { getRealtimeOHLCBars } from '../feedBars.js';
 import { computeRegime, formatMomentumLine, formatMomentumLineForTrend, type Regime } from '../signalTrade/regime.js';
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades, getDailyCloses } from '../db/store.js';
@@ -202,7 +202,7 @@ export function buildRichScalpContextResult(
       if (indicatorsOn && resolveBandwalkEnabled()) {
         bandwalk = evaluateBandwalk(
           buildBandwalkSamples(bars, DEFAULT_BANDWALK.windowBars, resolveShockParams()),
-          resolveEffectiveScalpBias(profile), DEFAULT_BANDWALK,
+          toBandwalkBias(resolveEffectiveScalpBias(profile)), DEFAULT_BANDWALK,
         );
       }
     } catch (e) {
@@ -492,7 +492,11 @@ function attachSplitRecord(
   if (!record) return result;
   // ★2026-08-25: A の文面は rangeEnabled で2版に分かれる(レンジ無効では range の選択肢ごと消える)。
   //   ★同じ値を buildScalpPlan も使う(runner の rangeEnabled は resolveEffectiveRangeEnabled の同値)。
-  const withA: SplitRecord = { ...record, aPromptBuild: aTrendPromptBuildFp(rangeEnabled) };
+  // ★2026-08-25: 手動目線の回は A を **1度も呼んでいない**。A のプロンプトの型を記録すると
+  //   「その文面を送った」という嘘になる。★記録しない(NULL)= a_provider が無いことと揃う。
+  const withA: SplitRecord = record.aForced
+    ? { ...record }
+    : { ...record, aPromptBuild: aTrendPromptBuildFp(rangeEnabled) };
   const withB: SplitRecord = record.bVariant === 'none'
     ? withA
     : { ...withA, bPromptBuild: bOrderPromptBuildFp(record.bVariant) };

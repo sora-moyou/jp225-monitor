@@ -155,7 +155,13 @@ export function buildPlanNote(result: ScalpPlanResult, at: number, gate?: PlanGa
   //     付き、そちらの rationale は **AI 自身の文** である。広げると旧経路の理由が消える
   //     (=この直しの「逆側」。planNote.test.ts の §逆側 で固定してある)。
   const sr = result.splitRecord;
-  if (sr) {
+  // ★2026-08-25(ユーザー指示): 「手動」で目線を決めた回は **表示は理由なしで、選択された目線を表示**。
+  //   ★理由の欄を1つも埋めない: A を呼んでいないので「AI が言った理由」は存在せず、
+  //     B の本文(rationale)を借りると **AI が言っていない理由を目線が名乗る** ことになる。
+  //   ★目線(bias)は上で splitRecord.aDirection から入っているので、ここで理由だけを飛ばす。
+  if (sr?.aForced) {
+    // 見送りの語だけは下で付く(こちらのゲートで止めた回は「なぜ出なかったか」が要る)。
+  } else if (sr) {
     const reason = result.ok ? result.noneReason : undefined;
     const synthesized = reason !== undefined && SPLIT_SYNTHESIZED_REASONS.includes(reason);
     note.why = text(sr.aWhy)

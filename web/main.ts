@@ -177,7 +177,6 @@ const settingsCtl = initSettingsModal({
   selectTrendVetoMode: document.getElementById('scalp-trend-veto-mode') as HTMLSelectElement,
   selectCooldownMode:  document.getElementById('scalp-cooldown-mode') as HTMLSelectElement,
   selectBiasMode:      document.getElementById('scalp-bias-mode') as HTMLSelectElement,
-  selectRangeMode:     document.getElementById('scalp-range-mode') as HTMLSelectElement,
   checkScalpLcHardMaxEnabled: document.getElementById('scalp-lc-hardmax-enabled') as HTMLInputElement,
   inputScalpLcHardMax: document.getElementById('scalp-lc-hardmax') as HTMLInputElement,
   // ★v0.8.2: System B(仮想取引専用)の設定入力。
@@ -191,7 +190,6 @@ const settingsCtl = initSettingsModal({
   selectTrendVetoModeB: document.getElementById('scalp-trend-veto-mode-b') as HTMLSelectElement,
   selectCooldownModeB:  document.getElementById('scalp-cooldown-mode-b') as HTMLSelectElement,
   selectBiasModeB:      document.getElementById('scalp-bias-mode-b') as HTMLSelectElement,
-  selectRangeModeB:     document.getElementById('scalp-range-mode-b') as HTMLSelectElement,
   selectHardMaxEnabledB: document.getElementById('scalp-lc-hardmax-enabled-b') as HTMLSelectElement,
   inputScalpLcHardMaxB: document.getElementById('scalp-lc-hardmax-b') as HTMLInputElement,
   statusArea:     document.getElementById('settings-status-area') as HTMLElement,

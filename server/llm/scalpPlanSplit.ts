@@ -58,6 +58,10 @@ export interface SplitPlanOptions {
   squeezeState: SqueezeState;
   /** 判定が使えなかった理由('ready_false'/'closed'/'disabled')。使えたときは undefined。 */
   squeezeUnavailable?: string;
+  /** ★2026-08-25(ユーザー指示): **こちらが決めた目線**。指定された回は A を1度も呼ばない。
+   *  「手動」= 買い目線/売り目線/レンジ を設定で固定したとき(server/config/scalpResolvers.ts の
+   *  resolveForcedTrend)。null/undefined = 従来どおり A に尋ねる。 */
+  forcedTrend?: ATrend | null;
   // ★2026-08-22 訂正(リーダー指摘): 一度 delegationNote を SplitPlanOptions に足して B へ渡したが、
   //   取り消した。理由: buildDelegationNote の文面は「上のロジック」「上の2択」「direction」
   //   「regime」「confidence」など、B には存在しないブロック/フィールドへの参照を大量に含み、
@@ -85,8 +89,13 @@ export interface SplitRecord {
   missingData?: string;
   /** A と B のツール呼び出し回数の合計。★A は常に 0(ツールを付けない)。 */
   toolCalls?: number;
-  /** ★段5: A(目線)を答えたプロバイダ。A の呼び出しが失敗して一度も応答が来なかった回は undefined。 */
+  /** ★段5: A(目線)を答えたプロバイダ。A の呼び出しが失敗して一度も応答が来なかった回は undefined。
+   *  ★2026-08-25: **手動目線の回も undefined**(A を1度も呼んでいない)。
+   *    台帳で「AI が答えた目線」と「こちらが決めた目線」を分けるときは a_provider の有無で切れる。 */
   aProvider?: AnsweringProvider;
+  /** ★2026-08-25(記録専用): その回の目線を **こちらが決めた**(手動)か。true=A を呼んでいない。
+   *  ★画面はこれを見て「理由なしで目線だけ」を出す(AI の言葉でない理由を名乗らせない)。 */
+  aForced?: boolean;
   /** ★段5: B(価格と損切幅)を答えたプロバイダ。B を呼ばなかった回(bVariant='none')は undefined。
    *  ★A と別に持つ理由: callWithFallback は呼び出しごとにプールを引くため、A を gemini・B を groq が
    *    答える組み合わせが起こる。1つの provider に混ぜて残すと「どちらが答えたか」が分からなくなる。 */
@@ -140,9 +149,19 @@ export async function runSplitPlan(
     ...(opts.squeezeUnavailable ? { squeezeUnavailable: opts.squeezeUnavailable } : {}),
   };
 
+  // ── ①' ★こちらが目線を決めている回は A を **呼ばない**(2026-08-25・ユーザー指示) ─────
+  //   「プロンプトAはAIに渡さず、表示は理由なしで、選択された目線を表示してください。
+  //     目線に応じた、プロンプトBのみをAIに渡します。」
+  //   ★早期 return にせず「A の呼び出しだけを飛ばす」形にした理由:
+  //     ②レンジ不許可 / ③版の選択 / ④B / ⑤組み立て の分岐を **1行も変えずに** 共有できる。
+  //     早期 return で B 側を別関数へ切り出すと、同じ判断が2箇所に増える(片方だけ直す事故の元)。
+  //   ★理由(aWhy)は付けない: こちらが決めた目線に「AI の言葉の理由」は存在しない。
+  //     推測で理由を作ると、台帳の a_why が「AI が言った理由」でなくなる。
+  const forced = opts.forcedTrend ?? null;
+
   // ── ① A(目線) ────────────────────────────────────────────────────────────
-  let aRes: SplitCallResult;
-  try {
+  let aRes: SplitCallResult = { text: '', toolCalls: 0 };
+  if (!forced) try {
     // ★2026-08-25: A のプロンプトは **設定(rangeEnabled)の関数**。レンジ無効のときは
     //   range という選択肢そのものを出さない(=下の ② はほぼ死に条項になるが、防御として残す)。
     aRes = await deps.callTrend(
@@ -151,13 +170,15 @@ export async function runSplitPlan(
     );
   } catch (e) {
     // ★A の失敗は「相場が悪かった」ではない。★**B を投げず・再試行せず**に見送る。
+    //   ★手動目線の回はここへ来ない(A を呼んでいないので失敗しようがない)。
     console.warn('[scalp-plan] A(目線)の呼び出しに失敗 — B は呼ばず見送り:', e instanceof Error ? e.message : String(e));
     return {
       parsed: withReason(nonePlan(refPrice, '目線の判断が得られませんでした(呼び出し失敗)。'), 'aFailed'),
       record: { ...baseRecord, bVariant: 'none' },
     };
   }
-  const answer = parseTrendAnswer(aRes.text);
+  // ★手動目線の回は parse を通さない(読む文字列がそもそも無い)。
+  const answer = forced ? { direction: forced } : parseTrendAnswer(aRes.text);
   if (!answer) {
     // 3語のどれでもない/読めない。★これも aFailed(相場のせいではない)。
     // ★2026-08-25(エバリュエーター指摘(h)): **何と答えたのか** を残す。
@@ -183,6 +204,8 @@ export async function runSplitPlan(
     aDirection: answer.direction,
     ...(answer.why ? { aWhy: answer.why } : {}),
     ...(aRes.provider ? { aProvider: aRes.provider } : {}),
+    // ★2026-08-25: 「こちらが決めた目線」の回に印を付ける(a_provider が無いこととの二重の手掛かり)。
+    ...(forced ? { aForced: true } : {}),
   };
 
   // ── ② レンジ不許可なら B を呼ばない ──────────────────────────────────────

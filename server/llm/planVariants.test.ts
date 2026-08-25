@@ -5,6 +5,7 @@ import {
   type BVariant, type SqueezeState, type TrendDirection,
 } from './planVariants.js';
 import { stopLossFromWidth, stopSideOk } from '../../core/stopGeometry.js';
+import { forcedTrendFrom } from '../config/scalpResolvers.js';
 
 // ★段3(v0.9.99)＋★2026-08-25(v0.9.99・応答が JSON → 自由文): B の4種と対応表・読み取り。
 //
@@ -861,5 +862,52 @@ describe('★形式の見本の書き写しは理由に入らない', () => {
       .toBe('理由は節目抜け。日本語で書く。');
     expect(why('逆指値買い65,780円（LC幅60円）自由表記のレンジ上限を抜けたら追随。'))
       .toBe('自由表記のレンジ上限を抜けたら追随。');
+  });
+});
+
+// ═══ ★2026-08-25(ユーザー指示): 目線の5ルート ═══════════════════════════════
+//
+// ■ ユーザー確定の5ルート
+//   ①AI委任 + レンジON  → A(3択: buy/sell/range) + B
+//   ②AI委任 + レンジOFF → A(2択: buy/sell)       + B
+//   ③手動 + 買い目線     → **B(buy) のみ**（A を呼ばない）
+//   ④手動 + 売り目線     → **B(sell) のみ**
+//   ⑤手動 + レンジ目線   → **B(range-*) のみ**。★「目線がAI委任の場合、レンジを許可」に **依存しない**
+//
+// ■ ★私が一度作った穴(ユーザー訂正で判明)
+//   ⑤を①に依存させたため、①OFF のとき手動レンジが **常に見送り** になっていた。
+//   ①は「**AI に** range という選択肢を見せるか」の設定で、手動では A を呼ばないので無関係。
+//   ★依存させていた箇所は4つ(forcedTrendFrom / UI / rangeDisabled の門 / enforceRangeEnabled)。
+describe('★目線の5ルート(forcedTrendFrom と B の版)', () => {
+  const V = (mode: 'manual' | 'ai', bias: 'long' | 'short' | 'range' | 'none') =>
+    forcedTrendFrom(mode, bias);
+
+  it('①② AI委任は目線を固定しない(=A を呼ぶ)', () => {
+    expect(V('ai', 'none')).toBeNull();
+    // ★AI委任なら保存値が何であっても固定しない(委任の意味を保つ)。
+    for (const b of ['long', 'short', 'range'] as const) expect(V('ai', b)).toBeNull();
+  });
+
+  it('③④⑤ 手動は目線を固定する(A の答えの語彙で返す)', () => {
+    expect(V('manual', 'long')).toBe('buy');
+    expect(V('manual', 'short')).toBe('sell');
+    expect(V('manual', 'range')).toBe('range');
+  });
+
+  it('★★⑤ 手動レンジは「レンジを許可」に依存しない(引数に持たない=依存しようがない)', () => {
+    // ★引数が2つだけ=レンジ設定を受け取る口が無い(構造で保証する)。
+    expect(forcedTrendFrom.length).toBe(2);
+    expect(V('manual', 'range')).toBe('range');
+  });
+
+  it('★レガシーの none(両方向)は目線を固定しない(手動でも A を呼ぶ)', () => {
+    expect(V('manual', 'none')).toBeNull();
+  });
+
+  it('★固定した目線がそのまま B の版になる(コードが選ぶ・AI は選ばない)', () => {
+    expect(pickBVariant(V('manual', 'long')!, null)).toBe('buy');
+    expect(pickBVariant(V('manual', 'short')!, null)).toBe('sell');
+    expect(pickBVariant(V('manual', 'range')!, null)).toBe('range-fade');
+    expect(pickBVariant(V('manual', 'range')!, 'squeeze')).toBe('range-breakout');
   });
 });

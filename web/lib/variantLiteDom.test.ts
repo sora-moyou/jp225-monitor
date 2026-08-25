@@ -21,7 +21,7 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     // ★v0.9.70: 5行目(AIにチャート画像を送る)は A/B の knob ではない **全体設定** だが、
     //   シグナルエンジンは lite でも動き、この設定だけが直接お金に効くので lite にも出す。
     expect(keepRows.toArray().map(labelOf)).toEqual([
-      '初期LC下限(円)', '最大初期LC(円)', 'バイアス', 'LC安全上限(円)', 'AIにチャート画像を送る',
+      '初期LC下限(円)', '最大初期LC(円)', '目線', 'LC安全上限(円)', 'AIにチャート画像を送る',
     ]);
   });
 
@@ -29,9 +29,9 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     const dropped = dropRows.toArray().map(labelOf);
     expect(dropped).toContain('トレンドveto(円)');
     expect(dropped).toContain('クールダウン(秒)');
-    expect(dropped).toContain('レンジ両面(実験)');
+    expect(dropped).toContain('目線がAI委任の場合、レンジを許可');   // ★2026-08-25 にタイトル変更
     // 残す4項目が「隠す側」に混ざっていないこと。
-    for (const keep of ['初期LC下限(円)', '最大初期LC(円)', 'バイアス', 'LC安全上限(円)']) {
+    for (const keep of ['初期LC下限(円)', '最大初期LC(円)', '目線', 'LC安全上限(円)']) {
       expect(dropped).not.toContain(keep);
     }
   });
@@ -62,7 +62,8 @@ describe('lite の AIエントリー(index.html の構造)', () => {
     const withMode = keepRows.toArray()
       .filter(r => $(r).find('.ab-col:not(.ab-col-b) ' + LITE_SCALP.modeSelect).length > 0)
       .map(labelOf);
-    expect(withMode).toEqual(['最大初期LC(円)', 'バイアス']);
+    // ★2026-08-25: レンジのモード select を廃止したので、モードを持つ行は 最大初期LC と 目線 の2つ。
+    expect(withMode).toEqual(['最大初期LC(円)', '目線']);
     for (const label of ['初期LC下限(円)', 'LC安全上限(円)']) {
       const row = keepRows.toArray().find(r => labelOf(r) === label)!;
       expect($(row).find(LITE_SCALP.modeSelect).length).toBe(0);   // A/B とも無い=委任対象外

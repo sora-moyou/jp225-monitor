@@ -181,7 +181,9 @@ describe('configStore: lite 独立名前空間(config.lite)', () => {
     expect(resolveScalpRangeEnabled()).toBe(true);
     expect(resolveScalpTrendVetoDirective().mode).toBe('ai');
     expect(resolveScalpCooldownDirective().mode).toBe('ai');
-    expect(resolveScalpRangeDirective().mode).toBe('ai');
+    // ★2026-08-25(ユーザー指示): レンジは **ON/OFF だけ** になり、AI委任/手動の選択を廃止した。
+    //   scalpRangeSource が 'ai' でも mode は常に 'manual'(=設定の ON/OFF がそのまま効く)。
+    expect(resolveScalpRangeDirective().mode).toBe('manual');
   });
 
   // ─── System B との関係 ───────────────────────────────────────────────
