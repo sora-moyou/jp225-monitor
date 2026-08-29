@@ -17,6 +17,9 @@ import { stopLossFromWidth, stopSideOk } from '../../core/stopGeometry.js';
 //   画面(web/components/signalPanel.ts)が同じ判定を必要とするが、web は server を import できない。
 //   複製すると「片方だけ直す」事故が生まれるので、実体を core/entryLabel.ts に置いて両方から import する。
 import { entryPositionOk, type EntryTrendDir } from '../../core/entryLabel.js';
+// ★2026-08-26: ピボット節目の5円ずらし(仕様の本体は core の純関数・AI は関与しない)。
+import { nudgeEntryOnPivot, type NudgeLevel } from '../../core/pivotNudge.js';
+import { rewriteLcWidthForLeg } from './rationaleLcRewrite.js';
 import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 // 型だけの import(実行時に消える)。scalpPlan は撮影モジュールを実行時には一切呼ばない。
 import type { ChartShotIdentity } from '../chart/chartShot.js';
@@ -2323,6 +2326,10 @@ export interface ScalpPlanInput {
   technicalForTrend?: string | null;
   /** ★v0.9.99(記録専用): A/B 分割で得た測定材料を呼び出し側へ返す。段5 で台帳へ落とす。 */
   onSplitRecord?: (r: SplitRecord) => void;
+  /** ★2026-08-26: **こちらが持つ節目**(levelsLoop のスナップショット)。5円ずらしの照合に使う。
+   *  ★AI には渡さない・AI からも受け取らない(仕様「AI は関与しない」)。runner が上下をまとめて渡す。
+   *  ★未指定なら **ずらさない**(安全側。節目が読めない回に勝手に価格を動かさない)。 */
+  levels?: readonly NudgeLevel[];
   /** ★v0.9.99(A/B 分割): BB スクイーズ判定の生値と、使えなかった理由。版の選択に使う。 */
   squeezeState?: SqueezeState;
   squeezeUnavailable?: string;
@@ -3265,7 +3272,36 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //   LC安全上限(hardMax)は mode 無関係に常時適用(有効時)。バイアスは ai なら 'none'(上で解決済)=veto なし。
     // ★LC下限(floorYen)は **委任設定 scalpLcFloorSource に関係なく常に渡す**=強制が委任に勝つ(安全側)。
     //   下限は「設定の好み」ではなく決済ロジック(利益ロックの床)が成立するための前提条件のため。
-    const enforced = enforcePlanConstraintsReport(parsed.plan, {
+    // ★2026-08-26(ユーザー承認済みの仕様): ピボット節目に **完全一致** した建値を5円ずらす。
+    //   ★enforce の **前** に置く。★2026-08-30 訂正: 従来ここに書いてあった理由
+    //     「後ろに置くと上限超えが素通りする」は **いまや偽**(独立検証の実測: ずらし→enforce と
+    //     enforce→ずらし の最終プランは 678/678 件で一致・lc 落ちの増分 0)。上限を超えるずらしを
+    //     諦めるようにしたので、ずらし後の幅は構造上 帯の中に収まるため。
+    //   ★順序が要る **本当の** 理由はこちら(合成入力で実証): 根拠文の書き換えは soleLeg/ambiguous が
+    //     「生き残っている脚の本数」に依存する。enforce が先に1脚落とすと、見出しの無い根拠文が
+    //     soleLeg=true になって全体書き換えの対象に変わり、書き換わる幅が変わる。
+    //     ★この順序依存は **実データでは未測定**(台帳は enforce 後のプランしか持たないため観測不能)。
+    //   ★2026-08-26 訂正: ここに「側の検査も enforce がやる」と書いてあったのは **誤り**。
+    //     entryPositionOk は parseScalpPlan / buildPlanFromBAnswer の中にしかなく、enforce は
+    //     stopSideOk しか見ない。だから **ずらしが現在値をまたがないこと自体を**
+    //     nudgeEntryOnPivot が保証する(blocked='crossesRef')。
+    //   ★2026-08-26 訂正: 「幅は保つ(損切りを引き直す)」も **撤回済み**。ユーザー確定
+    //     「節目ずらしによってLC幅が変わっても制限内なら可とします。」に従い、**建値だけ**を
+    //     ずらして損切りは動かさない=幅は5円広がる。
+    //   ★2026-08-30 訂正: 「帯を外れた脚は enforce が 'lc' で落とす」は **撤回**。
+    //     手動設定の帯は 55〜65 しかなく、+5円で 2脚→1脚 が 37.5% 起きていた(実測)。
+    //     いまは applyPivotNudge が **上限を超えるずらしを諦める**(脚は落とさない)。
+    //   ★2026-08-30: 上限を超えるずらしは **諦める**(blocked='lcCeiling')。帯は下の enforce に
+    //     渡すのと **同じ値** を渡す(別の出所を作らない)。実測で手動設定の 2脚→1脚 37.5% を消す。
+    const nudged = applyPivotNudge(parsed.plan, refPrice, input.levels, {
+      ceilingYen, ceilingMode, lcHardMax: hardMax,
+    });
+    // ★count===0 でもログを出す: notes には「一致したのに ずらせなかった(crossesRef)」が入る。
+    //   count だけで弾くと、その据え置きが **無言で捨てられる**(頻度が数えられない)。
+    if (nudged.count > 0 || nudged.notes.length > 0) {
+      console.log(`[scalp-plan] pivot-nudge ${nudged.count}件 ${nudged.notes.join(' / ')}`);
+    }
+    const enforced = enforcePlanConstraintsReport(nudged.plan, {
       ceilingYen, bias, trend, ceilingMode, lcHardMax: hardMax, floorYen,
     });
     // 防御多重化: レンジ無効設定で万一 range が返っても none に落とす(プロンプト指示の保険)。
@@ -3344,4 +3380,157 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
     //     根拠文で言い直しうる)を同期フォルダへ運びうるため。長さは触らない(診断値を落とさない)。
     return { ok: false, error: sanitizeErrorForOutput(e instanceof Error ? e.message : String(e)), imageSent, ...(answeredBy ? { provider: answeredBy } : {}), ...(splitBypassReason ? { splitBypassReason } : {}) };
   }
+}
+
+/** ★2026-08-26: ピボット節目に完全一致した建値を5円ずらし、**幅を保って損切りを引き直す**。
+ *
+ *  ■ 仕様の本体は core/pivotNudge.ts(純関数)。ここは AiPlan の形に当てるだけの薄い層。
+ *  ■ ★対象は4脚すべて: 方向プランの limitEntry / stopEntry と、レンジ両面の range.upper / lower。
+ *  ■ ★★**損切りは動かさない**(ユーザー確定 2026-08-26:「節目ずらしによってLC幅が変わっても
+ *    制限内なら可とします。」)。★動かす建値だけをずらし、LC 幅は5円変わるままにする。
+ *    ・理由: 損切りは AI が **その価格を根拠に** 選んでいる。建値の執行都合で一緒に動かすと、
+ *      AI が述べた理由と実際の損切り位置が食い違う。
+ *    ・★幅は必ず **広がる方向** にしか動かない(4脚とも建値が損切りから遠ざかる向きにずれるため)。
+ *      = 下限割れは起きない(実測: 発火866脚すべて newW−oldW=+5・下限割れ0件)。
+ *  ■ ★★2026-08-30 訂正:「上限を超えたら その脚は enforce が 'lc' で落とす」を **撤回**した。
+ *    実測(アナリスト・signal_plans 3,008件[2026-08-04〜08-28]から computeLevels を実走して
+ *    発火脚 866本を再構成): 手動設定の実効上限は **65円**(帯は 55〜65 の11円しかない)ため、
+ *    +5円が上限を跨いで **2脚→1脚 が 37.5%(60/160)**・見送り率 3.4%→6.2% になっていた
+ *    (AI委任側=実効上限159 は 2脚→1脚 0.7% でほぼ無傷)。
+ *    ★**上限を超えるなら ずらしを諦める**(blocked:'lcCeiling' として記録し、建値も根拠文も触らない)。
+ *      理由: ずらしは **執行の都合であって相場の判断ではない** ので、諦めて失うのは5円ぶんの
+ *      板の厚みだけ。**「ずらし」の意図が「脚を消す」に化けるほうが害**。
+ *      これは crossesRef で採った「(a) ずらしを諦める」と **同じ判断**。
+ *      実測の効き目: 落ちる脚 104→0 / 2脚→1脚 87→0 / 新規見送り 12→0。
+ *      代償: 発火が 866→762脚(−12.0%)、v0.9.102 手動では 195→127脚(−34.9%)。
+ *    ★上限の解決は **既存の lcEffectiveCeiling / lcLegExceeds を呼ぶ**(再実装しない)。
+ *      判定は `w > 上限`(境界=ちょうどは許可)。★`>=` にすると 60→65 が落ちる。
+ *    ★ずらしは引き続き enforce の **前** に置く。★2026-08-30 訂正: その理由は「検査した値と発注する値を
+ *      一致させるため」**ではない**(上限超えを諦めるので、ずらし後の幅は構造上 帯の中。実測でも
+ *      順序を入れ替えた最終プランは 678/678 件で一致)。★本当の理由は下の soleLeg/ambiguous が
+ *      **生き残っている脚の本数に依存する**こと。enforce が先に脚を落とすと書き換わる幅が変わる。
+ *      ★この順序依存は実データでは未測定(台帳は enforce 後しか持たない)。
+ *  ■ ★元の plan は書き換えない(浅いコピーを返す): parsed.plan は lcAudit / rangeAnomaly など
+ *    **AI の生出力に対して測る** 記録が後段で読むため。
+ *  ■ 返り値の count/notes は記録とログ用(★「何件発火したか」を知らないまま運用しない)。
+ *    ★count は **実際にずらした脚数**(諦めた脚は数に入れない)。諦めたことは notes に残す。
+ *
+ *  @param lc LC の帯。★**enforcePlanConstraintsReport に渡すのと同じ値**を渡すこと
+ *           (別の出所を作ると片方だけ直してズレる=この案件が何度も踏んでいる型)。
+ *           ★省略可能にしていない理由: 省略できると「渡し忘れた経路だけ上限を見ない」という
+ *           無言の失敗が生まれる。呼ぶ側に必ず帯を宣言させる。 */
+export function applyPivotNudge(
+  plan: AiPlan, refPrice: number, levels: readonly NudgeLevel[] | null | undefined,
+  lc: { ceilingYen: number; ceilingMode?: KnobSource; lcHardMax?: LcHardMax },
+): { plan: AiPlan; count: number; notes: string[] } {
+  if (!levels?.length || plan.direction === 'none') return { plan, count: 0, notes: [] };
+
+  // ── ① まず **どの脚が どれだけずれるか** を全部決める(書き換えるのはその後) ────────
+  //   ★1脚ずつ順に書き換えられない理由: 理由欄(共有の rationale)を直すには
+  //     「同じ幅を申告している別の脚が居ないか」を先に知る必要がある。
+  interface LegView { kind: 'limit' | 'stop'; entry: number; stopLoss: number; pos?: 'upper' | 'lower' }
+  const views: LegView[] = [];
+  if (plan.direction === 'range' && plan.range) {
+    for (const pos of ['upper', 'lower'] as const) {
+      const l = plan.range[pos];
+      if (l) views.push({ kind: l.type, entry: l.entry, stopLoss: l.stopLoss, pos });
+    }
+  } else {
+    if (plan.limitEntry != null && plan.stopLossForLimit != null) {
+      views.push({ kind: 'limit', entry: plan.limitEntry, stopLoss: plan.stopLossForLimit });
+    }
+    if (plan.stopEntry != null && plan.stopLossForStop != null) {
+      views.push({ kind: 'stop', entry: plan.stopEntry, stopLoss: plan.stopLossForStop });
+    }
+  }
+  const hits = views.map(v => {
+    const r = nudgeEntryOnPivot(v.entry, v.kind, refPrice, levels);
+    return { v, r, oldW: Math.abs(v.entry - v.stopLoss), newW: Math.abs(r.price - v.stopLoss) };
+  });
+  const notes: string[] = [];
+  const ja = (k: 'limit' | 'stop'): string => (k === 'limit' ? '指値' : '逆指値');
+  // ── ①' ★上限を超えるなら ずらしを諦める(**建値を書き換える前** に決める) ──────────
+  //   ★ここで nudged:false へ倒しておくと、③の根拠文の書き換えも自動的に走らない
+  //     (= 諦めた脚の根拠文は1文字も変わらない)。
+  //   ★上限の解決も判定も既存の関数をそのまま呼ぶ(規約を2箇所に持たない)。
+  const cap = lcEffectiveCeiling(lc);
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i]!;
+    if (!h.r.nudged || !lcLegExceeds(h.newW, lc)) continue;
+    notes.push(`${ja(h.v.kind)}${h.r.pivot}はずらすと幅${h.newW}円で上限${cap}円を超えるため据え置き`);
+    hits[i] = {
+      v: h.v,
+      r: { price: h.v.entry, nudged: false, pivot: h.r.pivot, blocked: 'lcCeiling' },
+      oldW: h.oldW, newW: h.oldW,
+    };
+  }
+  // ★count は **実際にずらした脚数**(上で諦めた脚は既に nudged:false なので入らない)。
+  const count = hits.filter(h => h.r.nudged).length;
+  // ★「一致したのに ずらせなかった」を **無言で捨てない**(2026-08-26)。
+  //   nudgeEntryOnPivot は blocked:'crossesRef' を返していたのに、ここが読み捨てていた。
+  //   頻度が分からないと「ピボットに当たっていない」と区別がつかない
+  //   (この案件が繰り返し踏んできた型 = 無言の失敗)。count は 0 のままでよいが notes には残す。
+  for (const h of hits) {
+    if (h.r.blocked === 'crossesRef') notes.push(`${ja(h.v.kind)}${h.r.pivot}はずらすと現在値をまたぐため据え置き`);
+  }
+  // ★1脚も動かないなら元の plan をそのまま返す(notes だけは持ち帰る=上の据え置きを数えるため)。
+  if (count === 0) return { plan, count: 0, notes };
+
+  const out: AiPlan = { ...plan };
+
+  // ── ② 建値だけをずらす(損切りは触らない=幅が5円広がる) ─────────────────────────
+  if (out.direction === 'range' && out.range) {
+    const range: NonNullable<AiPlan['range']> = {};
+    for (const h of hits) {
+      const l = out.range[h.v.pos!]!;
+      range[h.v.pos!] = h.r.nudged ? { ...l, entry: h.r.price } : l;   // ★stopLoss は動かさない
+    }
+    out.range = range;
+  } else {
+    for (const h of hits) {
+      if (!h.r.nudged) continue;
+      if (h.v.kind === 'limit') out.limitEntry = h.r.price;            // ★stopLossForLimit は動かさない
+      else out.stopEntry = h.r.price;                                  // ★stopLossForStop は動かさない
+    }
+  }
+  for (const h of hits) {
+    if (h.r.nudged) notes.push(`${ja(h.v.kind)}${h.r.pivot}→${h.r.price}(幅${h.oldW}→${h.newW})`);
+  }
+
+  // ── ③ ★理由欄に書かれた旧LC幅も直す(ユーザー指示・2026-08-26) ───────────────────
+  //   「LCずらしは、シグナル書き換えとともに、理由欄に旧LC幅が記載されていた場合、
+  //     その幅の値もずらしてください。」
+  //   ★直すのは **幅の数値だけ**。価格は直さない(ずらしは執行の都合で、狙いの説明と矛盾しない)。
+  //   ★台帳の lc_audit_json は parseScalpPlan の中で **ずらしの前** に採られているので、
+  //     ここで直しても「AI が何と申告したか」の測定は汚れない。
+  const soleLeg = views.length === 1;
+  for (const h of hits) {
+    if (!h.r.nudged || h.oldW === h.newW) continue;
+    const k = h.v.kind;
+    // (a) その脚 **専用の箱**(directional のみ存在。レンジの脚に理由の箱は無い)は文全体を直す。
+    if (k === 'limit') {
+      for (const f of ['entryWhyForLimit', 'lcWhyForLimit'] as const) {
+        const r = rewriteLcWidthForLeg(out[f], k, h.oldW, h.newW, { own: true });
+        if (r.hits) out[f] = r.text;
+      }
+    } else {
+      for (const f of ['entryWhyForStop', 'lcWhyForStop'] as const) {
+        const r = rewriteLcWidthForLeg(out[f], k, h.oldW, h.newW, { own: true });
+        if (r.hits) out[f] = r.text;
+      }
+    }
+    // (b) 共有の根拠文は **見出しで割り当てた区間だけ**。
+    // ★同じ注文タイプの脚が他にも居るなら、共有の根拠文は **触らない**
+    //   (取り違えて直すと台帳から AI の言葉が永久に消える)。
+    //   見出しは注文タイプしか区別しないので、上部/下部のどちらの申告かを決められない。
+    //   （幅が違っても駄目: 同じ区間に2回書き換えが当たり、連鎖してずれる。実測で上が60→65→70になった）
+    const ambiguous = hits.some(o => o !== h && o.v.kind === k);
+    if (ambiguous) {
+      notes.push(`根拠文の幅は据え置き(同じ${ja(k)}の脚が他にもあり どちらの申告か区別できない)`);
+      continue;
+    }
+    const rr = rewriteLcWidthForLeg(out.rationale, k, h.oldW, h.newW, { soleLeg });
+    if (rr.hits) { out.rationale = rr.text; notes.push(`根拠文の幅${h.oldW}→${h.newW}(${rr.hits}箇所)`); }
+  }
+  return { plan: out, count, notes };
 }

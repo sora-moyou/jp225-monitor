@@ -107,6 +107,9 @@ function cluster(cands: Cand[], current: number, opts: ClusterOpts): Level[] {
 
     const labels: string[] = [];
     for (const g of group) if (!labels.includes(g.label)) labels.push(g.label);
+    // ★2026-08-26: 種別も同じ作法で重複なく集める(labels と1行ずつ対応させる意味は無い=集合)。
+    const kinds: string[] = [];
+    for (const g of group) if (!kinds.includes(g.kind)) kinds.push(g.kind);
     const fibMember = group.find(g => g.fib !== undefined);
 
     // クラスタに寄与したセッション(被テスト自己除外用)
@@ -145,6 +148,7 @@ function cluster(cands: Cand[], current: number, opts: ClusterOpts): Level[] {
       price,
       dist: round5(price - current),
       labels,
+      kinds,
       strong: false,        // tier 確定後に上書き
       score,
       tier: 0,              // 相対ランクで後段確定

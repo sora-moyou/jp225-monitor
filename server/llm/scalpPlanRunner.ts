@@ -435,6 +435,12 @@ async function runScalpPlanWithChartInner(
   let splitRecord: SplitRecord | null = null;
   // ★版の選択に使う BB スクイーズ判定の生値と、使えなかった理由(既存の判定を読むだけ)。
   const squeeze = resolveSqueezeForPlan();
+  // ★2026-08-26: 5円ずらしの照合に使う節目(上下まとめて price/kinds だけ)。
+  //   ★engine の再武装ゲートと **同じ getLevelsSnapshot** を読む(別の出所を作らない)。
+  const lvSnap = getLevelsSnapshot();
+  const levelsForNudge = lvSnap
+    ? [...lvSnap.up, ...lvSnap.down].map(l => ({ price: l.price, kinds: l.kinds }))
+    : null;
   // ④ 戦略作成。LC/バイアスは override が無ければ buildScalpPlan 内で monitor 設定を既定に使う。
   // ★v0.9.93: いちばん外側で「版とプロンプトの型」を載せる(ok:true / ok:false のどちらにも付く)。
   return attachContextPresence(attachBuildIdentity(attachTrendDir(attachChartVision(attachGeneratorRecord(attachSplitRecord(attachPlanProvenance(await buildScalpPlan({
@@ -463,6 +469,11 @@ async function runScalpPlanWithChartInner(
     technicalForTrend: richResult.trendText === undefined
       ? undefined
       : buildTechnicalForTrend(price, regime, richResult.trendText),
+    // ★2026-08-26: **こちらが持つ節目** を渡す(5円ずらしの照合用)。
+    //   ★AI には渡さない・AI からも受け取らない(仕様「AI は関与しない」)。
+    //   ★上下をまとめる: ずらしは「その価格がピボットか」だけを見るので、上下の別は要らない。
+    //   ★取れない回は undefined のまま = **ずらさない**(勝手に価格を動かさない)。
+    ...(levelsForNudge ? { levels: levelsForNudge } : {}),
     // ★版の選択に使う BB スクイーズ判定の生値と、使えなかった理由(段5 で台帳に残す)。
     squeezeState: squeeze.state,
     ...(squeeze.unavailable ? { squeezeUnavailable: squeeze.unavailable } : {}),

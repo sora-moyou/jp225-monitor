@@ -67,8 +67,15 @@ vi.mock('../db/store.js', () => ({
   getSessionOHLC: () => [],
   getSignalTrades: () => [],
 }));
+// ★2026-08-26: 5円ずらしの照合に使う節目も、runner はここから読む。
+//   ★up/down に **kinds つき** の水準を1本ずつ置き、runner が buildScalpPlan へ渡すことを固定する。
 vi.mock('../loops/levelsLoop.js', () => ({
-  getLevelsSnapshot: () => ({ current: 0, up: [], down: [], swing: null, reversalSatisfied: false, asOf: 0 }),
+  getLevelsSnapshot: () => ({
+    current: 0,
+    up: [{ price: 39_500, kinds: ['sessHL'], labels: ['前日高'], dist: 0, strong: false, score: 1, tier: 0, confluence: false }],
+    down: [{ price: 38_500, kinds: ['grid500'], labels: ['節目500'], dist: 0, strong: false, score: 1, tier: 0, confluence: false }],
+    swing: null, reversalSatisfied: false, asOf: 0,
+  }),
 }));
 // 既定は '' (rich context オフ)。DB オープン失敗時に「メモリ足で文脈を組めるか」を見るため入力を記録する。
 const marketDataMock = vi.fn<[{ bars: { t: number }[] }], string>(() => '');
@@ -448,5 +455,36 @@ describe('★チャート画像の A/B(既定 off)', () => {
     const r = await runScalpPlanWithChart() as Record<string, unknown>;
     restore();
     expect(r.chartVision).toEqual({ mode: 'ab', requested: true, sent: true });
+  });
+});
+
+// ═══ ★2026-08-26: runner が **こちらが持つ節目** を buildScalpPlan へ渡す ═══════════
+//
+// ■ ★なぜ要るか(実際にすり抜けた)
+//   ずらしの本体(core/pivotNudge.ts)と、計画への適用(applyPivotNudge)と、
+//   buildScalpPlan の中での呼び出しは、それぞれテストで固定した。
+//   ★しかし「runner が levels を渡す」1行を消しても、どのテストも赤くならなかった。
+//   その1行が無ければ **ずらしは永久に発火しない**(input.levels が undefined = 安全側に倒れる)。
+//   ★配線は端から端まで1本ずつ固定する。
+describe('★runner が節目を buildScalpPlan へ渡す(5円ずらしの材料)', () => {
+  it('★★levels が渡り、up/down がまとめて price+kinds の形で入る', async () => {
+    buildScalpPlanMock.mockResolvedValue({ ok: true, plan: { direction: 'none', rationale: '', refPrice: 39_000 } });
+    await runScalpPlanWithChart({ symbol: 'NIY=F' });
+    const input = buildScalpPlanMock.mock.calls[0]![0] as { levels?: { price: number; kinds?: string[] }[] };
+    expect(input.levels, 'levels が渡っていない=ずらしは永久に発火しない').toBeDefined();
+    expect(input.levels).toEqual([
+      { price: 39_500, kinds: ['sessHL'] },     // 上(ピボット)
+      { price: 38_500, kinds: ['grid500'] },    // 下(計算値)
+    ]);
+  });
+
+  it('★AI には渡さない(仕様「AI は関与しない」): levels はプロンプトの材料ではない', () => {
+    // ★buildScalpPlan の入力に在るだけで、A/B のプロンプト本文には出ない。
+    //   本文に出ないことは server/llm/aFullTextForbidden.test.ts と
+    //   server/llm/planVariants.test.ts(⑥ 裸の数字)が別途固定している。
+    //   ここでは **AI へ渡す口(technical / technicalForTrend)に混ざっていない** ことだけ見る。
+    const input = buildScalpPlanMock.mock.calls[0]![0] as { technical?: string; technicalForTrend?: string };
+    expect(String(input.technical ?? '')).not.toContain('kinds');
+    expect(String(input.technicalForTrend ?? '')).not.toContain('kinds');
   });
 });

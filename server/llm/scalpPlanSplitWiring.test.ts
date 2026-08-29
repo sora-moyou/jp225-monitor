@@ -316,3 +316,59 @@ describe('⑥ ★読み取り失敗が legDrops(→ leg_drops_json)まで届く'
     if (r.ok) expect(r.legDrops).toBeUndefined();
   });
 });
+
+// ═══ ★2026-08-26: ピボットの5円ずらしが **buildScalpPlan の配線を通って** 効く ═══════
+//
+// ■ ★なぜこの検査が要るか(単体テストではすり抜けた)
+//   core/pivotNudge.test.ts と server/llm/pivotNudgeApply.test.ts は
+//   **関数を直接呼んでいる** ので、buildScalpPlan の中で呼ばれているかを1本も見ていない。
+//   実際、配線を外す変異を当てても両方とも緑のままだった。
+//   ★「側の検査が分割経路を通っていなかった」のと同じ型の穴なので、ここで配線そのものを固定する。
+describe('★ピボットの5円ずらしが buildScalpPlan を通って効く(配線の実証)', () => {
+  const LEVELS = [
+    { price: REF + 100, kinds: ['sessHL'] },      // ピボット
+    { price: REF - 100, kinds: ['grid500'] },     // 計算値
+  ];
+  const runWith = (levels?: readonly { price: number; kinds?: string[] }[]) =>
+    buildScalpPlan({
+      symbol: 'NIY=F', prices: PRICES, news: [],
+      technical: '【B文脈】主要節目', technicalForTrend: '【A文脈】足だけ',
+      ...(levels ? { levels } : {}),
+    });
+
+  beforeEach(() => { setSplit(true); createMock.mockReset(); });
+
+  /** A=bull → B(buy)。★逆指値をピボットちょうど・指値は計算値ちょうどに置かせる。 */
+  const feedPlan = (): void => {
+    createMock
+      .mockResolvedValueOnce({ choices: [{ message: { content: A_JSON } }] })
+      .mockResolvedValueOnce({ choices: [{ message: {
+        content: `逆指値買い${REF + 100}円（LC幅60円）節目抜け\n指値買い${REF - 100}円（LC幅60円）押し目`,
+      } }] });
+  };
+
+  it('★★ピボットちょうどの脚は5円ずれ、計算値ちょうどの脚は動かない', async () => {
+    feedPlan();
+    const r = await runWith(LEVELS);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // 逆指値(上のピボット) → 遠ざかる側=上へ5円
+    expect(r.plan.stopEntry).toBe(REF + 105);
+    // 指値(下・キリ番=計算値) → 動かさない
+    expect(r.plan.limitEntry).toBe(REF - 100);
+    // ★損切りは動かさない(ユーザー確定 2026-08-26)= ずらした脚の幅だけ5円広がる。
+    //   ★帯(55〜159)の中なので落ちない。外に出た脚は enforce が 'lc' で落とす
+    //   (server/llm/pivotNudgeApply.test.ts の「帯の検査」で固定)。
+    expect(r.plan.stopEntry! - r.plan.stopLossForStop!).toBe(65);    // ずれた脚: 60 → 65
+    expect(r.plan.limitEntry! - r.plan.stopLossForLimit!).toBe(60);  // ずれない脚: 60 のまま
+  });
+
+  it('★★否定対照: 節目を渡さない回は1円も動かない(=この検査が配線を見ている)', async () => {
+    feedPlan();
+    const r = await runWith(undefined);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.stopEntry).toBe(REF + 100);     // ★ずれない
+    expect(r.plan.limitEntry).toBe(REF - 100);
+  });
+});
