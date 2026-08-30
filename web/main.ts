@@ -11,6 +11,7 @@ import { enableSound, alertBeep } from './components/soundPlayer.js';
 import { mountChart } from './components/chart.js';
 import { initChat } from './components/chatBoard.js';
 import { initSettingsModal } from './components/settingsModal.js';
+import { positionFromSignalState } from './components/settings/tpHoldWarn.js';
 import { initParamsModal } from './components/paramsModal.js';
 import { initApiStatusPane } from './components/apiStatusPane.js';
 import { initLogsModal } from './components/logsModal.js';
@@ -179,6 +180,11 @@ const settingsCtl = initSettingsModal({
   selectBiasMode:      document.getElementById('scalp-bias-mode') as HTMLSelectElement,
   checkScalpLcHardMaxEnabled: document.getElementById('scalp-lc-hardmax-enabled') as HTMLInputElement,
   inputScalpLcHardMax: document.getElementById('scalp-lc-hardmax') as HTMLInputElement,
+  // ★TP(利確): 使うか / 幅の出所(手動・AI委任) / 手動時の幅 + 保有中の予告枠。
+  checkScalpTpEnabled: document.getElementById('scalp-tp-enabled') as HTMLInputElement,
+  selectTpWidthMode:   document.getElementById('scalp-tp-width-mode') as HTMLSelectElement,
+  inputScalpTpWidth:   document.getElementById('scalp-tp-width') as HTMLInputElement,
+  tpHoldWarn:          document.getElementById('scalp-tp-hold-warn') as HTMLElement,
   // ★v0.8.2: System B(仮想取引専用)の設定入力。
   inputScalpLcCeilingB: document.getElementById('scalp-lc-ceiling-b') as HTMLInputElement,
   selectScalpBiasB:     document.getElementById('scalp-bias-b') as HTMLSelectElement,
@@ -596,6 +602,9 @@ connectStream({
   onSignalTrade: (s) => {
     if (signalPanelEl) renderSignalPanel(signalPanelEl, s);
     if (positionPanelEl) renderPositionPanel(positionPanelEl, s);
+    // ★設定画面へ最新の建玉を渡す。手動TP幅は保有中に変えると **その建玉が即座に決済されうる** ので、
+    //   設定画面がその予告を出せるようにする(表示だけ。保存も決済も一切変えない)。
+    settingsCtl.setPosition(positionFromSignalState(s));
   },
   // ★System B のライブ表示は廃止(B の成績は履歴モーダルの A/B セレクタで確認)。SSE signalTradeB は購読しない。
 });

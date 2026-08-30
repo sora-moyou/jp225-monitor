@@ -15,6 +15,25 @@
 //   3) 同じ理由で `exitInitialStop`(約定レッグの初期LC)と `peakProfit`(決済時点の含み益ピーク)も必須にしてある。
 //      新経路が「理由だけ書いて値を忘れる」ことができない。
 //
+// ★訂正(2026-08-30・実測で確認): 上の 2) の最後の一文
+//   「この表に1行足して label / ratchet を決めるまで `tsc --noEmit` が落ちる」は **正確ではない**。
+//   実際に `take_profit` を1行足した直後の `npx tsc --noEmit` は **exit 0** だった。
+//   ★理由: `ExitReason` を網羅する `switch` も `Record<ExitReason, …>` もコードベースに1つも無いので、
+//     **表に足しただけでは型検査は何も言わない**(label / ratchet は satisfies が要求するので、
+//     そこは確かに落ちる。落ちないのは「消費側が全部埋まるまで」の部分)。
+//
+//   ★いま網羅を守っているのは **型ではなくテスト**:
+//     `server/signalTrade/exitRecord.test.ts` の
+//     「表の全理由が実際の決済経路から1つずつ出る(表と実装が食い違ったら落ちる)」が、
+//     表のキー集合と、実際の決済経路が返す理由の集合を **双方向** で突き合わせている
+//     (表に足したのに出す経路が無い=死んだ選択肢 / 経路が出すのに表に無い=記録漏れ、の両方で赤くなる)。
+//
+//   ★型が守っているのは **逆向きだけ**: `RecordedTrade.exitReason` が必須かつこの union なので、
+//     「表に無い文字列を理由にする」「理由を書き忘れる」は `tsc` が落とす。
+//
+//   → **決済経路を足す人へ**: この表に1行足したら、**`exitRecord.test.ts` にその経路を1つ足すまで
+//     テストが赤くなります**(tsc は赤くなりません)。そのテストを消すと網羅の保証はゼロになります。
+//
 // ★消費側(ここを変えたら影響する箇所):
 //   - server/signalTrade/decisions.ts … RecordedTrade.exitReason の型 / 各決済経路の理由決定
 //   - server/signalTrade/persist.ts   … signal_trades への挿入行(exit_reason 列)
@@ -45,6 +64,9 @@ export const EXIT_REASON_SPEC = {
   range_stop:    { label: 'レンジLC',     ratchet: false },
   /** レンジ建玉の反対側節目の手前に到達して成行TP。 */
   range_tp:      { label: 'レンジTP',     ratchet: false },
+  /** 建値 + TP幅(AI委任 or 手動設定)に到達して成行決済。★range_tp とは別物
+   *  (range_tp=レンジの反対側 **節目** 由来 / take_profit=建値からの **幅** 由来)。混ぜない。 */
+  take_profit:   { label: '利確TP',       ratchet: false },
   /** ドテン(保有中の反転評価)で建玉を成行決済して反対側へ武装した。 */
   doten:         { label: 'ドテン',       ratchet: false },
 } as const satisfies Record<string, ExitReasonSpec>;

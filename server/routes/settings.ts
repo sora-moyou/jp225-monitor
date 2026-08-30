@@ -7,7 +7,8 @@ import {
   resolveIndicatorsEnabled, resolveScalpAiTechnicalEnabled, PARAM_BOUNDS,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective,
-  resolveScalpLcHardMax, parseKnobSource, parseChartVisionMode, resolveDoubleFormingEnabled, resolveNwaveEnabled, resolveBandwalkEnabled,
+  resolveScalpLcHardMax, resolveScalpTpEnabled, resolveScalpTpWidthDirective,
+  parseKnobSource, parseTpWidthSource, parseChartVisionMode, resolveDoubleFormingEnabled, resolveNwaveEnabled, resolveBandwalkEnabled,
   resolveNewsOffHoursEnabled,
   resolveGeneratorKeySources, resolveGeneratorDailyBudget, resolveGeneratorEnabled,
   GENERATOR_PROVIDERS, GENERATOR_DAILY_BUDGET_DEFAULT, GENERATOR_DAILY_BUDGET_MAX,
@@ -37,6 +38,7 @@ const NUMERIC_PARAM_KEYS = [
   'nwaveMinSwingYen',   // ★N波動の最小1波幅(円)。resolver が次評価で即時反映=restart 不要。
   'scalpLcCeilingYen', 'scalpCooldownSec', 'scalpTrendVetoYen',
   'scalpLcFloorYen', 'scalpLcHardMaxYen',
+  'scalpTpWidthYen',   // ★TP幅(手動時)。engine が毎tick 読み直す=restart 不要(保有中の変更も次tickで効く)。
 ] as const satisfies readonly (keyof typeof PARAM_BOUNDS)[];
 
 // ★保存経路が「扱いを明示的に決める」非数値フィールド(= 設定画面が送ってくるもの)。
@@ -55,6 +57,7 @@ const EXPLICIT_PARAM_KEYS = [
   'scalpLcFloorSource', 'scalpLcCeilingSource', 'scalpTrendVetoSource',
   'scalpCooldownSource', 'scalpBiasSource', 'scalpRangeSource',
   'scalpLcHardMaxEnabled',
+  'scalpTpEnabled', 'scalpTpWidthSource',   // ★TP(利確): 使うか / 幅の出所(既定 'ai')
   'signalB', 'lite',
   // ★分析用(caller='generator')の設定。UI を持たせた(⚙️「分析用」fieldset)。
   'generatorKeys',          // 分析用プール専用の API キー(未設定なら共通キーへフォールバック)。秘密扱い・GET では値を返さない。
@@ -86,6 +89,14 @@ type _AllConfigKeysClassified = AssertTrue<[UnclassifiedConfigKey] extends [neve
 function applySourceField(existing: KnobSource | undefined, incoming: unknown): KnobSource | undefined {
   if (incoming === undefined) return existing;
   return parseKnobSource(incoming) === 'ai' ? 'ai' : undefined;
+}
+
+// ★TP幅の source フィールド適用。**既定が 'ai' なので上の applySourceField とは向きが逆**:
+//   undefined=変更なし / 'manual'→'manual' 保存 / それ以外(null/'ai'/不正)=既定 'ai'(=未設定で保存)。
+//   ★既定値を config に書かない規約は他の source と同じ(=未設定が既定を意味する)。
+function applyTpSourceField(existing: KnobSource | undefined, incoming: unknown): KnobSource | undefined {
+  if (incoming === undefined) return existing;
+  return parseTpWidthSource(incoming) === 'manual' ? 'manual' : undefined;
 }
 
 // AIエントリー **目線** の受理値。
@@ -198,6 +209,11 @@ export function getSettingsHandler(_req: Request, res: Response): void {
     scalpCooldownSource: resolveScalpCooldownDirective().mode,
     scalpBiasSource: resolveScalpBiasDirective().mode,
     scalpRangeSource: resolveScalpRangeDirective().mode,
+    // ★TP(利確): 使うか(既定 true) / 幅の出所(★既定 'ai'。上の5つの既定 'manual' とは逆)。
+    //   幅の数値 scalpTpWidthYen は PARAM_BOUNDS にあるので下の resolveAllNumericParams() 展開に含まれる
+    //   (LC上限 scalpLcCeilingYen と同じ流儀。ここで二重に書かない)。
+    scalpTpEnabled: resolveScalpTpEnabled(),
+    scalpTpWidthSource: resolveScalpTpWidthDirective().mode,
     // ★v0.7.56: LC安全上限(policy とは独立の安全系)。既定 enabled=true / value=159。
     scalpLcHardMaxEnabled: resolveScalpLcHardMax().enabled,
     // ★v0.8.2: System B(仮想取引専用)の設定。raw=signalB に保存された生値(未設定=A追従) /
@@ -550,6 +566,8 @@ export function postSettingsHandler(req: Request, res: Response): void {
   const newsOffHoursValue = applyBoolField(existing.newsOffHoursEnabled, bodyRec.newsOffHoursEnabled);
   // ★v0.7.56: LC安全上限の有効/無効(boolean・既定 true)。null=既定(true)に戻す(applyBoolField=undefined 保存)。
   const hardMaxEnabledValue = applyBoolField(existing.scalpLcHardMaxEnabled, bodyRec.scalpLcHardMaxEnabled);
+  // ★TP(利確)を使うか(boolean・既定 true)。null=既定(true)に戻す / false=明示保存(TP を切る)。
+  const tpEnabledValue = applyBoolField(existing.scalpTpEnabled, bodyRec.scalpTpEnabled);
   // ★基礎データ自動公開の有効/無効(boolean・既定 false)。checkbox は常に true/false を送る。
   const autoPublishValue = applyBoolField(existing.basedataAutoPublish, bodyRec.basedataAutoPublish);
   // ★v0.8.2: System B(仮想取引専用)の設定を組み立てる(未指定=変更なし・数値/bias 検証込み)。
@@ -626,6 +644,9 @@ export function postSettingsHandler(req: Request, res: Response): void {
     scalpRangeSource: applySourceField(existing.scalpRangeSource, bodyRec.scalpRangeSource),
     // ★v0.7.56: LC安全上限の有効/無効(既定 true は未設定で保存)。
     scalpLcHardMaxEnabled: hardMaxEnabledValue,
+    // ★TP(利確): 使うか(既定 true は未設定で保存)/ 幅の出所(★既定 'ai' なので manual だけ保存)。
+    scalpTpEnabled: tpEnabledValue,
+    scalpTpWidthSource: applyTpSourceField(existing.scalpTpWidthSource, bodyRec.scalpTpWidthSource),
     // ★v0.8.2: System B(仮想取引専用)の設定(空=undefined で保存=全て A追従)。
     signalB: signalBValue,
     // ★lite 独立設定(full では existing.lite をそのまま持ち越す=触らない)。

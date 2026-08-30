@@ -12,6 +12,7 @@ import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax,
   resolveScalpDotenEnabled, resolveScalpRangeEnabled, resolveScalpRangeReevalEnabled,
+  resolveScalpTpEnabled, resolveScalpTpWidthDirective,
   type KnobDirective, type SignalProfile,
 } from '../configStore.js';
 import type { SignalTradeInsert, SignalExitStopInsert } from '../db/store.js';
@@ -43,6 +44,7 @@ export function knobSnapshot<T>(d: KnobDirective<T>, realizedLcYen?: number): Kn
  *  ★v0.8.2: profile を渡すと B(signalB→A フォールバック)の実効設定を反映。省略/'A'=グローバル(現行と byte 一致)。 */
 export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalProfile): SignalSettingsSnapshot {
   const hardMax = resolveScalpLcHardMax(profile);
+  const tp = resolveScalpTpWidthDirective(profile);
   const snap: SignalSettingsSnapshot = {
     lcFloor: knobSnapshot(resolveScalpLcFloorDirective(profile), realizedLcYen),
     lcCeiling: knobSnapshot(resolveScalpLcCeilingDirective(profile), realizedLcYen),
@@ -51,6 +53,20 @@ export function buildSettingsSnapshot(realizedLcYen?: number, profile?: SignalPr
     cooldown: knobSnapshot(resolveScalpCooldownDirective(profile)),
     bias: knobSnapshot(resolveScalpBiasDirective(profile)),
     range: knobSnapshot(resolveScalpRangeDirective(profile)),
+    // ★TP(利確)の実効設定。★**必ず3つとも埋める**(在るときだけ載せる add-only にしない):
+    //   このスナップショットの用途は「後から期間を層別する」ことなので、
+    //   **切っていた期間ほど記録が要る**。欠落にすると「TP を切っていた回」と「記録開始前の旧行」が
+    //   区別できなくなり、目的(AI の TP が当たったかの標本作り)がそのまま壊れる。
+    scalpTpEnabled: resolveScalpTpEnabled(profile),
+    scalpTpWidthSource: tp.mode,
+    // ★**設定の現在値だけ**を入れる。★実測値(実際に効いた幅)は絶対に混ぜない。
+    //   ★既存の lcFloor/lcCeiling は knobSnapshot(d, realizedLcYen) で mode='ai' のとき value に
+    //     **実測LC幅** を入れており、実際にアナリストが「AI委任なのに上限が120」と誤読した。
+    //     TP で同じ形にすると、同じ誤読が確実にもう一度起きる(しかも今度は主指標の標本を汚す)。
+    //   ★実際に効いた幅は **signal_trades.tp_width**(決済時点の実効値)に1行ずつ残る。
+    //     ここは「設定」、あちらは「実測」。★1つの欄に混ぜない。
+    //   ★source='ai' のとき、この数値は **1円も効いていない**(AI が計画ごとに幅を決める)。
+    scalpTpWidthYen: tp.value,
   };
   // ★ドテン(反転)許可の委任状態(ADD-ONLY): 許可 ON の時だけ載せる。OFF(既定)では欠落=既存 meta JSON と byte 一致。
   if (resolveScalpDotenEnabled(profile)) snap.dotenEnabled = true;
@@ -93,6 +109,13 @@ export function buildSignalTradeInsert(
   ins.exitReason = t.exitReason;
   if (Number.isFinite(t.exitInitialStop)) ins.exitInitialStop = t.exitInitialStop;
   if (Number.isFinite(t.peakProfit)) ins.peakProfit = t.peakProfit;
+  // ★TP の記録(RECORD-ONLY): 決済時点で有効だった幅と、その発火価格。
+  //   ★RecordedTrade 側では **必須かつ null 許容**(書き忘れは型で禁止 / TP不在は null)。
+  //   ここでは exitInitialStop / peakProfit と同じ流儀で **非有限を弾いて NULL に落とす**
+  //   (壊れた数値を列に入れて後の集計を汚さない)。null はそのまま NULL。
+  //   ★TP で決済していない行にも入る(initial_stop でも「その時 TP がどこにあったか」を残す)。
+  if (t.tpWidth != null && Number.isFinite(t.tpWidth)) ins.tpWidth = t.tpWidth;
+  if (t.tpTrigger != null && Number.isFinite(t.tpTrigger)) ins.tpTrigger = t.tpTrigger;
   // ★決済設定の版(RECORD-ONLY)。渡された時だけ載せる。値は含まない(整数版番号 + 一方向ハッシュのみ)。
   if (exitCfg) { ins.exitCfgVersion = exitCfg.version; ins.exitCfgHash = exitCfg.hash; }
   return ins;

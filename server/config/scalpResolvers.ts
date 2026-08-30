@@ -182,6 +182,45 @@ export function resolveScalpRangeDirective(profile?: SignalProfile): KnobDirecti
   return { mode: 'manual', value: resolveScalpRangeEnabled(profile) };
 }
 
+// ─── TP(利確の成行決済)の knob ────────────────────────────────────────────
+//
+// ★TP = 「建値からの **幅**」に価格が到達したら成行で強制決済する、利側の出口。
+//   決済ロジック(フェーズ式ラチェット床)は一切変えない。損側 → 利側 の順で評価する
+//   (同 tick で両方成立したら損側が勝つ)。判定の本体は server/signalTrade/decisions.ts。
+
+/** ★TP を使うか。未設定/非boolean は **true(既定ON)**。
+ *  ★既定を ON にする理由(実測は「一律TPは不利」と出ているのに ON にする根拠):
+ *   ① このプロジェクトの目的は「AI が過去のエントリーから学ぶこと」で、既定OFFだと
+ *      「AI が選んだ TP はどうだったか」の記録が1件も貯まらず、目的そのものが止まる。
+ *   ② いま金銭リスクが無い(実取引の記録は 2026-07-24 以降ゼロ・8/15 以降は全て dryrun)。
+ *  ★false にすると **AI委任の幅も含めて** TP は一切効かない(= TP 導入前と byte 一致)。 */
+export function resolveScalpTpEnabled(profile?: SignalProfile): boolean {
+  const v = readKnobRaw(profile, 'scalpTpEnabled');
+  return typeof v === 'boolean' ? v : true;
+}
+
+/** ★手動時の TP幅[円]。未設定は PARAM_BOUNDS 既定(80)。★保有中に変えたら毎tick 反映される
+ *  (engine が tick ごとにこの関数を引き直して advance / computeHold へ渡す)。 */
+export function resolveScalpTpWidthYen(profile?: SignalProfile): number { return resolveNumericProfile(profile, 'scalpTpWidthYen'); }
+
+/** ★TP幅の source を寛容にパース。**既定は 'ai'**(既存5つの既定 'manual' とは **逆**)。
+ *
+ *  ★なぜ逆にするか: 既存5つは「もともとコードが強制していた制約を、ユーザーが1つずつ AI へ倒す」枠組みで、
+ *    未設定=従来どおりコードが強制する=manual が既定だった。TP は **この版で新設した** 項目で、
+ *    従来の挙動というものが存在せず、目的は「AI が1件ごとに選んだ TP を記録して学ぶ」ことなので、
+ *    未設定(=まだ触っていない)は AI委任が既定になる。手動は明示的に選んだときだけ。
+ *  ★寛容パースの倒し先も既定側('ai')。'manual'(大小文字無視)だけが manual。 */
+export function parseTpWidthSource(v: unknown): KnobSource {
+  return typeof v === 'string' && v.trim().toLowerCase() === 'manual' ? 'manual' : 'ai';
+}
+
+/** ★TP幅 directive。value=手動時の幅(円)。
+ *  mode='manual' → その幅を毎tick 使う / mode='ai' → **手動値は使わない**(B の答えを建玉に焼いた幅を使う)。
+ *  ★既存の resolveScalp*Directive と同じ形(KnobDirective<T>)。既定 mode だけが 'ai' で異なる。 */
+export function resolveScalpTpWidthDirective(profile?: SignalProfile): KnobDirective<number> {
+  return { mode: parseTpWidthSource(readKnobRaw(profile, 'scalpTpWidthSource')), value: resolveScalpTpWidthYen(profile) };
+}
+
 /** ★LC安全上限(policy とは独立の安全系)。enabled のとき手動/AI とも超過レッグを落とす。
  *  enabled 未設定は true(既定で安全網ON)。value 未設定は PARAM_BOUNDS 既定(159)。 */
 export function resolveScalpLcHardMax(profile?: SignalProfile): { enabled: boolean; value: number } {

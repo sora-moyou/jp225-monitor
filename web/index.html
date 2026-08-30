@@ -404,6 +404,30 @@
           </span>
           <div class="exit-hint lite-hint" hidden>上の設定とは独立した最後の安全網。左のチェックが入っていれば、どんな場合でもこの幅を超える損切りは出しません。★<b>チェックを外しても上限が無くなるわけではありません</b>：コード側の上限<b>300円</b>が常に残り（AIへの指示にも「コード上限300円」と伝わります）、「最大初期LC」が手動ならその値も引き続き効きます。既定=有効・159円。</div>
         </div>
+        <!-- ★TP(利確): 建値からこの幅だけ利が乗ったら成行で決済する。
+             ★部品と並びは「最大初期LC」「目線」と同じ(knob-mode select → 入力)。
+             ★B(仮想取引)側の設定は無い(signalB に TP のキーが無い)ので A 列だけ。 -->
+        <div class="setting-row">
+          <label>TPを使う(利確)</label>
+          <span class="ab-col">
+            <input type="checkbox" id="scalp-tp-enabled" />
+          </span>
+        </div>
+        <div class="setting-row">
+          <label>TP幅(円)</label>
+          <span class="ab-col">
+            <select id="scalp-tp-width-mode" class="knob-mode">
+              <option value="manual">手動</option>
+              <option value="ai">AI委任</option>
+            </select>
+            <input type="number" id="scalp-tp-width" autocomplete="off" min="5" max="1000" step="1" placeholder="80 (既定)" />
+          </span>
+          <!-- ★保有中に手動TP幅を触ったときの予告(JS が文言を入れる・保有中でなければ hidden のまま)。
+               ★class に exit-hint を使わない: 既存の説明(.exit-hint:not(.lite-hint))は
+                 「3つ・hidden でない」として固定されており(variantLiteDom.test.ts)、
+                 既定 hidden のこの予告をそこに混ぜると lite の見え方の契約が崩れる。 -->
+          <div class="setting-warn" id="scalp-tp-hold-warn" hidden></div>
+        </div>
         <div class="setting-row">
           <label>ドテン許可(反転)</label>
           <span class="ab-col">

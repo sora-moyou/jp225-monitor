@@ -53,7 +53,7 @@ import { normalizeCorsPath } from './corsPolicy.js';
 import { startGeneratorHeartbeat, stopGeneratorHeartbeat } from './db/generatorHeartbeat.js';
 import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, setBuildIdentityMeta, setColumnVocabMeta } from './db/store.js';
+import { openDb, resolveDbPath, setBuildIdentityMeta, setColumnVocabMeta, setLcAuditSemanticsMeta, setTpSemanticsMeta } from './db/store.js';
 import { allPromptBuildFps, promptBuildFp } from './llm/promptBuild.js';
 // ★段5: A/B 分割の実行時状態と、その版が持つ A/B のプロンプトの型(meta へ載せる)。
 import { allAbPromptBuildFps } from './llm/abPromptBuild.js';
@@ -244,6 +244,12 @@ function recordBuildIdentity(): void {
     // ★2026-08-25: 列の値の語彙が版で切り替わったことを **DB の中** に残す(meta 1行・記録専用)。
     //   ソースのコメントは DB を開いた分析者に届かないため(エバリュエーター指摘③)。
     setColumnVocabMeta(db);
+    // ★lc_audit_json は「ずらしの前の生の申告」を写す一方 rationale 列は「ずらしの後」に
+    //   書き換わりうる。DB を開いた人がその食い違いを欠陥と誤読しないよう meta に1行残す。
+    setLcAuditSemanticsMeta(db);
+    // ★TP(利確)の列は途中の版から入り、AI委任/手動で意味が違い、AI委任の幅は5円ずらしで詰められうる。
+    //   3つとも知らずに集計すると必ず誤読するので meta に1行残す(記録専用)。
+    setTpSemanticsMeta(db);
     setBuildIdentityMeta(db, {
       appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: Date.now(),
       planSplit: { enabled: isPlanSplitEnabled(), aPromptBuild, bPromptBuilds },

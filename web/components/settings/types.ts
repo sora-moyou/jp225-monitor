@@ -37,6 +37,12 @@ export interface SettingsResponse {
   scalpLcFloorSource: KnobSource; scalpLcCeilingSource: KnobSource; scalpTrendVetoSource: KnobSource;
   scalpCooldownSource: KnobSource; scalpBiasSource: KnobSource; scalpRangeSource: KnobSource;
   scalpLcHardMaxEnabled: boolean; scalpLcHardMaxYen: number;
+  // ★TP(利確)。scalpTpWidthYen は他の数値と同じく resolveAllNumericParams の展開で来る。
+  //   ★scalpTpWidthSource の既定は 'ai'(上の5つの既定 'manual' とは逆)。
+  //   ★古いサーバ(このキーを返さない版)と繋いでも壊れないよう任意にする(他の後追い追加と同じ作法)。
+  scalpTpEnabled?: boolean;
+  scalpTpWidthSource?: KnobSource;
+  scalpTpWidthYen?: number;
   // ★v0.8.2: System B(仮想取引専用)の設定。raw=保存済み生値(未設定=A追従) / effective=A フォールバック済みの実効値(表示補助)。
   signalB?: SignalBRaw;
   signalBEffective?: SignalBEffective;
@@ -121,6 +127,10 @@ export interface SavePayload {
   scalpRangeSource?: KnobSource;
   scalpLcHardMaxEnabled?: boolean | null;
   scalpLcHardMaxYen?: number | null;
+  // ★TP(利確): 使うか / 幅の出所 / 手動時の幅[円](空欄=null=既定 80 に戻す)。
+  scalpTpEnabled?: boolean | null;
+  scalpTpWidthSource?: KnobSource;
+  scalpTpWidthYen?: number | null;
   // ★v0.8.2: System B(仮想取引専用)。ネストしたオブジェクトで送る(各フィールドは A と同名・''/null=A追従)。
   signalB?: Record<string, unknown>;
   // ★分析用の専用キー。秘密フィールド規約(空欄=変更なし)+ null=消去(共通キーへ戻す)。
@@ -185,6 +195,12 @@ export interface SettingsElements {
   selectBiasMode: HTMLSelectElement;
   checkScalpLcHardMaxEnabled: HTMLInputElement;
   inputScalpLcHardMax: HTMLInputElement;
+  // ★TP(利確)。部品の構成は「最大初期LC」と同じ(委任モード select + 数値入力)。B 列は無い。
+  checkScalpTpEnabled: HTMLInputElement;   // TPを使う/使わない
+  selectTpWidthMode: HTMLSelectElement;    // 幅の出所(手動/AI委任)。★既定は 'ai'
+  inputScalpTpWidth: HTMLInputElement;     // 手動時の幅[円]
+  //   ★保有中に手動TP幅を変えたときの予告を出す枠。保有していなければ hidden のまま(何も出さない)。
+  tpHoldWarn: HTMLElement;
   // ★v0.8.2: System B(仮想取引専用)の設定入力。B の value 系は空欄=A追従 / mode/tri-state は ''=A追従。
   inputScalpLcCeilingB: HTMLInputElement;
   selectScalpBiasB: HTMLSelectElement;
@@ -240,4 +256,7 @@ export interface SettingsElements {
 export interface SettingsController {
   refresh: () => Promise<void>;
   save: () => Promise<void>;
+  /** ★いま保有している建玉(SSE の最新)を渡す。保有していなければ null。
+   *  手動TP幅を保有中に変えると **その建玉が即座に決済されうる** ので、その予告表示に使う。 */
+  setPosition: (p: { direction: 'buy' | 'sell'; entryPrice: number; unrealized: number } | null) => void;
 }

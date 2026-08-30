@@ -3,6 +3,8 @@ import {
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpBiasDirective, resolveScalpRangeDirective, resolveScalpLcHardMax, resolveScalpCooldownDirective, forcedTrendFrom,
   resolveScalpAiTechnicalEnabled,
+  // ★2026-08-30: TP(利確)の設定。B に TP幅を尋ねるかの判断にだけ使う(決済の判定は decisions.ts)。
+  resolveScalpTpEnabled, resolveScalpTpWidthDirective,
   type ScalpBias, type KnobSource, type SignalProfile,
 } from '../configStore.js';
 import { describeExitLogic, describeExitLogicVariant, loadExitImpl, type ExitVariant } from '../signalTrade/exit/index.js';
@@ -101,6 +103,24 @@ export interface AiPlan {
   //   欠落・不正・非数値でも計画は落とさない(strategy と同じ後方互換)。
   limitLevel?: number;       // 指値の根拠にした節目の価格。
   stopLevel?: number;        // ブレイク新規の根拠にした節目の価格。
+  // ★TP(利確の成行決済)の幅[円]。**AI委任(scalpTpWidthSource='ai')のときだけ入る。**
+  //   手動設定の幅はここに入らない(設定の現在値を毎tick 引き直すのが手動の契約=共有契約 §2)。
+  //
+  // ★★**価格ではなく「幅」。符号はコードが付ける。**
+  //   理由: すぐ上の RangeLeg のコメント(この節の冒頭)が書いているとおり、損切りは
+  //   「LLM から受け取るのは lcWidth(正の幅)だけで、符号は parse が付ける
+  //    = **逆位置が構造的に表現できない**」形にしてある(v0.9.70)。
+  //   TP を **価格** で受け取ると、買いなのに建値より下の TP(=約定と同時に利確する不正)が
+  //   型の上で表現可能になり、損切りで実害を出した「向きだけ逆」(project_stop_side_root_cause)を
+  //   利側にもう一度作ることになる。★幅なら向きは direction から一意に決まる。
+  //   発火価格の導出は共有契約 §2 の takeProfitTrigger(建玉には幅だけ持ち、価格は毎回導出)。
+  tpWidthForLimit?: number;  // 指値レッグ用の TP幅[円](建値からの距離。正の数)。
+  tpWidthForStop?: number;   // 逆指値レッグ用の TP幅[円](建値からの距離。正の数)。
+  // ★TP幅の理由(AI の言葉)。★分割経路(A/B)では **設定しない**(理由は planVariants.ts の
+  //   readOneLeg の TP の節)。lcWhyForLimit / lcWhyForStop が分割経路で常に未設定なのと同じ扱いで、
+  //   ユーザー指定の自由文形式は「価格・LC幅・TP幅をまとめて1つの理由文」で書かせるため、
+  //   その文から「TP の理由だけ」を切り出すのは脚の取り違えより難しい(v0.9.103 で 53.9% を出した型)。
+  tpWhy?: string;
   // ======================================================================================
   // ★★★ 次の設計(ユーザー確定・2026-08-21)。**まだ実装していない。指示が出るまで着手しない** ★★★
   //
@@ -2693,8 +2713,11 @@ export function enforcePlanConstraintsReport(
     out.stopEntry != null && out.stopLossForStop != null &&
     lcReason(Math.abs(out.stopEntry - out.stopLossForStop)) === null &&
     stopSideOk(plan.direction, out.stopEntry, out.stopLossForStop);
-  if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; }
-  if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; }
+  // ★2026-08-30: 落とすレッグの **TP幅も一緒に落とす**。残すと「建値も損切りも無いのに TP幅だけ在る」
+  //   行が台帳に生まれる(＝「価格の無い箱に理由だけ在る形を作らない」という既存の規約と同じ話)。
+  //   ★TP幅は `out = { ...plan }` で素通りするので、明示的に消さないと残る。
+  if (!limitOk) { out.limitEntry = undefined; out.stopLossForLimit = undefined; out.tpWidthForLimit = undefined; }
+  if (!stopOk) { out.stopEntry = undefined; out.stopLossForStop = undefined; out.tpWidthForStop = undefined; }
 
   // ★v0.9.57(記録専用): 片レッグだけ落ちた回も理由を残す。**enforce が受け取った時点で在ったレッグだけ**
   //   を対象にする(parse で既に落ちた/AI が出さなかったレッグはここでは何も落としていない=二重に数えない。
@@ -2966,6 +2989,17 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   const rangeD = resolveScalpRangeDirective(profile);
   const trendD = resolveScalpTrendVetoDirective(profile);
   const hardMax = resolveScalpLcHardMax(profile);
+  // ★2026-08-30: TP(利確の成行決済)の幅を **B に尋ねるか** を、ここ1箇所で決める。
+  //   ★条件は2つの AND:
+  //     ① scalpTpEnabled … TP を使うか。false なら TP は一切効かない(=TP 導入前と byte 一致)ので、
+  //        尋ねてもプロンプトが伸びるだけ(課金が増え、数値のアンカーだけが残る)。
+  //     ② scalpTpWidthSource === 'ai' … 幅を AI に委任するか。'manual' なら幅は設定の現在値を
+  //        毎tick 引き直す契約なので、AI の答えは使わない。
+  //   ★**尋ねない項目の数値をプロンプトに置かない**(実測: 印字した数値はそのまま選ばれる。
+  //     上限65→LC60固着 / 下限55→55固着)。だから「使わない」とすら書かず、行ごと出さない。
+  //   ★この値は runSplitPlan の opts.askTp に渡すだけ(=B の system / user / 読み取りの3箇所に
+  //     同じ1つの値が届く)。旧経路(1回呼び出し)には TP を足していない(依頼外)。
+  const askTp = resolveScalpTpEnabled(profile) && resolveScalpTpWidthDirective(profile).mode === 'ai';
   // 初期 LC 幅の上限とバイアスは、要求で明示されなければ monitor 設定を既定に使う(＝直呼びのシグナルエンジンも
   // monitor 設定に従う=単一の真実)。上限はサニタイズ・クランプ後にプロンプトへ反映し、最終保証は enforcePlanConstraints。
   const ceilingMode = ceilingD.mode;
@@ -3195,6 +3229,8 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
         // ★A に range の選択肢を見せるかは rangeEnabled(=①)。
         //   B を呼ぶかどうかの門は rangeAllowed(=手動レンジは①に依存しない)。
         rangeEnabled: rangeAllowed,
+        // ★TP幅を B に尋ねるか(上で1箇所だけ解決した値)。false のとき B の文面は TP 導入前と1バイト同一。
+        askTp,
         squeezeState: input.squeezeState ?? null,
         ...(input.squeezeUnavailable ? { squeezeUnavailable: input.squeezeUnavailable } : {}),
         // ★2026-08-25: 手動目線なら A を呼ばず、この目線で B だけを呼ぶ。
@@ -3384,6 +3420,21 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
 
 /** ★2026-08-26: ピボット節目に完全一致した建値を5円ずらし、**幅を保って損切りを引き直す**。
  *
+ *  ■ ★2026-08-30(TP): **TP幅は5円 詰める**(＝TP の絶対価格は動かさない)。リーダー裁定 §9。
+ *    ・LC は動かさない(幅が +5 広がる) / TP は幅を詰める(-5)。★この非対称は仕様。
+ *      どちらも規則は1つ——「AI がその **価格** を根拠に選んだものは、執行の都合で動かさない」。
+ *      損切りは価格が固定なので幅が広がり、TP も価格が固定なので幅が縮む。同じ規則の両側。
+ *    ・★詰めた結果が 0以下 になるなら **ずらしを諦める**(blocked:'tpCollapse')。
+ *      crossesRef / lcCeiling と同じ作法(建値も根拠文も1文字も触らない)。
+ *    ・★対象は **AI委任の TP幅だけ**。手動設定の幅は計画に焼かれない(毎tick 設定を引き直す契約)ので
+ *      構造上ここへ来ない=手動は「調整しない」がコードを足さずに成立する。
+ *    ・★★**根拠文の TP幅の数値は書き換えない**(意図して やっていない・2026-08-30)。
+ *      LC幅の書き換え(rewriteLcWidthForLeg・下の ③)は既に在るが、**同じ文に2種類の幅がある状態での
+ *      書き換え**は脚の取り違えより難しく、v0.9.103 で 53.9% の取り違えを出したばかり。
+ *      → TP を足した直後に同じ機構を2種類の幅へ広げない。次の版で扱う。
+ *      ★結果として「根拠文に TP幅120円 と書いてあるのに tp_width_for_* は 115」という行が出る。
+ *        lc_audit_json と rationale の関係(store.ts の column_semantics_lc_audit)と同じ性質。
+ *
  *  ■ 仕様の本体は core/pivotNudge.ts(純関数)。ここは AiPlan の形に当てるだけの薄い層。
  *  ■ ★対象は4脚すべて: 方向プランの limitEntry / stopEntry と、レンジ両面の range.upper / lower。
  *  ■ ★★**損切りは動かさない**(ユーザー確定 2026-08-26:「節目ずらしによってLC幅が変わっても
@@ -3428,24 +3479,43 @@ export function applyPivotNudge(
   // ── ① まず **どの脚が どれだけずれるか** を全部決める(書き換えるのはその後) ────────
   //   ★1脚ずつ順に書き換えられない理由: 理由欄(共有の rationale)を直すには
   //     「同じ幅を申告している別の脚が居ないか」を先に知る必要がある。
-  interface LegView { kind: 'limit' | 'stop'; entry: number; stopLoss: number; pos?: 'upper' | 'lower' }
+  //   ★tpW = **AI委任の TP幅**(AiPlan に載っているのはこれだけ)。手動設定の幅はここに来ない
+  //     (手動は設定の現在値を毎tick 引き直す契約なので、計画には焼かれない)=**手動は自動的に対象外**。
+  interface LegView { kind: 'limit' | 'stop'; entry: number; stopLoss: number; tpW?: number; pos?: 'upper' | 'lower' }
   const views: LegView[] = [];
   if (plan.direction === 'range' && plan.range) {
     for (const pos of ['upper', 'lower'] as const) {
       const l = plan.range[pos];
+      // ★レンジの脚に TP幅の箱は無い(planVariants.ts の該当コメント)。よって tpW は常に undefined。
       if (l) views.push({ kind: l.type, entry: l.entry, stopLoss: l.stopLoss, pos });
     }
   } else {
     if (plan.limitEntry != null && plan.stopLossForLimit != null) {
-      views.push({ kind: 'limit', entry: plan.limitEntry, stopLoss: plan.stopLossForLimit });
+      views.push({
+        kind: 'limit', entry: plan.limitEntry, stopLoss: plan.stopLossForLimit,
+        ...(plan.tpWidthForLimit != null ? { tpW: plan.tpWidthForLimit } : {}),
+      });
     }
     if (plan.stopEntry != null && plan.stopLossForStop != null) {
-      views.push({ kind: 'stop', entry: plan.stopEntry, stopLoss: plan.stopLossForStop });
+      views.push({
+        kind: 'stop', entry: plan.stopEntry, stopLoss: plan.stopLossForStop,
+        ...(plan.tpWidthForStop != null ? { tpW: plan.tpWidthForStop } : {}),
+      });
     }
   }
+  // ★newTpW = ずらした後の TP幅。★**TP の絶対価格は動かさない**(リーダー裁定 2026-08-30):
+  //   建値は4脚とも **利益方向へ** 動く(指値は現在値に近づき、逆指値は現在値から遠ざかる=
+  //   どちらも「その脚が儲かる向き」)ので、TP価格を保つには幅を同じだけ **詰める**。
+  //   ★LC は逆に5円 **広がる**(建値が損切りから遠ざかるため)。★この非対称(LC +5 / TP −5)は
+  //     仕様であって欠陥ではない: LC も TP も「AI がその **価格** を根拠に選んだもの」なので、
+  //     執行の都合(ずらし)で狙いの価格を動かさない、という同じ1つの規則の両側にすぎない。
+  //   ★|r.price − v.entry| で書く(定数 PIVOT_NUDGE_YEN を2箇所目に写さない)。ずらさなければ 0。
   const hits = views.map(v => {
     const r = nudgeEntryOnPivot(v.entry, v.kind, refPrice, levels);
-    return { v, r, oldW: Math.abs(v.entry - v.stopLoss), newW: Math.abs(r.price - v.stopLoss) };
+    return {
+      v, r, oldW: Math.abs(v.entry - v.stopLoss), newW: Math.abs(r.price - v.stopLoss),
+      newTpW: v.tpW === undefined ? undefined : v.tpW - Math.abs(r.price - v.entry),
+    };
   });
   const notes: string[] = [];
   const ja = (k: 'limit' | 'stop'): string => (k === 'limit' ? '指値' : '逆指値');
@@ -3461,7 +3531,24 @@ export function applyPivotNudge(
     hits[i] = {
       v: h.v,
       r: { price: h.v.entry, nudged: false, pivot: h.r.pivot, blocked: 'lcCeiling' },
-      oldW: h.oldW, newW: h.oldW,
+      oldW: h.oldW, newW: h.oldW, newTpW: h.v.tpW,
+    };
+  }
+  // ── ①'' ★TP幅が 0以下 になるなら ずらしを諦める(2026-08-30・リーダー裁定 §9) ──────────
+  //   ★lcCeiling と **同じ作法**: 建値を書き換える前に nudged:false へ倒す(=根拠文も1文字も動かない)。
+  //   ★なぜ諦めるのか: TP幅 0以下 = 約定した瞬間に利確する不正な注文。
+  //     ずらしは執行の都合であって相場の判断ではないので、諦めて失うのは板の厚みだけ。
+  //     これは crossesRef / lcCeiling で採ったのと同じ判断(新しい流儀を作らない)。
+  //   ★lcCeiling で既に諦めた脚はここへ来ない(nudged:false になっている)=二重に notes を出さない。
+  //   ★手動TP は対象外(そもそも v.tpW が undefined)。AI委任の脚だけがここを通る。
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i]!;
+    if (!h.r.nudged || h.newTpW === undefined || h.newTpW > 0) continue;
+    notes.push(`${ja(h.v.kind)}${h.r.pivot}はずらすとTP幅が${h.newTpW}円(0以下)になるため据え置き`);
+    hits[i] = {
+      v: h.v,
+      r: { price: h.v.entry, nudged: false, pivot: h.r.pivot, blocked: 'tpCollapse' },
+      oldW: h.oldW, newW: h.oldW, newTpW: h.v.tpW,
     };
   }
   // ★count は **実際にずらした脚数**(上で諦めた脚は既に nudged:false なので入らない)。
@@ -3489,12 +3576,20 @@ export function applyPivotNudge(
   } else {
     for (const h of hits) {
       if (!h.r.nudged) continue;
-      if (h.v.kind === 'limit') out.limitEntry = h.r.price;            // ★stopLossForLimit は動かさない
-      else out.stopEntry = h.r.price;                                  // ★stopLossForStop は動かさない
+      if (h.v.kind === 'limit') {
+        out.limitEntry = h.r.price;                                    // ★stopLossForLimit は動かさない
+        // ★TP は **幅を詰める**(絶対価格は動かさない)。★0以下 は上の ①'' で諦めているので必ず正。
+        if (h.newTpW !== undefined) out.tpWidthForLimit = h.newTpW;
+      } else {
+        out.stopEntry = h.r.price;                                     // ★stopLossForStop は動かさない
+        if (h.newTpW !== undefined) out.tpWidthForStop = h.newTpW;
+      }
     }
   }
   for (const h of hits) {
-    if (h.r.nudged) notes.push(`${ja(h.v.kind)}${h.r.pivot}→${h.r.price}(幅${h.oldW}→${h.newW})`);
+    // ★TP幅を持つ脚だけ TP の増減も書く(持たない脚の note は1バイトも変わらない)。
+    const tpNote = h.v.tpW !== undefined && h.newTpW !== undefined ? `・TP幅${h.v.tpW}→${h.newTpW}` : '';
+    if (h.r.nudged) notes.push(`${ja(h.v.kind)}${h.r.pivot}→${h.r.price}(幅${h.oldW}→${h.newW}${tpNote})`);
   }
 
   // ── ③ ★理由欄に書かれた旧LC幅も直す(ユーザー指示・2026-08-26) ───────────────────

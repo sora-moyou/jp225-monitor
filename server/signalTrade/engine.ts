@@ -22,9 +22,11 @@ import { collectRecentBars } from '../barsSource.js';
 import { inPollWindow } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
-import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled, type SignalProfile } from '../configStore.js';
+import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled,
+  resolveScalpTpEnabled, resolveScalpTpWidthDirective, type SignalProfile } from '../configStore.js';
 import {
   advance, toSignalTradeState, computeHold, planToArmed, entryRoundedFromPlan, armedToCurrentSignal,
+  type TpDirective,
   inCooldown, realizedLcFromArmed, checkStaleLegs, ARMED_TIMEOUT_MS,
   opposite, reverseToDoten, shouldRequestHeldEval, sameHeldPosition,
   computeAvgFillMs, shouldRangeReeval, bothRangeLegsLimit, sameArmedBracket, sameBracketShape,
@@ -391,8 +393,10 @@ export class SignalEngine {
   /** 現在の SSE state(stream.ts の初回送出 / 各 tick の broadcast 用)。 */
   getState(now = Date.now()): SignalTradeState {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
+    // ★TP の実効設定を必ず通す(broadcast 経路と同じ)。★stream.ts の **初回送出** はここを通るので、
+    //   渡し忘れると「late-join した trade2 だけ TP を知らない」という半端な片肺になる。
     return toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts,
-      this.currentWaitReason(now, price), this.lastPlanNote);
+      this.currentWaitReason(now, price), this.lastPlanNote, this.tpDirective());
   }
 
   /** 現在シグナル(trade2 追従用)。A のみ。B は常に null(=露出しない)。 */
@@ -401,7 +405,7 @@ export class SignalEngine {
   getPhase(): SignalPhase { return this.state.phase; }
 
   /** 保有中の意図(hold・trade2 追従用)。A の filled 中のみ非 null。B は常に null。 */
-  getHold(): SignalHold | null { return computeHold(this.state, this.signalForState()); }
+  getHold(): SignalHold | null { return computeHold(this.state, this.signalForState(), this.tpDirective()); }
 
   /** テスト/リセット用: エンジン内部状態を初期化する。 */
   reset(): void {
@@ -448,6 +452,9 @@ export class SignalEngine {
   //   決済ロジック/SSE には一切影響しない。A のみ(B は signalForState=null → hold=null で自然に無記録)。失敗は握りつぶす。
   private recordExitStopChange(now: number): void {
     try {
+      // ★TP の実効設定は **渡さなくてよい**(意図的): この記録は hold.exitStop(決済逆指値)だけを読み、
+      //   TP は exitStop を1円も動かさないので、渡しても記録は1行も変わらない。
+      //   ★「渡し忘れ」と区別するためにここに書く(SSE/GET 経路とは違い、ここは片肺にならない)。
       const rec = buildExitStopRecord(computeHold(this.state, this.signalForState()), this.exitStopTracker, now);
       if (!rec) return;
       const db = openDb(resolveDbPath());
@@ -831,7 +838,10 @@ export class SignalEngine {
       console.log(`${this.logTag} doten-reject ${drift.reason} ref=${Math.round(plan.refPrice)} reason=refstale`);
       return 'reject';
     }
-    const rev = reverseToDoten(this.state, plan, price, now, { vetoFired: result.vetoFired, trendDir: result.trendDir });
+    // ★TP の実効設定は **記録のためだけ** に渡す(ドテンは必ず成行クローズ=判断は変わらない)。
+    //   渡さないと doten の行だけ tp_width/tp_trigger が無音で NULL になる。
+    const rev = reverseToDoten(this.state, plan, price, now,
+      { vetoFired: result.vetoFired, trendDir: result.trendDir }, this.tpDirective());
     if (!rev) return 'reject';
     // ★stale plan veto(反対ブラケットにも同一規約で適用): ARM 時点の live 価格でもう通過しているレッグは武装しない。
     //   reverseToDoten は純関数=ここまで engine 状態は未変更なので、全レッグ通過済みならそのまま降りれば保有継続(無害)。
@@ -1032,11 +1042,29 @@ export class SignalEngine {
     return 'swap';
   }
 
+  /** ★TP(利確)の実効設定を **いま** 解決する。★毎tick 引き直すのが仕様:
+   *  手動幅は「保有中に変えたら次の tick から効く」ことになっており、
+   *  `pos.settings`(ARM 時のスナップショット)を使うと保有中の変更が永久に反映されない。
+   *  ★AI委任(mode='ai')のときは manualYen=null を返す = **手動値は使わない**
+   *    (建玉に焼いた AI の幅だけが効く)。既存 knob の「委任した項目の保存値は効かない」約束と同じ。
+   *  ★TP が無効(scalpTpEnabled=false)なら enabled=false = AI委任の幅も含めて一切効かない。 */
+  private tpDirective(): TpDirective {
+    const d = resolveScalpTpWidthDirective(this.cfg.profile);
+    return {
+      enabled: resolveScalpTpEnabled(this.cfg.profile),
+      manualYen: d.mode === 'manual' ? d.value : null,
+    };
+  }
+
   // 非公開: 現在の state + (A のみ)currentSignal から SSE state を組み立てて broadcast(前回と同一 JSON なら抑止)。
   private broadcastSignalState(now: number): void {
     const price = getPrices().find(p => p.symbol === NIKKEI_SYMBOL)?.price ?? null;
+    // ★TP の実効設定を toSignalTradeState → computeHold まで通す。
+    //   ★これを渡し忘れると **手動TP のときだけ** hold.tpTrigger が SSE に載らず、
+    //     trade2 の先回り決済(maybeRangeTakeProfit は hold.tpTrigger の有無だけを見る)が
+    //     無音で効かなくなる = 2秒の遅延と SSE 片方向障害への冗長化を失う。
     const s = toSignalTradeState(this.state, price, now, this.signalForState(), this.lastExitedSignalId, this.armedTimeouts,
-      this.currentWaitReason(now, price), this.lastPlanNote);
+      this.currentWaitReason(now, price), this.lastPlanNote, this.tpDirective());
     const json = JSON.stringify(s);
     if (json !== this.lastBroadcastJson) {
       this.lastBroadcastJson = json;
@@ -1053,7 +1081,8 @@ export class SignalEngine {
       const prevPhase = this.state.phase;
       const prevArmedAt = this.state.armed?.at;
       const prevArmed = this.state.armed;   // ★未約定失効の診断ログ用(advance 後は消えるのでここで控える)。
-      const { next, recorded, armedTimedOut } = advance(this.state, price, now);
+      // ★TP の実効設定は **毎tick** 解決して渡す(advance は純関数のまま=中で設定を読まない)。
+      const { next, recorded, armedTimedOut } = advance(this.state, price, now, { tp: this.tpDirective() });
       this.state = next;
       // ★fill latency: armed→filled に遷移したら position.at−armed.at を移動平均サンプルへ記録(平均約定所要=再評価閾値の元)。
       if (prevPhase === 'armed' && next.phase === 'filled' && next.position && prevArmedAt != null) {

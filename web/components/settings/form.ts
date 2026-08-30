@@ -113,6 +113,12 @@ export function applySettingsToForm(el: SettingsElements, current: SettingsRespo
 
   el.checkScalpLcHardMaxEnabled.checked = current ? current.scalpLcHardMaxEnabled : true;   // 既定=有効(安全網ON)
   el.inputScalpLcHardMax.value = current ? String(current.scalpLcHardMaxYen) : '';
+  // ★TP(利確)。既定は「使う(true)」/「AI委任」/ 幅 80。
+  //   ★source の既定だけ他の項目と逆(未設定=AI委任)。サーバ側 parseTpWidthSource と同じ倒し方をここでもする
+  //     ('manual' 以外は 'ai')。画面とサーバで既定がずれると「AI委任で表示 → 保存したら手動」になる。
+  el.checkScalpTpEnabled.checked = current ? current.scalpTpEnabled !== false : true;
+  el.selectTpWidthMode.value = current?.scalpTpWidthSource === 'manual' ? 'manual' : 'ai';
+  el.inputScalpTpWidth.value = current?.scalpTpWidthYen === undefined ? '' : String(current.scalpTpWidthYen);
   // ★v0.8.2: System B(仮想取引専用)を反映。value 系は raw(未設定=空欄=A追従)/ mode/tri-state は raw ?? ''(A追従)。
   //   プレースホルダ/選択初期値は effective(A フォールバック済み)を補助表示に使う。
   const b = current?.signalB ?? {};
@@ -173,6 +179,8 @@ export function syncKnobDisabled(el: SettingsElements): void {
     [el.selectTrendVetoMode, el.inputScalpTrendVeto],
     [el.selectCooldownMode, el.inputScalpCooldown],
     [el.selectBiasMode, el.selectScalpBias],
+    // ★TP幅も同じ扱い(AI委任なら手動の数値欄を灰色にして編集不可)。挙動を最大初期LC と1バイトも変えない。
+    [el.selectTpWidthMode, el.inputScalpTpWidth],
   ];
   for (const [mode, input] of pairs) {
     const ai = mode.value === 'ai';
@@ -279,6 +287,12 @@ export function buildSavePayload(el: SettingsElements): SavePayload {
   body.scalpLcHardMaxEnabled = el.checkScalpLcHardMaxEnabled.checked;
   const hardMaxRaw = el.inputScalpLcHardMax.value.trim();
   body.scalpLcHardMaxYen = hardMaxRaw === '' ? null : Number(hardMaxRaw);
+  // ★TP(利確): チェック(常に true/false)+ 出所 select(常に値あり)+ 幅(空欄=既定 80 に戻す=null)。
+  //   ★幅の欄は AI委任のとき灰色(disabled)だが、値そのものは往復させる(手動へ戻したときに消えていない)。
+  body.scalpTpEnabled = el.checkScalpTpEnabled.checked;
+  body.scalpTpWidthSource = el.selectTpWidthMode.value as KnobSource;
+  const tpWidthRaw = el.inputScalpTpWidth.value.trim();
+  body.scalpTpWidthYen = tpWidthRaw === '' ? null : Number(tpWidthRaw);
   // ★v0.8.2: System B(仮想取引専用)。value 系は空欄→null(=A追従で unset) / mode・tri-state は select 値をそのまま
   //   ('' A追従 / 'manual'|'ai' / 'true'|'false' / 'none'|'long'|'short')。サーバ側 buildSignalB で unset/明示保存を判定。
   const numOrNull = (v: string): number | null => (v.trim() === '' ? null : Number(v.trim()));

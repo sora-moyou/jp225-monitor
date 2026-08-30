@@ -118,6 +118,11 @@ export interface UserConfig {
   //   有効時は手動でもAIでも |entry−SL| がこの円超のレッグを必ず落とす(最後の安全網)。無効時はハード上限なし。
   scalpLcHardMaxYen?: number;          // LC安全上限[円]。未設定は 159。
   scalpLcHardMaxEnabled?: boolean;     // LC安全上限を有効にするか。未設定は true(既定で安全網ON)。
+  // ★TP(利確の成行決済): 建値からの **幅** に到達したら成行で強制決済する、利側の出口。
+  //   ★決済ロジック(フェーズ式ラチェット床)は一切変えない。利側の出口を1本足すだけ。
+  scalpTpEnabled?: boolean;            // TPを使うか。未設定/非boolean は true(既定ON)。false=TP は一切効かない(=TP 導入前と byte 一致)。
+  scalpTpWidthSource?: KnobSource;     // TP幅の出所。★既定は 'ai'(既存5つの既定 'manual' とは逆・理由は scalpResolvers の parseTpWidthSource)
+  scalpTpWidthYen?: number;            // 手動時の TP幅[円]。未設定は 80。★保有中に変えたら毎tick 反映される。
   // ★v0.8.2: System B(仮想取引専用の並走エンジン)の独立設定。A と同じ knob 一式を持つ(全て任意)。
   //   B リゾルバは signalB.<knob> を優先し、未設定は A(グローバル)値/directive にフォールバックする
   //   (箱出しは B も A と同一挙動→そこから B だけ差分)。実取引 A には一切影響しない(B は currentSignal を出さない)。
@@ -223,6 +228,13 @@ export const PARAM_BOUNDS = {
   scalpTrendVetoYen:      { min: 0, max: 1000, default: 100 },  // AIエントリー: トレンド veto 閾値(円)。直近10分でこの円以上動いたら逆行フェードを禁止。0で無効。
   scalpLcFloorYen:        { min: 20, max: 300, default: 55 },   // ★AIエントリー 初期LC幅の下限(円)。プロンプト + コードで強制(委任でも効く)。
   scalpLcHardMaxYen:      { min: 20, max: 500, default: 159 },  // ★v0.7.56: LC安全上限(円)。有効時は手動/AIとも超過レッグを落とす。
+  // ★TP幅(円)。手動(scalpTpWidthSource='manual')のときだけ使う。既定 80 の根拠は下記(★最適値ではない):
+  //   実測(shadow_exits 501,330行・現行相当 spec・n=13,009)で建玉の MFE 中央値=50円 / 75%点=135円。
+  //   80 はそのあいだで、初期LC(中央値55円)に対しおおよそ 1.5R。
+  //   ★この値に理論的な最適性はない。同じ実測で「一律TPはどの幅でも現行より成績が悪い」と出ている
+  //   (TP=100円で合計 −51,486円 / 現行 +57,423円・損益分岐は TP≈650円)。
+  //   ★あくまで **手動で動かして試すための出発点** であって、推奨値ではない。
+  scalpTpWidthYen:        { min: 5, max: 1000, default: 80 },
 } as const;
 
 let cached: UserConfig | null = null;
@@ -584,6 +596,7 @@ export {
   parseKnobSource,
   resolveScalpLcFloorDirective, resolveScalpLcCeilingDirective, resolveScalpTrendVetoDirective,
   resolveScalpCooldownDirective, resolveScalpBiasDirective, resolveScalpRangeDirective, resolveForcedTrend, forcedTrendFrom,
+  resolveScalpTpEnabled, resolveScalpTpWidthYen, resolveScalpTpWidthDirective, parseTpWidthSource,
   resolveScalpLcHardMax,
 } from './config/scalpResolvers.js';
 export type { KnobDirective } from './config/scalpResolvers.js';

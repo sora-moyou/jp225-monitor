@@ -38,6 +38,14 @@ import { stopLossFromWidth } from '../../core/stopGeometry.js';
 // ★2026-08-25(エバリュエーター指摘②): 価格の「側」の検査は **既存の権威をそのまま呼ぶ**。
 //   新しい判定を書かない(2箇所で別々に書くと片方だけ直す事故が生まれる=core/entryLabel.ts の警告)。
 import { entryPositionOk } from '../../core/entryLabel.js';
+// ★v0.9.103(RECORD-ONLY): 根拠文の申告 LC幅/向き の突き合わせは **旧経路と同じ関数** を呼ぶ。
+//   ★ここで scalpPlan.ts の lcAuditFor を呼べない理由(再実装ではなく import の制約):
+//     scalpPlan.ts → scalpPlanSplit.ts → planVariants.ts が **実行時の** import 連鎖になっているため、
+//     planVariants.ts から scalpPlan.ts を値として import すると循環する。
+//     rationaleLc.ts は core/stopGeometry.ts しか読まない葉なので循環しない。
+//   ★突き合わせの規約(auditLcDeclarations)は **1つのまま**。ここに複製したのは
+//     「記録の失敗で計画を止めない」try/catch だけ(lcAuditFor と同じ作法)。
+import { auditLcDeclarations, type LcDeclarationCheck } from './rationaleLc.js';
 
 /** 目線(A の答え)。ブル/ベア/レンジ。
  *  ★2026-08-25: 語が `bull`/`bear` → **`buy`/`sell`** に変わった(ユーザー指定文面)。
@@ -152,6 +160,16 @@ export interface BReadIssues {
   a?: string;
   /** い)の脚を読めなかった理由。読めていれば undefined。 */
   i?: string;
+  /** ★あ)/い) の **TP幅** を読めなかった理由(askTp=true のときだけ入りうる)。
+   *  ★a/i とは別のキーにする: あちらは「脚が立たなかった理由」で legDrops へ写るが、
+   *    こちらは **脚は立っている**(TP が無いだけ)。同じ箱に入れると、脚が立った回に
+   *    「立たなかった理由」が入ることになり、台帳の意味が壊れる。
+   *  ★台帳への経路(2026-08-30 に配線済み): この2つは scalpPlanSplit が
+   *    SplitRecord.tpReadIssue に連結し、planLedger が signal_plans.tp_read_issue へ書く。
+   *    ★実ファイル SQLite で値が入ることを server/db/tpColumns.test.ts が固定している。
+   *    (旧記述の「台帳へ運ぶ経路は無い」は **事実と違う** ので削除した) */
+  aTp?: string;
+  iTp?: string;
   /** ★どの脚にも入れなかった行(期待と違う注文タイプ / 重複)。捨てた事実を残す。 */
   unmatched?: readonly string[];
 }
@@ -163,6 +181,10 @@ export interface BAnswer {
   strategy?: string;
   aPrice?: number; aLcWidth?: number; aWhy?: string;
   iPrice?: number; iLcWidth?: number; iWhy?: string;
+  /** ★TP幅[円](利確の成行決済の幅)。★**尋ねた回(askTp=true)だけ入る。**
+   *  ★LC幅と違い、読めなくても脚は落とさない(TP は無くても計画は成立する。
+   *    落とすようにすると「TP を足したせいで脚が減る」= まさに避けたい回帰になる)。 */
+  aTpWidth?: number; iTpWidth?: number;
   /** ★段6(2026-08-22): 判断に必要なデータが足りなかったときに、何が足りなかったかを書く自由文。 */
   missingData?: string;
   /** ★2026-08-25(記録専用): 読み取りの失敗と、捨てた行。 */
@@ -224,6 +246,30 @@ const PRICE_AFTER_RE = new RegExp(`^(.{0,8}?)(${NUM_SRC})`);
  *    「値幅◯◯円」が出る確率はむしろ **上がった**。 */
 const WIDTH_LABEL = '(?:LC幅|損切り幅|損切幅|ロスカット幅|LC)';
 const WIDTH_RE = new RegExp(`${WIDTH_LABEL}\\s*(?:は|[:：=])?\\s*(${NUM_SRC})`, 'g');
+/** ★TP幅(利確の成行決済の幅)のラベル。★**裸の「幅」は入れない**(WIDTH_LABEL と全く同じ規約)。
+ *
+ *  ■ ★なぜ LC と別のラベル集合にするか(取り違えを型で防ぐ)
+ *    同じ1文に **2種類の幅** が並ぶことになった。ラベルが重なると、どちらの幅かを
+ *    位置(何字目か)で推測することになり、それは「近傍の語を拾う曖昧な照合」= この案件で
+ *    最も高くついた事故(損切りの向きが逆・「外側」の語の衝突)と同じ根になる。
+ *    ★2つのラベル集合は **交わらない**(LC側に TP/利確 は無く、TP側に LC/損切 は無い)ので、
+ *      1つの数値が両方の候補になることが構造的に起こらない。
+ *
+ *  ■ ★TP の窓は「値」と「理由の切り出し」で扱いが違う(★2026-08-30 訂正)
+ *    ★訂正前ここには「TP には近傍20字の窓を設けない(WIDTH_NEAR_PRICE を使わない)」と書いてあった。
+ *      **いまは使っている**(下の readOneLeg 参照)。片方だけ直して記述が取り残された形で、
+ *      grep で来た人が混乱するので事実に合わせる。
+ *    ・**値の採用**には窓を掛けない … 脚の本文全体から拾う。TP は帯を印字しない
+ *      (尋ねるのは幅だけで上限も下限も文面に出さない)ので「帯の数値」と「申告の数値」が
+ *      同じ文に並ぶ理由が無い。代わりに **候補が2つ以上あれば採らない** を全体に効かせる。
+ *      ★これが無いと、散文形(実データの多数派)で TP が1件も記録できなくなる。
+ *    ・**理由文の切り出し**には窓を掛ける … ★LC と同じ WIDTH_NEAR_PRICE。
+ *      理由: 窓が無いと、AI が文末に「…とし、TP幅は120円とします。」と書いた回で
+ *      理由の開始位置がそこまで前進し、**根拠文がほぼ消える**(実測 226字→28字)。
+ *      ★AI が指定の括弧形で書くのは 2.6% だけで、45.4% は散文形で幅を文末に書く。
+ *      ★次にここを触る人へ: この2つの数字が、窓が要る理由の全部です。 */
+const TP_LABEL = '(?:TP幅|利確幅|利食い幅|利確目標幅|TP)';
+const TP_RE = new RegExp(`${TP_LABEL}\\s*(?:は|[:：=])?\\s*(${NUM_SRC})`, 'g');
 /** ★「置けない」と述べている脚の語。★価格/幅が欠けている脚に限って効かせる(下の実装を参照)。 */
 const DECLINE_RE = /見送|置けな|置きません|出さな|見合わせ|不可/;
 /** `(上)` `[下]` `「上」` `上:` で始まる行。★理由の受け皿としてのみ使う(価格は絶対に入れない)。
@@ -239,9 +285,15 @@ export interface BLegCandidate {
   side: 'buy' | 'sell';
   price?: number;
   lcWidth?: number;
+  /** ★TP幅[円]。★askTp=true で、ラベル付きの候補が **ちょうど1つ** のときだけ入る。 */
+  tpWidth?: number;
   why?: string;
   /** ★読めなかった/曖昧だった理由(記録用)。読めていれば undefined。 */
   issue?: string;
+  /** ★TP幅を読めなかった/曖昧だった理由(記録用)。★`issue` と **別の箱** にする:
+   *  `issue` は「この脚を立てない理由」として legDrops の parseIssue に写る。
+   *  TP が読めないことは脚を落とす理由ではないので、混ぜると健全な脚が落ちる。 */
+  tpIssue?: string;
   /** 元の行(記録用に短く残す)。 */
   raw: string;
 }
@@ -300,7 +352,7 @@ function headerPositionsOf(
 
 /** 見出しの後ろの本文から 価格 / LC幅 / 理由 を取り出す(★1脚ぶんの読み取りの全部)。 */
 function readOneLeg(
-  type: 'limit' | 'stop', side: 'buy' | 'sell', after: string, raw: string,
+  type: 'limit' | 'stop', side: 'buy' | 'sell', after: string, raw: string, askTp: boolean,
 ): BLegCandidate {
   const cand: BLegCandidate = { type, side, raw };
   const declines = DECLINE_RE.test(after);
@@ -350,6 +402,74 @@ function readOneLeg(
       cand.issue = `LC幅が近傍(${WIDTH_NEAR_PRICE}字)に無い(窓外に ${[...new Set(outValues)].join(' / ')}円の記述)`;
     }
   }
+  // ── ★TP幅: **尋ねた回だけ** 読む(askTp=false なら1文字も走らない=TP 導入前と同じ) ────
+  //
+  //   ■ ★LC の読み取りには一切触れない(上のブロックは1バイトも変えていない)。
+  //     TP のラベル集合は LC と交わらない(TP_LABEL のコメント参照)ので、
+  //     この節を足しても LC の候補集合は変わらない。★「TP を足したら LC の読み取りが
+  //     悪化した」が起きうる唯一の経路は **AI の書く文章が変わること** であって、
+  //     読み取りコードの側ではない(実データでの検証結果は報告に載せてある)。
+  //   ■ ★読めなくても脚は落とさない。TP は無くても計画は成立する。
+  //     曖昧(候補が2つ以上)なときも **採らない**(LC の食い違い検出と同じ判断)。
+  //   ■ ★理由文の開始位置(whyEnd)を TP の分だけ進める。進めないと
+  //     「（LC幅60円・TP幅120円）」の `・TP幅120円）` が理由の頭に残り、
+  //     画面・台帳・AI へ返す履歴の3つに機械の文字列が混ざる(FORMAT_ECHO_RE と同じ害)。
+  //   ■ ★★ただし **進めてよいのは窓の中の TP だけ**(2026-08-30・エバリュエーター実測で判明)。
+  //
+  //     ★何が起きていたか(実データ・v0.9.102 の実根拠文):
+  //       AI は指定の括弧形「（LC幅60円）」に **2.6% しか従っておらず**、43.7% は
+  //       「…に逆指値買いを設定します。また、損切幅は60円とし、TP幅は120円とします。」という
+  //       **散文形** で書く。この形で TP は **文の最後** に来る。
+  //       窓が無いと、そこまで whySrc を進めてしまい **理由文が 226字 → 28字 に消えた**
+  //       (残るのは「とします。」だけ)。★台帳・画面・**AI へ返す履歴** の全部が同時に壊れる。
+  //       ★この案件の記録は「④理由が0字」で学習ループが切れていると既に分かっている。
+  //         記録を良くするための版が、記録の本体を壊すところだった。
+  //     ★直し方は LC と **同じ考え方・同じ定数**(WIDTH_NEAR_PRICE)。別の数字を作らない
+  //       (同じ規約を2箇所に別々の数字で持つのが、この案件が繰り返している型)。
+  //     ★基準点だけが LC と違う: LC は「価格の直後」から数えるが、TP は書式上 **LC の直後** に来るので
+  //       「価格/LC のブロックの終わり」から数える。ブロックの終わりは whySrc の位置がそのまま表す
+  //       (LC を採ったならその直後、採らなかったなら価格の直後)=新しい変数を作らない。
+  //     ★★窓の外の TP は「値は読むが、理由文は1文字も切らない」。
+  //       理由: 窓の外にある TP の記述は **AI 自身の文章の一部** であって、
+  //       括弧形のときに消したかった機械のエコー(`・TP幅120円）`)ではない。
+  //       値を捨てると散文形(実データの多数派)で TP が1件も記録できなくなる。
+  let tpEnd = -1;
+  if (askTp && priceEnd >= 0) {
+    const rest = after.slice(priceEnd);
+    const hits: Array<{ value: number; index: number; len: number }> = [];
+    const re = new RegExp(TP_RE.source, 'g');
+    let tm: RegExpExecArray | null;
+    while ((tm = re.exec(rest)) !== null) {
+      const v = toNum(tm[1]!);
+      if (v === undefined || v <= 0) continue;
+      hits.push({ value: v, index: tm.index, len: tm[0].length });
+    }
+    const distinct = new Set(hits.map(h => h.value));
+    if (distinct.size > 1) {
+      cand.tpIssue = `TP幅の候補が複数(${[...distinct].join(' / ')}円)`;
+    } else if (distinct.size === 1) {
+      const h = hits[0]!;
+      // ★非整数は採らない(LC と同じ理由: 実運用の幅は5円刻みで、非整数は AI の出力として不正)。
+      if (!Number.isInteger(h.value)) cand.tpIssue = `TP幅が整数ではない(${h.value})`;
+      else {
+        cand.tpWidth = h.value;
+        // ★whySrc を進めてよいのは、TP の記述が **価格/LC のブロックの近傍** にあるときだけ。
+        //   blockEnd = そのブロックの終わり(after 内の位置)。whySrc は after の接尾辞なので差で求まる。
+        //   ★窓の値は LC と同じ WIDTH_NEAR_PRICE(20)。★ここに別の数字を書かない。
+        const blockEnd = after.length - whySrc.length;
+        if (priceEnd + h.index <= blockEnd + WIDTH_NEAR_PRICE) tpEnd = priceEnd + h.index + h.len;
+      }
+    } else {
+      cand.tpIssue = 'TP幅を読めなかった(ラベル付きの記述が無い)';
+    }
+  }
+  // ★理由の開始位置は「価格 / LC幅 / TP幅 のうち **最も後ろで採用したもの** の直後」。
+  //   whySrc は常に after の接尾辞なので、開始位置は長さの差で求まる(変数を増やさない)。
+  //   ★askTp=false のときは tpEnd=-1 のままで、この if は1度も成立しない。
+  if (tpEnd >= 0) {
+    const whyFrom = after.length - whySrc.length;
+    if (tpEnd > whyFrom) whySrc = after.slice(tpEnd);
+  }
   // ── ★非整数の幅は採らない(2026-08-25・エバリュエーター指摘(f)) ─────────────
   //   帯を半開表記 `floor円<=損切幅<ceiling+1円` で書いているが、この等価性は **円が整数** のときだけ
   //   成り立つ。159.5 は表記上「可」・コードは `>159` で不可 = 帯の主張が崩れる。
@@ -366,6 +486,10 @@ function readOneLeg(
   if (declines && (cand.price === undefined || cand.lcWidth === undefined)) {
     delete cand.price;
     delete cand.lcWidth;
+    // ★TP幅も一緒に捨てる(2026-08-30・TP 追加時): 置かない脚の TP幅は意味を持たない。
+    //   残すと「価格の無い脚に TP幅だけ在る」形が台帳に生まれる。
+    delete cand.tpWidth;
+    delete cand.tpIssue;
     cand.issue = '「置けない」と述べている';
     whySrc = after;
   }
@@ -380,8 +504,11 @@ function readOneLeg(
  * ★理由が次の行に続く場合は次の見出し行までを理由に含める。
  * ★ここでは **どの脚に入れるかを決めない**(それは parseBFreeText の仕事)。
  */
+// ★askTp を **正規化しない**(effectiveAskTp を呼ばない): この関数は版(BVariant)を知らない。
+//   ★版による判断(レンジは尋ねない)は parseBFreeText が1箇所で行う。
+//   ★ここを直接呼ぶ場合は、呼ぶ側が effectiveAskTp を通してから渡すこと。
 export function readLegCandidates(
-  text: string,
+  text: string, askTp = false,
 ): { legs: BLegCandidate[]; positionReasons: { 上?: string; 下?: string } } {
   const lines = normalizeBText(text).split(/\r?\n/);
   const legs: BLegCandidate[] = [];
@@ -411,7 +538,7 @@ export function readLegCandidates(
     for (let i = 0; i < heads.length; i++) {
       const h = heads[i]!;
       const stop = i + 1 < heads.length ? heads[i + 1]!.start : line.length;
-      const cand = readOneLeg(h.type, h.side, line.slice(h.end, stop), line.slice(h.start, h.start + 60));
+      const cand = readOneLeg(h.type, h.side, line.slice(h.end, stop), line.slice(h.start, h.start + 60), askTp);
       legs.push(cand);
       current = cand;
     }
@@ -426,11 +553,22 @@ const MISSING_RE = new RegExp(MISSING_LINE_RE.source, 'm');
  * ★B の自由文を BAnswer に読み取る純関数。
  * ★空文字/文字列でないときだけ null(=呼び出し側が 'aiSilent' にする)。
  *   それ以外は **必ず** BAnswer を返し、読めなかった脚は readIssues に理由を残す。
+ *
+ * @param askTp ★TP幅を尋ねた回か(=プロンプトに TP の行を出したか)。
+ *   ★既定を false にしてある理由: 既定が「尋ねていない」= **TP 導入前と1バイト同じ読み取り**
+ *   になる(渡し忘れても誤読は起きず、TP が入らないだけ)。安全側に倒れる向きを既定にする。
+ *   ★逆に buildBSystemPrompt / buildBUserPrompt の askTp は **必須** にしてある:
+ *   あちらは渡し忘れると「設定は AI委任なのに TP を尋ねないプロンプト」という
+ *   無言の食い違いになるため、呼ぶ側に必ず宣言させる。
+ *   ★本番の呼び出し(server/llm/scalpPlanSplit.ts)は 3箇所すべてに **同じ1つの変数**
+ *   (opts.askTp)を渡す=プロンプトと読み取りがずれない。
  */
-export function parseBFreeText(text: string, variant: BVariant): BAnswer | null {
+export function parseBFreeText(text: string, variant: BVariant, askTp = false): BAnswer | null {
   if (typeof text !== 'string' || text.trim().length === 0) return null;
   const spec = B_VARIANTS[variant];
-  const { legs, positionReasons } = readLegCandidates(text);
+  // ★レンジ2版では **尋ねていない**(tpAskable=false)ので読まない。プロンプト側と同じ正規化を通す
+  //   = 「尋ねていないのに読んだ」= 台帳に尋ねていない数値が載る、という食い違いを構造的に潰す。
+  const { legs, positionReasons } = readLegCandidates(text, effectiveAskTp(variant, askTp));
   const slots: { a?: BLegCandidate; i?: BLegCandidate } = {};
   const unmatched: string[] = [];
   const matches = (c: BLegCandidate, want: LegContract): boolean => c.type === want.type && c.side === want.side;
@@ -480,6 +618,10 @@ export function parseBFreeText(text: string, variant: BVariant): BAnswer | null 
     }
     if (c.price !== undefined) { if (key === 'a') out.aPrice = c.price; else out.iPrice = c.price; }
     if (c.lcWidth !== undefined) { if (key === 'a') out.aLcWidth = c.lcWidth; else out.iLcWidth = c.lcWidth; }
+    // ★TP幅は **脚の採否に関与しない**(下の issues[key] にも入れない)。読めた値と、
+    //   読めなかった理由を それぞれ別の箱へ入れるだけ。
+    if (c.tpWidth !== undefined) { if (key === 'a') out.aTpWidth = c.tpWidth; else out.iTpWidth = c.tpWidth; }
+    if (c.tpIssue !== undefined) { if (key === 'a') issues.aTp = `「${short}」${c.tpIssue}`; else issues.iTp = `「${short}」${c.tpIssue}`; }
     if (c.why !== undefined) { if (key === 'a') out.aWhy = c.why; else out.iWhy = c.why; }
     // ★読み取り段(readOneLeg)が具体的な理由を持っていればそれを優先する
     //   (LC幅の候補が複数 / 非整数 / 「置けない」と述べている)。無ければ何が欠けたかを書く。
@@ -494,7 +636,8 @@ export function parseBFreeText(text: string, variant: BVariant): BAnswer | null 
   const md = normalizeBText(text).match(MISSING_RE);
   if (md && md[1]!.trim().length > 0) out.missingData = md[1]!.trim();
   if (unmatched.length > 0) issues.unmatched = unmatched;
-  if (issues.a !== undefined || issues.i !== undefined || issues.unmatched !== undefined) out.readIssues = issues;
+  if (issues.a !== undefined || issues.i !== undefined || issues.unmatched !== undefined
+    || issues.aTp !== undefined || issues.iTp !== undefined) out.readIssues = issues;
   return out;
 }
 
@@ -508,6 +651,11 @@ export interface BPlanBuild {
   bothDropped: boolean;
   /** ★2026-08-25(記録専用): 立たなかった脚を LegDrop として残す(leg_drops_json へ)。 */
   legDrops: LegDrop[];
+  /** ★v0.9.103(RECORD-ONLY): 根拠文で AI が **申告した LC幅/損切りの向き** と、B が **実際に出した**
+   *  entry/損切り の突き合わせ(台帳 lc_audit_json)。旧経路 scalpPlan.ts の lcAudit と同じ形・同じ関数。
+   *  ★1件も突き合わせられなければ undefined(空配列は載せない=「観測できた」と「0件」を混ぜない)。
+   *  ★採否・価格・noneReason・legDrops には一切影響しない。 */
+  lcAudit?: readonly LcDeclarationCheck[];
 }
 
 /** 1レッグぶんの価格と幅が揃っているか(幅は正・非0)。★向きと帯の検査は下流の既存検証に任せる。 */
@@ -565,10 +713,46 @@ export function buildPlanFromBAnswer(
   pushDrop(spec.legs.a, aOk, aSideOk);
   pushDrop(spec.legs.i, iOk, iSideOk);
 
+  // ── ★v0.9.103(RECORD-ONLY): 申告 LC幅/向き と 実出力の突き合わせ ────────────────────
+  //   ■ なぜここか
+  //     旧経路(scalpPlan.ts の parseScalpPlan)は lcAuditFor を必ず通るのに、分割経路は parsed を
+  //     自前で組み立てていて lcAudit を一度も設定していなかった。★実測: v0.9.96〜v0.9.102 の
+  //     signal_plans は lc_audit_json が **全行 NULL**(=この案件の出発点の指標が丸ごと欠測)。
+  //   ■ ★測る対象は旧経路と同じ「AI の生出力」
+  //     ・立たなかった脚(側の違反 / 読めなかった)も **含める**。故障は落ちた脚に集中して残るため。
+  //     ・幅が読めていない脚は損切り価格を導けない=stopLoss=null → 突き合わせ側が行を作らない
+  //       (旧経路の resolveLcWidth が widthYen=null を返す回と同じ扱い)。
+  //   ■ ★ずらし(applyPivotNudge)より前。ここは B の答えを組み立てている最中なので構造上必ず前になる。
+  //   ■ ★direction(side)を必ず渡す。渡さないと向きが 'sideUnknownDirection' にしかならない。
+  //     side は **表(LegContract)** が持つ値=価格・損切りに使ったものと同一(別の出所を作らない)。
+  //   ■ ★widthSource / signCorrected は **付けない**。あれは「新契約の JSON フィールドを使ったか /
+  //     旧フィールドの価格から幅を復元したか」の語彙で、自由文にはどちらのフィールドも存在しない。
+  //     'lcWidth' と書くと在りもしない JSON 欄を名乗ることになるので、素直に未設定にする。
+  let lcAudit: readonly LcDeclarationCheck[] | undefined;
+  try {
+    const rows = auditLcDeclarations(rationale, [spec.legs.a, spec.legs.i].map(c => {
+      const price = c.key === 'a' ? answer.aPrice : answer.iPrice;
+      const width = c.key === 'a' ? answer.aLcWidth : answer.iLcWidth;
+      return {
+        leg: dropName(c),
+        entry: price ?? null,
+        // ★向きは stopLossFromWidth(唯一の権威)。脚を立てるときと同じ式・同じ引数。
+        stopLoss: price !== undefined && width !== undefined && width > 0
+          ? stopLossFromWidth(c.side, price, width) : null,
+        side: c.side,
+      };
+    }));
+    if (rows.length) lcAudit = rows;
+  } catch (e) {
+    // ★記録の失敗で計画(取引の判断)を止めない。握りつぶすが、握りつぶした事実は必ず1行残す。
+    console.warn('[scalp-plan] LC申告の突き合わせに失敗(記録のみ・計画は続行):', e instanceof Error ? e.message : String(e));
+  }
+  const lcAuditField = lcAudit ? { lcAudit } : {};
+
   if (!aOk && !iOk) {
     return {
       plan: { direction: 'none', ...base, ...(strategy ? { strategy } : {}) },
-      aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: true, legDrops,
+      aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: true, legDrops, ...lcAuditField,
     };
   }
 
@@ -589,7 +773,15 @@ export function buildPlanFromBAnswer(
     //   side/type/entry/stopLoss だけ)。画面もレンジでは脚ごとの理由の行を出さない
     //   (既存の線引き)。★**意図して空**であって、配線漏れではない。理由は従来どおり
     //   rationale に載り、台帳では ai_why で追える。
-    return { plan, aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: false, legDrops };
+    // ★★2026-08-30(TP追加時の既知の穴・意図して開けてある):
+    //   **レンジ2版には TP幅の箱も無い**。共有契約 §1 が固定した名前は
+    //   tpWidthForLimit / tpWidthForStop の2つで、レンジの脚は upper/lower(range-fade は
+    //   両方 limit・range-breakout は両方 stop)なので、この2つの名前では **どちらの脚か
+    //   決められない**。★勝手に RangeLeg へ tpWidth を足すことはしなかった(契約の変更に当たる)。
+    //   ★実害はいま無い: レンジ設定は既定OFF・実データ22,011件中 range は0件・
+    //     b_variant='range-*' の行は1件も無い。★TP を尋ねるプロンプトは4版すべてに用意して
+    //     あるので(指紋も8つ)、レンジを ON にするならここが先に要る。リーダーへ報告済み。
+    return { plan, aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: false, legDrops, ...lcAuditField };
   }
 
   // 方向プラン: あ/い のどちらが limit でどちらが stop かは **版ごとに逆**(表が持つ)。
@@ -604,17 +796,22 @@ export function buildPlanFromBAnswer(
     //     価格と同じ分岐に乗せてあるので、「価格を入れた脚」と「理由を入れた箱」は必ず一致する。
     //   ■ ★立たなかった脚には理由も入れない(価格の無い箱に理由だけ在る形を作らない)。
     const why = c.key === 'a' ? answer.aWhy : answer.iWhy;
+    // ★TP幅は **幅のまま** 載せる(価格にしない)。符号=向きは決済側が direction から一意に決める
+    //   (AiPlan の tpWidthForLimit のコメント参照)。★読めていない脚には載らない。
+    const tpW = c.key === 'a' ? answer.aTpWidth : answer.iTpWidth;
     if (c.type === 'limit') {
       plan.limitEntry = price;
       plan.stopLossForLimit = stopLossFromWidth(c.side, price, width);   // ★向きはここだけ
       if (why) plan.entryWhyForLimit = why;
+      if (tpW !== undefined) plan.tpWidthForLimit = tpW;
     } else {
       plan.stopEntry = price;
       plan.stopLossForStop = stopLossFromWidth(c.side, price, width);
       if (why) plan.entryWhyForStop = why;
+      if (tpW !== undefined) plan.tpWidthForStop = tpW;
     }
   }
-  return { plan, aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: false, legDrops };
+  return { plan, aWhy: answer.aWhy, iWhy: answer.iWhy, bothDropped: false, legDrops, ...lcAuditField };
 }
 
 // ─── ★B のプロンプト(4版・2026-08-25 にユーザーが全文を指定) ────────────────────
@@ -638,6 +835,29 @@ export function buildPlanFromBAnswer(
 // ■ ★2026-08-22 訂正(リーダー指摘): delegationNote(AI委任の注記)は **渡さない**(意図的)。
 //   理由は設計書 docs/superpowers/specs/2026-08-21-ab-split-prompts.md を参照。
 
+/** ★その版に TP幅を尋ねてよいか(2026-08-30・リーダー裁定1)。
+ *
+ *  ■ ★レンジ2版(range-fade / range-breakout)には **尋ねない**。
+ *    共有契約 §1 が固定した TP幅の名前は `tpWidthForLimit` / `tpWidthForStop` の2つで、
+ *    レッグを **注文タイプ** で名指しする。ところがレンジの脚は upper / lower で、
+ *    range-fade は **両方 limit**・range-breakout は **両方 stop** なので、
+ *    ★**この2つの名前ではどちらの脚か決められない**(= 受け取っても置き場所が無い)。
+ *  ■ ★「尋ねて捨てる」が最悪の形(リーダー裁定): 課金が増え、使わない数値の
+ *    アンカーだけがプロンプトに残る。だから **問いそのものを出さない**。
+ *  ■ ★RangeLeg に tpWidth は **足していない**(依頼外・レンジを ON にする日に別途判断)。
+ *  ■ 結果: B の質問文は 4版 × {尋ねる/尋ねない} の8通りではなく **6通り**
+ *    (buy / buy+tp / sell / sell+tp / range-fade / range-breakout)。指紋も6つ。 */
+export function tpAskable(variant: BVariant): boolean {
+  return B_VARIANTS[variant].shape === 'directional';
+}
+
+/** ★実際に TP を尋ねるか。**設定 × 版** の AND を **ここ1箇所** で決める(純関数)。
+ *  ★呼ぶ側(scalpPlanSplit / abPromptBuild)は必ずこれを通す=「設定は ai なのにレンジ版で尋ねた」
+ *  という食い違いが構造的に起こらない。 */
+export function effectiveAskTp(variant: BVariant, askTp: boolean): boolean {
+  return askTp && tpAskable(variant);
+}
+
 /** 注文の日本語名から「注文」を落とした短い形(形式行に書く語)。例: 逆指値買い注文 → 逆指値買い。 */
 export function orderShortJa(c: LegContract): string {
   return c.orderJa.replace('注文', '');
@@ -653,12 +873,38 @@ export function lcBandPhrase(floorYen: number, ceilingYen: number): string {
   return `${floorYen}円<=損切幅<${ceilingYen + 1}円`;
 }
 
-/** B の system プロンプト。★文面はユーザー指定(SSOT)。 */
+// ─── ★TP(利確幅)を尋ねる版 / 尋ねない版(2026-08-30) ────────────────────────────────
+//
+// ■ ★尋ねるのは設定が AI委任(scalpTpWidthSource='ai')かつ TP が有効(scalpTpEnabled)のときだけ。
+//   ★**手動のときは TP の行を1文字も出さない。**
+//   理由(実測): **印字した数値はそのまま選ばれる**。LC の上限を65にすると LC=60 に固着し、
+//   下限を55にすると 55 に固着した。尋ねない項目の数値をプロンプトに置くと、
+//   AI はそれを「こちらの意向」として読む。★だから「TP は使いません」とすら書かない
+//   (否定文の中でも数値・語は供給される: feedback_prompt_numbers_anchor)。
+//   → ★B の質問文は 4版 × {尋ねる/尋ねない} = **8版** になる。指紋(b_prompt_build)も8つ。
+//
+// ■ ★TP の帯(下限/上限)は **印字しない**。LC の帯を印字したせいで
+//   「帯の数値」と「申告の数値」が同じ文に並び、読み取りの脱落の主因になっている(実測)。
+//   TP は同じ轍を踏まない。上限下限はコード側にも設けない(記録して後から測る段階のため)。
+//
+// ■ ★書式は LC幅と **同じ形** に揃える(新しい書式を発明しない)。
+//   括弧の中に「・」で足すだけ: 「逆指値買い○○円（LC幅○○円・TP幅○○円）その後に理由…」
+//   ★読み取り側(TP_LABEL)が LC と交わらないラベル集合を持つので、幅の取り違えは起きない。
+
+/** B の system プロンプト。★文面はユーザー指定(SSOT)。
+ *  @param askTp ★TP幅を尋ねるか。**必須**(省略できると「設定は AI委任なのに尋ねない」
+ *    という無言の食い違いが生まれる)。false のときの戻り値は TP 導入前と **1バイト同一**。 */
 export function buildBSystemPrompt(
-  variant: BVariant, floorYen: number, ceilingYen: number, marketData: string,
+  variant: BVariant, floorYen: number, ceilingYen: number, marketData: string, askTp: boolean,
 ): string {
   const spec = B_VARIANTS[variant];
   const a = spec.legs.a, i = spec.legs.i;
+  // ★レンジ2版では **常に尋ねない**(tpAskable=false・受け取っても置き場所が無いため)。
+  //   ★ここで正規化しておくと、呼び出し側が true を渡しても文面は TP 導入前と1バイト同一になる。
+  const ask = effectiveAskTp(variant, askTp);
+  // ★「損切幅とその理由」に続けて、同じ形で TP を1文足すだけ。
+  const tpAsk = ask ? 'それに対応したTP幅とその理由。' : '';
+  const tpFmt = ask ? '・TP幅○○円' : '';
   return [
     'あなたは日経225先物(NIY=F)のスキャルピング/デイトレードを専門とするトレーダーです。',
     `現在価格より上の価格の${a.orderJa}、下の価格の${i.orderJa}を同時に出し、先に約定した方でエントリーし他方はキャンセルします。`,
@@ -666,11 +912,13 @@ export function buildBSystemPrompt(
     '',
     '制約:',
     `- ${lcBandPhrase(floorYen, ceilingYen)}とする。`,
+    // ★TP幅の定義を1行だけ置く(数値は1つも書かない)。無いと「TP幅」の意味を AI が推測する。
+    ...(ask ? ['- TP幅は、建値からその幅だけ利益方向へ動いたら成行で決済する幅とする。'] : []),
     '- 2つに分けて返してください。',
-    `（上）現在価格より上の${sideJa(a)}エントリー価格とその理由。それに対応した損切幅とその理由。`,
-    `形式は「${orderShortJa(a)}○○円（LC幅○○円）その後に理由を日本語で自由表記）`,
-    `（下）現在価格より下の${sideJa(i)}エントリー価格とその理由。それに対応した損切幅とその理由。`,
-    `形式は「${orderShortJa(i)}○○円（LC幅○○円）その後に理由を日本語で自由表記）`,
+    `（上）現在価格より上の${sideJa(a)}エントリー価格とその理由。それに対応した損切幅とその理由。${tpAsk}`,
+    `形式は「${orderShortJa(a)}○○円（LC幅○○円${tpFmt}）その後に理由を日本語で自由表記）`,
+    `（下）現在価格より下の${sideJa(i)}エントリー価格とその理由。それに対応した損切幅とその理由。${tpAsk}`,
+    `形式は「${orderShortJa(i)}○○円（LC幅○○円${tpFmt}）その後に理由を日本語で自由表記）`,
     '- 渡されたデータやテクニカル指標と、それから得られる事柄のみを根拠にする。',
     '',
     '【データ】',
@@ -686,12 +934,19 @@ export function buildBSystemPrompt(
  *    (=黙って別の脚に入らない)ので、語を先に約束しておくほうが取りこぼしが減る。
  *  ★「1行」と書かない(2026-08-22 の実測: 字数/行数を指定すると理由が 47% 短くなった)。
  *    複数行に書かれても、読み取りは次の見出し行までを理由として拾う。 */
-export function buildBUserPrompt(variant: BVariant, refPrice: number, floorYen: number, ceilingYen: number): string {
+export function buildBUserPrompt(
+  variant: BVariant, refPrice: number, floorYen: number, ceilingYen: number, askTp: boolean,
+): string {
   const spec = B_VARIANTS[variant];
+  // ★見送りの書き方だけ TP を足す(尋ねている項目は、見送るときも書かせない対象に含める)。
+  //   ★TP の帯や既定値はここでも1つも印字しない。★レンジ2版では常に尋ねない(system と同じ正規化)。
+  const declineLine = effectiveAskTp(variant, askTp)
+    ? '置けないと判断した側は、価格と損切幅とTP幅を書かず、理由だけを書いてください。'
+    : '置けないと判断した側は、価格と損切幅を書かず、理由だけを書いてください。';
   return `現在価格は ${refPrice} です。損切幅は ${lcBandPhrase(floorYen, ceilingYen)} です。
 
 （上）と（下）を、上の形式で書いてください。
 （上）は「${orderShortJa(spec.legs.a)}」、（下）は「${orderShortJa(spec.legs.i)}」で書き始めてください。
-置けないと判断した側は、価格と損切幅を書かず、理由だけを書いてください。
+${declineLine}
 判断に必要なデータが足りなかったときは、最後に「不足データ: …」と書いてください。`;
 }

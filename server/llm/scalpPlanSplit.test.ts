@@ -35,6 +35,9 @@ const OPTS = {
   trendContext: '【A用の文脈】足とテクニカルと基礎データだけ',
   orderContext: '【B用の文脈】主要節目 / 直近アラート / 長期高安 を含む',
   floorYen: 55, ceilingYen: 160, rangeEnabled: false, squeezeState: null,
+  // ★2026-08-30: 既定は **TP を尋ねない**(設定が手動 or TP無効のとき)=TP 導入前の文面。
+  //   TP を尋ねる回は各テストで { ...OPTS, askTp: true } と明示する。
+  askTp: false,
 } as const;
 
 const A_BUY = '{"direction":"buy","why":"高値切り上げが3本続き、5分足がMA上"}';
@@ -384,5 +387,95 @@ describe('★(h) 契約に無い語で落ちた回でも「何と答えたか」
     const r = await runSplitPlan(deps('すみません分かりません', B_BOTH), OPTS);
     expect(r.parsed.noneReason).toBe('aFailed');
     expect(r.parsed.plan.rationale).toBe('目線の判断が得られませんでした(答えが規定の3語でない)。');
+  });
+});
+
+// ─── ★v0.9.103: lcAudit が分割経路の parsed に載る(台帳 lc_audit_json の欠測を止める) ───
+//
+// ★下流は `if (parsed.lcAudit?.length) out.lcAudit = parsed.lcAudit;`(scalpPlan.ts)しか無いので、
+//   ここに載らなければ台帳は必ず NULL になる。★実測でも v0.9.96〜v0.9.102 は全行 NULL だった。
+describe('★v0.9.103 分割経路の lcAudit が parsed に載る(RECORD-ONLY)', () => {
+  it('★両脚が立った回: 生の entry/損切り が2行(申告が無い根拠文なので status=undeclared)', async () => {
+    const r = await runSplitPlan(deps(A_BUY, B_BOTH), OPTS);
+    expect(r.parsed.lcAudit?.map(x => [x.leg, x.entry, x.stopLoss, x.actualYen, x.status])).toEqual([
+      ['stop', 38400, 38320, 80, 'undeclared'],
+      ['limit', 38100, 38030, 70, 'undeclared'],
+    ]);
+  });
+
+  it('★★両脚落ちの回(none)にも載る = 故障が残る側を捨てない', async () => {
+    // ★上下を入れ替えた回答 = 買いの逆指値が現在値の下 / 買いの指値が上(どちらも側の違反で落ちる)。
+    const swapped = J2('逆指値買い38100円（LC幅80円）節目手前', '指値買い38400円（LC幅70円）押し目');
+    const r = await runSplitPlan(deps(A_BUY, swapped), OPTS);
+    expect(r.parsed.plan.direction).toBe('none');
+    expect(r.parsed.lcAudit?.map(x => [x.leg, x.entry, x.actualYen])).toEqual([
+      ['stop', 38100, 80], ['limit', 38400, 70],
+    ]);
+  });
+
+  it('★突き合わせる材料が無い回は載せない(空配列で「観測できた」と言わない)', async () => {
+    const r = await runSplitPlan(deps(A_BUY, B_NONE_WITH_WHY), OPTS);
+    expect(r.parsed.noneReason).toBe('ai');
+    expect(r.parsed.lcAudit).toBeUndefined();
+  });
+
+  it('★B を呼ばなかった3経路(A失敗/契約外の語/レンジ不許可)には付かない', async () => {
+    expect((await runSplitPlan(deps(new Error('x')), OPTS)).parsed.lcAudit).toBeUndefined();
+    expect((await runSplitPlan(deps('すみません', B_BOTH), OPTS)).parsed.lcAudit).toBeUndefined();
+    const range = await runSplitPlan(deps('{"direction":"range"}', B_FADE), { ...OPTS, rangeEnabled: false });
+    expect(range.parsed.lcAudit).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ★2026-08-30(追記): TP(利確幅)の配線。★askTp の1つの値が **3箇所**(system / user / 読み取り)へ届く。
+//
+//   ■ ここが割れると起きること
+//     ・プロンプトは尋ねているのに読み取りが読まない → AI の答えが黙って捨てられる
+//     ・尋ねていないのに読み取りが読む → 尋ねていない数値を台帳に載せる
+//     ★どちらも「無言の失敗」。だから配線を1本に絞って、その1本をここで固定する。
+// ═══════════════════════════════════════════════════════════════════════════════════════
+describe('★TP(利確幅)の配線: askTp の1つの値が system / user / 読み取り の3箇所へ届く', () => {
+  const B_TP = '逆指値買い38400円（LC幅80円・TP幅150円）節目手前\n指値買い38100円（LC幅70円・TP幅120円）押し目';
+
+  it('askTp=false: B のプロンプトに TP の語が1文字も無く、TP幅も読まない', async () => {
+    const d = deps(A_BUY, B_TP);
+    const r = await runSplitPlan(d, { ...OPTS, askTp: false });
+    const b = d.calls.find(c => c.who === 'B')!;
+    expect(b.system).not.toContain('TP');
+    expect(b.user).not.toContain('TP');
+    expect(r.parsed.plan.tpWidthForStop).toBeUndefined();
+    expect(r.parsed.plan.tpWidthForLimit).toBeUndefined();
+    expect(r.record.bAskTp).toBe(false);
+  });
+
+  it('★askTp=true: 両方のプロンプトが TP を尋ね、答えの TP幅が plan へ入る', async () => {
+    const d = deps(A_BUY, B_TP);
+    const r = await runSplitPlan(d, { ...OPTS, askTp: true });
+    const b = d.calls.find(c => c.who === 'B')!;
+    expect(b.system).toContain('TP幅○○円');
+    expect(b.user).toContain('TP幅');
+    expect(r.parsed.plan.tpWidthForStop).toBe(150);    // ★あ)=逆指値買い
+    expect(r.parsed.plan.tpWidthForLimit).toBe(120);   // ★い)=指値買い
+    expect(r.record.bAskTp).toBe(true);
+    // ★理由に TP の文字列が漏れない(画面・台帳・履歴が機械の文字列で汚れない)。
+    expect(r.parsed.plan.entryWhyForStop).toBe('節目手前');
+    expect(r.parsed.plan.entryWhyForLimit).toBe('押し目');
+  });
+
+  it('★A を呼ばない/呼べない回(bVariant=none)は bAskTp を残さない(B の文面が存在しない)', async () => {
+    const d = deps(new Error('A 落ち'));
+    const r = await runSplitPlan(d, { ...OPTS, askTp: true });
+    expect(r.record.bVariant).toBe('none');
+    expect(r.record.bAskTp).toBeUndefined();
+  });
+
+  it('★askTp=true でも AI が TP を書かなければ脚は普通に立つ(TP は必須ではない)', async () => {
+    const d = deps(A_BUY, B_BOTH);
+    const r = await runSplitPlan(d, { ...OPTS, askTp: true });
+    expect(r.parsed.plan.stopEntry).toBe(38_400);
+    expect(r.parsed.plan.limitEntry).toBe(38_100);
+    expect(r.parsed.plan.tpWidthForStop).toBeUndefined();
+    expect(r.parsed.legDrops).toBeUndefined();
   });
 });

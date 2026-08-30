@@ -87,6 +87,12 @@ export interface ArmedBracket {
   //   ボラティリティから決める(armWait.ts の computeArmWait)。欠落なら従来どおり ARMED_TIMEOUT_MS(15分)。
   //   ADD-ONLY: 据えない呼び出し元(テスト/影シミュ)は byte 一致で従来挙動のまま。
   waitMs?: number;
+  // ★TP(利確の成行決済)の幅[円]。**価格ではなく幅**(符号はコードが付ける)。レッグごとに持つ。
+  //   AI 委任のときだけ載る(手動は設定の現在値を毎tick引き直すのでブラケットには焼かない)。
+  //   約定した側の幅だけが OpenPosition.tpWidth へ焼き付く(carryStrategy と同じ「在るときだけ付ける」規約)。
+  //   ★rangeTp とは別物。流用禁止(rangeTp はレンジ分岐=固定LC・ラチェット無しへ落ちる)。
+  tpWidthForLimit?: number;
+  tpWidthForStop?: number;
 }
 
 /** 現在シグナル(trade2 追従用)。ARM ごとに signalId を単調増加で採番し、最新 armed プランを保持する。
@@ -146,6 +152,11 @@ export interface OpenPosition {
   doten?: true;          // ★ドテン(反転)で建てた建玉(add-only)。決済記録(RecordedTrade)まで持ち回る。
   armedAt?: number;      // ★遡り解析用: この建玉の ARM(武装)時刻(= armed.at)。at−armedAt = ARM→約定の経過。
   armedPrice?: number;   // ★遡り解析用: ARM 時点で monitor が見ていた価格(取れない/stale は欠落)。
+  /** ★TP幅[円]。**約定したレッグ**の幅(ArmedBracket.tpWidthForLimit / tpWidthForStop のうち約定した側)。
+   *  ★AI委任のときだけ入る(手動は設定の現在値を毎tick引き直す=建玉には焼かない)。
+   *  ★rangeTp と混同しない: rangeTp は「レンジの反対側 **節目**(絶対価格)」で、据わると建玉が
+   *    レンジ分岐(固定LC・ラチェット無し)へ落ちる。tpWidth は phase-exit を一切変えず、利側の成行決済を足すだけ。 */
+  tpWidth?: number;
 }
 
 export interface EngineState {
@@ -166,7 +177,14 @@ export interface SignalHold {
   // ★レンジ建玉のTP(反対側レンジ節目・利益側のみ設定)。設定時は exitStop=固定initialStop(ラチェットせず)。
   //   directional / rangeTp 無しの建玉では付与しない(=既存の exitStop 契約と byte 一致)。
   rangeTp?: number;      // 反対側レンジ節目(TP目標の生値)。
-  tpTrigger?: number;    // 成行TPの発火価格(buy=rangeTp−5 / sell=rangeTp+5)。
+  /** 成行TPの発火価格。出所は2つ:
+   *   ・レンジ建玉(rangeTp 設定済) … rangeTpTrigger(buy=rangeTp−5 / sell=rangeTp+5)
+   *   ・directional 建玉(TP幅あり) … takeProfitTrigger(buy=建値+幅 / sell=建値−幅)
+   *  ★directional にも載せるのは trade2 の冗長化のため: trade2 の maybeRangeTakeProfit は
+   *    mode を見ず hold.tpTrigger が有限かだけを見るので、trade2 が **先回りで** 同じ価格で閉じる
+   *    (monitor→trade2 の2秒の遅延が消え、SSE 片方向障害への冗長化にもなる)。
+   *  ★TP幅が無い建玉では従来どおり付与しない(=既存 JSON と byte 一致)。 */
+  tpTrigger?: number;
 }
 
 export interface RecordedTrade {
@@ -190,6 +208,23 @@ export interface RecordedTrade {
   /** R3: 決済時点の含み益ピーク[pt]= OpenPosition.peakProfit(エンジンがラチェット床の決定に使っている値そのもの)。
    *   これで「床の何段目が効いたか」が設定値から逆算でき、各エントリーの MFE が価格再生なしで分かる。 */
   peakProfit: number;
+  // ── ★TP の記録(RECORD-ONLY・必須2点)。→ signal_trades.tp_width / tp_trigger ──────────────
+  //   ★**必須(optional にしない)** を選んだ理由 — 上の R1〜R3 と同じ判断です:
+  //     ・決済経路は今後も増える(現に take_profit で1本増えた)。optional にすると、
+  //       新しい経路が「TP の記録だけ書き忘れる」ことが型で許され、**無音で NULL が増える**。
+  //       この2列は「AI が出した TP が当たったか」を shadow_exits.mfe と突き合わせるための列なので、
+  //       欠測は「まだ TP が無かった回」と区別がつかなくなり、標本が静かに壊れる。
+  //     ・RecordedTrade を作る = この2つを埋める、以外の道が無い状態にしておく。
+  //   ★**null 許容** にした理由: 「TP が無かった」は実在の状態(設定OFF / AI が幅を出さなかった / レンジ建玉)。
+  //     0 や -1 で表すと集計側で「幅0のTP」と混ざる。**書き忘れ(型で禁止)と、TP不在(null)を分ける。**
+  //   ★TP で決済していない回にも入れる(initial_stop / ratchet_floor / doten でも
+  //     「その時 TP がどこに置かれていたか」は反実仮想に要る)。
+  /** R4: 決済時点で有効だった TP幅[円](resolveTpWidth の結果)。★手動で動かされていたら動かされた後の値。
+   *   null = その決済時点で TP が効いていなかった(設定OFF / 幅なし / レンジ建玉)。 */
+  tpWidth: number | null;
+  /** R5: R4 の幅から導いた発火価格(takeProfitTrigger の結果。buy=建値+幅 / sell=建値−幅)。
+   *   null = R4 が null のとき(幅が無ければ発火価格も存在しない)。 */
+  tpTrigger: number | null;
 }
 
 // ─── 純関数(単体テスト対象) ─────────────────────────────
@@ -402,7 +437,13 @@ export function restingStopOf(pos: OpenPosition, exitFn: ExitFn = computeExitSto
 /** 保有中の意図(hold)を組み立てる純関数。filled かつ position かつ現在シグナルが在るときだけ返す。
  *  signalId は currentSignal から取る(ARM ごとに采番され filled 中は不変=そのエントリーの采番)。
  *  exitStop は毎tick算出する resting stop の絶対価格(null=有効な逆指値なし)。flat/armed/未シグナルは null。 */
-export function computeHold(st: EngineState, signal: CurrentSignal | null): SignalHold | null {
+export function computeHold(
+  st: EngineState, signal: CurrentSignal | null,
+  // ★TP の実効設定(設定を読むのは呼び出し側=この関数は純関数のまま)。
+  //   ★これを渡し忘れると「手動TP のときだけ hold.tpTrigger が SSE に載らない」= trade2 の
+  //     先回り決済が **無音で片肺** になる。engine の broadcast 経路は必ず渡すこと。
+  tp?: TpDirective | null,
+): SignalHold | null {
   if (st.phase !== 'filled' || !st.position || !signal) return null;
   const p = st.position;
   // ★レンジ建玉(rangeTp 設定済): 損側は固定初期LC(ラチェットしない)、利側は反対側節目手前の成行TP。
@@ -418,13 +459,20 @@ export function computeHold(st: EngineState, signal: CurrentSignal | null): Sign
       tpTrigger: rangeTpTrigger(p.direction, p.rangeTp),
     };
   }
-  return {
+  const h: SignalHold = {
     signalId: signal.signalId,
     direction: p.direction,
     entryPrice: p.entryPrice,
     exitStop: restingStopOf(p),
     at: p.at,
   };
+  // ★TP(directional): 幅が在るときだけ発火価格を載せる。trade2 は mode を見ず tpTrigger の有無だけを見るので、
+  //   これで trade2 が **先回りで** 同じ価格で閉じられる(monitor 側の advance も同じ価格で閉じる=二重の網)。
+  //   ★幅が無い建玉ではフィールドごと付けない=既存 SSE JSON と byte 一致(broadcast dedupe を壊さない)。
+  //   ★穴として記録: indepManaged(孤児採用)の建玉には効かない(trade2 が monitor を無視する経路)。
+  const w = resolveTpWidth(p, tp?.manualYen, tp?.enabled ?? true);
+  if (w != null) h.tpTrigger = takeProfitTrigger(p.direction, p.entryPrice, w);
+  return h;
 }
 
 /** 決済(filled→flat)後クールダウン中か(=再ARMを抑止すべきか)を判定する純関数。
@@ -441,6 +489,47 @@ export function inCooldown(lastExitAt: number | null, now: number, cooldownSec: 
 export const RANGE_TP_OFFSET_YEN = 5;
 export function rangeTpTrigger(direction: 'buy' | 'sell', rangeTp: number, offset: number = RANGE_TP_OFFSET_YEN): number {
   return direction === 'buy' ? rangeTp - offset : rangeTp + offset;
+}
+
+/** ★TP(利確)の実効設定。engine が **毎tick 解決して** 純関数へ引数で渡す(純関数は設定を読まない)。
+ *  ★なぜ1つの型に束ねるか: advance / computeHold / toSignalTradeState の3経路へ **同じものを** 渡す必要があり、
+ *    別々の引数にすると片方だけ渡し忘れる(実際に「手動TPのときだけ hold.tpTrigger が SSE に載らない」
+ *    片肺事故の一歩手前まで行った)。1つの値にしておけば、渡し忘れは型で目に見える。 */
+export interface TpDirective {
+  /** TP を使うか(設定 scalpTpEnabled)。★false なら TP は一切効かない = TP 導入前と byte 一致。 */
+  enabled: boolean;
+  /** 手動時の TP幅[円]の **現在値**。AI委任(source='ai')や無効値のときは null(=建玉に焼いた AI の幅を使う)。 */
+  manualYen: number | null;
+}
+
+/** ★この建玉にいま効いている TP幅[円]。無ければ null(=TP を使わない=従来と完全に同じ挙動)。
+ *
+ *  ★出所は2つあり、優先順位は **手動 > 建玉に焼いた AI の幅**:
+ *   ・手動 … `manualTpYen`(設定の現在値)。★**引数で渡す**(この関数も advance も設定を読まない=純関数のまま)。
+ *            ★毎tick 引き直すので、保有中に設定を変えたら **次の tick から** 効く。
+ *            ★`pos.settings`(ARM 時のスナップショット)は使わない — 保有中の変更が反映されないため。
+ *   ・AI委任 … `pos.tpWidth`(約定した瞬間に焼き付けた B の答え。以後は動かない)。
+ *
+ *  ★正の有限値だけを幅として認める(0/負/NaN/Inf は「TP無し」= null)。
+ *    幅0を通すと約定 tick でいきなり建値決済になり、無意味な決済が量産される。 */
+export function resolveTpWidth(
+  pos: OpenPosition, manualTpYen: number | null | undefined,
+  // ★TP を使うか(設定 scalpTpEnabled)。省略時は true = この引数を足す前と完全に同じ挙動。
+  //   false のとき **AI委任の pos.tpWidth も含めて** 一切効かない(「切れば従来どおり」を1箇所で保証する)。
+  enabled: boolean = true,
+): number | null {
+  if (!enabled) return null;
+  if (manualTpYen != null && Number.isFinite(manualTpYen) && manualTpYen > 0) return manualTpYen;
+  const w = pos.tpWidth;
+  if (w != null && Number.isFinite(w) && w > 0) return w;
+  return null;
+}
+
+/** ★TP の発火価格。建玉には **幅だけ** を持ち、発火価格は毎回ここで導出する
+ *  (rangeTpTrigger と同じ作法。絶対価格を建玉に焼くと、幅を変えたときに古い価格が残る)。
+ *  buy → 建値 + 幅 / sell → 建値 − 幅。★境界(ちょうど)は **発火する**(呼び出し側の >= / <=)。 */
+export function takeProfitTrigger(direction: 'buy' | 'sell', entryPrice: number, tpWidthYen: number): number {
+  return direction === 'buy' ? entryPrice + tpWidthYen : entryPrice - tpWidthYen;
 }
 
 /** 現在値が決済逆指値に達したか。達したら exit 価格(= 逆指値)、未達なら null。 */
@@ -484,6 +573,12 @@ export interface AdvanceOptions {
    *  分析用の「影」は同じ advance を **パラメータだけ変えて** 呼ぶためにこれを渡す
    *  (約定判定 detectFill / 建玉組み立て / スリッページ / 決済理由の規約を一切再実装しない)。 */
   exitFn?: ExitFn;
+  /** ★TP(利確)の実効設定。**設定を読むのは呼び出し側(engine)**。
+   *  ★なぜ引数か: advance を純関数のまま保つため。中で configStore を引くと影の模擬が実運用の設定に汚染され、
+   *    テストも「設定に依存する決済」になる。★また `pos.settings`(ARM 時のスナップショット)を使うと
+   *    保有中に設定を変えても反映されない — 手動は「毎tick 引き直す」が仕様なので、必ず毎回渡す。
+   *  渡さなければ TP 導入前と byte 一致(AI委任の pos.tpWidth だけが効き、それも無ければ TP は一切効かない)。 */
+  tp?: TpDirective | null;
 }
 
 /** 現在値 price を受けて armed→filled / filled→flat の遷移を1歩進める純関数(DB/LLM は呼ばない)。
@@ -551,6 +646,16 @@ export function advance(
     if (st.armed.planMeta) position.planMeta = st.armed.planMeta;   // 自己レジーム/確信度/veto を引き継ぐ。
     if (st.armed.settings) position.settings = st.armed.settings;   // ★v0.7.56: 実効設定を引き継ぐ。
     if (st.armed.doten) position.doten = true;   // ★ドテン建玉フラグを約定後の建玉へ持ち回る(add-only)。
+    // ★TP幅: **約定したレッグの側だけ** を建玉へ焼く(AI委任のときだけ載っている)。
+    //   有限かつ正のときだけ付ける=載っていない/不正な計画から作る建玉は従来と byte 一致。
+    // ★TP が無効(設定 scalpTpEnabled=false)なら **焼かない**。
+    //   理由: 焼くだけでも advance() の返り値(position オブジェクト)が TP 導入前と変わってしまい、
+    //   「切れば1バイトも変わらない」が成立しなくなる(実測で 342件の差分として出た)。
+    //   ★代償を明記する: TP を切っている間に約定した建玉には AI の幅が残らないので、
+    //     保有中に TP を ON へ戻しても **その建玉では AI委任の TP は効かない**(手動幅は効く)。
+    //     「切っている」は「その建玉に TP を持たせない」の意味に倒す(安全側)。
+    const tpW = fill.leg === 'limit' ? st.armed.tpWidthForLimit : st.armed.tpWidthForStop;
+    if ((opts?.tp?.enabled ?? true) && tpW != null && Number.isFinite(tpW) && tpW > 0) position.tpWidth = tpW;
     carryArmed(position, st.armed.at, st.armed.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を建玉へ。
     return { next: { phase: 'filled', position, lastExit: st.lastExit } };
   }
@@ -577,6 +682,9 @@ export function advance(
           //     つまりここに載るのは「約定 tick 時点のピーク」であって MFE ではない。エンジンが持っている値を
           //     そのまま残す(記録のために保有中の状態更新を足すと、それは挙動変更になるため足さない)。
           exitReason: reason, exitInitialStop: pos.initialStop, peakProfit: pos.peakProfit,
+          // ★R4/R5: レンジ建玉に TP幅は効かない(利側は反対側 **節目** で閉じる=range_tp)。
+          //   ★0 ではなく null: 「TP が無かった」と「幅0の TP」を集計で混ぜないため。
+          tpWidth: null, tpTrigger: null,
         };
         if (pos.planMeta) r.planMeta = pos.planMeta;
         if (pos.settings) r.settings = pos.settings;
@@ -603,30 +711,60 @@ export function advance(
     }
     const peak = Math.max(pos.peakProfit, unrealizedPt(pos.direction, pos.entryPrice, price));
     const updated: OpenPosition = { ...pos, peakProfit: peak };
+    // ★TP の実効値を **この tick の1箇所で** 決める(判断にも記録にも同じ値を使う)。
+    //   ★判定より前に出しておく理由: TP で閉じなかった回(initial_stop / ratchet_floor)にも
+    //     「そのとき TP がどこに置かれていたか」を記録するため。反実仮想(TP が無ければどうなったか)に要る。
+    //   ★手動で保有中に動かされていれば、ここに入るのは **動かされた後の値**(毎tick引き直し)。
+    const tpW = resolveTpWidth(pos, opts?.tp?.manualYen, opts?.tp?.enabled ?? true);
+    const tpTrig = tpW != null ? takeProfitTrigger(pos.direction, pos.entryPrice, tpW) : null;
+    // 決済記録の共通組み立て(range 分岐の mkRecorded と同じ流儀)。理由は呼び出し側が渡す=判断はここに持ち込まない。
+    //   ★載せる材料(mode/planMeta/settings/doten/armed*)は従来の1本道と完全に同じ順・同じ条件。
+    const mkRecordedPhase = (exitPrice: number, pnl: number, reason: ExitReason): RecordedTrade => {
+      const r: RecordedTrade = {
+        entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
+        exitT: now, exitPrice, pnl, qty: pos.qty, rationale: pos.rationale,
+        // ★R1(RECORD-ONLY): どの経路で閉じたか。R2: 約定レッグの初期LC(建玉に載っている実値)。
+        //   R3: この tick で更新済みの含み益ピーク(=床の決定に使った値)。
+        exitReason: reason, exitInitialStop: pos.initialStop, peakProfit: peak,
+        // ★R4/R5: **この決済の tick で有効だった** TP幅と発火価格。TP で閉じたかどうかに関係なく載せる。
+        tpWidth: tpW, tpTrigger: tpTrig,
+      };
+      // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
+      if (pos.mode === 'range') r.mode = 'range';
+      if (pos.planMeta) r.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
+      if (pos.settings) r.settings = pos.settings;   // ★v0.7.56: 実効設定を決済記録へ。
+      if (pos.doten) r.doten = true;   // ★ドテン建玉の決済記録にフラグ(add-only)。
+      carryArmed(r, pos.armedAt, pos.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を決済記録へ。
+      return r;
+    };
     const stop = restingStopOf(updated, opts?.exitFn);
     const exit = detectExit(updated, price, stop);
     if (exit == null) {
+      // ★利側(TP): 損側が成立しなかった **後** に見る。同 tick で両方成立したら損側が勝つ
+      //   (レンジ分岐の「損側優先(安全)」と同じ順序。逆に置くと、初期LC を割ったのに TP で閉じたことになる)。
+      //   ★決済ロジック(phase-exit のラチェット床)は1バイトも触っていない。ここは「利側の出口を1本足す」だけ。
+      if (tpTrig != null) {
+        const tpHit = pos.direction === 'buy' ? price >= tpTrig : price <= tpTrig;
+        if (tpHit) {
+          // ★板を叩く純粋な成行決済 = SLIPPAGE_YEN(1tick)。逆指値用の STOP_SLIPPAGE_YEN ではない
+          //   (レンジTP と同じ執行形態。トリガ価格ではなく **現在値** に不利スリップを載せる)。
+          const tpFill = withSlip(price, pos.direction, SLIPPAGE_YEN);
+          const tpPnl = realizedPnl(pos.direction, pos.entryPrice, tpFill, pos.qty);
+          return {
+            next: { phase: 'flat', lastExit: { exitPrice: tpFill, pnl: tpPnl, at: now } },
+            recorded: mkRecordedPhase(tpFill, tpPnl, 'take_profit'),
+          };
+        }
+      }
       return { next: { phase: 'filled', position: updated, lastExit: st.lastExit } };
     }
     const exitFill = withSlip(exit, pos.direction, STOP_SLIPPAGE_YEN);   // 逆指値決済=逆指値価格ちょうど
     const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
-    const recorded: RecordedTrade = {
-      entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
-      exitT: now, exitPrice: exitFill, pnl, qty: pos.qty, rationale: pos.rationale,
-      // ★R1(RECORD-ONLY): ヒットした逆指値が初期LC そのものなら「初期LC」、そうでなければ「ラチェット床」。
-      //   computeExitStop(非公開 phase-exit)は床が未発動/初期LC より不利なとき initialStop を **そのまま返す**
-      //   契約なので、この同値比較で両者を判別できる(非公開の閾値/段数をここに持ち込まない=公開リポは不変)。
-      //   ★簡易フォールバック(公開ビルド=ラチェット無し)では常に initialStop → 常に 'initial_stop' で正しい。
-      exitReason: stop === pos.initialStop ? 'initial_stop' : 'ratchet_floor',
-      // ★R2: 約定レッグの初期LC(建玉に載っている実値)。R3: この tick で更新済みの含み益ピーク(=床の決定に使った値)。
-      exitInitialStop: pos.initialStop, peakProfit: peak,
-    };
-    // range 由来のみ mode タグを付与(directional は無付与=既存記録とバイト互換)。
-    if (pos.mode === 'range') recorded.mode = 'range';
-    if (pos.planMeta) recorded.planMeta = pos.planMeta;   // 自己レジーム/確信度/veto を決済記録へ。
-    if (pos.settings) recorded.settings = pos.settings;   // ★v0.7.56: 実効設定を決済記録へ。
-    if (pos.doten) recorded.doten = true;   // ★ドテン建玉の決済記録にフラグ(add-only)。
-    carryArmed(recorded, pos.armedAt, pos.armedPrice);   // ★遡り解析用: ARM 時刻/ARM 時点価格を決済記録へ。
+    // ★R1: ヒットした逆指値が初期LC そのものなら「初期LC」、そうでなければ「ラチェット床」。
+    //   computeExitStop(非公開 phase-exit)は床が未発動/初期LC より不利なとき initialStop を **そのまま返す**
+    //   契約なので、この同値比較で両者を判別できる(非公開の閾値/段数をここに持ち込まない=公開リポは不変)。
+    //   ★簡易フォールバック(公開ビルド=ラチェット無し)では常に initialStop → 常に 'initial_stop' で正しい。
+    const recorded = mkRecordedPhase(exitFill, pnl, stop === pos.initialStop ? 'initial_stop' : 'ratchet_floor');
     return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded };
   }
 
@@ -737,6 +875,10 @@ export function toSignalTradeState(
   // ★v0.9.97(ADD-ONLY・表示専用): 直近の「ARM しなかった計画サイクル」の目線と理由
   //   (server/signalTrade/planNote.ts の buildPlanNote が組み立てたもの)。
   lastNone?: SignalTradeState['lastNone'] | null,
+  // ★TP の実効設定(engine が毎tick 解決して渡す)。★hold.tpTrigger を SSE に載せるのはこの経路だけなので、
+  //   ここで渡し忘れると **手動TP のときだけ** trade2 の先回り決済が効かなくなる(無音の片肺)。
+  //   渡さなければ従来どおり(AI委任の pos.tpWidth だけが効く)。
+  tp?: TpDirective | null,
 ): SignalTradeState {
   const s: SignalTradeState = { phase: st.phase, updatedAt: now };
   if (st.phase === 'armed' && st.armed) {
@@ -792,7 +934,7 @@ export function toSignalTradeState(
     };
   }
   if (st.lastExit) s.lastExit = st.lastExit;
-  const hold = computeHold(st, signal ?? null);
+  const hold = computeHold(st, signal ?? null, tp);
   if (hold) s.hold = hold;
   if (signal) {
     s.signal = {
@@ -876,6 +1018,11 @@ export function planToArmed(
     // ★v0.9.88(表示専用): レッグごとの理由。同じく載っていればそのまま引き継ぐ(中身は見ない)。
     directionWhy?: string; entryWhyForLimit?: string; entryWhyForStop?: string;
     lcWhyForLimit?: string; lcWhyForStop?: string;
+    // ★TP幅(AI が出した利確幅[円]・レッグ別)。載っていれば armed へそのまま引き継ぐ。
+    //   ★この引数は **構造的な型** なので、AiPlan に同名の optional フィールドが在れば
+    //     `server/llm/` を1バイトも触らずにそのまま代入できる((plan as any) を使わない)。
+    //   ★AiPlan にまだ無い時期でも、この2つは optional なので既存の呼び出しは型検査を通る。
+    tpWidthForLimit?: number; tpWidthForStop?: number;
   },
   now: number,
   // ★v0.9.88: trendDir = そのサイクルでコードが測ったトレンドの向き(表示専用・未指定は従来と同じ)。
@@ -901,6 +1048,17 @@ export function planToArmed(
     if (plan.lcWhyForStop !== undefined) a.lcWhyForStop = plan.lcWhyForStop;
     // ★v0.9.88: コードが測ったトレンドの向き(画面の順張り/逆張りの基準)。
     if (extra?.trendDir !== undefined) a.trendDir = extra.trendDir;
+    // ★TP幅(レッグ別)。**在るときだけ付ける**=載っていない計画から作る armed は従来と byte 一致
+    //   (JSON.stringify も同一)。★非有限/0以下は付けない: 幅0の TP は約定 tick で建値決済を量産し、
+    //   負の幅は「建値の反対側」に TP を置くことになる(=約定した瞬間に損切り側で閉じる)。
+    //   ★range 分岐でも同じ carryStrategy を通るが、range 建玉は advance のレンジ分岐で決済されるため
+    //     tpWidth は焼かれない(=レンジの挙動は不変)。
+    if (plan.tpWidthForLimit !== undefined && Number.isFinite(plan.tpWidthForLimit) && plan.tpWidthForLimit > 0) {
+      a.tpWidthForLimit = plan.tpWidthForLimit;
+    }
+    if (plan.tpWidthForStop !== undefined && Number.isFinite(plan.tpWidthForStop) && plan.tpWidthForStop > 0) {
+      a.tpWidthForStop = plan.tpWidthForStop;
+    }
     return a;
   };
   // ★レンジ両面ストラドル: range に上/下いずれかのレッグがあれば range ブラケットを作る。
@@ -1065,6 +1223,12 @@ export function reverseToDoten(
   // ★v0.9.88: extra はそのまま planToArmed へ渡る。trendDir を受け取れないと **反転シグナルだけ**
   //   画面の順張り/逆張りが無言で消える(通常の ARM とドテンで表示の作りが変わってしまう)。
   extra?: { vetoFired?: boolean; trendDir?: EntryTrendDir },
+  // ★TP の実効設定(engine が毎tick 解決したもの)。★決済の判断には一切使わない — ドテンは
+  //   保有中の反転評価で **必ず成行クローズ** するので、TP が在ろうと無かろうと閉じる。
+  //   使い道は **記録だけ**: 「反転で閉じたその瞬間、TP はどこに置かれていたか」を残す
+  //   (TP に届く手前で反転したのか、TP を通り越していたのかが後から分かる)。
+  //   渡さなければ tp_width/tp_trigger は NULL(=呼ばない経路の記録は従来どおり)。
+  tp?: TpDirective | null,
 ): { next: EngineState; recorded: RecordedTrade; armed: ArmedBracket } | null {
   if (st.phase !== 'filled' || !st.position) return null;
   if (!Number.isFinite(price)) return null;
@@ -1077,12 +1241,16 @@ export function reverseToDoten(
   //   (逆指値決済の STOP_SLIPPAGE_YEN=0 とは別物)。
   const exitFill = p.direction === 'buy' ? price - SLIPPAGE_YEN : price + SLIPPAGE_YEN;
   const pnl = realizedPnl(p.direction, p.entryPrice, exitFill, p.qty);
+  // ★記録用の TP 実効値(判断には使わない)。advance と同じ1つの純関数で引く=解釈がずれない。
+  const dotenTpW = resolveTpWidth(p, tp?.manualYen, tp?.enabled ?? true);
   const recorded: RecordedTrade = {
     entryT: p.at, entryPrice: p.entryPrice, dir: p.direction,
     exitT: now, exitPrice: exitFill, pnl, qty: p.qty, rationale: p.rationale, doten: true,
     // ★記録3点(RECORD-ONLY): ドテンは逆指値ではなく成行クローズなので理由は 'doten'。
     //   初期LC/ピークは「もし決済せず持っていたら」の反実仮想に要るので、P 自身の値をそのまま残す。
     exitReason: 'doten', exitInitialStop: p.initialStop, peakProfit: p.peakProfit,
+    // ★R4/R5(記録のみ): 反転で閉じた瞬間に TP がどこに置かれていたか。
+    tpWidth: dotenTpW, tpTrigger: dotenTpW != null ? takeProfitTrigger(p.direction, p.entryPrice, dotenTpW) : null,
   };
   if (p.mode === 'range') recorded.mode = 'range';
   if (p.planMeta) recorded.planMeta = p.planMeta;

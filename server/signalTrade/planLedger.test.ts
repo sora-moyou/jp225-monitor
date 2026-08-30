@@ -20,6 +20,8 @@ const SETTINGS: SignalSettingsSnapshot = {
   cooldown: { mode: 'ai' },
   bias: { mode: 'manual', value: 'none' },
   range: { mode: 'manual', value: false },
+  // ★TP の実効設定(必須3点)。この fixture の検証対象ではないので既定のまま。
+  scalpTpEnabled: true, scalpTpWidthSource: 'ai', scalpTpWidthYen: 80,
 };
 
 describe('buildSignalPlanInsert', () => {

@@ -508,9 +508,13 @@ function attachSplitRecord(
   const withA: SplitRecord = record.aForced
     ? { ...record }
     : { ...record, aPromptBuild: aTrendPromptBuildFp(rangeEnabled) };
+  // ★2026-08-30: B の文面は **版4 × TPを尋ねるか2 = 8版**。指紋も8つに分かれるので、
+  //   その回に実際に尋ねたか(record.bAskTp)と組で引く。★bAskTp は runSplitPlan が
+  //   B を呼んだ回にだけ入れる。未設定(古い記録/B 未呼び出し)は false に倒す
+  //   = 「尋ねなかった」= TP 導入前と同じ文面の指紋になる(安全側)。
   const withB: SplitRecord = record.bVariant === 'none'
     ? withA
-    : { ...withA, bPromptBuild: bOrderPromptBuildFp(record.bVariant) };
+    : { ...withA, bPromptBuild: bOrderPromptBuildFp(record.bVariant, record.bAskTp ?? false) };
   return { ...result, splitRecord: withB };
 }
 

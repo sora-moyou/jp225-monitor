@@ -111,6 +111,8 @@ describe('buildSignalTradeInsert: armedT / armedPrice を挿入行へ', () => {
     entryT: 2_000, entryPrice: 38000, dir: 'buy', exitT: 3_000, exitPrice: 38050, pnl: 50, qty: 1, rationale: 'r',
     // ★決済記録の必須3点(記録専用)。この describe の検証対象は armed_t/armed_price なので固定値。
     exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
+    // ★TP の必須2点。この describe の検証対象ではないので「TP 無し」= null。
+    tpWidth: null, tpTrigger: null,
   };
   it('在れば載せる', () => {
     const ins = buildSignalTradeInsert({ ...base, armedAt: 1_000, armedPrice: 37990 }, null, 5);

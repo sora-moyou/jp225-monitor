@@ -200,6 +200,8 @@ describe('advance', () => {
     expect(recorded).toEqual({
       entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37950, pnl: -50, qty: 1, rationale: 'r',
       exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
+      // ★TP の記録(必須2点)。TP を使っていない回は null=「その決済時点で TP は効いていなかった」。
+      tpWidth: null, tpTrigger: null,
     });
   });
 
@@ -1254,6 +1256,8 @@ describe('buildTradeMetaJson に settings をマージ', () => {
     lcHardMax: { enabled: true, value: 150 },
     trendVeto: { mode: 'manual', value: 100 }, cooldown: { mode: 'manual', value: 90 },
     bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+    // ★TP の実効設定(必須3点)。この describe の検証対象ではないので既定のまま。
+    scalpTpEnabled: true, scalpTpWidthSource: 'ai', scalpTpWidthYen: 80,
   };
   it('settings 省略は従来どおり(ctxV のみ)', () => {
     expect(JSON.parse(buildTradeMetaJson())).toEqual({ ctxV: 'rich' });
@@ -1273,6 +1277,8 @@ describe('advance が settings を armed→position→recorded へ持ち回る',
     lcHardMax: { enabled: true, value: 150 },
     trendVeto: { mode: 'ai' }, cooldown: { mode: 'manual', value: 90 },
     bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+    // ★TP の実効設定(必須3点)。この describe の検証対象ではないので既定のまま。
+    scalpTpEnabled: true, scalpTpWidthSource: 'ai', scalpTpWidthYen: 80,
   };
   it('約定で position.settings、決済で recorded.settings に載る', () => {
     const armed: ArmedBracket = { direction: 'buy', limitEntry: 38000, stopLossForLimit: 37950, rationale: 'x', at: 0, settings };
@@ -1293,6 +1299,8 @@ describe('armedToCurrentSignal / toSignalTradeState が settings を露出', () 
     lcHardMax: { enabled: true, value: 150 },
     trendVeto: { mode: 'manual', value: 100 }, cooldown: { mode: 'manual', value: 90 },
     bias: { mode: 'manual', value: 'none' }, range: { mode: 'manual', value: false },
+    // ★TP の実効設定(必須3点)。この describe の検証対象ではないので既定のまま。
+    scalpTpEnabled: true, scalpTpWidthSource: 'ai', scalpTpWidthYen: 80,
   };
   it('armedToCurrentSignal は settings を引き継ぐ', () => {
     const armed: ArmedBracket = { direction: 'buy', limitEntry: 38000, stopLossForLimit: 37950, rationale: 'x', at: 1, settings };
@@ -1370,6 +1378,8 @@ describe('buildSignalTradeInsert(系統タグ)', () => {
     entryT: 1000, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 38050, pnl: 50, qty: 1, rationale: 'x',
     // ★決済記録の必須3点(記録専用)。この describe の検証対象は系統タグ/signalId なので固定値。
     exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
+    // ★TP の必須2点。この describe の検証対象ではないので「TP 無し」= null。
+    tpWidth: null, tpTrigger: null,
   };
   it('A(null)は system 省略(=既存挙動)・mode=directional', () => {
     const ins = buildSignalTradeInsert(base, null);
@@ -1639,6 +1649,8 @@ describe('directional は range 変更の影響を受けない(byte 互換)', ()
       entryT: 500, entryPrice: 38000, dir: 'buy', exitT: 2000, exitPrice: 37950, pnl: -50, qty: 1, rationale: 'r',
       // ★記録専用(決済パラメータ分析用): 必須3点。決済の判断・価格・タイミングは不変(mode/rangeTp は付かないまま)。
       exitReason: 'initial_stop', exitInitialStop: 37950, peakProfit: 0,
+      // ★TP の記録(必須2点)。TP を使っていない回は null。
+      tpWidth: null, tpTrigger: null,
     });
     expect(recorded?.mode).toBeUndefined();
   });

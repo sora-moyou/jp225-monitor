@@ -33,6 +33,41 @@ export interface SignalSettingsSnapshot {
   cooldown: KnobSettingSnapshot;
   bias: KnobSettingSnapshot;
   range: KnobSettingSnapshot;
+  // ── ★TP(利確の成行決済)の実効設定 ────────────────────────────────────────
+  //
+  // ★なぜ要るか(この3つが無いと台帳が層別できない):
+  //   signal_plans.tp_source が 'manual' になる経路は **3通り** ある
+  //     (a) scalpTpWidthSource='manual'(幅を手で決めている)
+  //     (b) scalpTpEnabled=false(TP を切っている)
+  //     (c) レンジ版
+  //   台帳ではこれが全部 'manual' に潰れ、★**「TP を切っていた期間」が後から特定できない**。
+  //   そのため「AI の TP が当たったか」の標本に、TP が動いていなかった回が黙って混ざる。
+  //
+  // ★命名がこのオブジェクトの他の項目(lcFloor / cooldown …)と違う理由:
+  //   他は「scalp を落として {mode,value} にする」流儀だが、TP は **設定キー名そのまま** にした。
+  //   ・(a)/(b) の区別は「委任モード」1つでは表せない(enabled は委任とは別の軸)。
+  //   ・{mode,value} に押し込むと、下の「value に実測を混ぜない」約束が読み手に伝わらない。
+  //   ・解析側は json_extract(settings_json,'$.scalpTpEnabled') のように **キー名で** 引く。
+  //     設定画面の項目名と1対1で対応させたほうが、突き合わせで間違えない。
+  //
+  // ★★value の約束(既存 lcCeiling と **わざと違う流儀** にした。理由も残す):
+  //   既存の lcCeiling は mode='ai' のとき value に **上限ではなく実測LC幅** を入れており、
+  //   実際にアナリストが「AI委任なのに上限が120だった」と誤読した(knobSnapshot の realizedLcYen)。
+  //   → ★**scalpTpWidthYen には実測値を一切混ぜない。常に「設定の現在値」だけ。**
+  //     mode='ai' のときこの数値は **1円も効いていない**(効いた幅は建玉ごとに違う)。
+  //   ★実際に効いた幅は **signal_trades.tp_width**(決済時点の実効値)を見ること。
+  //     ここは「設定」、あちらは「実測」。1つの欄に混ぜない。
+  //
+  // ★旧行の扱い: この3キーが記録されるのは v0.9.104 以降。
+  //   それ以前の settings_json / meta.settings には **キーごと存在しない**
+  //   (parseTradeSettings は未検証 JSON を型に cast するだけなので、読み手は undefined を
+  //    「TP が無かった」ではなく **「記録開始前」** として扱うこと)。
+  /** TP を使うか(設定 scalpTpEnabled)。★false=TP は一切効かない期間。 */
+  scalpTpEnabled: boolean;
+  /** TP幅の出所。'manual'=下の値を毎tick使う / 'ai'=AI が計画ごとに決める(下の値は効かない)。 */
+  scalpTpWidthSource: 'manual' | 'ai';
+  /** ★**設定の現在値**[円]。★実測値ではない。source='ai' のときは効いていない値。 */
+  scalpTpWidthYen: number;
   // ★ドテン(反転)許可の委任状態(ADD-ONLY): 許可 ON の時だけ true を載せる。OFF(既定)では欠落=既存 meta JSON 不変。
   dotenEnabled?: true;
   // ★レンジ再評価(未約定→ブレイク)の許可状態(ADD-ONLY): レンジ使用時のみ載せる(レンジOFF=既定では欠落=既存 meta JSON 不変)。
@@ -257,7 +292,12 @@ export interface SignalTradeState {
     // ★レンジ建玉のTP(反対側レンジ節目・利益側のみ)。設定時は損側=固定initialStop(ラチェットせず)、
     //   利側=tpTrigger(節目の5円内側)到達で成行決済。directional / rangeTp 無しでは付与しない。
     rangeTp?: number;      // 反対側レンジ節目(TP目標の生値)。
-    tpTrigger?: number;    // 成行TPの発火価格(buy=rangeTp−5 / sell=rangeTp+5)。
+    /** 成行TPの発火価格。出所は2つ:
+     *   ・レンジ建玉(rangeTp あり)… 節目の5円内側(buy=rangeTp−5 / sell=rangeTp+5)
+     *   ・directional 建玉(TP幅あり)… 建値±幅(buy=建値+幅 / sell=建値−幅)
+     *  ★directional にも載せるのは trade2 の冗長化のため(trade2 は mode を見ず tpTrigger の有無だけを見る
+     *    ので、同じ価格で先回りして閉じられる)。TP幅が無い建玉では従来どおり付与しない=既存 JSON 不変。 */
+    tpTrigger?: number;
   };
   // ★直近に「決済(filled→flat)した」シグナルの signalId(trade2 の即時再同期用・A のみ)。
   //   仮想取引エンジンが約定中の建玉を決済した瞬間に、そのエントリーの ARM 采番(currentSignal.signalId)を載せ、

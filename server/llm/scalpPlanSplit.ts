@@ -22,7 +22,7 @@
 
 import type { AiPlan, AnsweringProvider, NoneReason, ScalpPlanResult } from './scalpPlan.js';
 import {
-  B_VARIANTS, buildBSystemPrompt, buildBUserPrompt, buildPlanFromBAnswer, parseBFreeText,
+  B_VARIANTS, buildBSystemPrompt, buildBUserPrompt, buildPlanFromBAnswer, effectiveAskTp, parseBFreeText,
   pickBVariant, type BVariant, type SqueezeState, type TrendDirection,
 } from './planVariants.js';
 import { buildTrendSystemPrompt, buildTrendUserPrompt, parseTrendAnswer, rawDirectionOf } from './trendPrompt.js';
@@ -54,6 +54,12 @@ export interface SplitPlanOptions {
   floorYen: number;
   ceilingYen: number;
   rangeEnabled: boolean;
+  /** ★TP(利確幅)を B に尋ねるか。**必須**(渡し忘れが「設定は AI委任なのに尋ねない」という
+   *  無言の食い違いになるため、呼ぶ側に必ず宣言させる)。
+   *  ★true になるのは 設定が scalpTpEnabled=true かつ scalpTpWidthSource='ai' のときだけ
+   *  (解決は server/config/scalpResolvers.ts・判断は呼び出し側の scalpPlan.ts が1箇所で行う)。
+   *  ★この1つの値を **プロンプト2本と読み取り1本の3箇所すべて** に渡す=ずれない。 */
+  askTp: boolean;
   /** BB スクイーズ判定の生値。版の選択に使う。 */
   squeezeState: SqueezeState;
   /** 判定が使えなかった理由('ready_false'/'closed'/'disabled')。使えたときは undefined。 */
@@ -105,6 +111,19 @@ export interface SplitRecord {
   aPromptBuild?: string;
   /** ★段5: B のプロンプトの型の指紋。bVariant='none'(B を呼んでいない)回は未設定のまま。 */
   bPromptBuild?: string;
+  /** ★2026-08-30: その回に **実際に TP幅を尋ねたか**(=B の文面が6版のどれか)。
+   *  ★**設定の写しではなく実測**: 設定が 'ai' でもレンジ2版では尋ねない(tpAskable)ので false になる。
+   *  ★B を呼ばなかった回(bVariant='none')は未設定。★指紋(bPromptBuild)は
+   *  呼び出し側(scalpPlanRunner.ts)が bVariant と この値の組で引くので、両方が要る。
+   *  ★台帳 signal_plans.tp_source(ai/manual)は **この値から導く**(設定を直接引かない)。 */
+  bAskTp?: boolean;
+  /** ★2026-08-30(記録専用): **TP幅を読めなかった/曖昧だった** 理由(両脚ぶんを1文に連結)。
+   *
+   *  ★TP は脚を落とす理由に **しない**(落とすと「TP を足したせいで脚が減る」= 避けたい回帰そのもの)。
+   *    しかし落とさないだけだと、読めなかった事実が **どこにも残らない**(脚が立った回は LegDrop が
+   *    作られないため)。★無音の失敗を作らないために、この列で数えられるようにする(台帳 tp_read_issue)。
+   *  ★aiWhy / missingData とは別物・混ぜない: あちらは AI の言葉、こちらは **こちらの読み取りの失敗**。 */
+  tpReadIssue?: string;
 }
 
 export interface SplitPlanOutcome {
@@ -225,20 +244,29 @@ export async function runSplitPlan(
 
   // ── ④ B(価格と損切幅) ───────────────────────────────────────────────────
   //   ★A の自由文(why)は渡さない。渡すと反対の目線の語が理由経由で B に入り、分ける意味が消える。
+  //   ★askTp は **同じ1つの値** を system / user / 読み取り の3箇所へ渡す
+  //     (プロンプトが尋ねているのに読み取りが読まない、という食い違いを構造的に作らない)。
+  //   ★★設定(opts.askTp)と **版** の AND をここで1回だけ解く(effectiveAskTp)。
+  //     レンジ2版は受け取っても置き場所が無いので尋ねない(リーダー裁定1)。
+  //     ★以降はこの askTp だけを使う。opts.askTp を直接読まない。
+  const askTp = effectiveAskTp(variant, opts.askTp);
   const bRes = await deps.callOrder(
-    buildBSystemPrompt(variant, opts.floorYen, opts.ceilingYen, opts.orderContext),
-    buildBUserPrompt(variant, refPrice, opts.floorYen, opts.ceilingYen),
+    buildBSystemPrompt(variant, opts.floorYen, opts.ceilingYen, opts.orderContext, askTp),
+    buildBUserPrompt(variant, refPrice, opts.floorYen, opts.ceilingYen, askTp),
   );
   const provider = bRes.provider ?? aRes.provider;
   const toolCalls = addCalls(aRes.toolCalls, bRes.toolCalls);
   const rec = {
     ...aRecord, bVariant: variant, ...(toolCalls === undefined ? {} : { toolCalls }),
     ...(bRes.provider ? { bProvider: bRes.provider } : {}),
+    // ★B を呼んだ回にだけ入る(呼ばなかった回は undefined=「尋ねていない」ではなく「B が無い」)。
+    //   ★入れるのは **実際に尋ねた値**(版で正規化した後)。設定の写しではない。
+    bAskTp: askTp,
   };
 
   // ★2026-08-25: B の応答は **自由文**。読み取りは注文タイプの語だけで脚を決め、
   //   読めなかった脚は理由を残す(黙って別の脚へ入れない)。
-  const bAnswer = parseBFreeText(bRes.text, variant);
+  const bAnswer = parseBFreeText(bRes.text, variant, askTp);
   if (!bAnswer) {
     // ★空応答。**B の故障** であって相場ではない。
     return {
@@ -265,12 +293,20 @@ export async function runSplitPlan(
   //    (実測: 2026-08-19〜24 で85件)ので、台帳の形も新しくならない。
   if (answer.why) built.plan.directionWhy = answer.why;
   const aiWhy = joinWhy(built.aWhy, built.iWhy);
+  // ★TP の読み取り失敗(あ/い)を1文に。★尋ねていない回(askTp=false)は readIssues.aTp/iTp が
+  //   そもそも設定されないので、必ず undefined = 列は NULL(=「尋ねていない」が形から読める)。
+  const tpReadIssue = [bAnswer.readIssues?.aTp, bAnswer.readIssues?.iTp]
+    .filter((x): x is string => typeof x === 'string' && x.length > 0).join(' / ') || undefined;
   const record: SplitRecord = {
     ...rec,
     ...(bAnswer.strategy ? { bStrategy: bAnswer.strategy } : {}),
     ...(aiWhy ? { aiWhy } : {}),
     // ★段6: 見送ったかどうかに関わらず、B が「足りなかったデータ」を書けばそのまま記録する。
     ...(bAnswer.missingData ? { missingData: bAnswer.missingData } : {}),
+    // ★2026-08-30(記録専用): TP幅の読み取り失敗。★脚は落とさないので、ここで拾わないと
+    //   どこにも残らない(=無音の失敗)。両脚ぶんを ' / ' で連結する
+    //   (どちらの脚かは文の先頭の「逆指値買い」等で読める=既存の readIssues と同じ書式)。
+    ...(tpReadIssue ? { tpReadIssue } : {}),
   };
 
   // ★2026-08-25(記録専用): 読み取り段で立たなかった脚を legDrops として運ぶ。
@@ -278,16 +314,25 @@ export async function runSplitPlan(
   //     そのまま leg_drops_json へ落とす=**配線を1行も足さずに** 「読めなかった」が台帳に残る。
   const legDropsField = built.legDrops.length ? { legDrops: built.legDrops } : {};
 
+  // ★v0.9.103(RECORD-ONLY): 申告 LC幅/向き の突き合わせを **旧経路と同じ器** に載せる。
+  //   ★実測(複製 signal_plans 3,008行): v0.9.96〜v0.9.102 の lc_audit_json は **全行 NULL** だった。
+  //     原因はここ——分割経路は parsed を自前で組み立てており lcAudit を一度も設定していなかった
+  //     (旧経路 scalpPlan.ts の lcAuditFor を通らない)。a_direction が入り始めた版と完全に一致する。
+  //   ★下流(scalpPlan.ts:3353 の `if (parsed.lcAudit?.length) out.lcAudit = parsed.lcAudit;`)は
+  //     1行も足さずにそのまま台帳へ落とす。★中身は buildPlanFromBAnswer が
+  //     **ずらし(applyPivotNudge)より前** の生の値から採っている。
+  const lcAuditField = built.lcAudit ? { lcAudit: built.lcAudit } : {};
+
   if (built.bothDropped) {
     // ★理由が有る=AI の判断('ai') / 理由も無い=無言の故障('aiSilent')。
     const reason: NoneReason = aiWhy ? 'ai' : 'aiSilent';
     return {
-      parsed: { ...withReason(built.plan, reason), ...legDropsField },
+      parsed: { ...withReason(built.plan, reason), ...legDropsField, ...lcAuditField },
       record, ...(provider ? { provider } : {}),
     };
   }
   return {
-    parsed: { ok: true, plan: built.plan, ...legDropsField },
+    parsed: { ok: true, plan: built.plan, ...legDropsField, ...lcAuditField },
     record, ...(provider ? { provider } : {}),
   };
 }

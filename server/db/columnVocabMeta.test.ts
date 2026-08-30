@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   initSchema, insertSignalPlan, getMeta, setColumnVocabMeta,
   COLUMN_VOCAB_KEY, COLUMN_VOCAB_NOTE,
+  setLcAuditSemanticsMeta, COLUMN_SEMANTICS_LC_AUDIT_KEY, COLUMN_SEMANTICS_LC_AUDIT_NOTE,
 } from './store.js';
 
 // ★2026-08-25(エバリュエーター指摘③): **語彙の版境界を DB から読める場所に置く**。
@@ -132,3 +133,54 @@ describe('★★② 語彙の注記に 未出荷の版番号が1つも入って�
 
 afterEach(() => { /* keep */ });
 process.on('exit', () => { try { rmSync(ROOT, { recursive: true, force: true }); } catch { /* noop */ } });
+
+// ═══ ★2026-08-30: lc_audit_json の意味論も DB の中から読める ═══════════════════
+//
+// ■ 何を防ぐか
+//   `lc_audit_json` は **ずらしの前** の生の申告に対して採るのに、`rationale` 列は
+//   **ずらしの後** に幅の数字が書き換わりうる。この2列を突き合わせた分析者は
+//   「監査が壊れている」と誤読する。★ソースのコメントは DB を開いた人に届かない。
+// ■ もう1つ: v0.9.96〜v0.9.102 は配線漏れで **全行 NULL**。欠測を「AI が変わった」と読ませない。
+describe('★lc_audit_json の意味論が meta から読める', () => {
+  it('① 実ファイルの meta に1行入る(書く前は無い=この検査は恒真でない)', () => {
+    expect(getMeta(db, COLUMN_SEMANTICS_LC_AUDIT_KEY)).toBeNull();
+    setLcAuditSemanticsMeta(db);
+    expect(getMeta(db, COLUMN_SEMANTICS_LC_AUDIT_KEY)).toBe(COLUMN_SEMANTICS_LC_AUDIT_NOTE);
+  });
+
+  it('② 中身に 採る時点 / rationale 列とのズレ / それが仕様であること / 欠測期間 が揃っている', () => {
+    setLcAuditSemanticsMeta(db);
+    const note = getMeta(db, COLUMN_SEMANTICS_LC_AUDIT_KEY)!;
+    expect(note).toContain('signal_plans.lc_audit_json');
+    expect(note).toContain('生の申告');
+    expect(note).toContain('前');            // ★ずらしの「前」に採る
+    expect(note).toContain('rationale');
+    expect(note).toContain('書き換わっている場合があります');
+    expect(note).toContain('仕様');          // ★食い違いは欠陥ではない
+    expect(note).toContain('NULL');          // ★欠測期間
+  });
+
+  it('③ 冪等(2回書いても1行のまま)', () => {
+    setLcAuditSemanticsMeta(db);
+    setLcAuditSemanticsMeta(db);
+    const rows = db.prepare('SELECT COUNT(*) AS n FROM meta WHERE key = ?')
+      .all(COLUMN_SEMANTICS_LC_AUDIT_KEY) as Array<{ n: number }>;
+    expect(rows[0]!.n).toBe(1);
+  });
+
+  it('④ ★column_vocab を1バイトも汚していない(別のキー・別の意味論)', () => {
+    setColumnVocabMeta(db);
+    setLcAuditSemanticsMeta(db);
+    expect(getMeta(db, COLUMN_VOCAB_KEY)).toBe(COLUMN_VOCAB_NOTE);
+    expect(COLUMN_SEMANTICS_LC_AUDIT_KEY).not.toBe(COLUMN_VOCAB_KEY);
+  });
+
+  it('★★⑤ まだ実データに現れていない版番号を焼いていない(column_vocab と同じ作法)', () => {
+    setLcAuditSemanticsMeta(db);
+    const note = getMeta(db, COLUMN_SEMANTICS_LC_AUDIT_KEY)!;
+    const versions = [...new Set((note.match(/\d+\.\d+\.\d+/g) ?? []))].sort();
+    // ★実DB(複製)に出ている版は 0.9.92〜0.9.102。それ以外は名乗らない。
+    expect(versions).toEqual(['0.9.102', '0.9.96']);
+    for (const v of ['0.9.103', '0.9.104', '1.0.0']) expect(note).not.toContain(v);
+  });
+});

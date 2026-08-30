@@ -356,3 +356,102 @@ describe('★境界: 上限を超えるずらしだけを諦める', () => {
     expect(r.notes).toContain('指値65800はずらすと幅70円で上限65円を超えるため据え置き');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ★2026-08-30(追記): TP(利確幅)と5円ずらしの関係。★リーダー裁定 §9。
+//
+//   ・AI委任の TP幅は **5円 詰める**(= TP の **絶対価格** は動かさない)。
+//     建値は4脚とも「その脚が儲かる向き」へ動くので、TP価格を保つには幅を同じだけ縮める。
+//     ★LC は逆に5円 **広がる**(建値が損切りから遠ざかる)。この非対称は仕様であって欠陥ではない
+//     —— 規則は1つ「AI がその **価格** を根拠に選んだものは、執行の都合で動かさない」。
+//   ・★詰めた結果が 0以下 になるなら **ずらしを諦める**(crossesRef / lcCeiling と同じ作法)。
+//   ・★手動TP は対象外: 手動の幅は計画に焼かれない(毎tick 設定を引き直す契約)ので、
+//     tpWidthFor* が undefined = このコードは1行も走らない。
+// ═══════════════════════════════════════════════════════════════════════════════════════
+describe('★TP幅と5円ずらし(AI委任のみ・TP の絶対価格は動かさない)', () => {
+  /** 手動設定・実効上限65(v0.9.102 の実値)。★上の describe のものと同じ値を局所に置く。 */
+  const MANUAL_65 = band(65);
+  const withTp = (tpLimit?: number, tpStop?: number): AiPlan => ({
+    ...BUY,
+    ...(tpLimit !== undefined ? { tpWidthForLimit: tpLimit } : {}),
+    ...(tpStop !== undefined ? { tpWidthForStop: tpStop } : {}),
+  });
+
+  it('ずらした脚の TP幅が5円 詰まる(TP の絶対価格は不変)', () => {
+    const r = applyPivotNudge(withTp(120, 90), REF, LEVELS, WIDE);
+    expect(r.count).toBe(2);
+    expect(r.plan.limitEntry).toBe(65_605);
+    expect(r.plan.stopEntry).toBe(65_805);
+    expect(r.plan.tpWidthForLimit).toBe(115);
+    expect(r.plan.tpWidthForStop).toBe(85);
+    // ★TP の **価格** は動いていない: 買い → 建値 + 幅。
+    expect(65_605 + 115).toBe(65_600 + 120);
+    expect(65_805 + 85).toBe(65_800 + 90);
+  });
+
+  it('★LC は広がり TP は縮む(同じずらしで符号が逆・これが仕様)', () => {
+    const r = applyPivotNudge(withTp(120, 90), REF, LEVELS, WIDE);
+    expect(Math.abs(r.plan.limitEntry! - r.plan.stopLossForLimit!)).toBe(65);   // LC 60 → 65
+    expect(r.plan.tpWidthForLimit).toBe(115);                                   // TP 120 → 115
+  });
+
+  it('★★詰めると 0以下 になる脚は ずらしを諦める(blocked=tpCollapse)', () => {
+    const r = applyPivotNudge(withTp(5, 90), REF, LEVELS, WIDE);
+    expect(r.plan.limitEntry).toBe(65_600);            // ★据え置き(建値も動かない)
+    expect(r.plan.tpWidthForLimit).toBe(5);            // ★TP幅も動かない
+    expect(r.plan.stopEntry).toBe(65_805);             // ★もう一方は通る
+    expect(r.plan.tpWidthForStop).toBe(85);
+    expect(r.count).toBe(1);
+    expect(r.notes).toContain('指値65600はずらすとTP幅が0円(0以下)になるため据え置き');
+  });
+
+  it('★TP幅3円(詰めると −2円)も諦める=境界だけの検査になっていない', () => {
+    const r = applyPivotNudge(withTp(3), REF, LEVELS, WIDE);
+    expect(r.plan.limitEntry).toBe(65_600);
+    expect(r.notes).toContain('指値65600はずらすとTP幅が-2円(0以下)になるため据え置き');
+  });
+
+  it('★恒真でない: TP幅6円なら 1円 残るので ずらす', () => {
+    const r = applyPivotNudge(withTp(6), REF, LEVELS, WIDE);
+    expect(r.plan.limitEntry).toBe(65_605);
+    expect(r.plan.tpWidthForLimit).toBe(1);
+  });
+
+  it('★手動TP / TP無効(tpWidthFor* が無い計画)は TP 追加前と1バイト同じ結果', () => {
+    const r = applyPivotNudge(BUY, REF, LEVELS, WIDE);
+    expect(r.count).toBe(2);
+    expect(r.plan.tpWidthForLimit).toBeUndefined();
+    expect(r.plan.tpWidthForStop).toBeUndefined();
+    // ★notes に TP の語が1文字も出ない(TP を持たない脚の記録は従来のまま)。
+    expect(r.notes).toEqual(['指値65600→65605(幅60→65)', '逆指値65800→65805(幅60→65)']);
+  });
+
+  it('★上限で諦めた脚(lcCeiling)の TP幅は元のまま(二重に詰めない)', () => {
+    // 幅65 の逆指値は +5 で 70 → 手動上限65 を超えるので lcCeiling で諦める。
+    const plan: AiPlan = {
+      direction: 'buy', rationale: '', refPrice: REF,
+      stopEntry: 65_800, stopLossForStop: 65_735, tpWidthForStop: 90,
+    };
+    const r = applyPivotNudge(plan, REF, LEVELS, MANUAL_65);
+    expect(r.count).toBe(0);
+    expect(r.plan.stopEntry).toBe(65_800);
+    expect(r.plan.tpWidthForStop).toBe(90);
+  });
+
+  it('★元の plan を書き換えない(TP幅も含めて)', () => {
+    const src = withTp(120, 90);
+    applyPivotNudge(src, REF, LEVELS, WIDE);
+    expect(src.tpWidthForLimit).toBe(120);
+    expect(src.tpWidthForStop).toBe(90);
+    expect(src.limitEntry).toBe(65_600);
+  });
+
+  it('★enforce が落とすレッグの TP幅も一緒に落ちる(価格の無い箱に幅だけ残さない)', () => {
+    // 幅60 の指値を上限55 の帯に通す → 'lc' で落ちる。
+    const r = enforcePlanConstraintsReport(withTp(120, 90), { ceilingYen: 55, bias: 'none' as const });
+    expect(r.plan.limitEntry).toBeUndefined();
+    expect(r.plan.tpWidthForLimit).toBeUndefined();
+    expect(r.plan.stopEntry).toBeUndefined();
+    expect(r.plan.tpWidthForStop).toBeUndefined();
+  });
+});

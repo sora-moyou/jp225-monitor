@@ -113,7 +113,18 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
     return recorded!;
   }
 
-  /** 経路⑤: ドテン(保有中の反転評価)で成行決済。 */
+  /** 経路⑤: TP幅(建値からの幅)に到達して成行決済。★range_tp(節目由来)とは別経路。 */
+  function exitTakeProfit(): RecordedTrade {
+    const position: OpenPosition = {
+      direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r',
+      at: 500, tpWidth: 60,
+    };
+    const { next, recorded } = advance({ phase: 'filled', position }, 38060, 2_000);   // TP トリガ=38000+60
+    expect(next.phase).toBe('flat');
+    return recorded!;
+  }
+
+  /** 経路⑥: ドテン(保有中の反転評価)で成行決済。 */
   function exitDoten(): RecordedTrade {
     const position: OpenPosition = {
       direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 120, rationale: 'orig', at: 500,
@@ -135,6 +146,9 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
   it('レンジ建玉の成行TP → range_tp', () => {
     expect(exitRangeTp().exitReason).toBe<ExitReason>('range_tp');
   });
+  it('TP幅 到達の成行決済 → take_profit', () => {
+    expect(exitTakeProfit().exitReason).toBe<ExitReason>('take_profit');
+  });
   it('ドテンの成行決済 → doten', () => {
     expect(exitDoten().exitReason).toBe<ExitReason>('doten');
   });
@@ -146,7 +160,7 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
   it('表の全理由が実際の決済経路から1つずつ出る(表と実装が食い違ったら落ちる)', () => {
     const produced = new Set<string>([
       exitInitialStop().exitReason, exitRatchetFloor().exitReason, exitRangeStop().exitReason,
-      exitRangeTp().exitReason, exitDoten().exitReason,
+      exitRangeTp().exitReason, exitTakeProfit().exitReason, exitDoten().exitReason,
     ]);
     expect([...produced].sort()).toEqual([...EXIT_REASONS].sort());
   });
@@ -266,6 +280,8 @@ describe('buildSignalTradeInsert: 3点を挿入行へ', () => {
   const base: RecordedTrade = {
     entryT: 1_000, entryPrice: 38000, dir: 'buy', exitT: 2_000, exitPrice: 38050, pnl: 50, qty: 1, rationale: 'r',
     exitReason: 'ratchet_floor', exitInitialStop: 37950, peakProfit: 210,
+    // ★TP の必須2点。この describe の検証対象ではないので「TP 無し」= null。
+    tpWidth: null, tpTrigger: null,
   };
   it('理由/初期LC/ピークが挿入行に載る', () => {
     expect(buildSignalTradeInsert(base, null, 3)).toMatchObject({

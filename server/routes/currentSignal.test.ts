@@ -57,6 +57,8 @@ describe('currentSignalPayload', () => {
       lcHardMax: { enabled: true, value: 150 },
       trendVeto: { mode: 'manual' as const, value: 100 }, cooldown: { mode: 'manual' as const, value: 90 },
       bias: { mode: 'manual' as const, value: 'none' }, range: { mode: 'manual' as const, value: false },
+      // ★TP の実効設定(必須3点)。この it の検証対象ではないので既定のまま。
+      scalpTpEnabled: true, scalpTpWidthSource: 'ai' as const, scalpTpWidthYen: 80,
     };
     const sig: CurrentSignal = { signalId: 7, at: 1, direction: 'buy', rationale: 'r', limitEntry: 38100, stopLossForLimit: 38050, settings };
     const out = currentSignalPayload(sig) as { settings?: unknown };

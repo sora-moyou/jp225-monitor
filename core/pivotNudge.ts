@@ -77,9 +77,14 @@ export interface NudgeResult {
    *      理由: core は LC の帯(ceilingYen / ceilingMode / 安全上限)を知らないし、知るべきでもない。
    *      上限の唯一の権威は server/llm/scalpPlan.ts の lcEffectiveCeiling / lcLegExceeds なので、
    *      **applyPivotNudge が「ずらす」と決めた脚を後から この理由に倒す**。ここは語彙だけを持つ。
+   *  ・'tpCollapse' … ずらすと TP幅が 0以下 になる(★**この関数は決めない**。lcCeiling と同じ作法)。
+   *      理由: 建値は必ず **利益方向へ** 5円動く(4脚とも)ので、TP の絶対価格を保つには TP幅を
+   *      5円 詰めることになる。詰めた結果が 0以下 = その脚は約定と同時に利確する不正なので、
+   *      ★**ずらしを諦める**(crossesRef / lcCeiling と同じ判断=ずらしは執行の都合であって
+   *      相場の判断ではない)。★TP幅を知っているのは AiPlan を見る applyPivotNudge だけ。
    *  ★数えられるようにしてある: 「一致はしたが ずらせなかった」は、頻度が分からないと
    *    「発火していない」と区別がつかない(この案件が繰り返し踏んできた型)。 */
-  blocked?: 'crossesRef' | 'lcCeiling';
+  blocked?: 'crossesRef' | 'lcCeiling' | 'tpCollapse';
 }
 
 /**

@@ -298,3 +298,52 @@ describe('★プロンプトの例文がパーサで読めること(書式の SS
     expect(placeholder).toContain('引き算');
   });
 });
+
+// ═══ ★v0.9.104: 現行プロンプトが実際に書かせている2形を読む(足すだけ・既存を壊さない) ═══
+//
+// ■ ★なぜ足したか(実測・複製DB signal_plans 3,008行)
+//   v0.9.102 の根拠文 323件のうち、既存の語彙で読めた申告は **0件**だった。
+//   実際に書かれていたのは「損切幅は60円」(り なし・181件)と「（LC幅60円）」(12件)で、
+//   従来の枝は「損切り幅」と「LC幅は(55)円 / LC幅(55)」しか知らなかった。
+// ■ ★プロンプトではなく監査の語彙を広げた理由(リーダー裁定 2026-08-30)
+//   ①B の質問文はユーザー指定の文面 ②監査は RECORD-ONLY で判定に触れない
+//   ③B の質問文は別タスク(TP)でこれから変わる=同じ版で2つ動かすと効果を分離できない。
+describe('★v0.9.104 新しく読めるようにした2形', () => {
+  it('★「損切幅」(り なし)を読む。★「損切り幅」も従来どおり読める', () => {
+    expect(declaredWidthFor(parseLcDeclarations('損切幅は60円'), 'limit')).toEqual({ yen: 60, source: 'sole' });
+    expect(declaredWidthFor(parseLcDeclarations('損切り幅は60円'), 'limit')).toEqual({ yen: 60, source: 'sole' });
+  });
+
+  it('★「（LC幅60円）」(括弧が語句全体)を読む。★「LC幅は(55)円」「LC幅(55)」も従来どおり', () => {
+    expect(declaredWidthFor(parseLcDeclarations('（LC幅60円）'), 'limit')).toEqual({ yen: 60, source: 'sole' });
+    expect(declaredWidthFor(parseLcDeclarations('(LC幅65円)'), 'limit')).toEqual({ yen: 65, source: 'sole' });
+    expect(declaredWidthFor(parseLcDeclarations('LC幅は(55)円'), 'limit')).toEqual({ yen: 55, source: 'sole' });
+    expect(declaredWidthFor(parseLcDeclarations('LC幅(55)'), 'limit')).toEqual({ yen: 55, source: 'sole' });
+  });
+
+  it('★★偽陽性ガードは据え置き: 括弧の中が **価格** なら1件も拾わない', () => {
+    // 「（LC幅65780円）」から先頭3桁(657)を幅として拾ったら、食い違い件数が水増しされる。
+    const d = parseLcDeclarations('（LC幅65780円）');
+    expect(d.limit.length + d.stop.length + d.unassigned.length).toBe(0);
+  });
+
+  it('★見出しでレッグに割り当たる(実データの形: 注文タイプの語が見出しになる)', () => {
+    const rows = auditLcDeclarations(
+      '逆指値買い注文: 66,070円に置く。損切幅は60円とし、リスクを抑えます。 / '
+      + '指値買い注文: 65,975円に置く。損切幅は80円とします。',
+      [{ leg: 'stop', entry: 66070, stopLoss: 66010, side: 'buy' },
+       { leg: 'limit', entry: 65975, stopLoss: 65895, side: 'buy' }]);
+    expect(rows.map(r => [r.leg, r.declaredYen, r.status])).toEqual([
+      ['stop', 60, 'match'],
+      ['limit', 80, 'match'],
+    ]);
+  });
+
+  it('★向き(declaredSide)は増やしていない: 式も引き算も無い文からは材料が出ない', () => {
+    // ★現行 B の応答形式には式も引き算も無い=**構造的に0件になるのが正しい**(別の版で扱う)。
+    const rows = auditLcDeclarations('指値買い注文: 損切幅は60円とします。',
+      [{ leg: 'limit', entry: 65975, stopLoss: 65915, side: 'buy' }]);
+    expect(rows[0]!.status).toBe('match');
+    expect(rows[0]!.declaredSide).toBeUndefined();
+  });
+});

@@ -421,6 +421,60 @@ export function initSchema(db: DatabaseSync): void {
   if (!spCols.includes('b_provider_model')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_provider_model TEXT');
   if (!spCols.includes('a_prompt_build')) db.exec('ALTER TABLE signal_plans ADD COLUMN a_prompt_build TEXT');
   if (!spCols.includes('b_prompt_build')) db.exec('ALTER TABLE signal_plans ADD COLUMN b_prompt_build TEXT');
+  // ★TP(利確の成行決済)の記録(RECORD-ONLY・2026-08-30)。★決済ロジックには一切関与しない。
+  //
+  //   ■ なぜ列を足すのか(これが TP を入れる目的そのもの)
+  //     一律TP は実測(shadow_exits 501,330行)で **どの幅でも成績を悪化させた**。それでも入れるのは
+  //     「AI が1件ごとに選ぶTP」のデータが **1件も無い** ため。★記録が貯まらなければ何も学べない。
+  //     shadow_exits が既に持つ mfe(約定〜決済の最大含み益)と突き合わせれば、
+  //     「AI が言った TP幅」対「実際に伸びた幅」が1行で出る=当たったかが測れる。
+  //   ■ 列の意味
+  //     tp_width_for_limit / tp_width_for_stop … その計画の **指値/逆指値レッグ用の TP幅[円]**。
+  //         ★価格ではなく **幅**(建値からの距離・正の数)。符号=向きはコードが direction から付ける。
+  //         ★**AI委任(tp_source='ai')の回にだけ入る**。手動の幅は計画に焼かない(下記)。
+  //     tp_why    … TP幅の理由(AI の言葉)。★A/B 分割経路では **常に NULL**(理由の自由文が
+  //         価格・LC幅・TP幅をまとめて1文で説明する形式のため、TP の理由だけを切り出せない。
+  //         lc_why_for_limit / lc_why_for_stop が分割経路で常に NULL なのと同じ扱い)。
+  //     tp_source … 'ai' | 'manual'。★**層別キー**。AI が選んだ回と、設定で固定した回を混ぜて数えない。
+  //   ■ ★NULL の読み方(混同しやすい)
+  //     tp_width_for_* が NULL でも「TP が無かった」とは限らない: 手動(tp_source='manual')のときは
+  //     幅が **設定の現在値**(保有中に変えたら毎tick 反映される)なので、計画には焼かれず NULL になる。
+  //     決済時に実際に効いていた幅は signal_trades.tp_width の側を見ること。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('tp_width_for_limit')) db.exec('ALTER TABLE signal_plans ADD COLUMN tp_width_for_limit REAL');
+  if (!spCols.includes('tp_width_for_stop')) db.exec('ALTER TABLE signal_plans ADD COLUMN tp_width_for_stop REAL');
+  if (!spCols.includes('tp_why')) db.exec('ALTER TABLE signal_plans ADD COLUMN tp_why TEXT');
+  if (!spCols.includes('tp_source')) db.exec('ALTER TABLE signal_plans ADD COLUMN tp_source TEXT');
+  //     tp_read_issue … ★**TP幅を読めなかった/曖昧だった理由**(両脚ぶんを ' / ' で連結した1文)。
+  //         ★TP が読めないことは **脚を落とす理由にしていない**(落とすと「TP を足したせいで脚が減る」=
+  //           避けたい回帰そのもの)。だが落とさないだけだと、脚が立った回は LegDrop が作られないので
+  //           読み取りの失敗が **どこにも残らない**。★無音の失敗を作らないための列。
+  //         ★NULL の意味は2つある: ①TP を尋ねていない回(tp_source が 'manual' か NULL)
+  //           ②尋ねて、両脚とも読めた回。★区別は tp_source と tp_width_for_* の有無で付く。
+  if (!spCols.includes('tp_read_issue')) db.exec('ALTER TABLE signal_plans ADD COLUMN tp_read_issue TEXT');
+  // ★★settings_json 側の TP の3キー(2026-08-30・★「TP を切っていた期間」はここでしか特定できない)。
+  //
+  //   ■ 何が入るか: 計画サイクルごとに settings_json(SignalSettingsSnapshot)へ次の3キーが載る。
+  //       scalpTpEnabled    … boolean。★false = **TP が一切効かない期間**。
+  //       scalpTpWidthSource … 'manual' | 'ai'。幅を誰が決めるか。
+  //       scalpTpWidthYen   … number。★**設定の現在値**(既定80)。実測ではない。
+  //
+  //   ■ ★★「TP を切っていた期間」は tp_source では特定できない。settings_json.scalpTpEnabled を見ること。
+  //     tp_source は「**その回 AI に尋ねたか**」の2値(+NULL)でしかなく、
+  //     'manual' の中に **(a) 手動設定** と **(b) TP を切っていた** と **(c) レンジの版** が混ざる。
+  //     ★3つを分けたいなら settings_json 側を引く:
+  //         json_extract(settings_json, '$.scalpTpEnabled')     → (b) が切れる
+  //         json_extract(settings_json, '$.scalpTpWidthSource') → (a) が切れる
+  //         b_variant                                            → (c) が切れる
+  //
+  //   ■ ★★scalpTpWidthYen は source='ai' のときも載る = **効いていない数字が毎行入る**。
+  //     ★必ず scalpTpWidthSource と一緒に読むこと。source='ai' の行の scalpTpWidthYen は
+  //     「手動に切り替えたらこの値になる」という設定の控えでしかなく、その回の TP幅ではない。
+  //     ★単独で AVG を採ると、AI委任の回まで既定80で埋まった系列になる(この案件が繰り返している型)。
+  //
+  //   ■ ★実際に効いた幅は **signal_trades.tp_width**(決済時点の実効値)。
+  //     設定(settings_json / tp_width_for_*)と実測(tp_width)は **別の欄に分けてある**。混ぜないこと。
+  //   ★同じ内容は meta の column_semantics_tp にも書いてある(ソースのコメントは DB を開いた人に届かないため)。
   // ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったか(ContextPresence の JSON)。
   //
   //   ■ なぜ要るか(リーダー指摘)
@@ -521,6 +575,17 @@ export function initSchema(db: DatabaseSync): void {
   //   「版1」なのか区別できなくなる。既存DBへ後付けマイグレーション(NULL 可=記録開始前の旧行)。
   if (!stCols.includes('exit_cfg_version')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_cfg_version INTEGER');
   if (!stCols.includes('exit_cfg_hash')) db.exec('ALTER TABLE signal_trades ADD COLUMN exit_cfg_hash TEXT');
+  // ★TP(利確の成行決済)の決済側の記録(RECORD-ONLY・2026-08-30)。
+  //   tp_width   … **決済時点で有効だった** TP幅[円]。★手動のときは保有中に変えられるので、
+  //                計画(signal_plans.tp_width_for_*)ではなく **この列** が実際に効いていた幅。
+  //   tp_trigger … その幅から導いた発火価格(buy=建値+幅 / sell=建値−幅)。
+  //                ★建玉は幅だけを持ち、価格は毎tick 導出する(range_tp と同じ作法)ので、
+  //                  後から再現するためにこの列に焼く。
+  //   ★決済理由は既存の exit_reason 列に 'take_profit' として入る(列の追加は不要)。
+  //     ★'range_tp'(レンジの反対側節目由来)とは **別物**。混ぜて数えないこと。
+  //   既存DBへ後付けマイグレーション(NULL 可=旧行 / TP で閉じなかった行)。
+  if (!stCols.includes('tp_width')) db.exec('ALTER TABLE signal_trades ADD COLUMN tp_width REAL');
+  if (!stCols.includes('tp_trigger')) db.exec('ALTER TABLE signal_trades ADD COLUMN tp_trigger REAL');
   // ★武装したのに一度も約定せず armed-timeout で失効した回数(系統別・永続)。
   //   これが無いと「monitor は武装 → trade2 が拒否し続ける → 15分後に黙って失効」が完全に無音になる
   //   (実測 sid=361 は trade2 が147回拒否したが monitor 側にカウンタも警告も無かった)。
@@ -921,6 +986,120 @@ export function setColumnVocabMeta(db: DatabaseSync): void {
   setMeta(db, COLUMN_VOCAB_KEY, COLUMN_VOCAB_NOTE);
 }
 
+/** ★2026-08-30: **DB を開いた人に「lc_audit_json と rationale はズレて当たり前」を届ける場所**。
+ *
+ *  ■ なぜ要るか(★ソースのコメントは DB を開いた分析者に1文字も届かない。column_vocab と同じ理由)
+ *    `lc_audit_json` は **AI の生の申告** に対して採る監査で、節目ちょうどの建値を5円ずらす処理
+ *    (applyPivotNudge)の **前** に確定する。一方 `rationale` 列は ずらしの後に幅の数字が
+ *    書き換わっている回がある(rewriteLcWidthForLeg)。
+ *    ★その結果「台帳の根拠文には LC幅65円 と書いてあるのに lc_audit_json の declaredYen は 60」
+ *      という行が正常に出る。これを知らずに突き合わせると **監査が壊れている** と誤読する。
+ *  ■ ★別のキーにした理由: column_vocab は「列の **値の語彙** が版で切り替わった」ことの記録で、
+ *    こちらは「2つの列が **別の時点** を写している」という意味論。混ぜると読み手が境界を見失う。
+ *  ■ ★版番号の作法は column_vocab と同じ: **まだ実データに現れていない版番号を焼かない**
+ *    (この文字列は DB に焼かれ、後から直せない)。実DBに出ている最後の版は v0.9.102。 */
+export const COLUMN_SEMANTICS_LC_AUDIT_KEY = 'column_semantics_lc_audit';
+
+/** ★lc_audit_json の意味論(記録専用・人が読む1文)。★機械の結合キーにはしない。 */
+export const COLUMN_SEMANTICS_LC_AUDIT_NOTE =
+  'signal_plans.lc_audit_json は AI の **生の申告** に対して採る記録専用の突き合わせです'
+  + '(根拠文が申告した損切り幅 vs AI が実際に出した |建値 − 損切り|)。'
+  + '★採るのは 節目ちょうどの建値を5円ずらす処理の **前** です。'
+  + '一方 signal_plans.rationale 列は、v0.9.102 より後の版では **ずらしの後に幅の数字が書き換わっている場合があります**。'
+  + '★したがって rationale の数字と lc_audit_json の declaredYen が食い違う行が出ますが、'
+  + 'これは欠陥ではなく **仕様** です(監査はずらす前の申告を見るのが目的)。突き合わせ検証に使わないでください。'
+  + '★もう1点: lc_audit_json は v0.9.96 から v0.9.102 までの行が **全て NULL** です。'
+  + 'A/B 分割の経路が監査を採っていなかった配線漏れで、AI や相場が変わったのではありません。'
+  + '欠測期間として扱い、前後の版と連続した系列にしないでください。';
+
+/** meta に lc_audit_json の意味論を1行書く。★冪等。失敗は呼び出し側が握りつぶす。 */
+export function setLcAuditSemanticsMeta(db: DatabaseSync): void {
+  setMeta(db, COLUMN_SEMANTICS_LC_AUDIT_KEY, COLUMN_SEMANTICS_LC_AUDIT_NOTE);
+}
+
+/** ★2026-08-30: **DB を開いた人に TP列の読み方を届ける場所**(column_vocab / lc_audit と同じ流儀)。
+ *
+ *  ■ なぜ要るか(★ソースのコメントは DB を開いた分析者に1文字も届かない)
+ *    TP の6列は ALTER TABLE で足したので sqlite_master の CREATE TABLE 文に注釈が無い。
+ *    ★この3つを知らずに集計すると必ず誤読する:
+ *      ① TP は途中の版から入った(それ以前は全行 NULL)= 欠測期間であって「TP が0件」ではない。
+ *      ② tp_source で AI委任と手動を **層別しないと** 別々の意思決定を混ぜて数えることになる。
+ *      ③ AI委任の幅は 5円ずらしで **詰められている場合がある**(=AI が言った幅と5円違いうる)。
+ *  ■ ★版番号の作法は column_vocab / lc_audit と同じ:
+ *    **まだ実データに現れていない版番号を焼かない**(この文字列は DB に焼かれ、後から直せない)。
+ *    実DBに出ている最後の版は v0.9.102、5円ずらしが入ったのは v0.9.103。
+ *    ★TP は v0.9.103 より **後** の版で入る(何番になるかは出荷まで確定しない)ので、そう書く。 */
+export const COLUMN_SEMANTICS_TP_KEY = 'column_semantics_tp';
+
+/** ★TP列(signal_plans.tp_* / signal_trades.tp_*)の意味論(記録専用・人が読む1文)。 */
+export const COLUMN_SEMANTICS_TP_NOTE =
+  'TP(利確の成行決済)の列は v0.9.103 より **後** の版で追加されました。'
+  + 'それ以前に記録された行は signal_plans.tp_width_for_limit / tp_width_for_stop / tp_why / tp_source と '
+  + 'signal_trades.tp_width / tp_trigger が **全て NULL** です。'
+  + '★欠測期間として扱い、前後の版と連続した系列にしないでください(「TP が1件も出なかった」ではありません)。'
+  + '★signal_plans.tp_source で **AI委任(ai)と手動(manual)を層別してください**。'
+  + '別々の意思決定(AI が1件ごとに選んだ幅 / ユーザーが設定で固定した幅)なので、混ぜて平均を採ると両方が読めなくなります。'
+  + '★手動(tp_source=manual)の回は tp_width_for_* が NULL になります: '
+  + '手動の幅は設定の現在値を毎tick 引き直す契約で、計画には焼かれないためです。'
+  + '実際に効いていた幅は signal_trades.tp_width(決済時点の値)を見てください。'
+  + '★★AI委任(tp_source=ai)の tp_width_for_* は、ピボット節目の5円ずらしによって **5円 詰められている場合があります**。'
+  + 'ずらしは建値だけを動かし TP の絶対価格は動かさないため、幅が5円狭くなります'
+  + '(同じずらしで損切り幅は逆に5円 広がります)。'
+  + '★したがって この列の値は「AI が言った幅」と5円ずれうる = **AI の申告そのものではありません**。'
+  + '★さらに signal_plans.rationale の中に書かれた TP幅の数字は **書き換えていません**'
+  + '(LC幅は書き換えていますが、TP幅は同じ文に2種類の幅が並ぶため取り違えの危険が高く、この版では見送りました)。'
+  + 'よって「根拠文の TP幅」と「tp_width_for_* の値」が5円食い違う行が出ますが、これは仕様です。'
+  + '★決済理由は signal_trades.exit_reason の take_profit です。'
+  + 'range_tp(レンジの反対側節目由来)とは別物なので混ぜないでください。'
+  + '★signal_plans.tp_why は **常に NULL** です。'
+  + 'AI に書かせている自由文は「価格・損切幅・TP幅」をまとめて1つの理由文にする形式で、'
+  + 'そこから TP の理由だけを切り出せないため、意図して設定していません(lc_why_for_limit / lc_why_for_stop と同じ扱い)。'
+  + '★signal_plans.tp_read_issue は「TP幅を読めなかった/候補が複数だった」ことの記録です。'
+  + 'TP が読めないことは **レッグを落とす理由にしていない** ので、この列が無いと読み取りの失敗が'
+  + 'どこにも残りません(レッグが立った回は leg_drops_json が作られないため)。'
+  + '★tp_read_issue が NULL の意味は2つあります: (1) TP を尋ねていない回 (2) 尋ねて両脚とも読めた回。'
+  + 'tp_source と tp_width_for_* の有無で区別してください。'
+  + '★もう1点: レンジの版(b_variant が range-fade / range-breakout)では TP を **尋ねていません**。'
+  + 'TP幅の列名が指値/逆指値でレッグを名指しする形で、レンジの上下2脚を表せないためです。'
+  + 'よってレンジの行は tp_source が manual になり、TP の幅は入りません。'
+  // ★★罠(1): 2つの列は **別の時刻の別の事実**。片方だけを信じて層別しないこと。
+  + '★★重要(誤読しやすい): signal_plans.tp_source と signal_trades.tp_width は '
+  + '**別の時刻の別の事実** を写しています。'
+  + 'tp_source は「その計画を作った時点で AI に TP幅を尋ねたか」の記録で、'
+  + 'signal_trades.tp_width は「決済時点で実際に効いていた幅」の記録です。'
+  + '手動の TP幅は **保有中でも変更できる**(変更は次の tick で即反映される)ので、'
+  + '計画時は AI委任だったが決済時には手動に切り替えられていた、という回が起きます。'
+  + '★その回は tp_source=ai なのに tp_width は手動の値、という行になります。'
+  + 'これは欠陥ではなく **仕様** です。'
+  + '★層別するときは **片方だけを信じないでください**。'
+  + '「AI が選んだ幅で決済された回」を見たいなら、'
+  + 'tp_source=ai と、tp_width が signal_plans.tp_width_for_* と一致することの両方を条件にしてください。'
+  // ★★罠(2): TP が発火した回は「TP が無ければどこまで伸びたか」が残らない。
+  + '★★もう1つの構造的な限界: TP で決済した回(exit_reason=take_profit)は、'
+  + 'その建玉が **TP が無ければどこまで伸びたか** を残していません。'
+  + 'peak_profit(含み益のピーク)は TP で決済した時点で止まるためです。'
+  + '★したがって「AI の TP幅は当たっていたか」の評価に使えるのは、'
+  + '主に **TP に届かなかった回**(別の理由で閉じた回)です。'
+  + '★これを知らずに集計すると「TP は常に正しかった」という誤った結論が出ます'
+  + '(発火した回は定義上どれも TP幅ちょうどで閉じているため)。'
+  + '反事実(TP が無ければどうだったか)を見たい場合は shadow_exits の mfe を使ってください。'
+  // ★★「TP を切っていた期間」の探し方。★これが無いと、記録は在るのに誰も辿り着けない。
+  + '★★「TP を切っていた期間」を探すときは signal_plans.settings_json の scalpTpEnabled を見てください。'
+  + '★tp_source では特定できません: tp_source は「その回 AI に尋ねたか」の2値(+NULL)でしかなく、'
+  + 'manual の中に (a) 幅を手で決めていた回 (b) TP を切っていた回 (c) レンジの版だった回 の3つが混ざります。'
+  + '3つを分けるには json_extract(settings_json, 「$.scalpTpEnabled」) で (b) を、'
+  + 'json_extract(settings_json, 「$.scalpTpWidthSource」) で (a) を、b_variant で (c) を切ってください。'
+  + '★settings_json には scalpTpEnabled / scalpTpWidthSource / scalpTpWidthYen の3キーが毎行入ります。'
+  + '★★注意: scalpTpWidthYen は scalpTpWidthSource=ai のときも **設定の現在値(既定80)がそのまま載ります**。'
+  + 'その回に効いていた幅ではないので、**必ず scalpTpWidthSource と一緒に読んでください**。'
+  + '単独で平均を採ると、AI委任の回まで既定値で埋まった系列になります。'
+  + '★設定(settings_json / tp_width_for_*)と実測(signal_trades.tp_width)は別の欄に分けてあります。混ぜないでください。';
+
+/** meta に TP列の意味論を1行書く。★冪等。失敗は呼び出し側が握りつぶす。 */
+export function setTpSemanticsMeta(db: DatabaseSync): void {
+  setMeta(db, COLUMN_SEMANTICS_TP_KEY, COLUMN_SEMANTICS_TP_NOTE);
+}
+
 /** meta に書く中身。★本文は入らない(pb1 は一方向ダイジェスト)。 */
 export interface BuildIdentityMeta {
   /** 実行中のアプリの版。 */
@@ -1126,6 +1305,14 @@ export interface SignalTradeRow {
   peak_profit: number | null;       // ★決済時点の含み益ピーク[pt]。NULL=旧行。
   exit_cfg_version: number | null;  // ★決済設定の版番号(単調増加)。NULL=記録開始前の旧行。
   exit_cfg_hash: string | null;     // ★決済設定の振る舞い指紋(16桁hex・値は含まない)。NULL=旧行。
+  // ★TP(RECORD-ONLY・SELECT * で必ず返る列)。NULL=TP が効いていなかった / 記録開始前の旧行。
+  //   ★**optional(?)にしてある理由**を残す: この型は「読んだ行の形」であって、必須にしても
+  //     バグは1つも防げない(SQLite は ALTER 済みの列を必ず返す)。防ぎたいのは **書き忘れ** で、
+  //     そちらは RecordedTrade.tpWidth / tpTrigger を **必須かつ null 許容** にして型で禁止してある。
+  //   ★加えて実務上の理由: フィクスチャ(全列を手書きするテスト)が複数ファイルに散っており、
+  //     読み取り型に必須列を足すたびに無関係なテストが赤くなる。読み取り側の緩さで受ける。
+  tp_width?: number | null;
+  tp_trigger?: number | null;
 }
 
 export interface SignalTradeInsert {
@@ -1142,6 +1329,8 @@ export interface SignalTradeInsert {
   peakProfit?: number | null;       // ★決済時点の含み益ピーク[pt]。未指定/非有限は NULL。
   exitCfgVersion?: number | null;   // ★決済設定の版番号。未指定は NULL(=既存挙動と byte 一致)。
   exitCfgHash?: string | null;      // ★決済設定の振る舞い指紋。未指定は NULL。
+  tpWidth?: number | null;     // ★決済時点で有効だった TP幅[円]。未指定/非有限は NULL(=TP が効いていなかった)。
+  tpTrigger?: number | null;   // ★その幅から導いた発火価格。未指定/非有限は NULL。
   // ★v0.9.93(RECORD-ONLY): この行を書いた(=決済した)版と、その版のプロンプトの型の指紋。
   //   未指定なら実行中の値が入る(呼び出し側の付け忘れで無音の欠測を作らない)。
   appVersion?: string | null;
@@ -1158,13 +1347,15 @@ function systemWhere(system: SignalSystemFilter | undefined): { clause: string; 
 
 export function insertSignalTrade(db: DatabaseSync, t: SignalTradeInsert): void {
   db.prepare(`
-    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit, exit_cfg_version, exit_cfg_hash, app_version, prompt_build)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO signal_trades (entry_t, entry_price, dir, exit_t, exit_price, pnl, qty, rationale, meta, mode, system, signal_id, armed_t, armed_price, exit_reason, exit_initial_stop, peak_profit, exit_cfg_version, exit_cfg_hash, tp_width, tp_trigger, app_version, prompt_build)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(t.entryT, t.entryPrice, t.dir, t.exitT, t.exitPrice, t.pnl, t.qty,
     t.rationale ?? null, t.meta ?? null, t.mode ?? null, t.system ?? null, t.signalId ?? null,
     t.armedT ?? null, t.armedPrice ?? null,
     t.exitReason ?? null, t.exitInitialStop ?? null, t.peakProfit ?? null,
     t.exitCfgVersion ?? null, t.exitCfgHash ?? null,
+    // ★TP(RECORD-ONLY): 決済時点で有効だった幅と発火価格。TP が効いていなければ NULL。
+    t.tpWidth ?? null, t.tpTrigger ?? null,
     // ★v0.9.93: **この行を書いた(=決済した)版** と、その版のプロンプトの型。
     //   呼び出し側に足させず既定で埋める=付け忘れによる無音の欠測を作らない。
     //   ★prompt_build が未登録のプロセス(collector 等)では NULL のまま(捏造しない)。
@@ -1576,6 +1767,20 @@ export interface SignalPlanInsert {
   missingData?: string | null;
   /** ★段6続き(RECORD-ONLY): 分割ON設定なのに、この回だけ旧経路へ落とした理由。未該当=NULL。 */
   splitBypassReason?: string | null;
+  /** ★TP(利確・RECORD-ONLY): AI委任のとき AI が出した TP幅[円]。★価格ではなく **幅**。
+   *  手動のときは計画に焼かないので未指定=NULL(実際に効いた幅は signal_trades.tp_width)。 */
+  tpWidthForLimit?: number | null;
+  tpWidthForStop?: number | null;
+  /** ★TP幅の理由(AI の言葉)。★A/B 分割経路では **意図して設定していない**(裁定2)。
+   *  理由: ユーザー指定の自由文形式は「価格・LC幅・TP幅をまとめて1つの理由文」で書かせるので、
+   *  その1文から「TP の理由だけ」を切り出すことができない。lc_why_for_limit / lc_why_for_stop が
+   *  分割経路で常に NULL なのと **完全に同じ扱い**。★列は作る(将来 理由欄を持つ経路が来たときの受け皿)。 */
+  tpWhy?: string | null;
+  /** ★TP幅を誰が決めたか('ai' | 'manual')。★層別キー。
+   *  ★**設定ではなく「実際に AI に尋ねたか」から導く**(SplitRecord.bAskTp)。B を呼ばなかった回は NULL。 */
+  tpSource?: string | null;
+  /** ★TP幅を読めなかった/曖昧だった理由(記録専用)。読めた回・尋ねていない回は NULL。 */
+  tpReadIssue?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1598,8 +1803,9 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       a_direction, a_why, b_variant, squeeze_state, squeeze_unavailable,
       b_strategy, ai_why, tool_calls,
       a_provider, a_provider_model, b_provider, b_provider_model, a_prompt_build, b_prompt_build,
-      context_presence_json, missing_data, split_bypass_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      context_presence_json, missing_data, split_bypass_reason,
+      tp_width_for_limit, tp_width_for_stop, tp_why, tp_source, tp_read_issue
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1640,6 +1846,11 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     p.contextPresenceJson ?? null,
     p.missingData ?? null,
     p.splitBypassReason ?? null,
+    // ★TP(記録専用)。幅は数値列なので非有限は NULL(壊れた値で後の集計を汚さない=節目と同じ規約)。
+    //   ★tp_source は **文字列のまま**(?? null): 'ai' / 'manual' / NULL の3値に意味があり、
+    //     NULL は「B を呼んでいない=尋ねたかどうかが存在しない」を指す(b_variant='none' と対応)。
+    finiteOrNull(p.tpWidthForLimit), finiteOrNull(p.tpWidthForStop),
+    p.tpWhy ?? null, p.tpSource ?? null, p.tpReadIssue ?? null,
   );
 }
 

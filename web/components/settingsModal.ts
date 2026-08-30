@@ -4,6 +4,7 @@
 import { apiUrl } from '../lib/apiBase.js';
 import { fetchSettings, saveSettings } from './settings/api.js';
 import { applySettingsToForm, syncKnobDisabled, syncKnobDisabledB, buildSavePayload } from './settings/form.js';
+import { syncTpHoldWarning, type TpHoldPosition } from './settings/tpHoldWarn.js';
 import { wireUpdateSection } from './settings/update.js';
 import { wireDbSection } from './settings/dbOps.js';
 import { wireKeyTestSection } from './settings/keyTest.js';
@@ -56,9 +57,13 @@ function wireBasedataPublish(el: SettingsElements): void {
 }
 
 export function initSettingsModal(el: SettingsElements): SettingsController {
+  // ★いま保有している建玉(SSE の最新)。手動TP幅の予告に使うだけ=他の表示には一切影響しない。
+  let heldPosition: TpHoldPosition | null = null;
+
   async function refresh() {
     const current = await fetchSettings();
     applySettingsToForm(el, current);
+    syncTpHoldWarning(el, heldPosition);   // 反映後の値で予告を出し直す(保有していなければ消える)
   }
 
   // 更新(アプリ+基礎データ)・データ操作・キー検証の各セクションを配線。
@@ -75,6 +80,15 @@ export function initSettingsModal(el: SettingsElements): SettingsController {
     s.addEventListener('change', () => syncKnobDisabled(el));
   }
   el.checkScalpLcHardMaxEnabled.addEventListener('change', () => syncKnobDisabled(el));
+  // ★TP(利確): 出所 select は他の委任 select と同じ扱い(値入力の有効/無効を同期)。
+  //   ★加えて、TP の3つは **どれを触っても** 保有中の予告を出し直す。
+  //     手動TP幅は保有中の建玉に次の値動きから効く=いま何が起きるかを、変えたその場で見せる。
+  el.selectTpWidthMode.addEventListener('change', () => syncKnobDisabled(el));
+  for (const t of [el.checkScalpTpEnabled, el.selectTpWidthMode, el.inputScalpTpWidth]) {
+    // 'input' も拾うのは、数値欄を打っている最中(まだ blur していない)に予告が出るようにするため。
+    t.addEventListener('change', () => syncTpHoldWarning(el, heldPosition));
+    t.addEventListener('input', () => syncTpHoldWarning(el, heldPosition));
+  }
   // ★v0.8.2: System B の mode/tri-state を変えたら B の入力有効/無効を同期。
   for (const s of [el.selectLcCeilingModeB, el.selectTrendVetoModeB,
                    el.selectCooldownModeB, el.selectBiasModeB, el.selectHardMaxEnabledB]) {
@@ -151,5 +165,10 @@ export function initSettingsModal(el: SettingsElements): SettingsController {
   })();
 
   // ★v0.8.3: 🎛️(詳細設定)側からも移設フィールドを読み込み/保存できるよう公開。
-  return { refresh, save: doSave };
+  // ★setPosition: SSE の建玉状態を受け取り、手動TP幅の予告を出し直す(表示だけ・保存は一切止めない)。
+  return {
+    refresh,
+    save: doSave,
+    setPosition: (p) => { heldPosition = p; syncTpHoldWarning(el, heldPosition); },
+  };
 }

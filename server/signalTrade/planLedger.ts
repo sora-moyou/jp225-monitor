@@ -141,6 +141,21 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
     // ★段5: A/B それぞれのプロンプトの型の指紋(pb1 と同じ作法・データを含まない)。
     if (sr.aPromptBuild !== undefined) row.aPromptBuild = sr.aPromptBuild;
     if (sr.bPromptBuild !== undefined) row.bPromptBuild = sr.bPromptBuild;
+    // ★TP(利確・RECORD-ONLY・2026-08-30): **誰が TP幅を決めたか** の層別キー。
+    //
+    //   ■ ★設定(scalpTpWidthSource)を直接引かない(リーダー裁定)。
+    //     記録として意味のある事実は「**この回、実際に AI に尋ねたか**」であって、
+    //     「いまの設定がどうなっているか」ではない。設定は後からいくらでも変わるので、
+    //     行を書いた後に設定を変えられると、台帳の値が過去の事実を表さなくなる。
+    //     → SplitRecord.bAskTp(= B を呼ぶ直前に確定した実測値)から導く。
+    //   ■ ★true → 'ai' / false → 'manual' / ★**未設定(B を呼んでいない)→ NULL**。
+    //     b_variant='none' の回は「尋ねたかどうか」という事実自体が存在しないので、
+    //     'manual' で埋めない(0 と NULL を分けるのと同じ規約)。
+    //   ■ ★注意(誤読しやすい): tp_source='manual' は「TP が有効だった」を意味しない。
+    //     TP そのものを切っている(scalpTpEnabled=false)回も askTp=false なので 'manual' になる。
+    if (sr.bAskTp !== undefined) row.tpSource = sr.bAskTp ? 'ai' : 'manual';
+    // ★TP幅の読み取り失敗(記録専用)。★脚は落とさないので、この列が無いと無音で消える。
+    if (sr.tpReadIssue !== undefined) row.tpReadIssue = trimRationale(sr.tpReadIssue);
   }
   // ★段5続き(RECORD-ONLY): 文脈のどのブロックが実際に入ったか。error 分岐より前に載せる
   //   = 「計画は組めたが LLM で落ちた」回(ok:false)にも、その回の文脈が何を持っていたかが残る。
@@ -220,6 +235,19 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   if (plan.stopEntry !== undefined) row.stopEntry = plan.stopEntry;
   if (plan.stopLossForLimit !== undefined) row.stopLossForLimit = plan.stopLossForLimit;
   if (plan.stopLossForStop !== undefined) row.stopLossForStop = plan.stopLossForStop;
+  // ★TP(利確・RECORD-ONLY・2026-08-30): AI委任のときだけ plan に載る **幅**[円](価格ではない)。
+  //   ★手動のときは計画に焼かれない(設定の現在値を毎tick 引き直す契約)ので、ここは NULL のままになる。
+  //     実際に効いた幅は signal_trades.tp_width 側を見る。
+  //   ★★この値は **5円ずらし(applyPivotNudge)の後** の幅です。ずらした脚は AI が言った幅より
+  //     5円 狭い(TP の絶対価格を保つため)。「AI の申告そのもの」ではないことは meta に明記してある。
+  //   ★書かれなかった回は列ごと NULL=「欠測」が形から読める(0 を捏造しない)。
+  if (plan.tpWidthForLimit !== undefined) row.tpWidthForLimit = plan.tpWidthForLimit;
+  if (plan.tpWidthForStop !== undefined) row.tpWidthForStop = plan.tpWidthForStop;
+  // ★tp_why は **いまの経路では必ず undefined**(= 列は NULL)。★意図して設定していない(裁定2):
+  //   ユーザー指定の自由文形式は「価格・LC幅・TP幅をまとめて1つの理由文」で書かせるので、
+  //   その1文から「TP の理由だけ」を切り出せない。lc_why_for_* が分割経路で常に NULL なのと同じ。
+  //   ★それでも配線を通しておくのは、理由欄を持つ経路が来た日に **書き忘れの経路を作らない** ため。
+  if (plan.tpWhy !== undefined) row.tpWhy = trimRationale(plan.tpWhy);
   // ★分析用の台帳(proposals.leg_drops_json)と同じ書き方: LegDrop[] をそのまま JSON 配列にする。
   //   1本も落ちなければ列ごと NULL(= 空配列 '[]' は書かない。proposals と同じ規約)。
   if (result.legDrops?.length) row.legDropsJson = JSON.stringify(result.legDrops);
