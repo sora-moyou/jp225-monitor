@@ -53,7 +53,7 @@ import { normalizeCorsPath } from './corsPolicy.js';
 import { startGeneratorHeartbeat, stopGeneratorHeartbeat } from './db/generatorHeartbeat.js';
 import { startCollectorWatch, stopCollectorWatch } from './collectorWatch.js';
 import type { DatabaseSync } from 'node:sqlite';
-import { openDb, resolveDbPath, setBuildIdentityMeta, setColumnVocabMeta, setLcAuditSemanticsMeta, setTpSemanticsMeta } from './db/store.js';
+import { openDb, resolveDbPath, setBuildIdentityMeta, setColumnVocabMeta, setLcAuditSemanticsMeta, setTpSemanticsMeta, setLegLabelSemanticsMeta } from './db/store.js';
 import { allPromptBuildFps, promptBuildFp } from './llm/promptBuild.js';
 // ★段5: A/B 分割の実行時状態と、その版が持つ A/B のプロンプトの型(meta へ載せる)。
 import { allAbPromptBuildFps } from './llm/abPromptBuild.js';
@@ -250,6 +250,9 @@ function recordBuildIdentity(): void {
     // ★TP(利確)の列は途中の版から入り、AI委任/手動で意味が違い、AI委任の幅は5円ずらしで詰められうる。
     //   3つとも知らずに集計すると必ず誤読するので meta に1行残す(記録専用)。
     setTpSemanticsMeta(db);
+    // ★leg_label_* は列名も値も AI の理由文の列に似て見えるが、実体は **コードが付けた名札**で
+    //   画面には出していない。混ぜて数えられないよう meta に1行残す(記録専用)。
+    setLegLabelSemanticsMeta(db);
     setBuildIdentityMeta(db, {
       appVersion: APP_VERSION, promptBuilds: allPromptBuildFps(), at: Date.now(),
       planSplit: { enabled: isPlanSplitEnabled(), aPromptBuild, bPromptBuilds },

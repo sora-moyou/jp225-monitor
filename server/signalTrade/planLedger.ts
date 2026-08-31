@@ -19,6 +19,9 @@
 // ■ RECORD-ONLY
 //   ここで作った行は記録にしか使わない。採否・価格・SSE・決済には一切影響しない。
 
+// ★2026-08-31: 脚の名札(記録専用)の唯一の出所。web(signalPanel)と同じ1つの関数を見る
+//   = 名札の規約をここで再実装しない(core は依存ゼロの葉モジュール)。
+import { entryLabel } from '../../core/entryLabel.js';
 import type { SignalSettingsSnapshot } from '../types.js';
 import type { ScalpPlanResult } from '../llm/scalpPlan.js';
 import type { SignalPlanInsert } from '../db/store.js';
@@ -229,6 +232,25 @@ export function buildSignalPlanInsert(input: SignalPlanRecordInput): SignalPlanI
   // ★v0.9.88(RECORD-ONLY): 画面の「順張り/逆張り」を決めた値。plan ではなく **result** に載る
   //   (コードが測った値で、AI の応答ではないため)。無い回は列ごと NULL=「測れなかった」が形から読める。
   if (result.trendDir !== undefined) row.trendDir = result.trendDir;
+  // ★2026-08-31(RECORD-ONLY): **画面から消した脚の名札**。ユーザー指示
+  //   「指値押し目買い等の文字列は…表示しないようにして、記録のみにしてください」= 消さずに移す。
+  //   ★値は core/entryLabel.ts の entryLabel() を呼んで作る(**再実装しない**)。
+  //     同じ規約を2箇所に持つのが、この案件が繰り返している事故の型そのもの。
+  //   ★脚が無い回は **入れない**(列ごと NULL)。空文字にしない=「無い」と「空」を混ぜない。
+  //   ★direction が none/range の回は脚が立たないので、そもそも名札が存在しない(=NULL)。
+  //   ★トレンドが取れない回(trendDir が flat/conflict/stale/未指定)は entryLabel が
+  //     順張り/逆張りの語を付けない=脚の型の語だけが入る(「押し目買い」)。
+  //     ★★NULL にはしない: その回も画面では「押し目買い」と **呼んでいた**ので、事実として残す。
+  //   ★なぜ再計算に頼らないか(direction × 種別 × trend_dir から出せるのに列を足す理由)は
+  //     store.ts の ALTER のコメントと meta(column_semantics_leg_label)に書いた。
+  if (plan.direction === 'buy' || plan.direction === 'sell') {
+    if (plan.limitEntry !== undefined) {
+      row.legLabelLimit = entryLabel(plan.direction, 'limit', result.trendDir).text;
+    }
+    if (plan.stopEntry !== undefined) {
+      row.legLabelStop = entryLabel(plan.direction, 'stop', result.trendDir).text;
+    }
+  }
   if (result.vetoFired !== undefined) row.vetoFired = result.vetoFired;
   if (result.noneReason !== undefined) row.noneReason = result.noneReason;
   if (plan.limitEntry !== undefined) row.limitEntry = plan.limitEntry;

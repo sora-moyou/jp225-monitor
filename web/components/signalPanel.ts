@@ -683,12 +683,35 @@ function legStanceText(
   // ★順張り/逆張りは **トレンドの向き × 売買の向き** で決まる(core/entryLabel.ts)。
   //   トレンドが取れない/横這い/競合 の回は label.text に語が付かない(断定しない)。
   const label = entryLabel(direction, kind, trendDir);
-  let text = `${name} ${label.text}`;
-  if (typeof refPrice === 'number' && Number.isFinite(refPrice)
-      && !entryPositionOk(direction, kind, entry, refPrice)) {
-    text += ` ${WRONG_SIDE_MARK} ${WRONG_SIDE_TEXT}（ARM時 ${fmtPrice(refPrice)}）`;
-  }
-  return text;
+  const text = `${name} ${label.text}`;
+  // ★2026-08-31: 位置の警告は legWrongSideText へ切り出した(**返す文字列は1バイトも変わらない**)。
+  //   ★条件を2箇所に持たない: 3欄のパネルは名札を出さなくなったが警告は出し続けるので、
+  //     警告の条件だけを別に呼べる形が要る。そこで **条件は legWrongSideText の1本だけ** にした
+  //     (片方だけ直す事故=このファイルが繰り返し避けてきた型を作らない)。
+  const warn = legWrongSideText(direction, kind, entry, refPrice);
+  return warn ? `${text} ${warn}` : text;
+}
+
+/** ★2026-08-31(ユーザー指示「名札は表示せず記録のみ」): **位置の警告だけ** を組み立てる純関数。
+ *
+ *      ⚠ エントリーが現在値の逆側（ARM時 68,700）
+ *
+ *  ■ ★これは名札(押し目買い・順張り 等)ではなく **「注文の置き方が不正」という警告**。
+ *    名札を画面から消すときに行ごと消すと、この警告も一緒に消える=**無音の失敗**になる。
+ *    だから名札の生成(legStanceText)とは別の関数に分け、脚の欄はこちらだけを呼ぶ。
+ *  ■ ★脚の名前(指値/逆指値)を前に付けない: 3欄のパネルでは **欄そのものが1本の脚** で、
+ *    同じ欄の見出し(上/下)とメイン行(`🎯 買い 68,780 逆指値 (LC 68,720)`)が既にどの脚かを
+ *    名乗っている。新しい書式は作らず、既にある情報で足りる分は足さない(v0.9.90 以降の流儀)。
+ *    ★1行にまとめる buildEntryStance(旧経路)では名札が前に付いたままなので、そちらは不変。
+ *  ■ refPrice が無い/非有限の回は **検査を出さない**(entryPositionOk の fail-safe な true を
+ *    「合格」として見せない=core/entryLabel.ts の呼び出し側の規約)。 */
+function legWrongSideText(
+  direction: 'buy' | 'sell', kind: EntryKind, entry?: number, refPrice?: number,
+): string {
+  if (entry == null || !Number.isFinite(entry)) return '';
+  if (typeof refPrice !== 'number' || !Number.isFinite(refPrice)) return '';
+  if (entryPositionOk(direction, kind, entry, refPrice)) return '';
+  return `${WRONG_SIDE_MARK} ${WRONG_SIDE_TEXT}（ARM時 ${fmtPrice(refPrice)}）`;
 }
 
 export function buildEntryStance(
@@ -1020,6 +1043,56 @@ function legWhyLine(entryWhy?: string, lcWhy?: string): string {
   return parts.join(BASIS_SEP);
 }
 
+/** 文の終わりとみなす記号(★これで終わっている文には「。」を足さない=二重の句点を作らない)。
+ *  全角/半角の両方を入れるのは、AI の出力が半角で終わる回が実在するため(実データで確認)。 */
+const SENTENCE_END_MARKS = ['。', '．', '.', '！', '!', '？', '?', '…'] as const;
+
+/** 文の途中で切れている印(読点)。★句点に **置き換える**。理由は endWithPeriod のコメント。 */
+const COMMA_MARKS = ['、', '，', ','] as const;
+
+/** ★2026-08-31(ユーザー指示「残す部分は、改行せず句点にして」): 1つの断片を「。」で閉じる(純関数)。
+ *
+ *  ■ ★規則(1箇所にしか書かない。呼ぶのは joinLegLines だけ)
+ *    ① 空文字は **空文字のまま返す**(孤立した「。」を作らない=依頼の守ること②)。
+ *    ② 既に 。．.！!？?… で終わっていれば **足さない**(二重の句点を作らない=守ること①)。
+ *       ★AI の理由文は実測でほとんどが「。」で終わる。足すと `…。。` になる。
+ *    ③ ★**切詰の印(DISPLAY_TRUNCATED_MARK)で終わる回も足さない**。
+ *       印は「ここで切った」という意味で、句点を足すと **文が完結したように見える**(嘘になる)。
+ *    ④ ★**読点(、，,)で終わる回は、その1文字を「。」に置き換える**。
+ *       ・そのまま足すと `…、。` という日本語に無い並びになる(読める文にならない)。
+ *       ・足さないと、後ろに繋ぐ ⚠ の警告が **理由の続きの節** に見える
+ *         (「…に置き、⚠ エントリーが現在値の逆側」= 1文に読めてしまう)。
+ *       ・置き換えは「閉じていない文を閉じる」以上のことをしていない(語を1つも消していない)。
+ *       ★★実測(この枝は **稀ではない**): 実運用ホストの複製 prices2.db の signal_plans
+ *         app_version=0.9.102(325件・2026-08-25〜08-28)を実際に描かせると、脚の欄に出た
+ *         理由の行 619行のうち **34行(5.49%)** がこの枝を通る(残り 585行は既に「。」で終わる)。
+ *         実例はどれも「…さらなる下落が予想されるため、」= AI が節の途中で止まった形。
+ *         ★当初この枝を「実データでは起きない」と報告したが **数え落としだった**
+ *         (名札の行が末尾に在ったため、行末を見ていて理由の断片の末尾を見ていなかった)。
+ *       ★これは **画面だけ** の整形。台帳(signal_plans の理由5列)は1バイトも触っていない。 */
+function endWithPeriod(text: string): string {
+  if (!text) return '';
+  if (text.endsWith(DISPLAY_TRUNCATED_MARK)) return text;
+  if (SENTENCE_END_MARKS.some(m => text.endsWith(m))) return text;
+  if (COMMA_MARKS.some(m => text.endsWith(m))) return `${text.slice(0, -1)}。`;
+  return `${text}。`;
+}
+
+/** ★2026-08-31(ユーザー指示): 脚の欄の **メイン行より下の行** を1行に繋ぐ(純関数)。
+ *
+ *      直近安値の外側に置く。⚠ エントリーが現在値の逆側（ARM時 65,500）。
+ *
+ *  ■ ★繋ぐのはメイン行より下だけ。メイン行(`🎯 買い 65,395 指値 (LC …)`)は
+ *    **値段の行であって文章ではない** ので、この関数には渡さない(依頼の明示)。
+ *  ■ ★順序は元の行の順序のまま(理由 → 警告)。並べ替えない。
+ *  ■ ★空の断片は落とす: 理由が空(cleanAiText が全部落とした回を含む)/警告が無い回に
+ *    孤立した「。」を出さない。全部空なら **空文字**=呼び出し側が行ごと出さない。
+ *  ■ ★区切り文字を足さない: 各断片が endWithPeriod で「。」を持つので、そのまま連結すれば
+ *    「。」が区切りになる(新しい区切り記号を発明しない)。 */
+function joinLegLines(parts: readonly string[]): string {
+  return parts.filter(p => p !== '').map(endWithPeriod).join('');
+}
+
 /** 脚1本ぶんの欄を組み立てる(純関数)。
  *  ・見出し(上/下)は **entryLabel().above が決める**(規約の写しを作らない)。
  *  ・中身: 理由(中身のあるものだけ)→ 脚のラベル(legStanceText。⚠ の警告も含む)。
@@ -1049,9 +1122,21 @@ function buildLegSection(
   const why = isLimit
     ? legWhyLine(sig.entryWhyForLimit, sig.lcWhyForLimit)
     : legWhyLine(sig.entryWhyForStop, sig.lcWhyForStop);
-  if (why) lines.push(why);
-  const stance = legStanceText(sig.direction, kind, name, entry, sig.refPrice, sig.trendDir);
-  if (stance) lines.push(stance);
+  // ★2026-08-31(ユーザー指示①「指値 押し目買い・逆張り 等の名札は表示せず記録のみ」):
+  //   脚の名札(legStanceText / core の entryLabel)は **画面に出さない**。
+  //   ★名札は AI の言葉ではなく **コードが direction × 脚の種別 × トレンドの向き から付けた名前**で、
+  //     トレーダーが読む情報を足していない(欄の見出しとメイン行が既にどの脚かを名乗っている)。
+  //   ★★消したのは名札だけ。同じ行に載っていた `⚠ エントリーが現在値の逆側（ARM時 …）` は
+  //     名札ではなく **「注文の置き方が不正」という警告** なので、legWrongSideText で出し続ける。
+  //     行ごと消すと警告も消える=このプロジェクトが禁じている無音の失敗になる。
+  //   ★名札は台帳へ移した(signal_plans.leg_label_limit / leg_label_stop)。
+  //     「表示しないようにして、記録のみにしてください」= 消したのではなく移した。
+  // ★2026-08-31(ユーザー指示②「残す部分は、改行せず句点にして」):
+  //   残った2つ(AI の理由 / ⚠ の警告)を **別々の行にせず**、句点で繋いだ1行にする。
+  //   繋ぎ方の規則は joinLegLines / endWithPeriod の1箇所だけ(2箇所に書かない)。
+  const warn = legWrongSideText(sig.direction, kind, entry, sig.refPrice);
+  const joined = joinLegLines([why, warn]);
+  if (joined) lines.push(joined);
   const lc = isLimit ? sig.stopLossForLimit : sig.stopLossForStop;
   // ★TP(利確)の価格。出す/出さないと価格の求め方は legTpPrice が唯一の実装(ここでは判断しない)。
   const tp = legTpPrice(sig, kind, hold);
@@ -1291,6 +1376,14 @@ export function buildSignalSections(
   //     (旧い記録では従来と byte 一致)。位置も変えていない(目線の欄の末尾に1回だけ)。
   //   ■ ★対になる書式: 括弧付きの `（順張り/逆張りなし: …）`(stanceNote)は
   //     buildEntryStance =「1行に脚と一緒に並べる」文脈でだけ残る(下の PanelView.stance の注記を参照)。
+  //   ■ ★★2026-08-31: **一度この行を消して、戻した**(経緯を残す=同じ判断を繰り返さないため)。
+  //     ・消した理由 … 脚の名札を出さなくなったので「なぜ名札に順張り/逆張りが付かないか」の
+  //       説明だけが残る形になる、と読んだ。
+  //     ・★戻した理由(裁定) … ユーザーの指示は逐語で「**シグナル最後の行**の指値押し目買い等の
+  //       文字列は…表示しないように」。★この語は **脚の最後の行ではなく目線の欄の別の行** で、
+  //       名指しされていない。そして上の v0.9.90 の裁定どおり **相場の観測結果** であって
+  //       名札の付属物ではない(パネルの他のどこにも出ていない)。★影響は 24.4% の回。
+  //     ★消してよいのは「コードが付けた名札」だけ。**相場の事実は消さない**。
   const note = entryStanceUnknownReason(sig.trendDir);
   if (note && (sig.limitEntry != null || sig.stopEntry != null)) biasLines.push(note);
 

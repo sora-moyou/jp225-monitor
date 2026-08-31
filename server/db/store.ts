@@ -452,6 +452,29 @@ export function initSchema(db: DatabaseSync): void {
   //         ★NULL の意味は2つある: ①TP を尋ねていない回(tp_source が 'manual' か NULL)
   //           ②尋ねて、両脚とも読めた回。★区別は tp_source と tp_width_for_* の有無で付く。
   if (!spCols.includes('tp_read_issue')) db.exec('ALTER TABLE signal_plans ADD COLUMN tp_read_issue TEXT');
+  // ★2026-08-31(RECORD-ONLY): **画面から消した脚の名札**(`押し目買い・逆張り` 等)をここへ移す。
+  //
+  //   ■ 経緯(ユーザー指示・逐語)
+  //     「シグナル最後の行の指値押し目買い等の文字列は、こちら側の文字例なので、
+  //       表示しないようにして、記録のみにしてください。」
+  //     = 画面(web/components/signalPanel.ts の脚の欄)からは出さない。**消したのではなく移した**。
+  //   ■ 値の意味
+  //     leg_label_limit … 指値レッグの名札(例 '押し目買い・逆張り' / トレンド不明の回は '押し目買い')
+  //     leg_label_stop  … 逆指値レッグの名札(例 'ブレイク新規・順張り')
+  //     ★これは **AI の言葉ではない**。core/entryLabel.ts の entryLabel() が
+  //       `direction × 脚の種別 × trend_dir` から機械的に付けた名前(コードが付けた名札)。
+  //     ★その脚が無い回(片脚だけ/見送り/レンジ)は NULL。★空文字は入れない(「無い」と「空」を混ぜない)。
+  //   ■ ★★なぜ列を足すのか(= 「後から再計算できる」を **採らない** 理由)
+  //     direction × 脚の種別 × trend_dir は同じ行に全部あるので、名札は後から計算できる **ように見える**。
+  //     ★採らない。この規則は **既に一度変わっている**(core/entryLabel.ts:20 —
+  //       初版は「指値=逆張り / 逆指値=順張り」と脚の種別だけで決めており、誤りだった)。
+  //     ★規則が変わると、過去行の名札が **新しい規則で** 再計算される = 歴史が黙って書き換わる。
+  //       「そのとき画面でどう呼んでいたか」という事実は、そのときの文字列を残すことでしか保てない。
+  //   ■ 記録専用。採否・価格・veto・SSE・決済には一切影響しない。
+  //   ★同じ内容は meta の column_semantics_leg_label にも書いてある(ソースのコメントは DB を開いた人に届かない)。
+  //   既存DBへ後付けマイグレーション(NULL 可=この列を持たない版で記録された旧行)。
+  if (!spCols.includes('leg_label_limit')) db.exec('ALTER TABLE signal_plans ADD COLUMN leg_label_limit TEXT');
+  if (!spCols.includes('leg_label_stop')) db.exec('ALTER TABLE signal_plans ADD COLUMN leg_label_stop TEXT');
   // ★★settings_json 側の TP の3キー(2026-08-30・★「TP を切っていた期間」はここでしか特定できない)。
   //
   //   ■ 何が入るか: 計画サイクルごとに settings_json(SignalSettingsSnapshot)へ次の3キーが載る。
@@ -1098,6 +1121,47 @@ export const COLUMN_SEMANTICS_TP_NOTE =
 /** meta に TP列の意味論を1行書く。★冪等。失敗は呼び出し側が握りつぶす。 */
 export function setTpSemanticsMeta(db: DatabaseSync): void {
   setMeta(db, COLUMN_SEMANTICS_TP_KEY, COLUMN_SEMANTICS_TP_NOTE);
+}
+
+/** ★2026-08-31: **DB を開いた人に leg_label_* の読み方を届ける場所**
+ *  (column_vocab / lc_audit / tp と同じ流儀)。
+ *
+ *  ■ なぜ要るか(★ソースのコメントは DB を開いた分析者に1文字も届かない)
+ *    leg_label_* は列名も値も **AI が書いた理由文の列(strategy_why / entry_why_for_*)に似て見える**。
+ *    ★実際は AI の言葉ではなく **コードが付けた名札**。混ぜて「AI はこう呼んだ」と数えると、
+ *      AI の出力を測っているつもりで **コードの分類器を測る** ことになる(この案件が繰り返している型)。
+ *  ■ ★版番号の作法は column_vocab / lc_audit / tp と同じ:
+ *    **まだ実データに現れていない版番号を焼かない**(この文字列は DB に焼かれ、後から直せない)。
+ *    実DBに出ている最後の版は v0.9.102 で、この列は v0.9.105 より **後** の版で入る。 */
+export const COLUMN_SEMANTICS_LEG_LABEL_KEY = 'column_semantics_leg_label';
+
+/** ★leg_label_limit / leg_label_stop の意味論(記録専用・人が読む1文)。 */
+export const COLUMN_SEMANTICS_LEG_LABEL_NOTE =
+  'signal_plans.leg_label_limit / leg_label_stop は **コードが付けた脚の名札** です'
+  + '(例「押し目買い・逆張り」「ブレイク新規・順張り」「戻り売り」)。'
+  + '★★AI の言葉ではありません。direction(目線) × 脚の種別(指値/逆指値) × trend_dir(コードが測ったトレンドの向き) '
+  + 'から機械的に決まる文字列で、AI は1文字も関与していません。'
+  + 'AI が書いた自由文は strategy / strategy_why / direction_why / entry_why_for_* / lc_why_for_* の側です。'
+  + '★同じ行に並んでいますが出所が違うので、混ぜて数えないでください'
+  + '(混ぜると「AI の言い回しの分布」を測っているつもりで、コードの分類器の分布を測ることになります)。'
+  + '★これらの列は v0.9.105 より **後** の版で追加されました。それ以前に記録された行は **全て NULL** です。'
+  + '欠測期間として扱い、前後の版と連続した系列にしないでください(「名札が付かなかった」ではありません)。'
+  + '★その脚が無い回(片脚だけ提案された回・見送りの回・レンジの版)は NULL です。空文字は入れていません。'
+  + '★トレンドの向きが断定できなかった回(trend_dir が flat / conflict / stale / NULL)は、'
+  + '名札に「順張り」「逆張り」が付かず、脚の型の語だけ(「押し目買い」「戻り売り」「ブレイク新規」)になります。'
+  + '★★この列は「後から direction × 脚の種別 × trend_dir で再計算できる」にもかかわらず、あえて残しています。'
+  + '順張り/逆張りの決め方は **既に一度変わっており**(初版は脚の種別だけで決めていて誤りでした)、'
+  + '再計算に頼ると規則が変わった日に過去行の名札まで新しい規則で書き換わってしまうためです。'
+  + '★ここに残っているのは「そのとき実際にそう呼んだ」という事実です。再計算した値と食い違う行が出たら、'
+  + 'それは欠陥ではなく **規則が変わった証拠** として読んでください。'
+  + '★★もう1点: これらの名札は **画面には出していません**(記録専用)。'
+  + '2026-08-31 のユーザー指示「表示しないようにして、記録のみにしてください」により、'
+  + 'シグナルのパネルからは名札の行を外しました。'
+  + '★したがって「画面に出ていた文字列」としてではなく「その回コードがその脚をどう分類したか」として読んでください。';
+
+/** meta に leg_label_* の意味論を1行書く。★冪等。失敗は呼び出し側が握りつぶす。 */
+export function setLegLabelSemanticsMeta(db: DatabaseSync): void {
+  setMeta(db, COLUMN_SEMANTICS_LEG_LABEL_KEY, COLUMN_SEMANTICS_LEG_LABEL_NOTE);
 }
 
 /** meta に書く中身。★本文は入らない(pb1 は一方向ダイジェスト)。 */
@@ -1781,6 +1845,11 @@ export interface SignalPlanInsert {
   tpSource?: string | null;
   /** ★TP幅を読めなかった/曖昧だった理由(記録専用)。読めた回・尋ねていない回は NULL。 */
   tpReadIssue?: string | null;
+  /** ★2026-08-31(RECORD-ONLY): 画面から消した **脚の名札**(コードが付けた名前・AI の言葉ではない)。
+   *  ★値の出所は core/entryLabel.ts の entryLabel().text ひとつだけ(再実装しない)。
+   *  ★その脚が無い回は未指定=NULL(空文字は入れない)。詳細は initSchema の ALTER のコメントと meta。 */
+  legLabelLimit?: string | null;
+  legLabelStop?: string | null;
 }
 
 /** 非有限(NaN/Infinity)は NULL にする(壊れた数値を列に入れて後の集計を汚さない)。 */
@@ -1804,8 +1873,9 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
       b_strategy, ai_why, tool_calls,
       a_provider, a_provider_model, b_provider, b_provider_model, a_prompt_build, b_prompt_build,
       context_presence_json, missing_data, split_bypass_reason,
-      tp_width_for_limit, tp_width_for_stop, tp_why, tp_source, tp_read_issue
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      tp_width_for_limit, tp_width_for_stop, tp_why, tp_source, tp_read_issue,
+      leg_label_limit, leg_label_stop
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     p.t, p.system, p.signalId ?? null, p.direction ?? null, p.noneReason ?? null,
     p.vetoFired == null ? null : (p.vetoFired ? 1 : 0),
@@ -1851,6 +1921,9 @@ export function insertSignalPlan(db: DatabaseSync, p: SignalPlanInsert): void {
     //     NULL は「B を呼んでいない=尋ねたかどうかが存在しない」を指す(b_variant='none' と対応)。
     finiteOrNull(p.tpWidthForLimit), finiteOrNull(p.tpWidthForStop),
     p.tpWhy ?? null, p.tpSource ?? null, p.tpReadIssue ?? null,
+    // ★2026-08-31(記録専用): 画面から消した脚の名札。★**文字列のまま**(?? null)。
+    //   脚が無い回は呼び出し側が渡さない=NULL。★空文字を入れない(「無い」と「空」を混ぜない)。
+    p.legLabelLimit ?? null, p.legLabelStop ?? null,
   );
 }
 
