@@ -60,6 +60,15 @@ export interface SignalCurrent {
   range?: { upper?: SignalRangeLeg; lower?: SignalRangeLeg };
   // ★ドテン(反転)シグナル。true のとき「決済+反対新規」の反転指示=パネルに明示表示する。
   doten?: boolean;
+  // ★TP(利確)の **発火価格**・レッグ別(server SignalTradeState.signal と同じ ADD-ONLY フィールド)。
+  //   意味=「そのレッグが約定したら、この価格で成行決済される」。
+  //   ★**価格は server が毎 broadcast 計算する**(決済と同じ resolveTpWidth→takeProfitTrigger)。
+  //     ★画面は幅も設定も受け取らない=**web には「TP をどう決めるか」の規則が1行も無い**。
+  //     幅から画面が計算していた版では、ARM 時に凍結した設定を見ていたため
+  //     「決済は発火するのに画面は無音」「発火しないのに画面は出したまま」が起きた。
+  //   TP が効かない回(切っている/幅なし)とレンジ両面では **来ない**=画面は1文字も出さない。
+  tpTriggerForLimit?: number;
+  tpTriggerForStop?: number;
 }
 
 export interface SignalTradeState {
@@ -89,6 +98,21 @@ export interface SignalTradeState {
     qty: number;
     unrealized: number;
     at: number;
+  };
+  // ★保有中の意図(server SignalTradeState.hold の写し)。**filled の間だけ来る**。
+  //   画面が読むのは tpTrigger と entryPrice の2つだけ:
+  //   ・tpTrigger … **決済が実際に使う TP の価格**。★画面はこれをそのまま出す(自分で計算し直さない)。
+  //     計算し直すと、保有中に手動幅を変えた回や、どちらの脚で約定したかで **決済と表示がずれる**。
+  //   ・entryPrice … どちらの脚で約定したかの照合(約定した脚にだけ TP を出すため)。
+  //   ★TP が効いていない建玉では tpTrigger ごと来ない(=画面は何も出さない)。
+  hold?: {
+    signalId: number;
+    direction: 'buy' | 'sell';
+    entryPrice: number;
+    exitStop: number | null;
+    at: number;
+    rangeTp?: number;
+    tpTrigger?: number;
   };
   // 直近決済 (保有枠に「決済79000」を一時表示するため)
   lastExit?: { exitPrice: number; pnl: number; at: number };
@@ -919,8 +943,43 @@ export function extractLegDropNotes(
 /** 脚1本ぶんのメイン行(★既存のメイン行の1レッグぶんと byte 一致)。
  *  従来: `🎯 シグナル：買い 68,725 指値 (LC 68,665) / 買い 68,780 逆指値 (LC 68,720)`
  *  今回: 上の欄に `🎯 買い 68,780 逆指値 (LC 68,720)` / 下の欄に `🎯 買い 68,725 指値 (LC 68,665)` */
-function legMainText(direction: 'buy' | 'sell', name: string, entry: number, lc?: number): string {
-  return `${dirJa(direction)} ${fmtPrice(entry)} ${name}${lc != null ? ` (LC ${fmtPrice(lc)})` : ''}`;
+function legMainText(direction: 'buy' | 'sell', name: string, entry: number, lc?: number, tp?: number): string {
+  return `${dirJa(direction)} ${fmtPrice(entry)} ${name}${lc != null ? ` (LC ${fmtPrice(lc)})` : ''}`
+    // ★TP は LC と **同じ書式**(価格・同じ括弧・同じ並び)。新しい形は作らない。
+    //   ★出す価格の決め方は legTpPrice が唯一の実装(ここでは1円も計算しない)。
+    + `${tp != null ? ` (TP ${fmtPrice(tp)})` : ''}`;
+}
+
+/** ★脚1本に出す TP の **価格**。出さない回は undefined。
+ *
+ *  ■ ★この関数は **価格を1円も計算しない**。server が SSE に載せた価格を選ぶだけ:
+ *    ・保有中(hold あり)…… `hold.tpTrigger`(決済が実際に使う価格)
+ *    ・待機中(hold なし)…… `sig.tpTriggerForLimit` / `tpTriggerForStop`(そのレッグが約定したら、の価格)
+ *    ★**設定(scalpTpEnabled / 幅の出所 / 幅)は一切見ない。** 見た版で事故が出た:
+ *      画面が見ていたのは **ARM 時に凍結した設定** だったので、保有中/待機中に設定を変えると
+ *      「決済は発火するのに画面は無音」「発火しないのに画面は出したまま」になった。
+ *      ★値の **有無そのもの** が既に「TP が効いているか」を織り込んでいる(server が効かない回は載せない)。
+ *
+ *  ■ ★保有中に「約定した脚だけ」に出すのは **画面にしかできない照合** なので、ここに残す:
+ *    もう片方は OCO で消えた脚で、そこに建玉の TP を並べると
+ *    「買いの逆指値(上)より下に TP」という嘘の行になる(実際に出る形を確認した)。
+ *    照合は `hold.entryPrice`(約定価格)と脚の価格で行う。指値=指値価格・逆指値=逆指値価格ちょうど
+ *    (STOP_SLIPPAGE_YEN=0)で約定するので厳密に一致する。一致しない異常時は **出さない**。
+ *
+ *  ■ ★値が無ければ **1文字も出さない**。「TP なし」とは書かない
+ *    (欄が空なのと「TP が無い」は別の意味)。 */
+export function legTpPrice(
+  sig: SignalCurrent, kind: EntryKind, hold?: SignalTradeState['hold'] | null,
+): number | undefined {
+  const entry = kind === 'limit' ? sig.limitEntry : sig.stopEntry;
+  if (entry == null || !Number.isFinite(entry)) return undefined;
+  if (hold) {
+    const t = hold.tpTrigger;
+    if (t == null || !Number.isFinite(t)) return undefined;   // TP が効いていない建玉
+    return entry === hold.entryPrice ? t : undefined;         // 約定した脚だけに出す
+  }
+  const t = kind === 'limit' ? sig.tpTriggerForLimit : sig.tpTriggerForStop;
+  return t != null && Number.isFinite(t) ? t : undefined;
 }
 
 /** レンジ両面の1レッグの表示文字列(★buildSignalView の中にあった legStr をそのまま出しただけ)。 */
@@ -970,7 +1029,11 @@ function legWhyLine(entryWhy?: string, lcWhy?: string): string {
  *    PanelView.basis を従来どおり組み立てており(値は不変。ただし armed では描かれない=
  *    PanelView の注記を参照)、台帳側の limit_level / stop_level と合わせて後から検証できる。
  *  ・脚が無ければ `empty` を立てて「指値なし」/「逆指値なし」を出す(★行を消さない=理由は下記)。 */
-function buildLegSection(sig: SignalCurrent, kind: EntryKind, dropNote?: string): SignalSection {
+function buildLegSection(
+  sig: SignalCurrent, kind: EntryKind, dropNote?: string,
+  // ★保有中の意図(TP の価格の出所)。待機中は来ない=脚の幅から計算する(legTpPrice を参照)。
+  hold?: SignalTradeState['hold'] | null,
+): SignalSection {
   const isLimit = kind === 'limit';
   const name = isLimit ? WHY_LABEL.limit : WHY_LABEL.stop;
   const head = entryLabel(sig.direction, kind).above ? SECTION_HEAD.above : SECTION_HEAD.below;
@@ -990,7 +1053,9 @@ function buildLegSection(sig: SignalCurrent, kind: EntryKind, dropNote?: string)
   const stance = legStanceText(sig.direction, kind, name, entry, sig.refPrice, sig.trendDir);
   if (stance) lines.push(stance);
   const lc = isLimit ? sig.stopLossForLimit : sig.stopLossForStop;
-  return { head, main: `${SIGNAL_MARK} ${legMainText(sig.direction, name, entry, lc)}`, lines };
+  // ★TP(利確)の価格。出す/出さないと価格の求め方は legTpPrice が唯一の実装(ここでは判断しない)。
+  const tp = legTpPrice(sig, kind, hold);
+  return { head, main: `${SIGNAL_MARK} ${legMainText(sig.direction, name, entry, lc, tp)}`, lines };
 }
 
 /** ★v0.9.89(依頼の本体): シグナル枠の3つの欄を組み立てる純関数。
@@ -1035,6 +1100,9 @@ function buildLegSection(sig: SignalCurrent, kind: EntryKind, dropNote?: string)
 export function buildSignalSections(
   sig: SignalCurrent,
   parts: { bias: string; rationale: string },
+  // ★保有中の意図(TP の価格の出所)。★渡さなければ TP は待機中の規則で描かれる=
+  //   この引数を足す前と byte 一致(既存の呼び出し/テストは1行も変わらない)。
+  hold?: SignalTradeState['hold'] | null,
 ): SignalSections {
   const biasLines: string[] = [];
   // ★v0.9.92: **どの欄が空いているか** を先に確定させる(注記を引き当てる条件の片方)。
@@ -1226,8 +1294,8 @@ export function buildSignalSections(
   const note = entryStanceUnknownReason(sig.trendDir);
   if (note && (sig.limitEntry != null || sig.stopEntry != null)) biasLines.push(note);
 
-  const limitSec = buildLegSection(sig, 'limit', claimedNotes.get('limit'));
-  const stopSec = buildLegSection(sig, 'stop', claimedNotes.get('stop'));
+  const limitSec = buildLegSection(sig, 'limit', claimedNotes.get('limit'), hold);
+  const stopSec = buildLegSection(sig, 'stop', claimedNotes.get('stop'), hold);
   // ★上/下の振り分けは core/entryLabel.ts の above が唯一の権威(買い=逆指値が上 / 売り=指値が上)。
   const limitIsAbove = entryLabel(sig.direction, 'limit').above;
   return {
@@ -1309,6 +1377,10 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   }
 
   const legs: string[] = [];
+  // ★TP は **ここには足さない**(意図的)。この legs が入る PanelView.main は、脚が在る回には
+  //   **画面に描かれない**(paintPanel は sections だけを描く。冒頭 PanelView の表を参照)。
+  //   main の役目は「表示の作り直しで壊していない」ことを旧版と突き合わせる **否定対照** なので、
+  //   描かれない行に新しい情報を混ぜると、その役目が弱くなる。★TP が出るのは sections(=ボード)。
   if (sig.limitEntry != null) legs.push(legMainText(sig.direction, '指値', sig.limitEntry, sig.stopLossForLimit));
   if (sig.stopEntry != null) legs.push(legMainText(sig.direction, '逆指値', sig.stopEntry, sig.stopLossForStop));
   if (legs.length === 0) return flatView();
@@ -1345,7 +1417,9 @@ export function buildSignalView(s: SignalTradeState | null): PanelView {
   // ★理由の行も同じ規約(1行も無ければフィールドごと付けない=旧版の記録では従来と byte 一致)。
   if (whys.length) view.whys = whys;
   // ★v0.9.89: 上の素材を3つの欄へ配り直す(素材そのものは1バイトも変えない)。
-  view.sections = buildSignalSections(sig, { bias: view.bias ?? '', rationale: view.rationale });
+  // ★hold(保有中の意図)を渡す = 保有中の TP は **決済が使う価格そのもの** になる。
+  //   待機中(armed)は s.hold が来ないので、脚の幅から `エントリー ± 幅` で出す(legTpPrice)。
+  view.sections = buildSignalSections(sig, { bias: view.bias ?? '', rationale: view.rationale }, s?.hold);
   return view;
 }
 

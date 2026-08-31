@@ -279,6 +279,22 @@ export interface SignalTradeState {
     // ★ドテン(反転)シグナル(ADD-ONLY): 実 doten の時だけ true。反転指示=保有と反対方向・limit/stop/SL は新規反対建玉・
     //   signalId は新規採番。trade2 は「doten:true + 新 signalId + FILLED」を専用トリガーにする。非 doten では欠落=既存 JSON 不変。
     doten?: true;
+    // ★v0.9.104(ADD-ONLY・表示用): TP(利確)の幅[円]・レッグ別。**AI委任のときだけ載る**
+    //   (手動の幅は下の settings.scalpTpWidthYen に入っている=毎tick引き直す値なので計画には焼かない)。
+    //   ★載せる理由: 待機中(armed)のシグナルには TP の材料がどこにも無く、**ボードは TP を一度も
+    //     表示できなかった**。画面はこの幅から `エントリー ± 幅`(買い=+ / 売り=−)で TP 価格を出す。
+    //   ★保有中(filled)の TP は **この幅から作らない**: 下の hold.tpTrigger(決済が実際に使う価格)を描く。
+    //   AI が幅を出さなかった回/手動TP では **フィールドごと欠落**=既存 SSE JSON 不変。
+    tpWidthForLimit?: number;
+    tpWidthForStop?: number;
+    // ★v0.9.104(ADD-ONLY・表示用): TP の **発火価格**(レッグ別)。★**画面が描くのはこれ**。
+    //   意味=「そのレッグが約定したら、この価格で成行決済される」。hold.tpTrigger の待機中版。
+    //   ★server が **毎 broadcast いまの設定から** 引き直す(決済と同じ resolveTpWidth→takeProfitTrigger)。
+    //     ★画面には幅から価格を作らせない: 画面が自前で計算していた版では、ARM 時に凍結した設定を
+    //       見ていたため「決済は発火するのに画面は無音」「発火しないのに画面は出したまま」が起きた。
+    //   TP が効かない回(切っている/幅なし)と レンジ両面 では **フィールドごと欠落**=既存 SSE JSON 不変。
+    tpTriggerForLimit?: number;
+    tpTriggerForStop?: number;
   };
   // 保有中の意図(trade2 追従用)。filled の間だけ付与し、決済逆指値(computeExitStop の絶対価格)を
   // 毎tick公開する。signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。

@@ -135,6 +135,17 @@ export interface CurrentSignal {
   // ★ドテン(反転)シグナル。在るときだけ true(add-only)。反転指示=保有と反対方向・limit/stop/SL は新規反対建玉のもの・
   //   signalId は新規採番。trade2 は「doten:true + 新 signalId + FILLED」を専用トリガーにする。
   doten?: true;
+  // ★TP(利確)の幅[円]・レッグ別(ArmedBracket の同名フィールドをそのまま運ぶ)。**AI委任のときだけ載る**
+  //   (手動は設定の現在値を毎tick引き直すので計画には焼かない=SignalSettingsSnapshot 側に入っている)。
+  //   ★これを載せる理由: **待機中(armed)のシグナルには TP の材料がどこにも無く**、画面は TP を
+  //     描こうにも描けなかった(ボードは TP を一度も表示していなかった)。画面は
+  //     `エントリー ± この幅`(買い=+ / 売り=−)で TP 価格を出す。
+  //   ★保有中(filled)は **この幅を使わない**: 決済が使う価格そのもの(SignalHold.tpTrigger)を画面が描く
+  //     (画面が計算し直すと、手動幅の変更や約定レッグの違いで決済側と表示がずれる)。
+  //   ★採否・価格・約定・決済には一切使わない(strategy と同じ「持ち回るだけ」)。
+  //   欠落(手動TP / AI が幅を出さなかった回 / 旧版の計画)では **フィールドごと付けない**=従来と byte 一致。
+  tpWidthForLimit?: number;
+  tpWidthForStop?: number;
 }
 
 export interface OpenPosition {
@@ -513,7 +524,12 @@ export interface TpDirective {
  *  ★正の有限値だけを幅として認める(0/負/NaN/Inf は「TP無し」= null)。
  *    幅0を通すと約定 tick でいきなり建値決済になり、無意味な決済が量産される。 */
 export function resolveTpWidth(
-  pos: OpenPosition, manualTpYen: number | null | undefined,
+  // ★型を `OpenPosition` から **幅を持つものなら何でも** へ広げた(既存の呼び出しは1行も変わらない)。
+  //   ★理由: **待機中(armed)のレッグにも同じ規則を通す** ため。armed のレッグが持つ幅は
+  //   `ArmedBracket.tpWidthForLimit / tpWidthForStop` で、建玉の `tpWidth` と同じ意味の値。
+  //   ★ここを広げないと、画面側が「手動 > AI委任」「0/負/NaN は幅なし」を **もう1度書く** ことになり、
+  //     実際にそれが事故になった(画面と決済で判断が食い違う組み合わせが 480通り中 12件)。
+  pos: { tpWidth?: number }, manualTpYen: number | null | undefined,
   // ★TP を使うか(設定 scalpTpEnabled)。省略時は true = この引数を足す前と完全に同じ挙動。
   //   false のとき **AI委任の pos.tpWidth も含めて** 一切効かない(「切れば従来どおり」を1箇所で保証する)。
   enabled: boolean = true,
@@ -530,6 +546,35 @@ export function resolveTpWidth(
  *  buy → 建値 + 幅 / sell → 建値 − 幅。★境界(ちょうど)は **発火する**(呼び出し側の >= / <=)。 */
 export function takeProfitTrigger(direction: 'buy' | 'sell', entryPrice: number, tpWidthYen: number): number {
   return direction === 'buy' ? entryPrice + tpWidthYen : entryPrice - tpWidthYen;
+}
+
+/** ★待機中(armed)のレッグの TP発火価格。**そのレッグが約定したら、この価格で成行決済される** という価格そのもの。
+ *
+ *  ■ ★なぜ server が計算して SSE に載せるのか(画面に計算させない理由)
+ *    画面が「幅 → 価格」を自分で計算していた版で、**決済と画面が別々の規則を持つ** 事故が出た:
+ *     ① ARM 時 TP=OFF → 保有中に ON+手動幅 に戻すと、決済は発火するのに **画面は1文字も出さない**(無音)。
+ *     ② ARM 時 ON → 待機中に OFF にすると、発火しないのに **画面は TP を出したまま**(嘘の行)。
+ *        しかも SSE は JSON 一致で dedupe するので、古い表示が待ち時間(15〜30分)ぶん残る。
+ *     ③ 手動幅が不正(0/負/NaN)のときの落とし方が画面と決済で食い違う(480通り中12件)。
+ *    ★①②の根は同じで、画面が見ていたのが **ARM 時に凍結した設定スナップショット** だったこと。
+ *    → ★**発火価格の計算は server に1本化し、画面は「server が言った価格を描くだけ」にする。**
+ *      毎 broadcast ここで引き直すので、設定を変えれば **値が変わり=JSON が変わり=SSE が再送される**。
+ *
+ *  ■ ★式は増やさない: `resolveTpWidth`(幅の決め方)→ `takeProfitTrigger`(価格の作り方)だけで作る。
+ *    決済(computeHold / advance)が通るのと **同じ2つの関数**=同じ規則であることが構造で保証される。
+ *  ■ 幅が無い/TP無効/エントリーが無い・非有限 なら **undefined**(=SSE に載せない=画面も何も出さない)。
+ *  ■ ★エントリー価格をそのまま使ってよい理由: 指値は指値価格で約定し、逆指値は逆指値価格ちょうどで
+ *    約定する(STOP_SLIPPAGE_YEN=0)。つまり約定後に computeHold が出す tpTrigger と同じ価格になる。
+ *  ■ ★レンジ両面には使わない(レンジでは TP を尋ねていない=幅が存在しない)。 */
+export function armedTpTrigger(
+  direction: 'buy' | 'sell', entry: number | undefined, tpWidth: number | undefined,
+  tp?: TpDirective | null,
+): number | undefined {
+  if (entry == null || !Number.isFinite(entry)) return undefined;
+  // ★computeHold と **同じ引数の渡し方**(未指定=enabled 既定 true・手動なし)。
+  const w = resolveTpWidth({ tpWidth }, tp?.manualYen, tp?.enabled ?? true);
+  if (w == null) return undefined;
+  return takeProfitTrigger(direction, entry, w);
 }
 
 /** 現在値が決済逆指値に達したか。達したら exit 価格(= 逆指値)、未達なら null。 */
@@ -972,6 +1017,26 @@ export function toSignalTradeState(
     if (signal.settings) s.signal.settings = signal.settings;
     // ★ドテン(反転)フラグ(ADD-ONLY): 実 doten の時だけ付与。非 doten の JSON は不変=dedupe/OFF byte 一致。
     if (signal.doten) s.signal.doten = true;
+    // ── ★TP(利確)の欄。**TP が効いている directional のときだけ作る** ─────────────────
+    //   ★この gating の理由(advance の「TP無効なら幅を焼かない」と同じ判断):
+    //     TP を切っている間に1バイトでも増えると「切れば TP 導入前と byte 一致」が成立しなくなる。
+    //     ★実測でここに気づいた: 幅だけを無条件に載せていた版は、TP=OFF でも SSE JSON が
+    //       変更前と一致しなかった(不変の実証で 2ケース赤)。
+    //   ★レンジ両面も対象外(TP を尋ねていない=幅も価格も意味を持たない)。
+    const tpOn = (tp?.enabled ?? true) && !(signal.mode === 'range' || signal.range != null);
+    if (tpOn) {
+      // ★TP幅(レッグ別・**記録/分析用**): AI が出した幅そのもの。AI委任のときだけ在る。
+      //   ★画面はこれを **使わない**(幅から価格を作る規則を web に置くと、決済と2箇所に規則ができる)。
+      if (signal.tpWidthForLimit !== undefined) s.signal.tpWidthForLimit = signal.tpWidthForLimit;
+      if (signal.tpWidthForStop !== undefined) s.signal.tpWidthForStop = signal.tpWidthForStop;
+      // ★TP の **発火価格**(レッグ別・表示用)= 画面が描くのはこれ。
+      //   ★毎 broadcast **いまの設定(tp)** から引き直す。ARM 時のスナップショット(signal.settings)は使わない。
+      //   幅が無い/不正なら載せない(=画面も1文字も出さない)。
+      const tl = armedTpTrigger(signal.direction, signal.limitEntry, signal.tpWidthForLimit, tp);
+      if (tl !== undefined) s.signal.tpTriggerForLimit = tl;
+      const ts = armedTpTrigger(signal.direction, signal.stopEntry, signal.tpWidthForStop, tp);
+      if (ts !== undefined) s.signal.tpTriggerForStop = ts;
+    }
   }
   // ★直近決済シグナルID(ADD-ONLY): 在るときだけ露出(初回決済まで欠落=既存 JSON 不変)。
   if (lastExitedSignalId != null) s.lastExitedSignalId = lastExitedSignalId;
@@ -1178,6 +1243,9 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
   if (a.settings) s.settings = a.settings;
   // ★ドテン(反転)フラグを引き継ぐ(在るときだけ=add-only)。
   if (a.doten) s.doten = true;
+  // ★TP幅(レッグ別)を引き継ぐ(在るときだけ=欠落なら従来と byte 一致)。画面が待機中の TP 価格を描くために要る。
+  if (a.tpWidthForLimit !== undefined) s.tpWidthForLimit = a.tpWidthForLimit;
+  if (a.tpWidthForStop !== undefined) s.tpWidthForStop = a.tpWidthForStop;
   return s;
 }
 

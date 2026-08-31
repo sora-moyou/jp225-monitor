@@ -1750,3 +1750,110 @@ describe('★ボードから消した3つの文字列(2026-08-25 ユーザー指
     expect(only.above.lines[0]).toBe('LC: 節目の内側に戻る幅');
   });
 });
+
+// ─── ★TP(利確)をボードに出す ──────────────────────────────────────────────
+//   ■ 症状(ユーザー報告): 「TP が AI委任 ですが、TP 表示されません。」
+//     実際にボードは TP を **一度も** 表示していなかった(描いている箇所が0件)。
+//   ■ 出し方: LC が価格で出ているので TP も **価格**。書式は既存の `(LC …)` と同じ形を並べるだけ。
+//   ■ ★★価格は **server が計算して SSE に載せる**。画面は選んで描くだけで、1円も計算しない:
+//     ・待機中 … `signal.tpTriggerForLimit` / `tpTriggerForStop`
+//     ・保有中 … `hold.tpTrigger`(決済が実際に使う価格)を **約定した脚だけ** に
+//     ★画面が幅から計算していた版では、ARM 時に凍結した設定を見ていたため
+//       「決済は発火するのに画面は無音」「発火しないのに画面は出したまま」が起きた。
+//       → ★画面のテストに **設定(scalpTpEnabled/幅)は1つも出てこない**。それが直った証拠。
+//   ■ 値が無ければ **1文字も出さない**(「TP なし」とは書かない)。
+
+/** 買いの2レッグ(指値=下 / 逆指値=上)。TP の材料だけを差し替えて使う。 */
+const TP_SIG = (extra: Record<string, unknown>): SignalTradeState => ({
+  phase: 'armed', updatedAt: 0,
+  signal: {
+    direction: 'buy',
+    limitEntry: 65395, stopLossForLimit: 65345,
+    stopEntry: 65520, stopLossForStop: 65470,
+    rationale: '押し目買い', at: 1, ...extra,
+  },
+});
+
+describe('★TP をボードに出す(sections=実際に描かれる欄)', () => {
+  it('待機中: server が載せた発火価格を両脚にそのまま出す', () => {
+    const v = buildSignalView(TP_SIG({ tpTriggerForLimit: 65465, tpTriggerForStop: 65610 }));
+    // 買い: 指値=下 / 逆指値=上。
+    expect(v.sections?.below.main).toBe('🎯 買い 65,395 指値 (LC 65,345) (TP 65,465)');
+    expect(v.sections?.above.main).toBe('🎯 買い 65,520 逆指値 (LC 65,470) (TP 65,610)');
+  });
+
+  it('売りでも同じ(価格をそのまま出すだけなので向きの計算はしない)', () => {
+    const v = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'sell', limitEntry: 65520, stopLossForLimit: 65570,
+        stopEntry: 65395, stopLossForStop: 65445, at: 1,
+        tpTriggerForLimit: 65450, tpTriggerForStop: 65305,
+      },
+    });
+    // 売り: 指値=上 / 逆指値=下。
+    expect(v.sections?.above.main).toBe('🎯 売り 65,520 指値 (LC 65,570) (TP 65,450)');
+    expect(v.sections?.below.main).toBe('🎯 売り 65,395 逆指値 (LC 65,445) (TP 65,305)');
+  });
+
+  it('★保有中: hold.tpTrigger を **そのまま** 出す(画面が計算し直さない)', () => {
+    const s = TP_SIG({ tpTriggerForLimit: 65465, tpTriggerForStop: 65610 });
+    s.phase = 'filled';
+    // 指値(65,395)で約定。★待機中の値(65,465)が signal に残っていても、
+    //   決済が使う価格は hold.tpTrigger=65,500。**画面はこちらを出す**。
+    s.hold = { signalId: 1, direction: 'buy', entryPrice: 65395, exitStop: 65345, at: 2, tpTrigger: 65500 };
+    const v = buildSignalView(s);
+    expect(v.sections?.below.main).toBe('🎯 買い 65,395 指値 (LC 65,345) (TP 65,500)');
+    // ★約定していない脚(逆指値)には出さない: そこに建玉の TP を並べると
+    //   「買いの逆指値 65,520 より下に TP 65,500」という嘘の表示になる。
+    expect(v.sections?.above.main).toBe('🎯 買い 65,520 逆指値 (LC 65,470)');
+  });
+
+  it('★保有中に TP が動けば表示も動く(hold.tpTrigger は毎tick 引き直される)', () => {
+    const mk = (trigger?: number): string => {
+      const s = TP_SIG({});
+      s.phase = 'filled';
+      s.hold = { signalId: 1, direction: 'buy', entryPrice: 65395, exitStop: 65345, at: 2, tpTrigger: trigger };
+      return buildSignalView(s).sections!.below.main;
+    };
+    expect(mk(65475)).toContain('(TP 65,475)');
+    expect(mk(65435)).toContain('(TP 65,435)');   // 幅が変わった → 次tickの hold で表示も動く
+    expect(mk(undefined)).toBe('🎯 買い 65,395 指値 (LC 65,345)');   // TP が効いていない建玉
+  });
+
+  it('★価格が来ていなければ1文字も出さない(「TP なし」とは書かない)', () => {
+    const bare = '🎯 買い 65,395 指値 (LC 65,345)';
+    // ① 旧い server / TP が効かない回(server が載せない)
+    expect(buildSignalView(TP_SIG({})).sections?.below.main).toBe(bare);
+    // ② 片脚だけ来ている(もう片方は出さない)
+    const one = buildSignalView(TP_SIG({ tpTriggerForStop: 65610 }));
+    expect(one.sections?.below.main).toBe(bare);
+    expect(one.sections?.above.main).toBe('🎯 買い 65,520 逆指値 (LC 65,470) (TP 65,610)');
+    // ③ 壊れた値(NaN/Infinity)は描かない
+    for (const t of [NaN, Infinity]) {
+      expect(buildSignalView(TP_SIG({ tpTriggerForLimit: t })).sections?.below.main).toBe(bare);
+    }
+  });
+
+  it('★レンジ両面の脚には出さない(レンジでは TP を尋ねていない)', () => {
+    const v = buildSignalView({
+      phase: 'armed', updatedAt: 0,
+      signal: {
+        direction: 'buy', mode: 'range', at: 1,
+        tpTriggerForLimit: 65465, tpTriggerForStop: 65610,   // ★万一載っていても描かない
+        range: {
+          upper: { side: 'sell', type: 'limit', entry: 65600, stopLoss: 65660 },
+          lower: { side: 'buy', type: 'limit', entry: 65400, stopLoss: 65340 },
+        },
+      },
+    });
+    expect(JSON.stringify(v.sections)).not.toContain('TP');
+  });
+
+  it('★否定対照: TP が来ない回は PanelView 全体が TP 導入前と同一(main は元から TP を持たない)', () => {
+    const noTp = buildSignalView(TP_SIG({}));
+    expect(noTp.main).toBe('🎯 シグナル：買い 65,395 指値 (LC 65,345) / 買い 65,520 逆指値 (LC 65,470)');
+    // TP が出る回でも **main は変えない**(main は描かれない=旧版との突き合わせ用の否定対照)。
+    expect(buildSignalView(TP_SIG({ tpTriggerForLimit: 65465, tpTriggerForStop: 65610 })).main).toBe(noTp.main);
+  });
+});
