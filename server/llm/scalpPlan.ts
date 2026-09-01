@@ -1672,6 +1672,12 @@ export function scalpJsonInstruction(
   // ★v1f(2026-08-20): lcWhyForLimit / lcWhyForStop の **注記だけ** を差し替える候補腕のフラグ。
   //   **既定 false = v1 と byte 一致**(実取引につながる経路は1ミリも動かない)。理由は lcWhyNote を参照。
   lcWhyJudgment = false,
+  // ★TP(利確の成行決済)の幅を尋ねるか。★**既定 false = この引数を足す前と1バイト同一**。
+  //   ★true になるのは buildScalpPlan の1箇所だけ(askTpOldPath: 設定が TP有効かつAI委任 **かつ**
+  //     この回がドテン(held-eval)のとき)。★理由と、なぜ他の旧経路には広げないかは
+  //     buildScalpPlan の askTpOldPath の注記を参照。
+  //   ★数値(帯・既定値)は1つも印字しない(印字した数値はそのまま選ばれる=実測)。
+  askTp = false,
 ): string {
   // ★v0.9.56 ①: LC 幅の書き方だけが手動(保存値)/委任(実効上限までの範囲)で分かれる。
   // ★v0.9.60: 旧文言「本来のストップ位置から+5円外側」をこのフィールド注記から撤去した。
@@ -1694,6 +1700,14 @@ export function scalpJsonInstruction(
       `    "upper": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "lcWidth": number },  // entry は現在値超・lcWidth は損切りの幅(条件は上の lcWidthFor… と同じ)\n` +
       `    "lower": { "side": "buy"|"sell", "type": "limit"|"stop", "entry": number, "lcWidth": number }   // entry は現在値未満・lcWidth は損切りの幅(条件は上の lcWidthFor… と同じ)\n` +
       `  },\n`
+    : '';
+  // ★TP(利確)の2フィールド。★askTp=false のときは空文字 = この行を足す前と1バイト同一。
+  //   ★TP幅の定義はここに1回だけ置く(散文で2度書かない)。★数値は1つも書かない。
+  //   ★レンジ(range)には足さない: 分割経路でも レンジ版は TP を尋ねない(tpAskable=false)ので、
+  //     旧経路だけ尋ねると経路によって契約が食い違う。
+  const tpFields = askTp
+    ? `  "tpWidthForLimit": number,   // 指値約定時の利確(TP)の幅。建値からその幅だけ利益方向へ動いたら成行で決済する **正の数の幅[円]**。指値レッグを出さない/none の時は省略\n` +
+      `  "tpWidthForStop": number,    // ブレイク新規約定時の利確(TP)の幅(条件は上の tpWidthForLimit と同じ)。ブレイク新規レッグを出さない/none の時は省略\n`
     : '';
   return `最終的な回答は、次のスキーマに厳密に一致する JSON オブジェクトのみを出力してください(前後の説明文・コードフェンス・マークダウンは一切付けない)。\n` +
     `{\n` +
@@ -1734,6 +1748,12 @@ export function scalpJsonInstruction(
     `  "lcWhyForLimit": string,     // ${lcWhyNote('lcWidthForLimit', lcWhyJudgment)}\n` +
     `  "lcWidthForStop": number,    // ブレイク新規約定時の損切りの幅(${lcNote})。ブレイク新規レッグを出さない/none の時は stopEntry と対で省略\n` +
     `  "lcWhyForStop": string,      // ${lcWhyNote('lcWidthForStop', lcWhyJudgment)}\n` +
+    // ★TP(利確)の幅。★**尋ねた回(askTp=true)だけ** この2行を出す。尋ねない回は1バイトも出さない
+    //   (「TP は使いません」とすら書かない=否定文でも語と数値は供給されるため)。
+    //   ★帯(下限/上限)も既定値も印字しない。★理由の箱(tpWhy)は足さない=尋ねるのは幅だけ。
+    //   ★LC と違い **対の必須ではない**: 書かれなければ その回は TP 無しで計画は成立する
+    //     (レッグは落とさない)。分割経路(B)の TP と同じ扱い。
+    tpFields +
     // ★v0.9.87: 「なぜこの価格なのか」を数値で残す。**新しい規則は足さない**(節目への置き方は既に上で
     //   決まっている)。ここで求めるのは「その規則で **実際に使った節目の価格**」だけ。
     //   文章の枠を増やさないのが要点(根拠文は実測で LC検算に埋め尽くされ、増やしても押し出される)。
@@ -1948,7 +1968,13 @@ export function buildLegNote(
   return parts.join('');
 }
 
-export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
+export function parseScalpPlan(
+  raw: string, refPrice: number,
+  // ★TP(利確)の幅を **尋ねた回か**。★既定 false = この引数を足す前と1バイト同一
+  //   (尋ねていない回は tpWidthFor* を1度も読まない=尋ねる/読むが必ず同じ1つの値で決まる)。
+  //   ★渡すのは runScalpPlanResult だけで、その値は buildScalpPlan の askTpOldPath と同一。
+  askTp = false,
+): ScalpPlanResult {
   const text = (raw ?? '').trim();
   if (!text) return { ok: false, error: 'empty response' };
   // ```json … ``` を剥がし、最初の { から最後の } までを候補にする。
@@ -2176,6 +2202,16 @@ export function parseScalpPlan(raw: string, refPrice: number): ScalpPlanResult {
     plan.stopEntry = stopEntry!;
     plan.stopLossForStop = stopLossForStop!;
   }
+  // ★TP幅: **尋ねた回だけ** 読む(askTp=false ならこの中は1度も走らない)。
+  //   ★採るのは **正の有限値** だけ(planToArmed / resolveTpWidth と同じ規約。0/負/非有限は「TP無し」)。
+  //   ★読めなくても脚は落とさない・計画も落とさない(TP が無い計画は従来どおり成立する)。
+  //   ★生き残ったレッグにだけ載せる(落ちたレッグに TP だけ残すと、下流の enforce が消す前提に頼ることになる)。
+  if (askTp) {
+    const tpForLimit = num(o.tpWidthForLimit);
+    const tpForStop = num(o.tpWidthForStop);
+    if (limitLegOk && tpForLimit !== null && tpForLimit > 0) plan.tpWidthForLimit = tpForLimit;
+    if (stopLegOk && tpForStop !== null && tpForStop > 0) plan.tpWidthForStop = tpForStop;
+  }
   // ★表示整合: 実際に採用したレッグを rationale 末尾に機械生成の注記として追記(directional のみ)。
   //   採用の有無は最終 plan から判定。AI が出したが検証で落ちたレッグは「不採用」タグを付す。none/range 経路は
   //   触らない(上で return 済み)。
@@ -2261,6 +2297,9 @@ export async function runScalpPlanResult(
   create: CreateFn, systemPrompt: string, userPrompt: string,
   tools: unknown[], handlers: ToolHandlers, refPrice: number,
   imageDataUrl?: string | null,
+  // ★TP幅を尋ねたか(= systemPrompt に TP の2フィールドを出したか)。★既定 false = 従来と1バイト同一。
+  //   ★初回・再要求の **両方** の parse に同じ値を渡す(片方だけ読むと、再要求で TP が黙って消える)。
+  askTp = false,
 ): Promise<Extract<ScalpPlanResult, { ok: true }>> {
   const userContent = buildScalpUserContent(userPrompt, imageDataUrl);
   const baseMessages: any[] = [
@@ -2268,7 +2307,7 @@ export async function runScalpPlanResult(
     { role: 'user', content: userContent },
   ];
   const first = await runChatWithTools(create, baseMessages, tools, handlers);
-  const parsed = parseScalpPlan(first, refPrice);
+  const parsed = parseScalpPlan(first, refPrice, askTp);
   if (parsed.ok) return parsed;
   // パース失敗 → 厳格に1回だけ再要求(tools 無し・JSON のみ)。
   const retry = await create({
@@ -2280,7 +2319,7 @@ export async function runScalpPlanResult(
     ],
   });
   const retryText = retry.choices?.[0]?.message?.content?.trim() ?? '';
-  const parsed2 = parseScalpPlan(retryText, refPrice);
+  const parsed2 = parseScalpPlan(retryText, refPrice, askTp);
   if (parsed2.ok) return parsed2;
   // ★投げる型は ScalpPlanUnparsableError(= providers.ts の UnusableResponseError では **ない**)。
   //   意味: 「診断のために種別は名乗るが、**フォールバックはしない**」。理由はクラス定義のコメント。
@@ -2997,9 +3036,31 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   //        毎tick 引き直す契約なので、AI の答えは使わない。
   //   ★**尋ねない項目の数値をプロンプトに置かない**(実測: 印字した数値はそのまま選ばれる。
   //     上限65→LC60固着 / 下限55→55固着)。だから「使わない」とすら書かず、行ごと出さない。
-  //   ★この値は runSplitPlan の opts.askTp に渡すだけ(=B の system / user / 読み取りの3箇所に
-  //     同じ1つの値が届く)。旧経路(1回呼び出し)には TP を足していない(依頼外)。
+  //   ★この値は runSplitPlan の opts.askTp に渡す(=B の system / user / 読み取りの3箇所に
+  //     同じ1つの値が届く)。
   const askTp = resolveScalpTpEnabled(profile) && resolveScalpTpWidthDirective(profile).mode === 'ai';
+  // ★2026-09-02(ドテンの TP 欠落の修正): 旧経路(1回呼び出し)でも TP を尋ねる。
+  //   ★ただし **ドテン(held-eval)の回だけ**(heldPosition が渡された回)。
+  //
+  //   ■ 何が壊れていたか(実データで特定済み)
+  //     ドテンは resolveSplitBypassReasons が 'heldPosition' を返して **必ず旧経路へ落ちる** のに、
+  //     旧経路は TP を1文字も尋ねていなかった。よって反対プランに tpWidthFor* が入らず、
+  //     planToArmed が幅を付けず、約定時に pos.tpWidth が焼かれず、resolveTpWidth が null になる。
+  //     = ★ドテンで入り直した建玉には TP が **効いていなかった**(記録の欠落ではない)。
+  //     実測: TP 導入後の約定 223件のうち A の35件(34.0%)が該当し、35件すべて直前が exit_reason='doten'。
+  //
+  //   ■ ★なぜ「ドテンの回だけ」なのか(旧経路 **全部** に広げない理由)
+  //     旧経路へ落ちる回は heldPosition だけではない(resolveSplitBypassReasons の6つ):
+  //       heldPosition / armedContext(レンジ再評価) / promptVariant(候補腕) /
+  //       exitVariant / caller≠default(★分析用=生成器) / emptyTrendContext。加えて分割OFF(env)。
+  //     ★このうち caller='generator' は **測定器そのもの**。質問文を変えれば実験の母集団が壊れる。
+  //     ★候補腕(promptVariant)も同じ理由で動かさない(動かす変数を1つに保つ)。
+  //     → ★ここで直したいのは「ドテンの TP が効いていない」1件だけなので、条件を
+  //       heldPosition に絞る。他の経路のプロンプトは1バイトも変わらない。
+  //
+  //   ■ ★設定の扱いは分割経路と同一(askTp との AND): TP 無効/手動なら **尋ねない**。
+  //     ★尋ねない回は tpWidthFor* の2行を出さず、読み取りも走らせない(同じ1つの値で決まる)。
+  const askTpOldPath = askTp && input.heldPosition !== undefined;
   // 初期 LC 幅の上限とバイアスは、要求で明示されなければ monitor 設定を既定に使う(＝直呼びのシグナルエンジンも
   // monitor 設定に従う=単一の真実)。上限はサニタイズ・クランプ後にプロンプトへ反映し、最終保証は enforcePlanConstraints。
   const ceilingMode = ceilingD.mode;
@@ -3132,6 +3193,8 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
   // ★v1f(2026-08-20): 候補腕。lcWhyFor* の注記 **だけ** を差し替える(質問文・system・strategySpec は v1 と同一)。
   const jsonInstruction = scalpJsonInstruction(
     refPrice, floorYen, promptCeilingYen, rangeAllowed, lcCeil, promptVariant === 'v1f',
+    // ★TP の2フィールドを出すのは **ドテンかつ設定が委任** の回だけ(askTpOldPath の注記を参照)。
+    askTpOldPath,
   );
   const userPromptFor = (withImage: boolean): string =>
     promptVariant === 'v2'
@@ -3266,7 +3329,8 @@ export async function buildScalpPlan(input: ScalpPlanInput = {}): Promise<ScalpP
         console.warn('[scalp-plan] プロンプト指紋の記録に失敗(計画は続行):', e instanceof Error ? e.message : String(e));
       }
       try {
-        planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis);
+        // ★読み取り(TP)は **尋ねたのと同じ1つの値** で決める(askTpOldPath)。
+        planResult = await runScalpPlanResult(create, systemPrompt, userPrompt, tools, handlers, refPrice, imgForThis, askTpOldPath);
       } catch (e) {
         // ★無音の失敗を潰す(2026-08-11): 「200 は返ったが計画が作れなかった」回に **1行だけ** 残す。
         //   この経路は tripCircuit が false で抜けるため [LLM:*] の warn が1行も出ず、事故が起きても
