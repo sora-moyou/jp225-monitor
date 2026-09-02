@@ -152,7 +152,7 @@ describe('★同 tick で損側と利側が両方成立 → 損側が勝つ', ()
 
   it('buy: 損側と利側が同 tick で成立 → 損側(ratchet_floor)が勝つ', () => {
     const pos = buyPos({ peakProfit: ARMED_PT, tpWidth: TP_NARROW });
-    const { next, recorded } = advance(filled(pos), collideBuy, 2_000, { exitFn: fakeLock });
+    const { next, recorded } = advance(filled(pos), collideBuy, 2_000, { exitFn: fakeLock, prevTick: null });
     expect(collideBuy >= takeProfitTrigger('buy', 38000, TP_NARROW)).toBe(true);   // 利側は成立している
     expect(next.phase).toBe('flat');
     expect(recorded!.exitReason).toBe<ExitReason>('ratchet_floor');
@@ -161,7 +161,7 @@ describe('★同 tick で損側と利側が両方成立 → 損側が勝つ', ()
   });
   it('sell: 損側と利側が同 tick で成立 → 損側(ratchet_floor)が勝つ', () => {
     const pos = sellPos({ peakProfit: ARMED_PT, tpWidth: TP_NARROW });
-    const { next, recorded } = advance(filled(pos), collideSell, 2_000, { exitFn: fakeLock });
+    const { next, recorded } = advance(filled(pos), collideSell, 2_000, { exitFn: fakeLock, prevTick: null });
     expect(collideSell <= takeProfitTrigger('sell', 38000, TP_NARROW)).toBe(true);
     expect(next.phase).toBe('flat');
     expect(recorded!.exitReason).toBe<ExitReason>('ratchet_floor');
@@ -169,7 +169,7 @@ describe('★同 tick で損側と利側が両方成立 → 損側が勝つ', ()
   });
   it('損側が成立しない tick では利側が効く(順序を入れただけで利側を殺していない)', () => {
     const pos = buyPos({ peakProfit: ARMED_PT, tpWidth: TP_NARROW });
-    const { recorded } = advance(filled(pos), 38060, 2_000, { exitFn: fakeLock });
+    const { recorded } = advance(filled(pos), 38060, 2_000, { exitFn: fakeLock, prevTick: null });
     expect(recorded!.exitReason).toBe<ExitReason>('take_profit');
   });
 });
@@ -179,20 +179,20 @@ describe('★同 tick で損側と利側が両方成立 → 損側が勝つ', ()
 describe('★手動TP幅は毎tick引き直す(保有中の変更が次tickで効く)', () => {
   it('同じ建玉・同じ価格でも、引数の幅を変えるだけで挙動が変わる', () => {
     const st = filled(buyPos());   // 建玉には TP幅を焼いていない(手動運用)
-    const wide = advance(st, 38060, 2_000, { tp: manual(100) });
+    const wide = advance(st, 38060, 2_000, { tp: manual(100), prevTick: null });
     expect(wide.next.phase).toBe('filled');   // 幅100 → トリガ38100 未到達
-    const narrow = advance(st, 38060, 2_100, { tp: manual(60) });
+    const narrow = advance(st, 38060, 2_100, { tp: manual(60), prevTick: null });
     expect(narrow.next.phase).toBe('flat');   // 幅60 → トリガ38060 到達
     expect(narrow.recorded!.exitReason).toBe<ExitReason>('take_profit');
   });
 
   it('★いまの伸びより小さい幅に変えたら、次tickで即座に決済される', () => {
     // 1st tick: 幅 211(遠い)のまま 38083(=建値+83)まで伸ばす。決済しない。
-    const t1 = advance(filled(buyPos()), 38083, 2_000, { tp: manual(211) });
+    const t1 = advance(filled(buyPos()), 38083, 2_000, { tp: manual(211), prevTick: null });
     expect(t1.next.phase).toBe('filled');
     expect(t1.next.position!.peakProfit).toBe(83);
     // 2nd tick: ユーザーが幅を 47 に縮めた(いまの伸び 83 より小さい)→ 同じ価格でも即決済。
-    const t2 = advance(t1.next, 38083, 2_100, { tp: manual(47) });
+    const t2 = advance(t1.next, 38083, 2_100, { tp: manual(47), prevTick: null });
     expect(t2.next.phase).toBe('flat');
     expect(t2.recorded!.exitReason).toBe<ExitReason>('take_profit');
     // ★決済価格は **トリガ(38047)ではなく現在値(38083)** に成行スリップ。実際に叩ける価格で記録する。
@@ -207,8 +207,8 @@ describe('★手動TP幅は毎tick引き直す(保有中の変更が次tickで�
 
   it('手動の幅は建玉に焼いた AI の幅より優先される', () => {
     const st = filled(buyPos({ tpWidth: 60 }));
-    expect(advance(st, 38060, 2_000, { tp: manual(200) }).next.phase).toBe('filled');
-    expect(advance(st, 38200, 2_000, { tp: manual(200) }).next.phase).toBe('flat');
+    expect(advance(st, 38060, 2_000, { tp: manual(200), prevTick: null }).next.phase).toBe('filled');
+    expect(advance(st, 38200, 2_000, { tp: manual(200), prevTick: null }).next.phase).toBe('flat');
   });
 });
 
@@ -240,7 +240,7 @@ describe('★TP幅が無い(null)なら従来と完全に同じ', () => {
     const st = filled(buyPos());
     for (const p of [38010, 38050, 37940]) {
       const a = advance(st, p, 2_000);
-      const b = advance(st, p, 2_000, {});
+      const b = advance(st, p, 2_000, { prevTick: null });
       expect(JSON.stringify(b)).toBe(JSON.stringify(a));
     }
   });
@@ -252,7 +252,7 @@ describe('★rangeTp を流用していない(レンジ分岐へ落ちない)', 
   it('tpWidth を据えても mode/rangeTp は付かず、利側へ動く逆指値は生きたまま', () => {
     // 逆指値は建値+TEST_LOCK_YEN(38023)へ動いている。TP幅を 777(遠い)にしても、その決済は従来どおり効く。
     const pos = buyPos({ peakProfit: ARMED_PT, tpWidth: 777 });
-    const { recorded, next } = advance(filled(pos), 38000 + TEST_LOCK_YEN - 3, 2_000, { exitFn: fakeLock });
+    const { recorded, next } = advance(filled(pos), 38000 + TEST_LOCK_YEN - 3, 2_000, { exitFn: fakeLock, prevTick: null });
     expect(next.phase).toBe('flat');
     expect(recorded!.exitReason).toBe<ExitReason>('ratchet_floor');   // レンジ分岐なら range_stop になる
     expect(recorded!.mode).toBeUndefined();
@@ -260,11 +260,11 @@ describe('★rangeTp を流用していない(レンジ分岐へ落ちない)', 
   it('レンジ建玉(rangeTp 設定済)は手動TP幅を渡しても挙動が変わらない', () => {
     const pos = buyPos({ mode: 'range', rangeTp: 38400 });
     const a = advance(filled(pos), 38100, 2_000);
-    const b = advance(filled(pos), 38100, 2_000, { tp: manual(30) });
+    const b = advance(filled(pos), 38100, 2_000, { tp: manual(30), prevTick: null });
     expect(JSON.stringify(b)).toBe(JSON.stringify(a));   // 幅30(=38030)を渡しても決済されない
     expect(b.next.phase).toBe('filled');
     // レンジTP は従来どおり節目の5円内側で発火し、理由は range_tp のまま。
-    const tp = advance(filled(pos), 38395, 2_000, { tp: manual(30) });
+    const tp = advance(filled(pos), 38395, 2_000, { tp: manual(30), prevTick: null });
     expect(tp.recorded!.exitReason).toBe<ExitReason>('range_tp');
   });
 });
@@ -551,17 +551,17 @@ describe('★TP を切っている間は幅を焼かない(切れば1バイト�
     tpWidthForLimit: 60,
   };
   it('tp.enabled=false の約定では position に tpWidth が付かない', () => {
-    const { next } = advance({ phase: 'armed', armed }, 37945, 2_000, { tp: tpOff });
+    const { next } = advance({ phase: 'armed', armed }, 37945, 2_000, { tp: tpOff, prevTick: null });
     expect('tpWidth' in next.position!).toBe(false);
     expect(JSON.stringify(next.position)).not.toContain('tpWidth');
   });
   it('tp.enabled=true(既定)の約定では付く', () => {
-    expect(advance({ phase: 'armed', armed }, 37945, 2_000, { tp: aiTp }).next.position!.tpWidth).toBe(60);
+    expect(advance({ phase: 'armed', armed }, 37945, 2_000, { tp: aiTp, prevTick: null }).next.position!.tpWidth).toBe(60);
     expect(advance({ phase: 'armed', armed }, 37945, 2_000).next.position!.tpWidth).toBe(60);   // opts 省略=既定 ON
   });
   it('tp.enabled=false なら、幅を焼いた建玉でも決済されない', () => {
     const pos = buyPos({ tpWidth: 60 });
-    expect(advance(filled(pos), 38400, 2_000, { tp: tpOff }).next.phase).toBe('filled');
+    expect(advance(filled(pos), 38400, 2_000, { tp: tpOff, prevTick: null }).next.phase).toBe('filled');
     expect(resolveTpWidth(pos, 47, false)).toBeNull();   // 手動幅も効かない
   });
 });

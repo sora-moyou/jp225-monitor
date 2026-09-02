@@ -295,6 +295,14 @@ export interface SignalTradeState {
     //   TP が効かない回(切っている/幅なし)と レンジ両面 では **フィールドごと欠落**=既存 SSE JSON 不変。
     tpTriggerForLimit?: number;
     tpTriggerForStop?: number;
+    // ★v0.9.108(ADD-ONLY・**trade2 追従用**): この ARM の未約定待ち時間[ms]。
+    //   monitor は v0.9.59 から待ちを可変(15〜30分・距離とσから armWait.ts が算出)にしたが、
+    //   その値が SSE に載っていなかったため trade2 は既定の 15分固定のままだった。実測(340件・系統A・dryrun)で
+    //   「monitor だけ約定」20件中 16件 が **trade2 が 15分で諦めた後に monitor が約定** した回で、
+    //   一致した 320件の armed→約定は最大 893秒・諦めた16件が必要とした窓は最小 943秒 = 分布が重ならない。
+    //   ★値の決め方は1バイトも変えていない(既にある ArmedBracket.waitMs を運ぶだけ)。
+    //   ★有限かつ正のときだけ載る。欠落 = monitor 側も既定の 15分(= trade2 の既定と同じ)。
+    armWaitMs?: number;
   };
   // 保有中の意図(trade2 追従用)。filled の間だけ付与し、決済逆指値(computeExitStop の絶対価格)を
   // 毎tick公開する。signalId=そのエントリーの ARM 采番=trade2 が「どの建玉のストップか」を対応づける。

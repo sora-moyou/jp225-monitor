@@ -124,6 +124,27 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
     return recorded!;
   }
 
+  /** 経路⑦: 引け(15:45 / 6:00)をまたいだ建玉を、その引けで全決済。
+   *  ★実測の形をそのまま使う: 引けから次の寄りまで tick は **1本も来ない** ので、決済を判断する tick は
+   *    次セッションの寄り(ここでは 17:00:03)であり、その価格は引け値ではない。
+   *    だから決済価格は prevTick(引け前に最後に見た価格)、決済時刻は引けの時刻になる。 */
+  function exitSessionClose(): RecordedTrade {
+    _setExitImpl(fakeRatchet);
+    const entryT = Date.UTC(2026, 7, 25, 6, 26, 0);    // 2026-08-25 15:26 JST(日中セッション)
+    const closeT = Date.UTC(2026, 7, 25, 6, 45, 0);    // 同日 15:45 JST(引け)
+    const reopenT = Date.UTC(2026, 7, 25, 8, 0, 3);    // 17:00:03 JST(引け後の最初の tick=夜間の寄り)
+    const position: OpenPosition = {
+      direction: 'buy', entryPrice: 38000, qty: 1, initialStop: 37950, peakProfit: 0, rationale: 'r', at: entryT,
+    };
+    // 寄り値 37800 は初期LC 37950 を割っているが、建玉は引けの時点で既に閉じている=初期LC では決済しない。
+    const { next, recorded } = advance({ phase: 'filled', position }, 37800, reopenT,
+      { prevTick: { price: 38020, t: closeT - 2_000 } });
+    expect(next.phase).toBe('flat');
+    expect(recorded!.exitT).toBe(closeT);        // ★決済時刻は「引け」(寄りの時刻ではない)
+    expect(recorded!.exitPrice).toBe(38020);     // ★引け前に最後に見た価格ちょうど(引け決済だけスリップ無し=trade2 と一致)
+    return recorded!;
+  }
+
   /** 経路⑥: ドテン(保有中の反転評価)で成行決済。 */
   function exitDoten(): RecordedTrade {
     const position: OpenPosition = {
@@ -152,6 +173,9 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
   it('ドテンの成行決済 → doten', () => {
     expect(exitDoten().exitReason).toBe<ExitReason>('doten');
   });
+  it('引けをまたいだ建玉の全決済 → session_close', () => {
+    expect(exitSessionClose().exitReason).toBe<ExitReason>('session_close');
+  });
 
   // ★「次に決済経路が増えたときに漏れない」仕掛けの実証(表と実装の双方向チェック):
   //   ・表 → 実装: 表に理由を足したのに、それを出す決済経路が無ければ ここが落ちる(死んだ選択肢の禁止)。
@@ -161,6 +185,7 @@ describe('R1 決済理由: 全5経路がコードの決済地点と1対1で対�
     const produced = new Set<string>([
       exitInitialStop().exitReason, exitRatchetFloor().exitReason, exitRangeStop().exitReason,
       exitRangeTp().exitReason, exitTakeProfit().exitReason, exitDoten().exitReason,
+      exitSessionClose().exitReason,
     ]);
     expect([...produced].sort()).toEqual([...EXIT_REASONS].sort());
   });

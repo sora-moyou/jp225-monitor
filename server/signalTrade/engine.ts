@@ -193,6 +193,11 @@ export class SignalEngine {
   /** テスト用: (d) の歯止め状態を覗く。 */
   _peekArmRepeat(): ArmRepeatState { return this.armRepeat; }
 
+  /** ★1つ前の tick(価格とその時刻)。引け全決済の約定価格に使う(advance の opts.prevTick)。
+   *  ★起動直後・再起動直後は null(=引けを跨いだ建玉は現在値へフォールバック)。建玉は永続していないので、
+   *    「再起動を跨いで引けを跨いだ建玉」は原理的に存在しない。 */
+  private lastTick: { price: number; t: number } | null = null;
+
   /** ログ接頭辞(A=[signalTrade] で従来ログと byte 一致 / B=[signalTradeB])。 */
   private get logTag(): string { return this.cfg.profile === 'B' ? '[signalTradeB]' : '[signalTrade]'; }
 
@@ -1082,7 +1087,15 @@ export class SignalEngine {
       const prevArmedAt = this.state.armed?.at;
       const prevArmed = this.state.armed;   // ★未約定失効の診断ログ用(advance 後は消えるのでここで控える)。
       // ★TP の実効設定は **毎tick** 解決して渡す(advance は純関数のまま=中で設定を読まない)。
-      const { next, recorded, armedTimedOut } = advance(this.state, price, now, { tp: this.tpDirective() });
+      // ★prevTick(1つ前の tick)= 引け全決済(session_close)の約定価格の材料。
+      //   実測(prices_kabu.db の複製・8か月): 引け(15:45 / 6:00)から次の寄り(17:00 / 8:45)までの帯に
+      //   ティックは **1本も来ない**(bars_1m 407,386本・ticks 282,089件・signal_plans 3,254件・
+      //   signal_exit_stops 2,279件 のどれも 0件)。priceLoop が `!niy.stale` でしか供給せず、
+      //   価格源の liveFlag が引けで 0 になるため。だから「引け以降の最初の tick の価格」は
+      //   75〜165分あとの寄り値であり、それで閉じたら持ち越しの損益がそのまま残る。
+      //   → 引け前に最後に見た価格で閉じる(trade2 forward/run.ts の sessionClose price=lastPrice と同じ材料)。
+      const prevTick = this.lastTick;
+      const { next, recorded, armedTimedOut } = advance(this.state, price, now, { tp: this.tpDirective(), prevTick });
       this.state = next;
       // ★fill latency: armed→filled に遷移したら position.at−armed.at を移動平均サンプルへ記録(平均約定所要=再評価閾値の元)。
       if (prevPhase === 'armed' && next.phase === 'filled' && next.position && prevArmedAt != null) {
@@ -1133,6 +1146,10 @@ export class SignalEngine {
       this.maybeRequestRangeReeval(now);   // ★レンジ再評価: armed かつ レンジ両指値が平均超過未約定のとき ブレイク切替評価を要求(非レンジ/既定OFF=no-op)。
       this.heartbeat(now);   // ★診断: 定期にエンジン状態を1行ログ(固着の早期発見)。
       this.broadcastSignalState(now);
+      // ★次の tick のための「1つ前の tick」を控える。**tick 処理の最後**に更新する
+      //   (先に更新すると advance が自分自身の tick を「引け前の価格」として使ってしまう)。
+      //   ★有限値だけ控える(壊れた価格を引け決済の建値にしない)。
+      if (Number.isFinite(price) && Number.isFinite(now)) this.lastTick = { price, t: now };
     } catch (e) {
       console.warn(`${this.logTag} tick error:`, e instanceof Error ? e.message : String(e));
     }

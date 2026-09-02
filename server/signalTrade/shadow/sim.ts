@@ -165,7 +165,11 @@ class ShadowLeg {
     const prevPhase = this.state.phase;
     const prevArmed = this.state.armed;
     // ★本番と同じ遷移関数。違うのは **exitFn(床のパラメータ)だけ**。
-    const r = advance(this.state, price, now, { exitFn: this.spec.exit });
+    // ★prevTick: 引け全決済(session_close)の約定価格の材料。**本番エンジンと同じものを渡す**
+    //   (渡さないと、影だけが引けを寄り値で閉じて実運用とずれる=影の比較が「床の違い」以外を含んでしまう)。
+    //   まだ tick を1本も受けていなければ null(=現在値へフォールバック)。
+    const prevTick = this.lastT != null && this.lastPrice != null ? { price: this.lastPrice, t: this.lastT } : null;
+    const r = advance(this.state, price, now, { exitFn: this.spec.exit, prevTick });
     this.state = r.next;
     if (prevPhase === 'armed' && r.next.phase === 'filled' && r.next.position && prevArmed) {
       const pos = r.next.position;

@@ -18,6 +18,9 @@ import type { EntryTrendDir } from '../../core/entryLabel.js';
 //   ★呼び名は別名で維持する=呼び出し側(下の armFromPlan の最終ガード等)は1文字も変わらない。
 //   ★役割は不変: 不正な向きの損切りを仮想取引エンジンが arm/約定しないための最終ガード(trade2 サニティと一致させる)。
 import { stopSideOk as stopOnCorrectSide, stopLossFromWidth as stopLossAtEntry } from '../../core/stopGeometry.js';
+// ★引け(15:45 / 6:00)の時刻は core/session.ts が **唯一の権威**(このファイルは数字を1つも持たない)。
+//   core/session は依存ゼロの葉なので、純粋コアである decisions からの import は上の stopGeometry と同じ扱い。
+import { nextSessionCloseMs } from '../../core/session.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
 
@@ -146,6 +149,15 @@ export interface CurrentSignal {
   //   欠落(手動TP / AI が幅を出さなかった回 / 旧版の計画)では **フィールドごと付けない**=従来と byte 一致。
   tpWidthForLimit?: number;
   tpWidthForStop?: number;
+  // ★v0.9.108(ADD-ONLY): このシグナルの **未約定待ち時間**[ms]。ArmedBracket.waitMs をそのまま運ぶ。
+  //   ★名前を waitMs から armWaitMs へ変えている理由: CurrentSignal は **trade2 が読む面** で、
+  //     ここには at / signalId / rationale のような「シグナル全体の属性」が並ぶ。裸の `waitMs` は
+  //     「何を待つ時間か」が読み手に分からない(SSE には別に waitReason(なぜ計画を出していないか)や
+  //     armedTimeout.waitMin も居る)。武装(ARM)の待ちであることを名前に入れる。
+  //     ★ArmedBracket 側の `waitMs` は改名しない(内部の呼び名は1バイトも変えない)。
+  //   ★**有限かつ正のときだけ** 載せる=載っている値は monitor が実際に使う値と必ず一致する
+  //     (armedWaitMsOf のフォールバック条件と同じ判定。欠落 = monitor も 15分 = trade2 の既定と同じ)。
+  armWaitMs?: number;
 }
 
 export interface OpenPosition {
@@ -624,6 +636,26 @@ export interface AdvanceOptions {
    *    保有中に設定を変えても反映されない — 手動は「毎tick 引き直す」が仕様なので、必ず毎回渡す。
    *  渡さなければ TP 導入前と byte 一致(AI委任の pos.tpWidth だけが効き、それも無ければ TP は一切効かない)。 */
   tp?: TpDirective | null;
+  /** ★**1つ前の tick**(価格とその時刻)。引け全決済(session_close)の約定価格に使う。
+   *
+   *  ★なぜ必要か(実測 2026-09-02・prices_kabu.db の複製):
+   *    monitor のエンジンは **引けから次の寄りまで1本もティックを受け取らない**。
+   *    bars_1m 407,386本(2025-12-29〜2026-09-02)・ticks 282,089件・signal_plans 3,254件・
+   *    signal_exit_stops 2,279件のどれを数えても、15:45〜17:00 と 6:00〜8:45 の帯は **全て0件**。
+   *    (原因: priceLoop は `!niy.stale` のときだけ engine へ供給し、価格源の liveFlag が引けで 0 になる。
+   *     inPollWindow の前後マージンは効いていない。)
+   *    → 「引け以降の最初のティック」は **75分〜165分あと** の寄り値になる。そこで決済しても
+   *      持ち越しの損益がそのまま残り、直そうとした食い違いが1円も直らない。
+   *  ★trade2 の実装(合わせる相手)も同じ材料を使っている:
+   *    `forward/run.ts` はセッション変化を見て sessionClose を注入し、その **price は lastPrice**
+   *    (= 引け前に最後に見た価格)。engine.flatten はその価格で全建玉を閉じる。
+   *    → monitor もここを揃える = **引け前に最後に見た価格** で閉じる。
+   *  ★**省略可能にしていない(必須・null 許容)理由**: 省略できると「渡し忘れた経路だけ、引け決済が静かに
+ *    寄り値になる」という無言の失敗が生まれる(実測でその差は 75〜165分後の値=最大で建玉の損益がまるごと変わる)。
+ *    scalpPlan の帯/ scalpPlanSplit の TP と同じ規約で、**呼ぶ側に必ず宣言させる**。
+ *  ★値が無い回は `null` を明示的に渡すこと(「渡していない」と「値が無い」を型で分ける)。
+ *    null のときは現在値へフォールバックする(=決済を止めない)。 */
+  prevTick: { price: number; t: number } | null;
 }
 
 /** 現在値 price を受けて armed→filled / filled→flat の遷移を1歩進める純関数(DB/LLM は呼ばない)。
@@ -713,6 +745,96 @@ export function advance(
     //     ・逆指値ヒットの決済(初期LC / ラチェット床 / レンジ損側)= STOP_SLIPPAGE_YEN(0)= 逆指値価格ちょうど
     //     ・板を叩く純粋な成行決済(レンジTP)                       = SLIPPAGE_YEN(1tick)
     const withSlip = (raw: number, dir: 'buy' | 'sell', slip: number): number => raw + (dir === 'buy' ? -slip : slip);
+
+    // ══ ★引け全決済(session_close): 建玉は引け(15:45 / 6:00)を越えて持ち越さない ═══════════
+    //  ★合わせる相手 = trade2。trade2 は forward/run.ts がセッション変化で sessionClose を注入し、
+    //    core/engine.ts が `if (!this.liveFillSource) this.flatten(...)` で全建玉を閉じる。
+    //  ★monitor 側に `!liveFillSource` に当たる条件は **要らない**(条件を置かない、と決めた):
+    //    trade2 でその条件が要るのは「LIVE は引けも **実発注**(atclose)で決済するので、模擬決済を重ねると
+    //    二重計上になる」ためで、monitor の紙エンジンには実発注が無い=二重計上する相手が存在しない。
+    //    さらに trade2 は LIVE でも実発注で必ず引けに閉じるので、**どちらのモードでも引けで閉じる** が正。
+    //    条件を置くと「紙だけ持ち越す」という、いま直している食い違いをもう一度作ることになる。
+    //  ★引けの時刻は core/session.ts が唯一の権威(ここに 15:45/6:00 の数字は無い)。
+    const closeMs = nextSessionCloseMs(pos.at);
+    /** 引けが **この tick より前** に起きたか。true = 建玉は引けの時点で既に閉じているべきだった。 */
+    const pastClose = now > closeMs;
+    /** 引けちょうどの tick か。この場合だけ「引けと損切りが同時」が成立しうる。 */
+    const atClose = now === closeMs;
+    /** 引けの成行決済に使う **生の価格**(スリップ前)。
+     *  ・引けちょうどの tick … その tick の価格(それが引け値)。
+     *  ・引けより後の tick  … **引け前に最後に見た価格**(opts.prevTick)。実測でこの間に tick は1本も無く、
+     *    現在値は 75〜165分あとの寄り値なので、それで閉じると持ち越しの損益がそのまま残る。
+     *    trade2 の sessionClose も同じ材料(forward/run.ts の lastPrice)を使う。
+     *  ・prevTick が渡されない/引け後の値しか無い … 現在値へフォールバック(新しい仕組みで決済を止めない)。 */
+    const closeRaw = pastClose && opts?.prevTick != null
+      && Number.isFinite(opts.prevTick.price) && opts.prevTick.t <= closeMs
+      ? opts.prevTick.price
+      : price;
+    /** 引け全決済で FLAT へ落とす(記録の材料は既存の決済経路と同じ順・同じ条件で載せる)。
+     *  ★exitT は **引けの時刻**(tick の時刻ではない): 引けの後に市場は無く、そこから寄りまでの
+     *    75〜165分を「保有していた」と記録すると保有時間の分析が壊れる。
+     *  ★クールダウンの起点は engine が別に `now` で持つ(this.lastSignalExitAt)ので、
+     *    ここで引け時刻を入れても「寄りでいきなり再ARM」にはならない。 */
+    const flattenAtSessionClose = (peakPt: number): { next: EngineState; recorded: RecordedTrade } => {
+      // ★★引け決済だけは **スリッページを引かない**(= 引け値ちょうどで約定させる)。
+      //
+      //   ★monitor の他の成行決済(ドテン / レンジTP / TP)は不利1tick(SLIPPAGE_YEN)のままで、
+      //     **ここだけ規約が違う**。次に読む人のために、なぜここだけ違うのかを書き残す:
+      //
+      //     ① この経路の存在理由が「trade2 と一致させること」そのものだから。
+      //        他の成行は monitor が自分で決めた執行モデルだが、引け全決済は trade2 に無かった規則を
+      //        後から monitor へ持ち込んだ経路で、**合わせる相手が先に存在する**。
+      //     ② 合わせる相手 trade2 の引け決済(src/core/engine.ts の closeAt)は **スリップを引かない**。
+      //        sessionClose イベントの価格(= 引け前に最後に見た価格 lastPrice)ちょうどで閉じている。
+      //     ③ ここで1tick 引くと、**引け決済のすべてに新しい5円の系統差を自分で作る**ことになる。
+      //        いま直している食い違い(決済規則の違い)を、別の形で作り直すだけになる。
+      //
+      //   ★規約: **新しい経路を足す側が、合わせる相手に揃える。**
+      //   ★他の成行経路のスリッページは1バイトも変えていない(withSlip / SLIPPAGE_YEN の定義も不変)。
+      const exitFill = closeRaw;
+      const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
+      // ★R4/R5: レンジ建玉(rangeTp 設定済)に TP幅は効かない=null(下のレンジ分岐 mkRecorded と同じ規約)。
+      const tpW = pos.mode === 'range' && pos.rangeTp != null
+        ? null
+        : resolveTpWidth(pos, opts?.tp?.manualYen, opts?.tp?.enabled ?? true);
+      const r: RecordedTrade = {
+        entryT: pos.at, entryPrice: pos.entryPrice, dir: pos.direction,
+        exitT: closeMs, exitPrice: exitFill, pnl, qty: pos.qty, rationale: pos.rationale,
+        exitReason: 'session_close', exitInitialStop: pos.initialStop, peakProfit: peakPt,
+        tpWidth: tpW, tpTrigger: tpW != null ? takeProfitTrigger(pos.direction, pos.entryPrice, tpW) : null,
+      };
+      if (pos.mode === 'range') r.mode = 'range';
+      if (pos.planMeta) r.planMeta = pos.planMeta;
+      if (pos.settings) r.settings = pos.settings;
+      if (pos.doten) r.doten = true;
+      carryArmed(r, pos.armedAt, pos.armedPrice);
+      // ★★ここだけ `recorded.exitT`(=closeMs)と `lastExit.at`(=now)で **時刻が違う**。意図的です。
+      //   2つは別物だからです:
+      //     ・recorded.exitT … **台帳**「いつ決済したか」= 引け(15:45 / 6:00)。市場が無い 75〜165分を
+      //       『保有していた』と記録しないため、また trade2 の flat 記録と突き合わせるため。
+      //     ・lastExit.at  … **画面**「いつ知らせるか」= いま(この tick)。web/components/signalPanel.ts の
+      //       buildPositionView は `now - lastExit.at < EXIT_DISPLAY_MS(40秒)` で『✔ 決済』を出すので、
+      //       ここに引けの時刻を入れると **判定した瞬間には既に窓の外**=決済表示が一度も出ない。
+      //       ★実測: 決済音(signalPanel の `lastExit.at > prevExitAt`)は鳴るのに画面は「保有なし」のまま、
+      //         という『音だけ鳴って何も出ない』無言の失敗になっていた。
+      //   ★lastExit のもう1つの消費者(`sig.at <= lastExit.at` による signal 枠クリア)は
+      //     sig.at < closeMs < now なのでどちらの値でも結果が同じ(=この変更で壊れない)。
+      //   ★他の決済経路は決済 tick = 決済時刻なので、この2つは元々同じ値です(区別が要るのは引けだけ)。
+      return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: r };
+    };
+    // ★引けが **この tick より前** なら、損切り/TP の判定より先に閉じる。
+    //   理由(規約 "同じtickで損切りと引けが両方成立したら損側が先" との関係): その規約は
+    //   **同じ瞬間に両方成立した場合** の順序であって、ここは同じ瞬間ではない。引け(15:45)は
+    //   この tick(実測で 17:00 台)より **75分以上前** に起きている。既に閉じているはずの建玉に
+    //   寄り値の損切りを当てると、市場が無い時間に付いた値で決済したことになる(=いま直している食い違いそのもの)。
+    //   ★引けちょうどの tick(atClose)は同じ瞬間なので、従来どおり損側 → TP → 引け の順で下まで落とす。
+    if (pastClose) return flattenAtSessionClose(pos.peakProfit);
+    // ★意図して残した差(事故ではない): **引けで ARMED の未約定ブラケットは取り消していない**。
+    //   trade2 の flatten() は `orders.cancelAll()` も呼ぶので、15:45〜17:00 のあいだ
+    //   monitor は「ARMED」を配信し続け、trade2 は既に取消済み、という3つ目の構造的非一致が残る。
+    //   ★台帳(signal_trades)には差が出ない(建玉が無いので行が作られない)ため今回は入れなかった。
+    //   ★入れるなら advance の armed 分岐(上)であって、この filled 分岐ではない。
+
     // ★レンジ建玉(rangeTp 設定済)= 損側は固定初期LC(ラチェットしない)/ 利側は反対側節目手前で成行決済(phase-exit を使わない)。
     //   directional / rangeTp 無しの建玉はこの分岐に入らず、既存の phase-exit(下)へ落ちる=byte 不変。
     if (pos.mode === 'range' && pos.rangeTp != null) {
@@ -751,6 +873,11 @@ export function advance(
         const pnl = realizedPnl(pos.direction, pos.entryPrice, exitFill, pos.qty);
         return { next: { phase: 'flat', lastExit: { exitPrice: exitFill, pnl, at: now } }, recorded: mkRecorded(exitFill, pnl, 'range_tp') };
       }
+      // ★引けちょうどの tick で、損側も利側も成立しなかった → 引け全決済(損側 → 利側 → 引け の順)。
+      //   レンジ建玉も対象にする理由: 引けで市場が消えるのは建玉の出自と無関係で、trade2 の flatten も
+      //   タグを見ずに全建玉を閉じる。ここだけ持ち越すと「レンジ由来だけ規則が違う」食い違いができる。
+      //   ★peak は range 決済では更新しない規約なので、記録にも pos.peakProfit をそのまま残す(下の mkRecorded と同じ)。
+      if (atClose) return flattenAtSessionClose(pos.peakProfit);
       // どちらも未到達 → 保有継続(peak 更新は range 決済に不要)。
       return { next: { phase: 'filled', position: pos, lastExit: st.lastExit } };
     }
@@ -801,6 +928,11 @@ export function advance(
           };
         }
       }
+      // ★引けちょうどの tick で、損側(逆指値)も利側(TP)も成立しなかった → 引け全決済。
+      //   ★順序は 損側 → 利側 → 引け。引けを先に置くと、初期LC を割った tick や TP に届いた tick が
+      //     「引けで閉じた」ことになり、既存の決済理由が引けの日だけ書き換わってしまう。
+      //   ★peak はこの tick で更新済みの値(=床の決定に使った値)をそのまま記録する。
+      if (atClose) return flattenAtSessionClose(peak);
       return { next: { phase: 'filled', position: updated, lastExit: st.lastExit } };
     }
     const exitFill = withSlip(exit, pos.direction, STOP_SLIPPAGE_YEN);   // 逆指値決済=逆指値価格ちょうど
@@ -1017,6 +1149,11 @@ export function toSignalTradeState(
     if (signal.settings) s.signal.settings = signal.settings;
     // ★ドテン(反転)フラグ(ADD-ONLY): 実 doten の時だけ付与。非 doten の JSON は不変=dedupe/OFF byte 一致。
     if (signal.doten) s.signal.doten = true;
+    // ★v0.9.108(ADD-ONLY): 未約定待ち時間[ms]。**型を足すだけでは JSON に載らない**(v0.9.105 で踏んだ穴)
+    //   ので、ここで明示的に写す。trade2 はこれを entryTimeoutMs の代わりに使える(既定 900000 のまま
+    //   固定されていたため、monitor が 15〜30分で待っている間に trade2 だけが 15分で諦めていた)。
+    //   欠落(据えなかった ARM)は従来どおり=既存 JSON 不変。
+    if (signal.armWaitMs !== undefined) s.signal.armWaitMs = signal.armWaitMs;
     // ── ★TP(利確)の欄。**TP が効いている directional のときだけ作る** ─────────────────
     //   ★この gating の理由(advance の「TP無効なら幅を焼かない」と同じ判断):
     //     TP を切っている間に1バイトでも増えると「切れば TP 導入前と byte 一致」が成立しなくなる。
@@ -1246,6 +1383,11 @@ export function armedToCurrentSignal(a: ArmedBracket, signalId: number): Current
   // ★TP幅(レッグ別)を引き継ぐ(在るときだけ=欠落なら従来と byte 一致)。画面が待機中の TP 価格を描くために要る。
   if (a.tpWidthForLimit !== undefined) s.tpWidthForLimit = a.tpWidthForLimit;
   if (a.tpWidthForStop !== undefined) s.tpWidthForStop = a.tpWidthForStop;
+  // ★v0.9.108: 未約定待ち時間を引き継ぐ(在るときだけ=据えなかった呼び出し元は従来と byte 一致)。
+  //   ★判定は armedWaitMsOf(=monitor 自身が実際に使う値を決める関数)と同一条件にする。
+  //     こうしておくと「載った値 ≠ monitor が使う値」が構造的に起こらない(0/NaN は載らず、
+  //     その場合 monitor も trade2 も 15分 という同じ既定に落ちる)。
+  if (a.waitMs != null && Number.isFinite(a.waitMs) && a.waitMs > 0) s.armWaitMs = a.waitMs;
   return s;
 }
 

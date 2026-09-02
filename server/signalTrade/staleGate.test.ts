@@ -327,7 +327,11 @@ describe('stale plan veto(ドテン反転の反対ブラケット)', () => {
       mockRunner.mockResolvedValue({ ok: true, plan: sellOco });
       const eng = newEngineA();
       await eng.start();
-      eng._setFilledForTest(heldBuyPos, heldBuySig);
+      // ★建玉の約定時刻は **NOW と同じセッション内** に置く(共有フィクスチャの at=500=1970年 は使わない)。
+      //   feed→advance を通る唯一のケースなので、1970年の建玉のままだと「引け全決済(session_close)」が
+      //   先に成立して held-eval まで到達しない(=このテストが見たいドテン経路が走らない)。
+      //   他のドテンのテストは applyDotenResult を直接呼ぶので advance を通らず、この影響を受けない。
+      eng._setFilledForTest({ ...heldBuyPos, at: NOW - 60_000 }, heldBuySig);
       eng.feed(38055, NOW);      // 保有中(LC37950 未達)→ held-eval を要求
       await settle();
       return eng;

@@ -26,6 +26,12 @@ export function currentSignalPayload(sig: CurrentSignal | null): Record<string, 
   }
   // ★v0.7.56: 実効設定スナップショットを露出(在るときだけ・trade2 が entry_meta に記録)。
   if (sig.settings) out.settings = sig.settings;
+  // ★v0.9.108: 未約定待ち時間[ms](在るときだけ)。**SSE の signal.armWaitMs と必ず同じものを載せる**。
+  //   ★ここに載せ忘れると「SSE を取り逃した回だけ静かに 15分(trade2 の既定)へ戻る」= 配線が死んでいる型の
+  //     無言の失敗になる。trade2 の late-join 初期同期は **この API しか読まない** ため、
+  //     SSE 側だけ直しても半分しか直らない。★この案件は既に1度踏んでいる(lastExitedSignalId が
+  //     この API に載っておらず、trade2 の初期同期が常に null を読んでいた)。同じ穴を二度開けない。
+  if (sig.armWaitMs !== undefined) out.armWaitMs = sig.armWaitMs;
   return out;
 }
 

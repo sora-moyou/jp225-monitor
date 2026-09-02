@@ -69,6 +69,12 @@ export const EXIT_REASON_SPEC = {
   take_profit:   { label: '利確TP',       ratchet: false },
   /** ドテン(保有中の反転評価)で建玉を成行決済して反対側へ武装した。 */
   doten:         { label: 'ドテン',       ratchet: false },
+  /** ★引け(セッション終了 = 15:45 / 6:00)をまたいだ建玉を、その引けで全決済した。
+   *  ★trade2 と揃えるための経路(trade2 は forward/run.ts がセッション変化で sessionClose を注入し
+   *    core/engine.ts の flatten が全建玉を閉じる)。monitor の紙エンジンには無く、次セッションまで
+   *    持ち越していた=決済規則そのものの食い違いだった。
+   *  ★ラチェット床とは無関係(引けは床の判断を一切見ない成行決済)なので ratchet:false。 */
+  session_close: { label: '引け全決済',   ratchet: false },
 } as const satisfies Record<string, ExitReasonSpec>;
 
 /** 決済理由。★手書きの union は存在しない — 上の表のキーがそのまま型になる。 */

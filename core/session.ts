@@ -165,6 +165,32 @@ export function tokyoCashOpen(epochMs: number): boolean {
   return mod >= CASH_OPEN && mod < CASH_CLOSE;
 }
 
+/**
+ * ★「引け(セッション終了)」の時刻[epoch ms]。epochMs より **後** にある最初の引けを返す。
+ *
+ * ★新しい定数は作らない: 引けは上の DAY_CLOSE(15:45)と NIGHT_MORN_CLOSE(6:00)がそのまま権威で、
+ *   このファイルが唯一の出所。呼ぶ側は 15:45 / 6:00 という数字を1つも持たない。
+ *
+ * ★1日に引けは2回だけ(6:00 = 夜間セッションの終わり / 15:45 = 日中セッションの終わり)なので、
+ *   JST の当日 00:00 を起点に「6:00 → 15:45 → 翌 6:00」の順で最初に epochMs を超えるものを返す。
+ *
+ * ★休場日/週末は **見ない**(引けの「時刻の格子」を返すだけ)。理由: この関数の用途は
+ *   「建玉がその引けを跨いだか」の判定だけで、非取引日の引けを跨いでも答えは変わらないため
+ *   (取引が無い日にはそもそも建玉が生まれない)。休場判定が要るなら classifySession を使うこと。
+ *
+ * ★境界は **半開**: epochMs がちょうど引けの瞬間なら、その引けは「既に来た」とみなして次の引けを返す
+ *   (classifySession が mod < DAY_CLOSE で Day を終える規約と揃える)。
+ */
+export function nextSessionCloseMs(epochMs: number): number {
+  // その epochMs が属する JST 日の 00:00(JST)の epoch ms。
+  const dayStart = Math.floor((epochMs + JST_OFFSET) / DAY_MS) * DAY_MS - JST_OFFSET;
+  const morning = dayStart + NIGHT_MORN_CLOSE * 60_000;   // 当日 6:00(夜間セッションの引け)
+  if (epochMs < morning) return morning;
+  const day = dayStart + DAY_CLOSE * 60_000;              // 当日 15:45(日中セッションの引け)
+  if (epochMs < day) return day;
+  return dayStart + DAY_MS + NIGHT_MORN_CLOSE * 60_000;   // 翌日 6:00
+}
+
 export const OPEN_GUARD_BARS = 3;   // 寄りから3本(=3分)は抑制
 
 /** 立会開始(寄付)からの分オフセット。非取引時間は null。
