@@ -19,7 +19,7 @@ import { broadcast } from '../sse/broker.js';
 import { getPrices } from '../cache.js';
 import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, insertSignalPlan, getSignalIdStart, SIGNAL_ID_SPACE_BASE, setSignalIdCounter, getArmedTimeoutStats, bumpArmedTimeout, resetArmedTimeoutStreak, type SignalPlanInsert } from '../db/store.js';
 import { collectRecentBars } from '../barsSource.js';
-import { inPollWindow } from '../../core/session.js';
+import { inPollWindow, inTradingSession } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
 import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled,
@@ -344,6 +344,20 @@ export class SignalEngine {
 
   stop(): void { this.running = false; }
 
+  /** ★**AI の応答が解決した時点の「エンジン時計」**。= 要求を出した tick の時刻 + その後に実際に経った時間。
+   *
+   *  ★なぜ素の `Date.now()` ではないのか(2026-09-05・ARM 経路①②③で共通化):
+   *    本番では tick の時刻(priceLoop が渡す now)= `Date.now()` なので両者は同じ値になる。しかし
+   *    **tick の時刻を外から与える呼び出し**(テスト・将来の再生)では `Date.now()` は
+   *    「エンジンが生きている世界の時計」ではない。時刻の判断を2つの時計に割ると、
+   *    武装可否・武装時刻・連続失効ブロックの比較が **別々の世界の値どうし** になり、
+   *    「テストの中だけ引けを跨いでいる/跨いでいない」という無言のズレが生まれる。
+   *    → 判断は必ず tick の時計で行い、実時計からは **経過時間だけ** を借りる。
+   *  ★requestedWallMs は「要求を出した瞬間の実時計」。時刻としては使わず、差分を取るためだけに使う。 */
+  private engineClockAfter(tickNow: number, requestedWallMs: number): number {
+    return tickNow + (Date.now() - requestedWallMs);
+  }
+
   /** ★待機理由(画面の「シグナル待機（…）」の中身)。maybeRequestPlan の抑止ゲートと **同じ材料・同じ順序**
    *  を読む(ここで別の判定を書くと、画面の理由と実際に抑止している理由がずれる)。
    *
@@ -383,6 +397,7 @@ export class SignalEngine {
       phase: this.state.phase,
       planning: this.planning,
       inPollWindow: inPollWindow(now),
+      inSession: inTradingSession(now),   // ★引けを過ぎた帯(引け〜引け+10分)も「取引時間外」と出す。
       cooldownUntilMs: until,
       planSuppressedAnchor: anchor,
       priceKnown,
@@ -518,6 +533,11 @@ export class SignalEngine {
   private maybeRequestPlan(price: number, now: number): void {
     if (this.planning || this.state.phase !== 'flat') return;
     if (!inPollWindow(now)) return;   // 取引時間外は要求しない。
+    // ★引けを過ぎたら要求しない(2026-09-04 の実記録)。inPollWindow は引けの **10分後まで true**
+    //   (実測: inPollWindow(15:45:06.735)=true / 15:55:00 でようやく false)なので、上の1行だけでは
+    //   引けちょうどのティック(=建玉を全決済したのと同じティック)で次の計画を要求してしまう。
+    //   ★ここで止めるのは金の話でもある: 引けの後に走った計画は必ず捨てるのに LLM の課金だけ発生する。
+    if (!inTradingSession(now)) return;
 
     // クールダウンゲート: 決済(filled→flat)後 scalpCooldownSec 秒は再ARM(plan要求)を抑止する。
     // ★v0.7.56: クールダウンが AI委任(mode==='ai')のときはゲートを無効化(AI の選択性に委ねる)。manual のみゲート。
@@ -553,6 +573,9 @@ export class SignalEngine {
     this.planning = true;
     this.lastPlanAt = now;   // 起動直後の多重要求を防ぐため、要求時点で更新する。
     const anchorPrice = price;   // 見送りが返った場合のアンカー(要求時点の現在値)。
+    // ★ARM 経路①のエンジン時計(理由は engineClockAfter の doc)。
+    const requestedWallMs = Date.now();
+    const armNow = (): number => this.engineClockAfter(now, requestedWallMs);
     void (async () => {
       // ★台帳(signal_plans)用: このサイクルの結末をここに集め、**どの分岐で抜けても**(途中の return も
       //   例外も)finally で1行残す。例外で計画が得られなかった回は catch が ok:false の形を入れる
@@ -646,7 +669,11 @@ export class SignalEngine {
                 + `anchor=${Math.round(anchorPrice)} ref=${Math.round(result.plan.refPrice)} reason=refstale`);
               return;   // ★finally で planning=false に戻る(この IIFE を抜けるだけ)。
             }
-            const armed0 = planToArmed(result.plan, Date.now(), { vetoFired: result.vetoFired, trendDir: result.trendDir });
+            // ★時計を1本に揃える(2026-09-05): armed.at は advance が `now - armed.at` と
+            //   `sameTradingSession(armed.at, now)` の **両方** で読む値なので、判断に使う時計
+            //   (= tick の時計 armNow)と同じでなければならない。素の Date.now() を刻むと、
+            //   tick 時刻を外から与える呼び出しで「武装時刻だけ別の世界」になる。
+            const armed0 = planToArmed(result.plan, armNow(), { vetoFired: result.vetoFired, trendDir: result.trendDir });
             // ★stale plan veto: ARM 時点の live 価格で「もう通過した価格」のレッグは武装しない。
             //   checkSanity は plan.refPrice(撮影時価格)基準のまま(上のコメントの設計判断=不変)。ここは別観点の
             //   ガードで、画像生成+LLM のレイテンシ中に価格が動き「ARM 時点では既にエントリーを通過している」計画を
@@ -694,12 +721,45 @@ export class SignalEngine {
                 return;   // ★finally で planning=false に戻る。
               }
             }
-            if (armed && this.armBlocked(armed, Date.now())) {
+            // ★armRepeat.blockedUntil は feed() が **tick の時計** で据える値なので、比較もエンジン時計で行う。
+            if (armed && this.armBlocked(armed, armNow())) {
               // ★(d) 歯止め: 同じ価格が連続で失効し続けている → 見送り(none)と同じ扱いにして節目まで抑止する。
               //   エンジン全体は止まらない(価格が節目を跨げば別の計画は普通に出る)。
               this.planSuppressedAnchor = anchorPrice;
               gate = 'armBlocked';
               return;   // ★finally で planning=false に戻る。
+            }
+            // ★★引けを過ぎたら武装しない(ARM 経路①の時計ゲート)。
+            //   ★**このゲートは「今回の事故を止めた層」ではない**(2026-09-05 訂正):
+            //     sig 1952 は 15:31:58 から引けの全決済まで phase=filled だったので、maybeRequestPlan は
+            //     `phase!=='flat'` で即 return していた = **1953 の要求は 15:45:00.000 より前には出ていない**。
+            //     つまり今回止めたのは上の **要求ゲート**(inTradingSession)である。
+            //     **評価者の実測**でも、この武装ゲートは 32日間の全記録で **発火実績0件**。
+            //   ★それでも要る理由: 計画は **非同期** なので、要求が場中(15:44:59)でも解決は引けの後になり得る。
+            //     その窓を塞ぐのはここだけで、他に誰も時計を見ていない
+            //     (ここまでの再チェックは `this.state.phase === 'flat'` **だけ** だった)。
+            //     経路②(ドテン)は要求ゲートが分単位の間隔で回るため、この窓に実際に入り得る。
+            //   ★★「15:45:00.000 → 15:45:06.735 の 6.735秒 = LLM の往復レイテンシ」とは **言えない**
+            //     (2026-09-05 訂正): 15:45:00.000 は flattenAtSessionClose が `exitT: closeMs` で
+            //     **合成した時刻**であって、ティックや約定の時刻ではない。言えるのは
+            //     **「往復は 6.735秒 以下」** までである。
+            //   ★武装してしまうと何が起きるか(2026-09-05 訂正・以前ここに「その帯にティックは1本も来ない」と
+            //     書いていたのは **誤り**): priceLoop は inPollWindow でゲートして供給するので、エンジンは
+            //     **引けの 10分後(15:55:00.000)まで実ティックを受け取り続ける**。
+            //     ★実測の出所(リーダーが signal_plans を照会): sig 1953 の `context_at = 15:45:01.392`。
+            //       これは **計画実行を開始した時刻**でティックの時刻ではないが、要求 tick はそれ以前なので
+            //       **引けの後にティックが来ていた**ことが言える(用語と出所は core/session.ts の
+            //       `inTradingSession` の doc)。
+            //     → 引け後に武装したブラケットは **その帯で約定し得る**(放置されるだけではない)。
+            //     実際、追従側(trade2)では同じブラケットが 17:00:03 に 75分前の価格で約定し、実損が出た。
+            //   ★見送り抑止アンカー(planSuppressedAnchor)は **据えない**: これは AI の計画が
+            //     悪かったのではなく市場が閉まっただけなので、次の寄りで「節目クロス待ち」を名乗らせない。
+            //   ★PlanGate も足さない(画面の語彙を増やさない)。この帯の待機理由は currentWaitReason が
+            //     既存の「取引時間外」で出す(inSession=false)。
+            if (armed && !inTradingSession(armNow())) {
+              console.log(`${this.logTag} plan-suppress 引け後(立会外)につき武装しない `
+                + `dir=${result.plan.direction} ref=${Math.round(result.plan.refPrice)} reason=sessionClosed`);
+              return;   // ★finally で planning=false に戻る(台帳には1行残る)。
             }
             if (armed) {
               // ★v0.7.56: 実効設定スナップショット(委任モード+値)を arm 時に確定して持ち回る(profile 別)。
@@ -792,6 +852,7 @@ export class SignalEngine {
     const heldEntry = pos.entryPrice;
     this.planning = true;   // flat-plan と共有(以降 flat-plan も held-eval も新規要求しない)。
     this.lastHeldEvalAt = now;
+    const requestedWallMs = Date.now();   // ★ARM 経路②のエンジン時計の起点(engineClockAfter の doc を参照)。
     void (async () => {
       try {
         const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
@@ -800,7 +861,8 @@ export class SignalEngine {
         // ★計画が得られなかった回を必ず1行残す(applyHeldEvalResult の中ではなく **ここ**: 中は
         //   同一性再チェック(stale)を先に通すので、建玉が入れ替わっていると失敗が黙って消える)。
         this.logReevalPlanFailure('held-eval', result);
-        const nowR = Date.now();
+        // ★経路①と同じ時計にする。applyHeldEvalResult は これを立会判定・建玉時刻・記録時刻に使う。
+        const nowR = this.engineClockAfter(now, requestedWallMs);
         // priceR = P を成行決済する価格(従来どおり・キャッシュ欠落時は要求時価格へフォールバック)=挙動不変。
         // ★ゲート(stale plan veto)用の価格は別に取る: 新鮮値のみ(stale は null=素通し)。古い持ち越し価格で
         //   レッグを落とす/落とさない を判断しないため、決済価格とは分離する。
@@ -830,6 +892,17 @@ export class SignalEngine {
     if (!sameHeldPosition(this.state, identity)) return 'stale';
     if (this.currentSignal?.signalId !== identity.signalId) return 'stale';
     if (!result.ok) return 'reject';
+    // ★★立会外なら反転しない(ARM 経路②の時計ゲート・2026-09-05 追加)。
+    //   ★経路①(flat計画)と同じ規約。ここが無いと 15:44:5x に要求したドテン評価が 15:45:0x に解決して
+    //     **引けの後に反対ブラケットを武装** し、その足で broadcastSignalState() が trade2 へ配信する。
+    //     ドテンはこの環境で実際に ON(事故当日 sig 1950/1951 が exit_reason='doten' で決済されている)。
+    //   ★now はこのメソッドの引数(= 応答が解決した時刻)。実運用の呼び出し元は Date.now() を渡す。
+    //   ★'reject'(=保有継続)に倒すのが正しい: 建玉は advance の filled 分岐が引けで全決済する。
+    //     ここで反転させると、引けで閉じるべき建玉を閉じたうえに新しい建玉を持つことになる。
+    if (!inTradingSession(now)) {
+      console.log(`${this.logTag} doten-reject 引け後(立会外)につき反転しない reason=sessionClosed`);
+      return 'reject';
+    }
     const plan = result.plan;
     const heldDir = this.state.position!.direction;
     // 第一級 opposite ガード(checkSanity とは別): 保有と反対方向の actionable プランのときだけドテン候補。
@@ -953,6 +1026,7 @@ export class SignalEngine {
     const ageMs = now - armed.at;
     this.planning = true;   // flat-plan / held-eval と共有(以降 新規要求しない)。
     this.lastRangeReevalAt = now;
+    const requestedWallMs = Date.now();   // ★ARM 経路③のエンジン時計の起点(engineClockAfter の doc を参照)。
     void (async () => {
       try {
         const { runScalpPlanWithChart } = await import('../llm/scalpPlanRunner.js');
@@ -960,7 +1034,8 @@ export class SignalEngine {
         const result = await runScalpPlanWithChart({ profile: this.cfg.profile, armedContext: { mode: 'range-fade', ageMs, avgMs } });
         // ★held-eval と同じ理由でここに置く(applyRangeReevalResult の中だと stale で先に return して消える)。
         this.logReevalPlanFailure('range-reeval', result);
-        const nowR = Date.now();
+        // ★経路①②と同じ時計にする(立会判定・新 armed.at・記録時刻に使われる)。
+        const nowR = this.engineClockAfter(now, requestedWallMs);
         // ★ゲート(stale plan veto)の判定は新鮮な live 価格のみ。取れない/stale は null=素通し
         //   (要求時価格へのフォールバックはしない=古い価格でレッグを落とさない)。
         this.applyRangeReevalResult(result, identity, nowR, this.livePrice());
@@ -999,6 +1074,15 @@ export class SignalEngine {
       this.broadcastSignalState(now);
       console.log(`${this.logTag} range-reeval cancel(none) oldSignalId=${identity.signalId} age=${ageMin}m avg=${avgMin}m`);
       return 'cancel';
+    }
+    // ★★立会外なら差替えない(ARM 経路③の時計ゲート・2026-09-05 追加)。
+    //   ★経路①②と同じ規約。差替え(swap)は **新しいブラケットの武装** なので、引けの後にやってはいけない。
+    //   ★`direction==='none'`(取消)の分岐より **後** に置いてある: 取消は引け後でも通してよい
+    //     (むしろ望ましい)。ここで止めるのは新規武装だけ。
+    //   ★'reject'(=現状維持)。いま武装しているブラケットは advance が同じ tick で取り消す。
+    if (!inTradingSession(now)) {
+      console.log(`${this.logTag} reeval-reject 引け後(立会外)につき差替えない reason=sessionClosed`);
+      return 'reject';
     }
     // 妥当性(trade2 と同一の checkSanity/checkRangeSanity)。不通過は現状維持(差替えない)。
     const sanity = checkSanity(plan, plan.refPrice);
@@ -1093,9 +1177,21 @@ export class SignalEngine {
       //   signal_exit_stops 2,279件 のどれも 0件)。priceLoop が `!niy.stale` でしか供給せず、
       //   価格源の liveFlag が引けで 0 になるため。だから「引け以降の最初の tick の価格」は
       //   75〜165分あとの寄り値であり、それで閉じたら持ち越しの損益がそのまま残る。
+      //
+      //   ★★2026-09-05 訂正: 上の「1本も来ない」は **言い過ぎ**(数えた表が答えを持っていなかった)。
+      //     ・`ticks` / `bars_1m` は collector/record.ts が `classifySession` で場外を捨てて書くので、
+      //       その帯に行が入ることは **構造上ありえない**。0件は「来なかった」証拠ではなく「書かない」証拠。
+      //     ・`signal_plans` は濾していない。そして 2026-09-04 の sig 1953 は `context_at=15:45:01.392`
+      //       の行がある(**リーダーが signal_plans を照会した実測**)。つまりこの帯は 0件ではなかった。
+      //       ★`context_at` は「計画実行を開始した時刻」でティックの時刻ではないが、要求 tick はそれ以前
+      //         なので **引け後にティックが来ていた**ことは言える(出所は core/session.ts の同名 doc)。
+      //   ★それでも **この prevTick の仕組みは正しいまま**なので変えていない: 引け後の最初の tick が
+      //     15:45:01 でも 17:00 でも、`pastClose` の分岐は `prevTick.t <= closeMs` の値、つまり
+      //     **引け前に最後に見た価格** で閉じる。近い tick が来る回はむしろ理想の材料が手に入る。
+      //     ★消さないこと(「もう要らない」と読み違えないための注記)。
       //   → 引け前に最後に見た価格で閉じる(trade2 forward/run.ts の sessionClose price=lastPrice と同じ材料)。
       const prevTick = this.lastTick;
-      const { next, recorded, armedTimedOut } = advance(this.state, price, now, { tp: this.tpDirective(), prevTick });
+      const { next, recorded, armedTimedOut, armedCancelReason } = advance(this.state, price, now, { tp: this.tpDirective(), prevTick });
       this.state = next;
       // ★fill latency: armed→filled に遷移したら position.at−armed.at を移動平均サンプルへ記録(平均約定所要=再評価閾値の元)。
       if (prevPhase === 'armed' && next.phase === 'filled' && next.position && prevArmedAt != null) {
@@ -1105,7 +1201,16 @@ export class SignalEngine {
         this.clearArmedTimeoutStreak();
         this.armRepeat = noteArmFilled();
       }
-      if (armedTimedOut) {
+      if (armedTimedOut && armedCancelReason === 'sessionClose') {
+        // ★★引けを跨いだ未約定ブラケットの取消(2026-09-04 から)。以降 phase=flat。
+        //   ★**未約定失効のカウンタ(recordArmedTimeout)にも armRepeat にも数えない**。
+        //     あれは「価格が届かなかった=無音の失敗」を数える指標で、引けは価格の問題ではない。
+        //     数えると (d) の歯止め(同じ形が3回失効したら1時間ブロック)が引けのたびに近づく=誤発火する。
+        //   ★ログは残す(取消は必ず1行になる=無音にしない)。
+        console.log(`${this.logTag} armed-session-close 引けにつき未約定ブラケットを取消→FLAT `
+          + `signalId=${this.armedSignalId ?? '-'} dir=${prevArmed?.direction ?? '-'} `
+          + `armedAt=${prevArmed?.at ?? '-'} price=${Math.round(price)}`);
+      } else if (armedTimedOut) {
         // ★未約定ブラケットの取消。以降 phase=flat で maybeRequestPlan が再計画できる(固着解除)。
         // ★作業3(無音の失敗を潰す): 件数を永続カウンタに刻み、SSE へ載せ、**なぜ届かなかったか** を1行で残す。
         //   monitor が武装 → trade2 が受信後ずっと拒否 → 15分で黙って失効、という乖離の終着点がここ。

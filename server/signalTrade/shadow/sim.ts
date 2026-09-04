@@ -190,6 +190,11 @@ class ShadowLeg {
     }
     this.lastT = now;
     this.lastPrice = price;
+    // ★armedTimedOut は「未約定のまま取り消した」の1ビット。2026-09-04 から理由が2つある
+    //   (advance の armedCancelReason: 'timeout' / 'sessionClose'=引けを跨いだ)。
+    //   ★影はどちらも 'armed_timeout' として閉じる = **理由の区別を持たない**(既知の不正確さ)。
+    //     ShadowOutcome に値を足すと影の台帳の enum と既存の集計クエリの意味が変わるため、
+    //     区別が要るようになったときに **意図して** 足すこと(いま黙って足さない)。
     if (r.armedTimedOut) return this.finishArmedTimeout(now);
     if (r.recorded) return this.finishExit(r.recorded);
     return null;

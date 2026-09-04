@@ -20,7 +20,7 @@ import type { EntryTrendDir } from '../../core/entryLabel.js';
 import { stopSideOk as stopOnCorrectSide, stopLossFromWidth as stopLossAtEntry } from '../../core/stopGeometry.js';
 // ★引け(15:45 / 6:00)の時刻は core/session.ts が **唯一の権威**(このファイルは数字を1つも持たない)。
 //   core/session は依存ゼロの葉なので、純粋コアである decisions からの import は上の stopGeometry と同じ扱い。
-import { nextSessionCloseMs } from '../../core/session.js';
+import { nextSessionCloseMs, sameTradingSession } from '../../core/session.js';
 
 const QTY = 1;   // 紙トラッキングは常に1枚。
 
@@ -644,6 +644,18 @@ export interface AdvanceOptions {
    *    signal_exit_stops 2,279件のどれを数えても、15:45〜17:00 と 6:00〜8:45 の帯は **全て0件**。
    *    (原因: priceLoop は `!niy.stale` のときだけ engine へ供給し、価格源の liveFlag が引けで 0 になる。
    *     inPollWindow の前後マージンは効いていない。)
+   *
+   *  ★★2026-09-05 訂正 — 上の「全て0件」は **数えた表が答えを持っていなかった**:
+   *    ・`ticks` / `bars_1m` は collector/record.ts が `classifySession` で場外を捨ててから書くので、
+   *      その帯に行が入ることは構造上ありえない。**0件は「来なかった」証拠ではなく「書かない」証拠。**
+   *    ・`signal_plans` は濾していない。そして 2026-09-04 の sig 1953 は `context_at = 15:45:01.392`
+   *      の行がある(**リーダーが signal_plans を照会した実測**)。この帯は 0件ではなかった。
+   *      ★`context_at` は「計画実行を開始した時刻」でティックの時刻ではないが、要求 tick はそれ以前なので
+   *        **引けの後にティックが来ていた**ことは言える(用語と出所は core/session.ts の inTradingSession doc)。
+   *    → 「引け以降の最初の tick は 75〜165分あと」も常には成り立たない(数秒後のこともある)。
+   *  ★それでも **prevTick の仕組みは正しいまま**なので変えていない: `pastClose` の分岐が使うのは
+   *    `prevTick.t <= closeMs` の値 = **引け前に最後に見た価格** で、tick が近かろうと遠かろうと同じ。
+   *    近い tick が来る回はむしろ理想の材料が手に入る。★消さないこと。
    *    → 「引け以降の最初のティック」は **75分〜165分あと** の寄り値になる。そこで決済しても
    *      持ち越しの損益がそのまま残り、直そうとした食い違いが1円も直らない。
    *  ★trade2 の実装(合わせる相手)も同じ材料を使っている:
@@ -658,18 +670,58 @@ export interface AdvanceOptions {
   prevTick: { price: number; t: number } | null;
 }
 
+/** ★未約定ブラケットを取り消した理由。`armedTimedOut` は「取り消した」の1ビットのままで、
+ *  こちらが **なぜ** を持つ(既存の消費者は armedTimedOut だけを見ればよい=byte 互換)。
+ *   ・'timeout' ……… 待ち時間(armedWaitMsOf)を使い切った。従来からある唯一の理由。
+ *   ・'sessionClose' … 引け(15:45 / 6:00)を跨いだ。★これは「価格が来なかった失敗」ではないので、
+ *     engine 側で **未約定失効のカウンタ(streak/count)と armRepeat に数えない**(数えると、
+ *     引けを跨いだだけで「同じ価格が連続で失効した」歯止めが誤発火する)。 */
+export type ArmedCancelReason = 'timeout' | 'sessionClose';
+
 /** 現在値 price を受けて armed→filled / filled→flat の遷移を1歩進める純関数(DB/LLM は呼ばない)。
  *  filled では peakProfit を更新し、ラチェット逆指値に達したら決済して RecordedTrade を返す。
- *  armed が ARMED_TIMEOUT_MS を超えて未約定なら取消して FLAT(armedTimedOut=true)。 */
+ *  armed が ARMED_TIMEOUT_MS を超えて未約定なら取消して FLAT(armedTimedOut=true)。
+ *  ★armed が引けを跨いだ場合も取消して FLAT(armedTimedOut=true / armedCancelReason='sessionClose')。 */
 export function advance(
   st: EngineState, price: number, now: number, opts?: AdvanceOptions,
-): { next: EngineState; recorded?: RecordedTrade; armedTimedOut?: boolean } {
+): { next: EngineState; recorded?: RecordedTrade; armedTimedOut?: boolean; armedCancelReason?: ArmedCancelReason } {
   if (st.phase === 'armed' && st.armed) {
     // ★未約定タイムアウト: どちらのレッグも約定しないまま一定時間経過 → 取消して FLAT(再計画可能に)。
     //   armed.at はブラケット武装時刻。約定判定より前に評価する(タイムアウトが最優先)。
     //   ★待ち時間はブラケット固有(armed.waitMs)。据わっていなければ従来の一律 ARMED_TIMEOUT_MS。
     if (st.armed.at != null && now - st.armed.at >= armedWaitMsOf(st.armed)) {
-      return { next: { phase: 'flat', lastExit: st.lastExit }, armedTimedOut: true };
+      return { next: { phase: 'flat', lastExit: st.lastExit }, armedTimedOut: true, armedCancelReason: 'timeout' };
+    }
+    // ★★立会セッションの外に出た未約定ブラケットの取消(2026-09-04 の実記録から / 2026-09-05 に判定を修正)。
+    //   ★**順序は「タイムアウト → セッション → 約定」**。タイムアウトと約定の相対順(タイムアウトが先)は
+    //     1バイトも動かしていない。ここに割り込ませたのは、その2つの **あいだ** である。
+    //     ・タイムアウトより後に置く理由: 待ち時間を既に使い切ったブラケットは、引けの有無に関係なく
+    //       従来どおり 'timeout' として取り消す(既存の記録・カウンタの意味を1つも変えない)。
+    //     ・約定より前に置く理由: **これが本体**。市場が無い時間の価格で約定させないため。
+    //
+    //   ★なぜ「同じセッションに居るか」なのか(2026-09-05・**評価者の実測**で判定を差し替えた)
+    //     旧: `now >= nextSessionCloseMs(armed.at)`。これは **armed.at が引けより前** のブラケットしか捕まえない。
+    //         事故が実際に生んだのは **引けの後に武装した** ブラケット(sig 1953 = 15:45:06.735 武装)で、
+    //         その「次の引け」は翌 06:00 になるため、この式では 1件も取り消せなかった。
+    //         実測: at=15:45:06.735 / now=15:50:00 / 約定する価格 → **filled**(第2層の保護がゼロだった)。
+    //     新: `sameTradingSession(armed.at, now)`(core/session.ts)。武装した時刻と現在が同じ立会セッションで
+    //         ないなら取り消す。armed.at が立会外なら(=そもそも武装してはいけなかった)必ず取り消す。
+    //     ★`!inTradingSession(now)` 単独にしなかった理由も core/session.ts の同関数 doc に書いた
+    //       (次の寄りまで now が飛んだ回を取り逃し、安全が未約定タイムアウトの定数の偶然に依存する)。
+    //
+    //   ★★これが実際に効く場面(2026-09-05 訂正・以前ここに書いた「効くのは引けちょうどの1本だけ」は誤り):
+    //     priceLoop は `inPollWindow` でゲートして供給するので、エンジンは **引けの 10分後(15:55:00.000)まで
+    //     実ティックを受け取り続ける**(`ticks` 表がその帯で 0件なのは collector が場外を捨てているだけ)。
+    //     ★実測の出所(リーダーが signal_plans を照会): sig 1953 の `context_at = 15:45:01.392`。
+    //       これは **計画実行を開始した時刻**であってティックの時刻ではないが、要求 tick はそれ以前なので
+    //       **引けの後にティックが来ていた**ことが言える。詳しい出所と用語は core/session.ts の
+    //       `inTradingSession` の doc(評価者によるティック表の実測も併記)。
+    //     → 放置されるだけではなく **その場で約定し得る**。ここは飾りではない。
+    //
+    //   ★セッションの定義は core/session.ts が唯一の権威(ここに 15:45/6:00 の数字は無い)。
+    //   ★決済ではないので core/exitReasons.ts には触らない(建玉が無い=RecordedTrade を作らない)。
+    if (st.armed.at != null && !sameTradingSession(st.armed.at, now)) {
+      return { next: { phase: 'flat', lastExit: st.lastExit }, armedTimedOut: true, armedCancelReason: 'sessionClose' };
     }
     // ★レンジ両面ストラドル: mode/range で gating(direction では判定しない)。上下どちらか跨いだ side を約定。
     if (st.armed.mode === 'range' || st.armed.range != null) {
@@ -829,11 +881,18 @@ export function advance(
     //   寄り値の損切りを当てると、市場が無い時間に付いた値で決済したことになる(=いま直している食い違いそのもの)。
     //   ★引けちょうどの tick(atClose)は同じ瞬間なので、従来どおり損側 → TP → 引け の順で下まで落とす。
     if (pastClose) return flattenAtSessionClose(pos.peakProfit);
-    // ★意図して残した差(事故ではない): **引けで ARMED の未約定ブラケットは取り消していない**。
-    //   trade2 の flatten() は `orders.cancelAll()` も呼ぶので、15:45〜17:00 のあいだ
-    //   monitor は「ARMED」を配信し続け、trade2 は既に取消済み、という3つ目の構造的非一致が残る。
-    //   ★台帳(signal_trades)には差が出ない(建玉が無いので行が作られない)ため今回は入れなかった。
-    //   ★入れるなら advance の armed 分岐(上)であって、この filled 分岐ではない。
+    // ★かつてここに「**引けで ARMED の未約定ブラケットは取り消していない**(意図して残した差)」と
+    //   書いてあった。**2026-09-04 に方針を変えて取り消すことにした**(実装は書いてあったとおり
+    //   advance の armed 分岐=上、この filled 分岐ではない)。
+    //   ★方針を変えた理由: 「台帳に差が出ないから入れない」は、**約定してしまう経路がある**ことを
+    //     数えていなかった。priceLoop は inPollWindow でゲートするので、エンジンは引けの 10分後
+    //     (15:55:00.000)まで実ティックを受け取り続ける。
+    //     ★実測の出所(リーダーが signal_plans を照会): sig 1953 の `context_at = 15:45:01.392`。
+    //       これは **計画実行を開始した時刻**であってティックの時刻ではないが、要求 tick はそれ以前なので
+    //       **引けの後にティックが来ていた**ことが言える。詳しい出所と用語は core/session.ts の
+    //       `inTradingSession` の doc(評価者によるティック表の実測も併記)。
+    //     → 古いブラケットがその帯で約定して建玉が生まれる = 台帳にも差が出る。
+    //     現に追従側(trade2)では同じブラケットが 17:00:03 に 75分前の価格で約定し、実損が出ている。
 
     // ★レンジ建玉(rangeTp 設定済)= 損側は固定初期LC(ラチェットしない)/ 利側は反対側節目手前で成行決済(phase-exit を使わない)。
     //   directional / rangeTp 無しの建玉はこの分岐に入らず、既存の phase-exit(下)へ落ちる=byte 不変。
@@ -981,6 +1040,8 @@ export type WaitReasonView =
  *  上から順に写したもの:
  *    ① planning / phase!=='flat' … 待機ではない(計画要求が既に走っている or 武装/保有中)→ 理由なし
  *    ② !inPollWindow ………………… 取引時間外(ここで止まる。以降のゲートは見てもいない)
+ *    ②' !inSession …………………… ★引けを過ぎている(立会外)。②と **同じ語**「取引時間外」を出す
+ *       (新しい語彙は作らない。画面から見ればどちらも「いま市場が無いから待っている」で同じ事実)。
  *    ③ cooldown ……………………… 決済後のクールダウン(manual のときだけ効く)
  *    ④ planSuppressedAnchor ……… 見送り後の抑止。ただし **節目クロス済み(levelRearmReady)** と
  *       **安全弁経過(safetyValveElapsed)** のときは maybeRequestPlan が先へ進む=抑止していないので理由にしない。
@@ -993,6 +1054,10 @@ export function computeWaitReason(input: {
   planning: boolean;
   /** 取引時間帯か(core/session.ts の inPollWindow の結果)。 */
   inPollWindow: boolean;
+  /** ★立会中か(core/session.ts の inTradingSession の結果)。**省略時は true=従来と完全に同じ**。
+   *  ★inPollWindow との違いは inTradingSession の doc を読むこと(あちらは引けの 10分後まで true)。
+   *  maybeRequestPlan は inPollWindow の直後にこれを見て return するので、ここでも同じ順序で見る。 */
+  inSession?: boolean;
   /** manual クールダウンの解除時刻。AI 委任(ゲート無効)や未決済は null。 */
   cooldownUntilMs: number | null;
   /** 見送り後の抑止アンカー(null=抑止していない)。 */
@@ -1014,6 +1079,8 @@ export function computeWaitReason(input: {
   const { phase, planning, inPollWindow, cooldownUntilMs, planSuppressedAnchor, priceKnown, levelRearmReady, safetyValveElapsed, now } = input;
   if (planning || phase !== 'flat') return null;
   if (!inPollWindow) return { kind: 'closed' };
+  // ★引けを過ぎた(立会外)= maybeRequestPlan が2つめの early return で止まる条件。既存の語に揃える。
+  if (input.inSession === false) return { kind: 'closed' };
   if (cooldownUntilMs != null && Number.isFinite(cooldownUntilMs) && cooldownUntilMs > now) {
     return { kind: 'cooldown', untilMs: cooldownUntilMs };
   }
