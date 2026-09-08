@@ -52,7 +52,10 @@ type CodeSymbols = ReadonlyArray<readonly [string, Symbol]>;
  * fetchAll は引数なしで呼ぶ = それぞれのモジュールが持つ既定のコード表(本番と同じ)が使われる。
  */
 const PRICE_ROUTES = [
-  { endpoint: 'ajax_cme.js', codeSymbols: AJAX_CME_CODE_SYMBOL, fetchAll: fetchAjaxCmePrices },
+  // ★v0.9.110: 取得先ファイル名が ajax_cme.js → ajax_cme2.js に変わった(提供元が旧ファイルを
+  //   2026-09-06 08:19 JST で凍結)。ここは **実際に叩いた URL と突き合わせる文字列** なので、
+  //   本番の URL を変えたらここも変えないと番人が赤になる(= 変更を見逃さないための結び付き)。
+  { endpoint: 'ajax_cme2.js', codeSymbols: AJAX_CME_CODE_SYMBOL, fetchAll: fetchAjaxCmePrices },
   { endpoint: 'ajax_fx.js', codeSymbols: AJAX_FX_CODE_SYMBOL, fetchAll: fetchAjaxFxPrices },
 ] as const satisfies ReadonlyArray<{
   endpoint: string;

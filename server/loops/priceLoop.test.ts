@@ -3,7 +3,8 @@ import { mergeSources, mergeWithCached } from './priceLoop.js';
 import { setPrices } from '../cache.js';
 import type { Price } from '../types.js';
 
-// v0.7.20(全銘柄 HTTP 化): 価格の全経路を公開 HTTP(ajax_cme.js / ajax_fx.js)に統一。socket / Yahoo は全廃。
+// v0.7.20(全銘柄 HTTP 化): 価格の全経路を公開 HTTP(ajax_cme2.js / ajax_fx.js)に統一。socket / Yahoo は全廃。
+// (v0.9.110: ajax_cme.js は提供元が 2026-09-06 08:19 JST に凍結させたので ajax_cme2.js へ差し替え済み)
 // mergeSources は各 HTTP 源の fresh(stale:false)のみを採用し、stale(清算/取得失敗)は落とす →
 // 下流の mergeWithCached が前回値を古い timestamp のまま stale で持ち越す(実取引安全 v0.7.9 を全銘柄へ徹底)。
 

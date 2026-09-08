@@ -113,7 +113,8 @@ describe('fetchAjaxCmePrice', () => {
     vi.stubGlobal('fetch', f);
     await fetchAjaxCmePrice('136');
     const [url, opts] = f.mock.calls[0]!;
-    expect(String(url)).toContain('ajax_cme.js?_=');
+    // ★v0.9.110: 取得先は ajax_cme2.js(旧 ajax_cme.js は 2026-09-06 08:19 JST に提供元が凍結)。
+    expect(String(url)).toContain('ajax_cme2.js?_=');
     expect((opts as { headers: Record<string, string> }).headers.Referer).toContain('225225.jp');
   });
 });

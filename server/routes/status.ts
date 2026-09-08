@@ -1,6 +1,9 @@
 import type { Request, Response } from 'express';
 import type { DatabaseSync } from 'node:sqlite';
 import { getYahooStatus } from '../loops/priceLoop.js';
+// ★v0.9.110: 価格フィードの状態(凍結/立会中の NIY=F 欠測/取得失敗)を画面にも出す。
+//   ★判定は server/db/priceFeedHeartbeat.ts の純関数 **だけ** が行う。ここも画面も、その結論を運ぶだけ。
+import { priceFeedApiState } from '../db/priceFeedHeartbeat.js';
 import { getProviderStatus } from '../llm/openai.js';
 import { generatorGateSnapshot, generatorArmUsage } from '../llm/generatorGate.js';
 import { loadExitImpl } from '../signalTrade/exit/index.js';
@@ -131,6 +134,10 @@ export async function statusHandler(_req: Request, res: Response): Promise<void>
   const collector = safeCollectorStatus();
   res.json({
     yahoo: getYahooStatus(),
+    // ★追加(additive): 価格フィードの判定(サーバ側の唯一の判定結果)。まだ測っていなければ返さない。
+    //   2026-09-06 の事故(提供元が凍結し liveFlag=1 のまま同じ値を配り続けた / 136 だけが止まった)を
+    //   画面で見えるようにする。**画面はこの state/reason を表示するだけ**。
+    ...(priceFeedApiState() ? { priceFeed: priceFeedApiState() } : {}),
     // ★既存フィールドは不変: llm は従来どおり **default プール**(実取引につながる経路)の状態。
     llm: getProviderStatus(),
     ...generator,

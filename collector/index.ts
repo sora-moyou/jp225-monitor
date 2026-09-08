@@ -25,7 +25,7 @@ import {
 import { runLedgerExport, writeLedgerExportStatus, formatLedgerExportStatus, writeLedgerExportStatusFile } from '../server/db/ledgerExport.js';
 import { recordFeedPrices } from './record.js';
 // v0.7.20(全銘柄 HTTP 化): 価格の主経路を monitor の priceLoop と同一にする。socket / Yahoo realtime を全廃し、
-// 監視 4 銘柄すべてを公開 HTTP から取る: ajax_cme.js(NIY=F/YM=F/NQ=F)+ ajax_fx.js(JPY=X)。両者とも毎 GET
+// 監視 4 銘柄すべてを公開 HTTP から取る: ajax_cme2.js(NIY=F/YM=F/NQ=F)+ ajax_fx.js(JPY=X)。両者とも毎 GET
 // 新スナップショット(long-lived セッション無し=ドリフト無し)。合成は priceLoop の純関数 mergeSources を再利用。
 import { fetchAjaxCmePrices } from '../server/sources/ajaxCmePrice.js';
 import { fetchAjaxFxPrices } from '../server/sources/ajaxFxPrice.js';

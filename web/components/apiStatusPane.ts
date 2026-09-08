@@ -2,6 +2,10 @@ import { apiUrl } from '../lib/apiBase.js';
 
 interface StatusResponse {
   yahoo: { fallback: boolean; skipUntil: number };
+  /** ★価格フィードの判定。**判定はサーバ(server/db/priceFeedHeartbeat.ts)だけが行う**。
+   *  画面は state に色を割り当て、reason をそのまま出すだけ(2箇所で違う結論を出さないため)。
+   *  旧 monitor / まだ一度も測っていない場合は返らない = 従来表示。 */
+  priceFeed?: { state: 'ok' | 'offhours' | 'settled' | 'stalled' | 'frozen' | 'down'; reason: string; at: number };
   llm: Array<{ name: string; enabled: boolean; paused: boolean; pausedUntil: number }>;
   /** ★分析用の台帳の死活。公開版(lite)や未導入の PC では返らない(=表示しない)。 */
   generatorLedger?: {
@@ -159,6 +163,35 @@ function renderDot(label: string, state: 'ok' | 'paused' | 'off' | 'halted', too
   return `<span class="dot" title="${tooltip}">${emoji}<span class="label">${label}</span></span>`;
 }
 
+/** 価格フィードのドット(P)。
+ *
+ *  ★2026-09-06 の事故: 提供元 ajax_cme.js が凍結したのに liveFlag=1 のままで、画面は緑のままだった。
+ *    さらに 136(NIY=F)だけが liveFlag=0 で固まり、監視も紙も実取引も2営業日止まったが画面は無言。
+ *  ★**判定はしない**。サーバ(server/db/priceFeedHeartbeat.ts の buildPriceFeedHeartbeat)が出した
+ *    state に色を割り当て、reason をそのまま出すだけ。以前はここで `frozen` を独自に最優先で見ており、
+ *    両ホスト取得失敗のときサーバ='down' / 画面='提供元の更新が停止' と **結論が食い違っていた**。
+ *  ★否定対照(git show HEAD:web/components/apiStatusPane.ts > <tmp>): HEAD には renderPriceDot が
+ *    存在せず、判定は data.yahoo.fallback だけ = 凍結中も NIY=F 欠測中も緑のまま(当時の画面そのもの)。 */
+export function renderPriceDot(
+  yahoo: { fallback: boolean; skipUntil: number },
+  priceFeed: { state: string; reason: string } | undefined,
+  now: number,
+): string {
+  // 取得失敗リトライ中(従来の黄)は、サーバ判定が無い旧 monitor でも従来どおり出す。
+  const retryTip = `価格フィード (225225.jp HTTP): 取得失敗・リトライ中 (残${fmtRemaining(yahoo.skipUntil, now)} / ${fmtClock(yahoo.skipUntil)} 再試行) — 直近価格を保持 (stale)`;
+  if (!priceFeed) {
+    return renderDot('P', yahoo.fallback ? 'paused' : 'ok', yahoo.fallback ? retryTip : '価格フィード (225225.jp HTTP ajax_cme2/ajax_fx): 利用可');
+  }
+  // ★frozen / stalled は「取れているのに中身が止まっている」= 見逃すと2営業日止まる。赤にする。
+  const state: 'ok' | 'paused' | 'halted' =
+    (priceFeed.state === 'frozen' || priceFeed.state === 'stalled') ? 'halted'
+      : (priceFeed.state === 'down' || yahoo.fallback) ? 'paused'
+        : 'ok';
+  const tip = `価格フィード (225225.jp HTTP ajax_cme2/ajax_fx): ${priceFeed.reason}`
+    + (yahoo.fallback && state === 'paused' ? ` | ${retryTip}` : '');
+  return renderDot('P', state, tip);
+}
+
 export async function refreshApiStatus(container: HTMLElement): Promise<void> {
   let data: StatusResponse;
   try {
@@ -170,11 +203,7 @@ export async function refreshApiStatus(container: HTMLElement): Promise<void> {
     return;
   }
   const now = Date.now();
-  const priceState: 'ok' | 'paused' = data.yahoo.fallback ? 'paused' : 'ok';
-  const priceTip = data.yahoo.fallback
-    ? `価格フィード (225225.jp HTTP): 取得失敗・リトライ中 (残${fmtRemaining(data.yahoo.skipUntil, now)} / ${fmtClock(data.yahoo.skipUntil)} 再試行) — 直近価格を保持 (stale)`
-    : '価格フィード (225225.jp HTTP ajax_cme/ajax_fx): 利用可';
-  const priceDot = renderDot('P', priceState, priceTip);
+  const priceDot = renderPriceDot(data.yahoo, data.priceFeed, now);
   const llm = data.llm.map(p => {
     const state: 'ok' | 'paused' | 'off' = !p.enabled ? 'off' : p.paused ? 'paused' : 'ok';
     const tooltip = !p.enabled
