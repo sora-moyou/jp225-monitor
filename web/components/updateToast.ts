@@ -1,4 +1,5 @@
-import { checkForUpdate, installUpdate, type UpdateInfo } from '../lib/updater.js';
+import { getUpdateStatus, installUpdate, type UpdateInfo } from '../lib/updater.js';
+import { reportUpdateCheck } from '../lib/updateReport.js';
 
 const DISMISS_KEY = 'jp225_update_dismissed_until';
 const DISMISS_DURATION_MS = 24 * 3600 * 1000;
@@ -64,10 +65,28 @@ function render(toast: HTMLElement, info: UpdateInfo): void {
   });
 }
 
+// 起動時の更新チェック。★v0.9.111: 結末を **必ずサーバへ記録させてから** 表示判断に入る。
+//
+// 旧実装は checkForUpdate() の null を見るだけで、失敗も「更新なし」も Tauri 外も
+// 区別せずそのまま return していた(= 起動時の失敗が完全に無音)。
+// ここでは4状態を明示的に場合分けし、どれであっても記録を1件残す。
+//
+// ★表示は変えていない: 失敗時に出す新しい UI は作らない(既存の表示先が無いため)。
+//   失敗は serverlog と meta の update_check_status に残るので、書き出しを見れば分かる。
 export async function maybeShowUpdateToast(toastEl: HTMLElement, delayMs: number = 5000): Promise<void> {
   await new Promise(r => setTimeout(r, delayMs));
-  const info = await checkForUpdate();
-  if (!info) return;
+  const status = await getUpdateStatus();
+  // 記録は表示の**手前で撃つ**が、★待たない(設定経路と同じ `void`)。
+  //   待つと、記録の送信が詰まっただけで更新の通知そのものが出なくなる
+  //   (差し戻しで実測: 解決しない fetch を食わせると 5 秒経ってもトーストが出なかった)。
+  //   撃つ場所が早期 return より前なので、どの分岐でも記録は必ず1件送られる。
+  void reportUpdateCheck('startup', status);
+  if (status.state === 'error') {
+    console.warn('[updater] 起動時の更新チェックが失敗:', status.message);
+    return;
+  }
+  if (status.state !== 'available') return;      // latest / unsupported = 出すものが無い
+  const info = status.info;
   if (isDismissed(info.version)) return;
   render(toastEl, info);
 }

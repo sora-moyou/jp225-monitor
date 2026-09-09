@@ -32,6 +32,7 @@ import { replaceHandler } from './routes/replace.js';
 import { signalTradesHandler, signalTradesClearHandler } from './routes/signalTrades.js';
 import { currentSignalHandler } from './routes/currentSignal.js';
 import { exitStopHandler } from './routes/exitStop.js';
+import { updateCheckHandler } from './routes/updateCheck.js';
 import { startSignalEngine } from './signalTrade/engine.js';
 import { loadExitImpl } from './signalTrade/exit/index.js';
 import { warmExitConfigHash, markFallbackExitConfigVersion } from './signalTrade/exitConfigVersion.js';
@@ -138,6 +139,9 @@ app.get('/api/current-signal', currentSignalHandler);
 // ★variant ゲートしない: /api/current-signal・/api/version と同じ「trade2 追従の面」であり、
 //   lite で塞ぐと lite に繋いだ trade2 の孤児保護だけが無音で劣化する(本件で潰そうとしている壊れ方そのもの)。
 app.post('/api/exit-stop', exitStopHandler);
+// 更新チェックの結末の記録(RECORD-ONLY)。★variant ゲートしない: 更新チェックは full/lite の
+// 両方で走る面であり、記録が片側だけ無いと「無音だったのか押していないのか」が読み分けられない。
+app.post('/api/update-check', updateCheckHandler);
 // スクショ専用の軽量チャートページ(scalp-plan のビジョン入力用・localhost 診断)。SSE 非依存。
 app.get('/chart-shot', chartShotHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true, llm: isLLMEnabled(), version: APP_VERSION }));

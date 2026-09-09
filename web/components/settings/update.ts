@@ -2,6 +2,7 @@
 
 import { apiUrl } from '../../lib/apiBase.js';
 import { getUpdateStatus, installUpdate } from '../../lib/updater.js';
+import { reportUpdateCheck } from '../../lib/updateReport.js';
 import { escapeHtml } from './util.js';
 import type { SettingsElements, BasedataStatus } from './types.js';
 
@@ -91,6 +92,12 @@ export function wireUpdateSection(el: SettingsElements): {
           .then(r => r.json() as Promise<BasedataStatus>)
           .catch((err: unknown): BasedataStatus => ({ ok: false, error: err instanceof Error ? err.message : 'failed' })),
       ]);
+
+      // ★v0.9.111: 表示の前に、結末をサーバへ記録させる(serverlog + meta の update_check)。
+      //   サーバは受けたついでに **同じ URL を自分でも叩く** ので、
+      //   「アプリは最新と言ったが配信側は新しい」食い違いが記録1行で読める
+      //   (2026-09-09 に取れなかった証拠そのもの)。表示は一切変えていない。
+      void reportUpdateCheck('settings', appStatus, current);
 
       // --- アプリ本体 ---
       if (appStatus.state === 'latest') {

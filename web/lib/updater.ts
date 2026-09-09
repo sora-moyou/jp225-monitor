@@ -39,15 +39,12 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
   }
 }
 
-// 後方互換: トースト用。更新がある時だけ UpdateInfo を返す。
-export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  const status = await getUpdateStatus();
-  if (status.state === 'available') return status.info;
-  if (status.state === 'error') {
-    console.warn('[updater] check failed:', status.message);
-  }
-  return null;
-}
+// ★checkForUpdate() は撤去した(v0.9.111)。
+//   失敗('error')と「更新なし」('latest')と Tauri 外('unsupported')を **同じ null に潰して**
+//   いたため、起動時トースト経路では失敗が完全に無音になっていた。2026-09-09 の事故で
+//   「画面がそう言った」以外の証拠が1つも残らなかった原因の一つがこれ。
+//   呼び出し側は getUpdateStatus() を使い、4状態を自分で場合分けすること
+//   (潰したい場合も、潰す前に reportUpdateCheck() で記録に残してから潰す)。
 
 // ダウンロード+インストール (再起動含む)。進捗コールバック可。
 export async function installUpdate(
