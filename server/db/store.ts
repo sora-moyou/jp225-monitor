@@ -703,6 +703,13 @@ export function getRecentBars(db: DatabaseSync, symbol: string, sinceT: number):
   ).all(symbol, sinceT) as unknown as Bar1m[];
 }
 
+/** t/h/l だけを返す軽量版(日足/週足ピボット用・最大400暦日ぶん=数十万行を読むので列を絞る)。 */
+export function getBarsHL(db: DatabaseSync, symbol: string, sinceT: number): { t: number; h: number; l: number }[] {
+  return db.prepare(
+    'SELECT t, h, l FROM bars_1m WHERE symbol = ? AND t >= ? ORDER BY t ASC',
+  ).all(symbol, sinceT) as unknown as { t: number; h: number; l: number }[];
+}
+
 /** 出来高(volume>0)のあるバーの h/l/volume。価格帯別出来高(ボリュームプロファイル)用。
  *  出来高はリアルタイムフィードに無く基礎データ(週次)由来のため、過去ぶんのみ返る。 */
 export function getVolumeBars(db: DatabaseSync, symbol: string, sinceT: number): { h: number; l: number; volume: number }[] {

@@ -21,7 +21,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars, getDailyCloses, upsertDailyClose,
+  getSessionOHLC, getLatestTick, getRecentBars, getVolumeBars, getDailyCloses, upsertDailyClose, getBarsHL,
   type SessionOHLC, type Tick,
 } from '../db/store.js';
 import { collectRecentBars } from '../barsSource.js';
@@ -29,6 +29,7 @@ import { computeVolumeProfile } from '../volumeProfile.js';
 import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeTrendLines } from '../trendLines.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
+import { buildDailyPivotCache, updateDailyPivotCache, dailyPivotsOf, latestConfirmedTradingDate, type DailyPivotCache } from '../dailyPivots.js';
 import { classifySession, type SessionInfo } from '../../core/session.js';
 import { getForecastSnapshot } from '../loops/forecastLoop.js';
 import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
@@ -131,6 +132,17 @@ const TREND_CHECK_MS = 60_000;
 const TREND_LOOKBACK_DAYS = 15;
 const TREND_CONFLUENCE_YEN = 40;
 const DAILYBAND_CHECK_MS = 60_000;
+// ★日足/週足ピボット(server/dailyPivots.ts)。1分足を最大400暦日(基礎データ全体 ≒ 2025-12-29〜)読むので重い
+//   (実DBで約25万行)。日足は1日に1本しか増えない(ユーザー指定「日足なら1日1回チェックすれば済む」)ので、
+//   DB から組み直すのは **起動時と、確定取引日が変わった時(=確定日足が1本増えた時)だけ**。
+//   ★列の組み替え(当日高安 h[0]/l[0] の更新・突破による反転/削除)と ±1500円窓の判定は **毎ティック現値で** 行う
+//     (h[0]/l[0] は階段の起点としてだけ使い、dailyPivotsOf の出力=監視水準には入らない)
+//     (ユーザー確定「価格を超えたときには、常に更新」)。updateDailyPivotCache が O(候補本数) で、DB は読まない。
+const DAILY_PIVOT_LOOKBACK_DAYS = 400;
+// 引け(15:45)の直後は最後の1分足が DB に載り切っていないことがあるので、確定日の切り替えを2分遅らせて読む。
+const DAILY_PIVOT_SETTLE_MS = 2 * 60_000;
+// DB 読みが失敗したときの再試行間隔(毎ティック重い読みを繰り返さない)。
+const DAILY_PIVOT_RETRY_MS = 60_000;
 const DAILYBAND_COOLDOWN_MS = 20 * 60_000;
 // ★v0.9.98: この2つは server/dailyBand.ts へ移した(AI 文脈と共有する SSOT・値は不変)。
 
@@ -198,6 +210,11 @@ export interface LevelDetectState {
   nwaveLevels: { price: number; label: string }[];
   lastDailyBandCheck: number;
   confirmedDailyCloses: number[];
+  // ★日足/週足ピボットのキャッシュ。確定取引日(dailyPivotDay)が変わった時だけ1分足から組み直し、
+  //   その間は毎ティック現値で当日高安・反転/削除を更新して書き戻す。lastDailyPivotTry は失敗時の再試行の間引き用。
+  dailyPivotDay: string | null;
+  lastDailyPivotTry: number;
+  dailyPivotCache: DailyPivotCache | null;
   // 検知器 cooldown/dedup(runLevelDetectors)
   lastBreakDir: Map<'up' | 'down', number>;
   lastEmit: Map<string, number>;
@@ -222,6 +239,7 @@ export function createLevelDetectState(): LevelDetectState {
     lastTrendCheck: 0, trendlineLevels: [],
     lastNwaveCheck: 0, nwave: null, nwaveLevels: [],
     lastDailyBandCheck: 0, confirmedDailyCloses: [],
+    dailyPivotDay: null, lastDailyPivotTry: 0, dailyPivotCache: null,
     lastBreakDir: new Map(), lastEmit: new Map(), lastPivotT: 0, pivotSeeded: false, lastSwingCheck: 0,
     lastNwaveFire: new Map(),
     bandwalk: createBandwalkFireState(),
@@ -357,13 +375,27 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
       state.confirmedDailyCloses = persistAndResolveDailyCloses(db, SYMBOL, confirmed, DAILY_CLOSES_KEEP);
     } catch (err) { console.warn('[detect] daily bands (confirmed closes) failed:', err instanceof Error ? err.message : err); }
   }
+  // 日足/週足ピボット: 起動時(dailyPivotDay=null)と確定取引日が変わった時だけ、1分足(最大400暦日)から組み直す。
+  const pivotDay = latestConfirmedTradingDate(now - DAILY_PIVOT_SETTLE_MS);
+  if (pivotDay !== state.dailyPivotDay && now - state.lastDailyPivotTry >= DAILY_PIVOT_RETRY_MS) {
+    state.lastDailyPivotTry = now;
+    try {
+      state.dailyPivotCache = buildDailyPivotCache(getBarsHL(db, SYMBOL, now - DAILY_PIVOT_LOOKBACK_DAYS * DAY_MS), now);
+      state.dailyPivotDay = pivotDay;   // ★成功した時だけ進める(失敗なら RETRY 間隔で再試行)
+    } catch (err) { console.warn('[detect] daily pivots failed:', err instanceof Error ? err.message : err); }
+  }
+  // ★毎ティック: 現値で当日高安(h[0]/l[0]=階段の起点。出力には含めない)を拡張し、突破による反転・削除を即時に反映して書き戻す
+  //   (書き戻さないと、割れて少し戻しただけで「支持」に戻って見える。次の再計算は日足から同じ結論に着く)。
+  //   ±1500円の表示窓は computeLevels が毎回この一覧に掛ける(窓に入った次のティックで出る)。
+  if (state.dailyPivotCache) state.dailyPivotCache = updateDailyPivotCache(state.dailyPivotCache, latest.price, now);
+  const dailyPivots = state.dailyPivotCache ? dailyPivotsOf(state.dailyPivotCache) : [];
   // バンド算出は毎ティック(現在値を進行中取引日の終値として append し MA25/σ を再計算)。
   const dailyBandLevels = state.confirmedDailyCloses.length >= 24
     ? computeDailyBands(dailyCloseSeries(state.confirmedDailyCloses, latest.price))
     : [];
   const dailyMaLevels = computeDailyMAs(dailyCloseSeries(state.confirmedDailyCloses, latest.price, 75));
   const tCompute = Date.now();
-  const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels, state.nwaveLevels);
+  const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels, state.nwaveLevels, dailyPivots);
   const computeMs = Date.now() - tCompute;
   return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, nwave: state.nwave, dbMs, computeMs };
 }

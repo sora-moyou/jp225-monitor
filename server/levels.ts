@@ -3,6 +3,7 @@ import { isSessionComplete } from './sessionOHLC.js';
 import { deriveSwing, fibLevelsForSwing, currentSessionSwing, DEFAULT_SWING_WINDOWS } from './fibLevels.js';
 import { resolveLevelsConfig } from './configStore.js';
 import type { Level, LevelsResult } from '../core/types.js';
+import { dailyPivotLabel, type DailyPivot } from './dailyPivots.js';
 // 後方互換のため再export(forecast.ts / forecastLoop.ts / 各テストは './levels.js' から import している)。
 export type { SessionOHLC } from './sessionOHLC.js';
 export { isSessionComplete } from './sessionOHLC.js';
@@ -23,6 +24,9 @@ export const LEVEL_TOL = 25;              // 束ね許容(円)
 export const LEVEL_SHOW_N = 5;            // up/down 各表示本数
 export const SELECT_WINDOW_YEN = 1500;    // 近接選抜窓(円)
 export const FIB_CONFLUENCE_BONUS = 1.5;  // 合流倍率
+// ★日足ピボット(高値/安値の階段)を重要価格にする窓(現値±円)。ユーザー確定で **1500 固定**。
+//   値は既定の選抜窓(SELECT_WINDOW_YEN)と同じだが、設定 selectWindowYen を動かしてもこちらは動かさない。
+export const DAILY_PIVOT_WINDOW_YEN = 1500;
 export const LEVEL_TEST_BONUS = 0.15;     // 被テスト加点係数
 
 // ── 候補タイプ別重み ──
@@ -39,6 +43,9 @@ const WEIGHTS = {
   congestion: 0.9, congestionPer: 0.4,  // もみ合い帯(直近の時間滞在=出来高の次善): weight = congestion + congestionPer×rel
   trendline: 1.3, trendlinePer: 0.3,    // 有効トレンドライン(3点接触×反応水準と合流): weight = trendline + trendlinePer×min(接触-3,2)
   nwave: 1.6,                           // ★N波動(値幅観測論)の値幅目標 N値/V値/E値。前方の実投影目標なので上位帯(長期高安 1.6 と同格)=単独でも tier≥1 に届く。
+  // ★日足/週足ピボット(server/dailyPivots.ts)。長期高安(1.6=実は約2週間)より長い時間軸で実際に付いた
+  //   スイング高安なので、長期高安以上に置く(週足 > 日足)。表示上の強さは下の tier 上書きで決める。
+  dailyPivot: 1.8, weeklyPivot: 2.0,
 } as const;
 
 interface Cand {
@@ -178,6 +185,7 @@ export function computeLevels(
   congestionLevels: { price: number; rel: number; visits: number }[] = [],   // v0.6.14: もみ合い帯(直近の時間滞在=出来高の次善)
   trendlineLevels: { price: number; kind: 'support' | 'resistance'; touches: number }[] = [],   // v0.6.15: 有効トレンドライン(3点接触)を now へ延長
   nwaveLevels: { price: number; label: string }[] = [],   // ★N波動(値幅観測論)の未到達目標(N値/V値/E値・方向ラベル込み)
+  pivotLevels: DailyPivot[] = [],   // ★日足/週足ピボット(server/dailyPivots.ts の有効分。役割は呼ぶ側で現値反映済み)
 ): LevelsResult {
   const cfg = resolveLevelsConfig();
   const tol = cfg.tol;
@@ -354,14 +362,39 @@ export function computeLevels(
     cands.push({ price: nw.price, label: nw.label, weight: WEIGHTS.nwave, kind: 'nwave' });
   }
 
+  // ── 日足/週足ピボット: 24セッションの窓では届かない、長い時間軸で実際に付いたスイング高安。
+  //   有効性(未割れ=支持 / 割れ→抵抗 / 反転後に戻されたら削除)は server/dailyPivots.ts が判定済み。
+  //   ここでは候補に足すだけ(★表示の強制と tier の上書きは選抜の後段)。ラベルは同関数の dailyPivotLabel が SSOT。
+  //   ★日足(高値/安値の階段)は **現値±DAILY_PIVOT_WINDOW_YEN(1500)以内だけ** を候補にする(ユーザー確定)。
+  //     窓は毎回(=毎ティック)ここで掛けるので、価格が近づいて窓に入れば次の computeLevels で出て、離れれば消える。
+  //   週足は窓を掛けない(従来どおり、上下の最寄り1本を下で強制表示)。
+  const validPivots = pivotLevels.filter(p => Number.isFinite(p.price) && p.price > 0
+    && (p.tf === 'W' || Math.abs(p.price - current) <= DAILY_PIVOT_WINDOW_YEN));
+  const pivotLabelOf = new Map<DailyPivot, string>();
+  for (const p of validPivots) {
+    const label = dailyPivotLabel(p);
+    pivotLabelOf.set(p, label);
+    cands.push({
+      price: p.price, label,
+      weight: p.tf === 'W' ? WEIGHTS.weeklyPivot : WEIGHTS.dailyPivot,
+      kind: p.tf === 'W' ? 'weeklyPivot' : 'dailyPivot',
+    });
+  }
+
   // 高安関係の固定水準(クラスタ/上位N選抜前)。ダブル/水準抜け検知の対象として露出。価格で重複排除。
   // 当日高安(todayHL)は現値追従(min/max(extreme, current))で動くため、固定水準としては使わない
   // (動く端を基準にすると下落中にダブルボトムが乱発する)。当日ぶんは levelsLoop が確定スイング
-  // ピボット(swingPivots)を別途供給する。ここでは固定の sessHL/直近/長期のみ。
+  // ピボット(swingPivots)を別途供給する。ここでは固定の sessHL/直近/長期 + 日足/週足ピボットのみ。
+  // ★同じ理由で、日足ピボット(pivotLevels)にも当日の h[0]/l[0] は入ってこない(dailyPivotsOf が確定日由来だけを返す)。
+  // ★日足/週足ピボットも実際に付いた固定の高安なので、ここ(hlLevels)にも含める。
+  //   ★ただし事実として、本番で result.hlLevels を読むコードは無い(2026-10 時点の grep)。
+  //     registry.runLevelDetectors は **表示行(up/down)のうち tier>=1** から自前の hlLevels を作って
+  //     break/level_sr を判定する。日足/週足ピボットが実際に監視されるのはその経路(下の tier 上書きで
+  //     日足=2・週足=最低1にしてあるので、表示されれば必ず乗る)。
   const hlSeen = new Set<number>();
   const hlLevels: { price: number; label: string }[] = [];
   for (const c of cands) {
-    if (c.kind !== 'sessHL' && c.kind !== 'longHL') continue;
+    if (c.kind !== 'sessHL' && c.kind !== 'longHL' && c.kind !== 'dailyPivot' && c.kind !== 'weeklyPivot') continue;
     if (!(c.price > 0) || hlSeen.has(c.price)) continue;
     hlSeen.add(c.price);
     hlLevels.push({ price: c.price, label: c.label });
@@ -420,6 +453,27 @@ export function computeLevels(
     else if (fib50Level.dist < 0 && !down.includes(fib50Level)) down.push(fib50Level);
   }
 
+  // ★ピボットの強制表示(fib50 の強制追加と同じ作法)。選抜窓の上位N本・far ラダーの本数上限で落とさない。
+  //   ・日足(階段): 窓(±1500)内の要素は **全部** 入れる(ユーザー確定)。窓外は上で候補から外してある。
+  //   ・週足: 現値より上で最も近い1本と下で最も近い1本だけを必ず入れる。遠いほど「相場を見られない時の
+  //     指値/逆指値の置き場」として価値があるのに、far ラダーは本数上限で切るので漏れ得る。
+  //   クラスタは代表価格が丸められ・ラベルが併記されるので、ピボットのラベルを含むクラスタで引き当てる。
+  const forcedPivotLevels: Level[] = [];
+  const weeklyPivots = validPivots.filter(p => p.tf === 'W');
+  const nearestWeekly = (side: 'up' | 'down'): DailyPivot | undefined => weeklyPivots
+    .filter(p => (side === 'up' ? p.price > current : p.price < current))
+    .sort((a, b) => Math.abs(a.price - current) - Math.abs(b.price - current))[0];
+  const forcedPivots = [...validPivots.filter(p => p.tf === 'D'), nearestWeekly('up'), nearestWeekly('down')];
+  for (const p of forcedPivots) {
+    if (!p) continue;
+    const label = pivotLabelOf.get(p)!;
+    const lv = clustered.find(l => l.labels.includes(label));
+    if (!lv) continue;
+    forcedPivotLevels.push(lv);
+    if (lv.dist > 0 && !up.includes(lv)) up.push(lv);
+    else if (lv.dist < 0 && !down.includes(lv)) down.push(lv);
+  }
+
   // 価格で重複排除
   const dedup = (arr: Level[]): Level[] => {
     const seen = new Set<number>();
@@ -445,6 +499,17 @@ export function computeLevels(
     else if (norm >= 0.40) l.tier = 1;
     else l.tier = 0;
     l.strong = l.tier >= 1;   // 後方互換
+  }
+  // ★tier の上書き(ユーザー確定):
+  //   ・強制表示したピボット(窓内の日足・最寄りの週足)は最低 tier1。registry の tier>=1 ゲート(break/level_sr の
+  //     監視対象)に必ず乗せ、強さ欄に★を出すため。
+  //   ・週足ピボットを含む水準は、表示されるなら(強制表示でなくても)**最低 tier1(★)**。
+  //   ・日足ピボットを含む水準は、表示されるなら **常に tier2(★★)**。スコアや合流に関係なく
+  //     「日足の実スイング」であること自体を強さ欄で示す(ラベルに★を付けない代わり)。日足と週足が合流した行も2。
+  for (const l of display) {
+    if ((forcedPivotLevels.includes(l) || l.kinds?.includes('weeklyPivot')) && l.tier < 1) l.tier = 1;
+    if (l.kinds?.includes('dailyPivot')) l.tier = 2;
+    l.strong = l.tier >= 1;
   }
 
   return { current, up, down, swing, reversalSatisfied, asOf, hlLevels };

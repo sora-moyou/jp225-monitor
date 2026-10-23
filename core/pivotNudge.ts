@@ -36,9 +36,11 @@ export const PIVOT_NUDGE_YEN = 5;
 /** ★ずらす対象の種別(= 実際に注文が出た値段)。server/levels.ts の Cand.kind と同じ語彙。
  *  ・sessHL … スイング高安 / セッション高安(前日Day高 等)
  *  ・todayHL … 本日高安 / longHL … 長期高安 / open … 寄付 / prevClose … 前日終値
- *  ・reaction … 反応価格(複数回反転した実水準) / congestion … もみ合い帯 / volume … 出来高集中(HVN/POC) */
+ *  ・reaction … 反応価格(複数回反転した実水準) / congestion … もみ合い帯 / volume … 出来高集中(HVN/POC)
+ *  ・dailyPivot / weeklyPivot … 日足/週足のスイング高安(server/dailyPivots.ts)。1分足の実際の高安=実際に付いた値段。 */
 export const PIVOT_KINDS: readonly string[] = [
   'sessHL', 'todayHL', 'longHL', 'open', 'prevClose', 'reaction', 'congestion', 'volume',
+  'dailyPivot', 'weeklyPivot',
 ];
 
 /** ★ずらさない種別(=計算値)。**この表は判定に使わない**(判定は PIVOT_KINDS の包含だけ)。

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { computeLevels, FIB_SWING_SESSIONS, LEVEL_SHOW_N, type SessionOHLC } from './levels.js';
+import { computeLevels, FIB_SWING_SESSIONS, LEVEL_SHOW_N, DAILY_PIVOT_WINDOW_YEN, type SessionOHLC } from './levels.js';
+import { buildDailyPivotCache, updateDailyPivotCache, dailyPivotsOf } from './dailyPivots.js';
 
 function s(sessionDate: string, session: 'Day' | 'Night', high: number, low: number,
            extra: Partial<SessionOHLC> = {}): SessionOHLC {
@@ -228,5 +229,131 @@ describe('computeLevels N波動レベル (値幅観測論)', () => {
     const sessions = [s('2026-06-01', 'Day', 67500, 66600)];
     const r = computeLevels(sessions, 67000, 0, null);
     expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => /N値|V値|E値/.test(x))).toBe(false);
+  });
+});
+
+describe('computeLevels 日足/週足ピボット(長期の実スイング)', () => {
+  const sessions = [
+    s('2026-06-01', 'Night', 67300, 66800, { close: 67000 }),
+    s('2026-06-01', 'Day',   67500, 66600, { close: 67100 }),
+  ];
+  const dLow = { price: 64000, tf: 'D' as const, type: 'low' as const, date: '2026-09-14', role: 'support' as const, flipped: false, t: 0 };
+
+  it('窓内(現値から1400円下)の日足安値は down に必ず出て、tier=2(★★)・hlLevels にも入る', () => {
+    // pivotLevels は 11 番目の positional 引数(nwave の後)。
+    const d = { ...dLow, price: 65600 };
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [d]);
+    const lv = r.down.find(l => l.price === 65600);
+    expect(lv).toBeTruthy();
+    expect(lv!.labels).toContain('日足安値(9/14)');
+    expect(lv!.labels.some(x => x.includes('★'))).toBe(false);   // ★はラベルではなく強さ欄(tier)
+    expect(lv!.kinds).toContain('dailyPivot');
+    expect(lv!.tier).toBe(2);   // 日足ピボットは常に ★★(強さ欄)
+    expect(lv!.strong).toBe(true);
+    expect((r.hlLevels ?? []).some(h => h.price === 65600 && h.label === '日足安値(9/14)')).toBe(true);
+  });
+
+  it('★窓外(現値から3000円下)の日足安値は出さない(強制表示もしない)', () => {
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [dLow]);
+    expect([...r.up, ...r.down].some(l => l.labels.includes('日足安値(9/14)'))).toBe(false);
+    expect((r.hlLevels ?? []).some(h => h.label === '日足安値(9/14)')).toBe(false);
+  });
+
+  it(`±${DAILY_PIVOT_WINDOW_YEN}円の境界: ちょうど${DAILY_PIVOT_WINDOW_YEN}円は入り、それより5円外は入らない`, () => {
+    const inP = { ...dLow, price: 67000 - DAILY_PIVOT_WINDOW_YEN, date: '2026-09-10' };
+    const outP = { ...dLow, price: 67000 + DAILY_PIVOT_WINDOW_YEN + 5, type: 'high' as const, role: 'resistance' as const, date: '2026-09-11' };
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [inP, outP]);
+    const labels = [...r.up, ...r.down].flatMap(l => l.labels);
+    expect(labels).toContain('日足安値(9/10)');
+    expect(labels).not.toContain('日足高値(9/11)');
+  });
+
+  it('★現値が動いて窓に入った瞬間に出て、窓外へ離れたら消える(62,530 の例)', () => {
+    const p = { ...dLow, price: 62530 };
+    const at = (cur: number) => computeLevels(sessions, cur, 0, null, [], [], [], [], [], [], [p]);
+    const shown = (cur: number) => [...at(cur).up, ...at(cur).down].some(l => l.labels.includes('日足安値(9/14)'));
+    expect(shown(64700)).toBe(false);   // 10/15 引けの現値: 2,170円離れている
+    expect(shown(64030)).toBe(true);    // 1,500円以内に入った
+    expect(shown(64035)).toBe(false);   // 1,505円 = また窓外
+  });
+
+  it('窓内の日足ピボットは全部表示する(選抜の上位N本で落とさない)', () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ ...dLow, price: 66900 - i * 150, date: `2026-09-${String(i + 1).padStart(2, '0')}` }));
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], many);
+    const labels = [...r.up, ...r.down].flatMap(l => l.labels);
+    for (let i = 0; i < 9; i++) expect(labels, String(i)).toContain(`日足安値(9/${i + 1})`);
+  });
+
+  it('割れ→抵抗に反転した日足安値は現値の上で up に出る(ラベルに反転を明記)', () => {
+    const flipped = { ...dLow, price: 68000, role: 'resistance' as const, flipped: true };
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [flipped]);
+    const lv = r.up.find(l => l.price === 68000);
+    expect(lv?.labels).toContain('日足安値(9/14)割れ→抵抗');
+    expect(lv!.tier).toBe(2);
+  });
+
+  it('週足ピボットも強制表示(上下で最も近い1本)され tier≥1。ラベルは週の月曜日', () => {
+    const w = { ...dLow, tf: 'W' as const, type: 'high' as const, price: 70500, role: 'resistance' as const };
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [w]);
+    const lv = r.up.find(l => l.price === 70500);
+    expect(lv?.labels).toContain('週足高値(9/14週)');
+    expect(lv!.kinds).toContain('weeklyPivot');
+    expect(lv!.tier).toBeGreaterThanOrEqual(1);
+  });
+
+  it('表示される dailyPivot を含むクラスタは(強制でなくても・スコアに関係なく)常に tier=2', () => {
+    // 現値に近い日足安値2本(どちらも窓内=強制表示)。
+    const near1 = { ...dLow, price: 66850 };
+    const near2 = { ...dLow, price: 66450, date: '2026-09-10' };
+    const r = computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [near1, near2]);
+    for (const l of [...r.up, ...r.down].filter(x => x.kinds?.includes('dailyPivot'))) {
+      expect(l.tier).toBe(2);
+      expect(l.strong).toBe(true);
+    }
+    expect([...r.up, ...r.down].some(l => l.labels.includes('日足安値(9/10)'))).toBe(true);
+  });
+
+  it('週足ピボットだけの行(日足と合流しない・強制表示でもない)も、表示されれば tier≥1', () => {
+    // 現値近くに強い反応帯(反応5回×4本が合流)を置き、近接の最大スコアを大きくする
+    // → 単独の週足(重み2.0)はスコアだけだと norm<0.40 = tier0 になる状況を作る。
+    const strong = Array.from({ length: 4 }, () => ({ price: 67100, reactions: 5 }));
+    // 週足安値2本: 65,000 は下で最も近い=強制表示、64,000 は強制表示ではない(遠方ラダーで表示)。
+    const wNear = { ...dLow, tf: 'W' as const, price: 65000 };
+    const wFar = { ...dLow, tf: 'W' as const, price: 64000, date: '2026-09-07' };
+    const r = computeLevels(sessions, 67000, 0, null, [], strong, [], [], [], [], [wNear, wFar]);
+    const lv = r.down.find(l => l.labels.includes('週足安値(9/7週)'));
+    expect(lv).toBeTruthy();
+    expect(lv!.kinds).not.toContain('dailyPivot');
+    expect(lv!.tier).toBeGreaterThanOrEqual(1);
+    expect(lv!.strong).toBe(true);
+    for (const l of [...r.up, ...r.down].filter(x => x.kinds?.includes('weeklyPivot'))) {
+      expect(l.tier).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('★下げ続けても当日安値は日足ピボット(★★)にならない(dailyPivotsOf 経由・当日安は「当日安」行のみ)', () => {
+    // 確定日 9/1〜9/4(高安は現値の遠く上下)+ 当日 9/7。当日の中で現値が下げ続ける。
+    const jst = (d: string, hm: string) => Date.parse(`${d}T${hm}:00+09:00`);
+    const days = ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04'];
+    const bars = days.map((d, i) => ({ t: jst(d, '10:00'), l: 66000 - i * 10, h: 68000 + i * 10 }));
+    bars.push({ t: jst('2026-09-07', '10:00'), l: 66950, h: 67050 });
+    const now = jst('2026-09-07', '12:00');
+    let cache = buildDailyPivotCache(bars, now);
+    for (let k = 0; k < 20; k++) {
+      const cur = 66940 - k * 20;   // 新安値を刻み続ける
+      cache = updateDailyPivotCache(cache, cur, now + k * 60_000);
+      const pivots = dailyPivotsOf(cache);
+      expect(pivots.some(p => p.date === cache.todayDate || p.price === cache.todayLo)).toBe(false);
+      const r = computeLevels(sessions, cur, 0, null, [], [], [], [], [], [], pivots);
+      const daily = [...r.up, ...r.down].filter(l => l.kinds?.includes('dailyPivot'));
+      expect(daily.some(l => l.price === cache.todayLo), String(cur)).toBe(false);
+      expect(daily.some(l => l.labels.includes('日足安値(9/7)')), String(cur)).toBe(false);
+      expect((r.hlLevels ?? []).some(h => h.price === cache.todayLo && h.label.startsWith('日足')), String(cur)).toBe(false);
+    }
+  });
+
+  it('pivotLevels 省略時は従来どおり(日足/週足ラベルは出ない)', () => {
+    const r = computeLevels(sessions, 67000, 0, null);
+    expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => /日足|週足/.test(x))).toBe(false);
   });
 });
