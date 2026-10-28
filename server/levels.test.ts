@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeLevels, FIB_SWING_SESSIONS, LEVEL_SHOW_N, DAILY_PIVOT_WINDOW_YEN, type SessionOHLC } from './levels.js';
+import { computeLevels, fillDisplayGaps, FIB_SWING_SESSIONS, LEVEL_SHOW_N, DAILY_PIVOT_WINDOW_YEN, DISPLAY_MAX_GAP_NEAR_YEN, DISPLAY_MAX_GAP_FAR_YEN, DISPLAY_GAP_NEAR_ZONE_YEN, SELECT_WINDOW_YEN, GAP_FILL_LABEL, type SessionOHLC, type Level, type LevelsResult } from './levels.js';
 import { buildDailyPivotCache, updateDailyPivotCache, dailyPivotsOf } from './dailyPivots.js';
 
 function s(sessionDate: string, session: 'Day' | 'Night', high: number, low: number,
@@ -357,3 +357,162 @@ describe('computeLevels 日足/週足ピボット(長期の実スイング)', ()
     expect([...r.up, ...r.down].flatMap(l => l.labels).some(x => /日足|週足/.test(x))).toBe(false);
   });
 });
+
+// ── 隙間埋め(表示専用): 選抜窓内で現値と表示行の隣接差を 近い帯(±500)200円 / 遠い帯 300円 以下にする ──
+describe('隙間埋め(gapFill・表示専用)', () => {
+  const CUR = 67000;
+  const L = (price: number, score = 1, over: Partial<Level> = {}): Level => ({
+    price, dist: price - CUR, labels: [`水準${price}`], kinds: ['sessHL'], strong: false, score, tier: 0, confluence: false, ...over,
+  });
+  /** 片側ごとに「現値 + 窓内の行 + 窓端(仮想の端点)」を並べた隣接差の最大を、隙間の現値側の端が ±500 以内(near)/外(far)で分けて返す。 */
+  const adjGaps = (cur: number, rows: Level[], win = SELECT_WINDOW_YEN): { near: number; far: number } => {
+    let near = 0, far = 0;
+    for (const sign of [1, -1]) {
+      const xs = [cur, ...rows.filter(l => sign * (l.price - cur) > 0 && Math.abs(l.price - cur) <= win).map(l => l.price), cur + sign * win]
+        .sort((a, b) => a - b);
+      for (let i = 1; i < xs.length; i++) {
+        const g = xs[i]! - xs[i - 1]!;
+        const nearEnd = Math.min(Math.abs(xs[i]! - cur), Math.abs(xs[i - 1]! - cur));
+        if (nearEnd <= DISPLAY_GAP_NEAR_ZONE_YEN) near = Math.max(near, g); else far = Math.max(far, g);
+      }
+    }
+    return { near, far };
+  };
+  const ok = (cur: number, rows: Level[]): void => {
+    const g = adjGaps(cur, rows);
+    expect(g.near).toBeLessThanOrEqual(200);
+    expect(g.far).toBeLessThanOrEqual(300);
+  };
+  const maxAdjGap = (cur: number, rows: Level[]): number => { const g = adjGaps(cur, rows); return Math.max(g.near, g.far); };
+
+  it('定数は 近い帯200円 / 遠い帯300円 / 境目±500円', () => {
+    expect(DISPLAY_MAX_GAP_NEAR_YEN).toBe(200);
+    expect(DISPLAY_MAX_GAP_FAR_YEN).toBe(300);
+    expect(DISPLAY_GAP_NEAR_ZONE_YEN).toBe(500);
+  });
+
+  it('現値〜窓端の隣接差(現値↔最寄り行・窓内最終行↔窓端を含む)が上限以下になる', () => {
+    const display = [L(67600, 5), L(66500, 5)];
+    const fill = fillDisplayGaps(CUR, display, display, SELECT_WINDOW_YEN);
+    expect(maxAdjGap(CUR, display)).toBeGreaterThan(200);
+    ok(CUR, [...display, ...fill]);
+  });
+
+  it('現値から遠い帯(隙間の現値側の端が±500超)は 300 円まで許す(近い帯は 200 円)', () => {
+    const a = L(68200, 5);   // 上 +1200 の1本だけ・実水準なし
+    const fill = fillDisplayGaps(CUR, [a], [a], SELECT_WINDOW_YEN);
+    // 67000-68200 → 67600 → (近)67300 → (近)67200 → (近 67300-67600)67500 → (遠 67600-68200)67900。68200-窓端68500 は 300 で可。
+    expect(fill.filter(l => l.price > CUR).map(l => l.price).sort()).toEqual([67200, 67300, 67500, 67600, 67900]);
+    const g = adjGaps(CUR, [a, ...fill]);
+    expect(g.near).toBeLessThanOrEqual(200);
+    expect(g.far).toBe(300);   // 67600-67900 / 67900-68200 は 300 のまま(200 まで細かくしない)
+  });
+
+  it('実水準(未選抜のクラスタ)がスコア順に優先され、埋まらない隙間だけ 100 円刻みの補間になる', () => {
+    const a = L(67600, 5), b = L(66500, 5);
+    // 67900 は最遠の表示行(67600)より外だが窓内(窓端68500)なので、67600-68500 の隙間を埋める実水準として使う。
+    // 窓外(68600)の実水準は使わない。
+    const clustered = [a, b, L(67250, 5), L(67300, 3), L(67900, 9), L(68600, 20)];
+    const fill = fillDisplayGaps(CUR, [a, b], clustered, SELECT_WINDOW_YEN);
+    const real = fill.filter(l => !l.kinds?.includes('gapFill')).map(l => l.price).sort();
+    const interp = fill.filter(l => l.kinds?.includes('gapFill')).map(l => l.price);
+    expect(real).toEqual([67250, 67300, 67900]);
+    // 実水準で埋まった帯には補間が入らない(67000-67250 / 67300-67600 / 67900-68500 の残りだけ補間)。
+    expect(interp.filter(p => p > CUR).sort()).toEqual([67100, 67500, 68200]);
+    for (const p of interp) expect(p % 100).toBe(0);
+    expect(interp.every(p => p > 65500 && p < 68500)).toBe(true);
+    expect(fill.find(l => l.price === 67100)!.labels).toEqual([GAP_FILL_LABEL]);
+    ok(CUR, [a, b, ...fill]);
+  });
+
+  it('隙間に実水準が十分あれば補間は入らない(現値〜67400 の帯)', () => {
+    const a = L(67400, 5);
+    const clustered = [a, L(67150, 2), L(67300, 2)];
+    const fill = fillDisplayGaps(CUR, [a], clustered, SELECT_WINDOW_YEN);
+    expect(fill.filter(l => l.price > CUR && l.price < 67400).every(l => !l.kinds?.includes('gapFill'))).toBe(true);
+    expect(fill.filter(l => l.price > CUR && l.price < 67400).map(l => l.price).sort()).toEqual([67150, 67300]);
+    ok(CUR, [a, ...fill]);
+  });
+
+  it('埋め行は filler:true・tier 0・strong:false。元の Level は書き換えない', () => {
+    const a = L(67600, 5), src = L(67300, 9, { tier: 2, strong: true });
+    const fill = fillDisplayGaps(CUR, [a], [a, src], SELECT_WINDOW_YEN);
+    expect(fill.length).toBeGreaterThan(0);
+    for (const l of fill) { expect(l.filler).toBe(true); expect(l.tier).toBe(0); expect(l.strong).toBe(false); }
+    expect(src.tier).toBe(2);
+    expect(src.filler).toBeUndefined();
+  });
+
+  it('窓内最終行〜窓端の隙間も上限以下に埋める(窓端そのものは行にしない)', () => {
+    // 現値69860・下側 68870 が窓内最終行(evaluator 指摘の形)。窓端 68360 までの 510 円を埋める。
+    const cur = 69860;
+    const M = (price: number): Level => ({ ...L(price, 5), dist: price - cur });
+    const display = [M(69700), M(69500), M(69300), M(69100), M(68870), M(68350)];
+    const fill = fillDisplayGaps(cur, display, display, SELECT_WINDOW_YEN);
+    const below = fill.filter(l => l.price < 68870).map(l => l.price);
+    expect(below.length).toBeGreaterThan(0);
+    expect(below.every(p => p > cur - SELECT_WINDOW_YEN)).toBe(true);   // 窓外(68350 側)には入れない
+    expect(fill.some(l => l.price === cur - SELECT_WINDOW_YEN || l.price === cur + SELECT_WINDOW_YEN)).toBe(false);
+    ok(cur, [...display, ...fill]);
+  });
+
+  it('窓内に表示行が無い側も窓端まで埋める。窓外の行との隙間(窓端の先)は埋めない', () => {
+    // 上: 窓外(+2000)の1本だけ → 現値〜窓端(68500)を埋める。下: -1000 と窓外 -3000 → 現値〜窓端(65500)を埋める。
+    const display = [L(69000, 5), L(66000, 5), L(64000, 5)];
+    const fill = fillDisplayGaps(CUR, display, display, SELECT_WINDOW_YEN);
+    expect(fill.some(l => l.price > CUR)).toBe(true);
+    expect(fill.every(l => Math.abs(l.price - CUR) < SELECT_WINDOW_YEN)).toBe(true);
+    ok(CUR, [...display, ...fill]);
+    // 表示行も実水準も無い(両側とも空)でも窓端まで埋まる。
+    const empty = fillDisplayGaps(CUR, [], [], SELECT_WINDOW_YEN);
+    expect(empty.some(l => l.price > CUR) && empty.some(l => l.price < CUR)).toBe(true);
+    ok(CUR, empty);
+  });
+
+  describe('computeLevels 経由', () => {
+    const sessions = [
+      s('2026-06-01', 'Night', 67900, 66100, { close: 67050 }),
+      s('2026-06-01', 'Day',   68400, 65800, { close: 66950 }),
+    ];
+    const dPiv = { price: 65600, tf: 'D' as const, type: 'low' as const, date: '2026-09-14', role: 'support' as const, flipped: false, t: 0 };
+    const run = (): LevelsResult => computeLevels(sessions, 67000, 0, null, [], [], [], [], [], [], [dPiv]);
+
+    it('up/down+gapFill の窓内隣接差が 近い帯200/遠い帯300 以下。gapFill は up/down と重ならず全て tier0・filler', () => {
+      const r = run();
+      const display = [...r.up, ...r.down];
+      expect(maxAdjGap(r.current, display)).toBeGreaterThan(200);   // 前提: 埋める前は隙間がある
+      const fill = r.gapFill ?? [];
+      expect(fill.length).toBeGreaterThan(0);
+      ok(r.current, [...display, ...fill]);
+      const shown = new Set(display.map(l => l.price));
+      for (const l of fill) {
+        expect(shown.has(l.price)).toBe(false);
+        expect(l.tier).toBe(0);
+        expect(l.filler).toBe(true);
+      }
+      expect(display.some(l => l.filler)).toBe(false);   // up/down には埋め行が入らない
+    });
+
+    it('registry の監視抽出(up/down の tier>=1)には埋め行が乗らない', () => {
+      const r = run();
+      const watched = [...r.up, ...r.down].filter(l => l.tier >= 1);
+      expect(watched.some(l => l.filler)).toBe(false);
+      const fillPrices = new Set((r.gapFill ?? []).map(l => l.price));
+      expect(watched.some(l => fillPrices.has(l.price))).toBe(false);
+    });
+
+    it('日足ピボット(★★)・fib50 の強制表示は壊れない', () => {
+      const r = run();
+      const piv = r.down.find(l => l.price === 65600);
+      expect(piv?.tier).toBe(2);
+      expect((r.gapFill ?? []).some(l => l.price === 65600)).toBe(false);
+      // fib50(転換ライン)は従来どおり up/down 側(埋め行ではない)。
+      const fib = clusteredFib50(r);
+      if (fib) expect(fib.filler).toBeUndefined();
+    });
+  });
+});
+
+function clusteredFib50(r: LevelsResult): Level | undefined {
+  return [...r.up, ...r.down].find(l => l.reversalLine);
+}

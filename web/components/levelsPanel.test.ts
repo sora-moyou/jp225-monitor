@@ -78,3 +78,25 @@ describe('buildLevelsHtml — 水準パネルのグレースフル劣化', () =>
     expect(idxCur).toBeLessThan(idx800);   // 下値は現値行の後
   });
 });
+
+describe('buildLevelsHtml — 隙間埋め(gapFill・表示専用)', () => {
+  it('gapFill の行も価格順に並べて描き、filler クラスで控えめにする。補間行はスコアを出さない', () => {
+    const r = result({
+      up: [lvl(67400, { labels: ['上値'] })],
+      down: [lvl(66600, { labels: ['下値'] })],
+      gapFill: [
+        lvl(67200, { labels: ['キリ番(補間)'], kinds: ['gapFill'], filler: true, score: 0 }),
+        lvl(66800, { labels: ['前日Day終値'], kinds: ['prevClose'], filler: true, score: 1.3 }),
+      ],
+    });
+    const html = buildLevelsHtml(r, 67000, false, '');
+    const i = (s: string): number => html.indexOf(s);
+    expect(i('67,400')).toBeLessThan(i('67,200'));
+    expect(i('67,200')).toBeLessThan(i('現値'));
+    expect(i('現値')).toBeLessThan(i('66,800'));
+    expect(i('66,800')).toBeLessThan(i('66,600'));
+    expect((html.match(/levels-row filler/g) ?? []).length).toBe(2);
+    expect(html).toContain('キリ番(補間)</span><span class="lv-score"></span>');
+    expect(html).toContain('<span class="lv-score">1.3</span>');
+  });
+});

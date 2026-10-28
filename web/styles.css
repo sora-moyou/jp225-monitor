@@ -245,6 +245,7 @@ body {
 .levels-row.confluence { color: #f0c674; }   /* 合流帯(★★): 強調色 */
 .levels-row.confluence .lv-price { font-weight: bold; }
 .levels-row .lv-score { text-align: right; color: var(--muted); font-size: 11px; opacity: 0.75; }
+.levels-row.filler { opacity: 0.55; }   /* 隙間埋め(表示専用・★なし): 控えめ */
 .levels-row.reversal { color: #ffb454; }   /* 転換ライン: 明度を上げて視認性UP */
 .levels-cur { padding: 2px 4px; color: #58a6ff; font-size: 12px; }
 .levels-cur-stale { color: var(--down, #f85149); }   /* 現値 取得不能(socket 停止/stale)。水準行は残す。 */

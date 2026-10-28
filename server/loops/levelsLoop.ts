@@ -45,7 +45,9 @@ export function levelSignature(r: LevelsResult): string {
     .sort((a, b) => a.price - b.price)
     .map(l => `${l.price}:${l.tier}:${Math.round(l.score * 2) / 2}`)
     .join(',');
-  return `${prices}#${r.swing ? `${r.swing.high}-${r.swing.low}-${r.swing.leg}` : ''}`;
+  // ★表示専用の隙間埋め行(gapFill)も署名に含める(埋め行だけが変わった時もパネルへ配信するため)。
+  const fill = (r.gapFill ?? []).map(l => l.price).sort((a, b) => a - b).join(',');
+  return `${prices}#${r.swing ? `${r.swing.high}-${r.swing.low}-${r.swing.leg}` : ''}${fill ? `#fill:${fill}` : ''}`;
 }
 
 function tick(): void {

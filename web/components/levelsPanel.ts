@@ -49,6 +49,9 @@ function rowHtml(l: Level, cur: number): string {
   if (l.strong) cls.push('strong');
   if (l.tier === 2) cls.push('confluence');
   if (l.reversalLine) cls.push('reversal');
+  // ★隙間埋め(表示専用・tier 0)は控えめに。補間行(実水準でない)はスコアを出さない。
+  const interp = !!l.filler && !!l.kinds?.includes('gapFill');
+  if (l.filler) cls.push('filler');
   const star = l.tier === 2 ? '★★' : l.tier === 1 ? '★' : '';
   const flag = l.reversalLine ? ' ⚑転換' : '';
   const labels = l.labels.join('・');
@@ -59,7 +62,7 @@ function rowHtml(l: Level, cur: number): string {
     `<span class="lv-price">${fmtPrice(l.price)}</span>` +
     `<span class="lv-dist">${fmtDist(dist)}</span>` +
     `<span class="lv-label">${labels}${flag}</span>` +
-    `<span class="lv-score">${l.score.toFixed(1)}</span></div>`;
+    `<span class="lv-score">${interp ? '' : l.score.toFixed(1)}</span></div>`;
 }
 
 /**
@@ -82,7 +85,8 @@ export function buildLevelsHtml(
   // 現値が fresh なら currentPrice、stale/欠落なら最後に計算した現値(latest!.current)を行分けに使う。
   const liveOk = currentPrice !== null && !priceStale;
   const splitAt = liveOk ? currentPrice! : (latest!.current || null);
-  const all = [...latest!.up, ...latest!.down];
+  // ★gapFill(表示専用の隙間埋め)は up/down と別配列で来る(判断材料に混ぜないため)。表示ではここで並べる。
+  const all = [...latest!.up, ...latest!.down, ...(latest!.gapFill ?? [])];
   // サーバの up/down 分割は計算時点の価格基準。行位置は splitAt(fresh 現値 or 最後の計算現値)で再分割。
   const above = splitAt !== null ? all.filter(l => l.price > splitAt).sort((a, b) => b.price - a.price) : [];
   const below = splitAt !== null ? all.filter(l => l.price <= splitAt).sort((a, b) => b.price - a.price) : all.sort((a, b) => b.price - a.price);

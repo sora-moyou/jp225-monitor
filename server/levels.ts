@@ -28,6 +28,15 @@ export const FIB_CONFLUENCE_BONUS = 1.5;  // 合流倍率
 //   値は既定の選抜窓(SELECT_WINDOW_YEN)と同じだが、設定 selectWindowYen を動かしてもこちらは動かさない。
 export const DAILY_PIVOT_WINDOW_YEN = 1500;
 export const LEVEL_TEST_BONUS = 0.15;     // 被テスト加点係数
+// ★表示の隣接差の上限(円)。選抜窓内で「現値↔最寄り行」「行↔行」の差が上限を超えたら、表示専用の
+//   埋め行(未選抜の実水準 → 無ければ100円刻みの補間)を足す(ユーザー指定: 隣接価格の差が200円以下。
+//   ただし現値から遠いものは300円以内で良い)。上限は隙間の「現値に近い側の端」の距離で2段:
+//   端が現値±DISPLAY_GAP_NEAR_ZONE_YEN 以内 → DISPLAY_MAX_GAP_NEAR_YEN、それより遠い → DISPLAY_MAX_GAP_FAR_YEN。
+export const DISPLAY_MAX_GAP_NEAR_YEN = 200;
+export const DISPLAY_MAX_GAP_FAR_YEN = 300;
+export const DISPLAY_GAP_NEAR_ZONE_YEN = 500;
+export const GAP_FILL_STEP_YEN = 100;     // 補間行の刻み(キリ番)
+export const GAP_FILL_LABEL = 'キリ番(補間)';
 
 // ── 候補タイプ別重み ──
 // v0.6.10: 反応水準(価格が複数回反転した実反応の帯)を最重視。Fib は単独だと過剰だったため低減し、
@@ -512,5 +521,80 @@ export function computeLevels(
     l.strong = l.tier >= 1;
   }
 
-  return { current, up, down, swing, reversalSatisfied, asOf, hlLevels };
+  // ★隙間埋め(表示専用)。tier 確定の **後** に作るので、相対ランクの基準(maxScore)にも影響しない。
+  const gapFill = fillDisplayGaps(current, display, clustered, selectWindowYen);
+
+  return { current, up, down, swing, reversalSatisfied, asOf, hlLevels, gapFill };
+}
+
+/**
+ * 表示専用の隙間埋め行を作る(純関数)。
+ *  対象: 現値を中心に選抜窓(|dist|<=windowYen)の内側だけ。片側ごとに「現値, 窓内の表示行, 窓端(現値±windowYen)」を
+ *        端点とした各隙間=現値〜窓端の全区間。窓端は **仮想の端点**(行としては出さない)。窓内に表示行が無い側も
+ *        窓端まで埋める(窓内最終行の先に、パネル上で大きな空白を残さないため)。窓外(遠方ラダー/週足)は埋めない。
+ *  上限: 隙間の現値に近い側の端が現値±nearZone 以内なら nearGap(200)、それより遠ければ farGap(300)。
+ *  埋め方: (a) 上限を超える隙間の中に入る未選抜のクラスタ済み実水準のうち score 最大を1本足す → 繰り返す。
+ *          (b) 実水準で埋まらない隙間は、中点に最も近い step(100)円刻みの価格を補間行として足す → 繰り返す。
+ *          上限 >= step なら中点±step/2 の刻みは必ず隙間の開区間内にあり、新しい隙間は (gap/2+step/2) 以下=単調に縮むので必ず収束する。
+ *  返す行はすべて filler:true・tier 0・strong:false(registry の tier>=1 監視に乗らない)。実水準は元オブジェクトを書き換えずコピーする。
+ */
+export function fillDisplayGaps(
+  current: number,
+  display: readonly Level[],
+  clustered: readonly Level[],
+  windowYen: number,
+  opts: { nearGap?: number; farGap?: number; nearZone?: number; step?: number } = {},
+): Level[] {
+  const nearGap = opts.nearGap ?? DISPLAY_MAX_GAP_NEAR_YEN;
+  const farGap = opts.farGap ?? DISPLAY_MAX_GAP_FAR_YEN;
+  const nearZone = opts.nearZone ?? DISPLAY_GAP_NEAR_ZONE_YEN;
+  const step = opts.step ?? GAP_FILL_STEP_YEN;
+  const out: Level[] = [];
+  if (!(step > 0) || !(nearGap >= step) || !(farGap >= step) || !Number.isFinite(current) || !(windowYen > 0)) return out;
+  /** 隙間 [lo,hi] の上限。現値に近い側の端(上側なら lo・下側なら hi)の距離で決める。 */
+  const limitOf = (lo: number, hi: number): number =>
+    Math.min(Math.abs(lo - current), Math.abs(hi - current)) <= nearZone ? nearGap : farGap;
+  const shown = new Set(display.map(l => l.price));
+  for (const sign of [1, -1] as const) {
+    const onSide = (l: Level): boolean => sign * l.dist > 0 && Math.abs(l.dist) <= windowYen;
+    const anchors = display.filter(onSide).map(l => l.price);
+    const pool = clustered.filter(l => onSide(l) && !shown.has(l.price));
+    const used = new Set<Level>();
+    const edge = current + sign * windowYen;   // 仮想の端点(行にしない)
+    const points = [current, ...anchors, edge];
+    const gaps = (): [number, number][] => {
+      const xs = [...points].sort((a, b) => a - b);
+      const res: [number, number][] = [];
+      for (let i = 1; i < xs.length; i++) if (xs[i]! - xs[i - 1]! > limitOf(xs[i - 1]!, xs[i]!)) res.push([xs[i - 1]!, xs[i]!]);
+      return res;
+    };
+    // (a) 実水準。どの隙間にも入る候補が無くなるまで。
+    for (;;) {
+      let best: Level | null = null;
+      for (const [lo, hi] of gaps()) {
+        for (const c of pool) {
+          if (used.has(c) || !(c.price > lo && c.price < hi)) continue;
+          if (!best || c.score > best.score || (c.score === best.score && Math.abs(c.dist) < Math.abs(best.dist))) best = c;
+        }
+      }
+      if (!best) break;
+      used.add(best);
+      points.push(best.price);
+      out.push({ ...best, tier: 0, strong: false, filler: true });
+    }
+    // (b) 補間(100円刻み)。
+    for (;;) {
+      const g = gaps()[0];
+      if (!g) break;
+      const [lo, hi] = g;
+      const p = Math.round((lo + hi) / 2 / step) * step;
+      if (!(p > lo && p < hi)) break;   // 理論上起きない(上限>=step 前提の保険)
+      points.push(p);
+      out.push({
+        price: p, dist: round5(p - current), labels: [GAP_FILL_LABEL], kinds: ['gapFill'],
+        strong: false, score: 0, tier: 0, confluence: false, filler: true,
+      });
+    }
+  }
+  return out.sort((a, b) => b.price - a.price);
 }

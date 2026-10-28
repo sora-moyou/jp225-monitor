@@ -177,6 +177,9 @@ export interface Level {
   confluence: boolean;      // 合流倍率が掛かったか(tier2 判定に使用)
   fib?: number;             // 0.382 | 0.5 | 0.618 など
   reversalLine?: boolean;   // fib 50% の方向転換ライン
+  /** ★隙間埋めの表示専用行(server/levels.ts の fillDisplayGaps)。true のときは tier 0 固定で、
+   *  LevelsResult.gapFill にだけ入る(up/down には入らない=監視・AI・注文・再武装の判断材料にしない)。 */
+  filler?: boolean;
 }
 export interface LevelsResult {
   current: number;
@@ -187,6 +190,12 @@ export interface LevelsResult {
   asOf: number;
   // 高安関係の全水準(クラスタ/上位N選抜・スコア合計によらず全件)。ダブルトップ/ボトム検知用に露出。
   hlLevels?: { price: number; label: string }[];
+  /** ★表示専用の隙間埋め行(各 Level は filler:true・tier 0)。選抜窓内で、現値と表示行の隣接差が上限
+   *  (現値±500以内の隙間は200円・それより遠い隙間は300円。server/levels.ts の DISPLAY_* 定数)を超える隙間(現値〜窓端の全区間)に、未選抜の実水準(スコア順)→無ければ100円刻みの補間を入れたもの。
+   *  ★up/down とは **別の配列** にしてある: up/down は registry(break/level_sr)・AI プロンプト・5円ずらし・
+   *    再武装ゲート・チャート画像・trade2(SSE levels の parseLevelPrices)が判断材料に読むので、混ぜると挙動が変わる。
+   *    水準パネル(web/components/levelsPanel.ts)だけがこれを up/down と並べて描く。任意(古いペイロード互換)。 */
+  gapFill?: Level[];
 }
 
 // トレードシグナル(表示専用・仮想取引の記録)の SSE state。エントリーは AI(scalp-plan)、

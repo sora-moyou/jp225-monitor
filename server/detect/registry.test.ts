@@ -176,6 +176,21 @@ describe('runLevelDetectors — break を sink に流し、cooldown/dedup は co
     runLevelDetectors(db, a, now, createLevelDetectState(), e => calls.push(e));
     expect(calls.some(e => e.detectionKind === 'dailyband' && e.direction === 'down')).toBe(true);
   });
+
+  it('★表示専用の隙間埋め(gapFill)は監視しない: 埋め行があっても無くても検知結果は同じ', () => {
+    const filler: Level = { ...lvl(100, 1, 'キリ番(補間)'), filler: true };   // tier を仮に1にしても gapFill は読まれない
+    const base = { current: 96, up: [], down: [], swing: null, reversalSatisfied: false, asOf: now };
+    const run = (r: LevelsResult): string[] => {
+      const calls: AlertEventPayload[] = [];
+      runLevelDetectors(db, { ...analytics(), result: r }, now, createLevelDetectState(), e => calls.push(e));
+      return calls.map(e => `${e.detectionKind}|${e.direction}|${e.note}`);
+    };
+    const withFill = run({ ...base, gapFill: [filler] } as LevelsResult);
+    expect(withFill).toEqual(run(base as LevelsResult));
+    expect(withFill.some(x => x.includes('キリ番(補間)'))).toBe(false);
+    // 対照: 同じ行を down(監視対象)に入れると break が出る=上の「出ない」は gapFill だから。
+    expect(run({ ...base, down: [lvl(100, 1, 'キリ番(補間)')] } as LevelsResult).some(x => x.startsWith('break|down'))).toBe(true);
+  });
 });
 
 describe('runLevelDetectors — double(スイングW)の形成抑制 / breakout 発火(40日ライブ)', () => {
