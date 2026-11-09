@@ -1,9 +1,27 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resetConfigCache, resolveApiKeyForPool, GENERATOR_DAILY_BUDGET_DEFAULT } from '../configStore.js';
 import { getSettingsHandler, postSettingsHandler } from './settings.js';
+import { restartPriceLoop } from '../loops/priceLoop.js';
+
+// ★本物のループを起動させない(2026-11-10: 毎回 afterEach の rmSync が EPERM で落ちていた真因)。
+//   pricePollMs を変える保存は settings.ts が restartPriceLoop() を呼ぶ。本物だと価格ループが起動し、
+//   取引時間外は最初の tick で **同期的に** price_feed_heartbeat を書くため一時フォルダ(APPDATA=dir)の
+//   jp225.db を開いたまま握る(stopPriceLoop を呼ぶまで閉じない)→ Windows ではフォルダを消せない。
+//   取引時間中は HTTP 取得の await の後に開くので rmSync が先に済んで通ってしまう=時刻で結果が変わっていた。
+//   さらに本物のループは 30秒(場外)/2秒(場中)ごとに回り続け、場中は本物の HTTP を叩く。
+//   → テストが確かめたいのは「保存の結果」と「再起動を頼んだか」だけなので、再起動はスパイに差し替える。
+//   newsLoop も同じ形(本物はニュース取得と翻訳=LLM 課金)なので併せて差し替える。
+vi.mock('../loops/priceLoop.js', async (orig) => ({
+  ...(await orig() as object),
+  restartPriceLoop: vi.fn(),
+}));
+vi.mock('../loops/newsLoop.js', async (orig) => ({
+  ...(await orig() as object),
+  restartNewsLoop: vi.fn(),
+}));
 
 // ★分析用(caller='generator')の設定を ⚙️ から扱えるようにした分の契約テスト。
 //
@@ -142,7 +160,10 @@ describe('/api/settings 分析用(キー/予算)', () => {
 
   it('generatorKeys を送らない普通の保存では専用キーが消えない', () => {
     writeConfig({ generatorKeys: { openai: 'sk-generator' }, generatorDailyBudget: 300, chromePath: 'C:\\chrome.exe' });
+    vi.mocked(restartPriceLoop).mockClear();
     expect(post({ scalpLcFloorYen: 45, pricePollMs: 2000 }).code).toBe(200);
+    // 本物を起動しない代わりに、「再起動を頼んだ」ことは確かめる(差し替えで経路を見失わない)。
+    expect(restartPriceLoop).toHaveBeenCalledTimes(1);
     const raw = readRaw();
     expect(raw.generatorKeys).toEqual({ openai: 'sk-generator' });
     expect(raw.generatorDailyBudget).toBe(300);
