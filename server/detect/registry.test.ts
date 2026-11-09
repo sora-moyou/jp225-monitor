@@ -349,6 +349,22 @@ describe('computeLevelAnalytics — tick が無ければ null', () => {
   });
 });
 
+// ★重要価格が「何時点の価格から」作られたかを結果に載せる(asOf は計算時刻で、ティックが止まっても進む)。
+//   AI チャットが「立会中なのにティックが古い」重要価格を渡さないための材料(server/chatContext.ts)。
+//   実例: ticks が 10/28 05:59 で止まったまま、11/10 まで 64,395 基準の重要価格が出続けた。
+describe('computeLevelAnalytics — latestTickAt に最新ティックの時刻を載せる', () => {
+  it('計算時刻(now)が進んでも latestTickAt は最新ティックの時刻のまま', () => {
+    const db = memDb();
+    const tickAt = Date.UTC(2026, 9, 27, 20, 59);   // 10/28 05:59 JST
+    db.prepare('INSERT INTO ticks (symbol, t, price) VALUES (?, ?, ?)').run(NIY, tickAt, 64_395);
+    const now = Date.UTC(2026, 10, 10, 2, 0);       // 11/10 11:00 JST
+    const a = computeLevelAnalytics(db, now, createLevelDetectState())!;
+    expect(a).not.toBeNull();
+    expect(a.result.asOf).toBe(now);
+    expect(a.result.latestTickAt).toBe(tickAt);
+  });
+});
+
 // ★aggregateBars(終値つき)へ差し替えても、スイングの入力である h/l は resampleHL と同じであること。
 //   double の帯条件を足すために集約関数を替えたので、「幾何は1円も変わらない」という前提を固定する
 //   (ここが崩れると、帯条件とは無関係にダブルの検知位置が動く)。

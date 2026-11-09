@@ -6,7 +6,7 @@ import './logInstall.js';
 // 日経225 データ収集デーモン v0.5.00。公開 HTTP フィード(ajax_cme/ajax_fx)を 2秒ごとに DB へ。
 // v0.5.00: デーモン単独でアラート検知→DB記録(単一ライター・ハートビート調停)。アプリ閉でも24/7記録。
 // v0.7.20: 価格源を公開 HTTP のみに統一(socket / Yahoo backfill を全廃)。
-import { openDb, resolveDbPath, pruneTicks } from '../server/db/store.js';
+import { openDb, resolveDbPath } from '../server/db/store.js';
 // ★ティック長期保管(将来の分析用・RECORD-ONLY)。共有DB(jp225.db)とは別ファイルに NIY=F だけを溜め、
 //   自動削除は一切置かない。理由と設計は server/db/tickArchive.ts の冒頭コメント参照。
 import {
@@ -32,9 +32,11 @@ import { fetchAjaxFxPrices } from '../server/sources/ajaxFxPrice.js';
 import { mergeSources } from '../server/loops/priceLoop.js';
 import type { Price } from '../server/types.js';
 import { inPollWindow } from '../core/session.js';
-import { acquireLock, releaseLock } from './lock.js';
+import { waitForCollectorLock, releaseLock } from './lock.js';
 import { AlertCollector } from './alertCollector.js';
-import { writeHeartbeat } from '../server/collectorHeartbeat.js';
+// ★心拍とティック間引きは poll の try の外で DB に書く。1回のロック失敗で collector を落とさないよう
+//   collector/housekeeping.ts で包む(2026-10-27/28 に writeHeartbeat の database is locked で落ちて13日止まった)。
+import { createHousekeepingState, runHeartbeatStep, runPruneStep } from './housekeeping.js';
 import { setCooldownMs } from '../server/alertCooldown.js';
 import { resolveCooldownMin } from '../server/configStore.js';
 import { warmFromDb } from '../server/warmup.js';
@@ -81,7 +83,11 @@ async function fetchAjaxThrottled(now: number): Promise<Price[]> {
 }
 
 async function main(): Promise<void> {
-  if (!acquireLock()) { console.log('[collector] another instance is running — exiting'); return; }
+  // ★ロックが取れなくても抜けない: 60秒ごとに再判定して待つ(待機中は DB を開かない)。
+  //   以前は即 return(exit 0)だったので、アプリ再起動後に古い collector が落ちると誰も再起動しなかった。
+  //   より新しい待機者が来たら身を引いて exit 0(待機者を増やさない)。設計は collector/lock.ts。
+  const lockWait = await waitForCollectorLock();
+  if (lockWait.kind === 'superseded') { console.log(`[collector] superseded by waiter pid=${lockWait.by} — exiting`); return; }
   const dbPath = resolveDbPath();
   const db = openDb(dbPath);
   // ★分析(=ティック長期保管)を走らせるかの唯一の判断。lite では archiveDb を **開かない**
@@ -115,7 +121,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => { running = false; });
   process.on('SIGTERM', () => { running = false; });
 
-  let lastPrune = 0;
+  const housekeeping = createHousekeepingState();
   let lastTickExport = 0;   // 0 = 起動直後に1回走らせる(取りこぼした過去日を拾う)
   /** ★poll が連続で失敗している回数。握りつぶして周回を続ける経路が **無音にならない** ようにする。 */
   let pollErrorStreak = 0;
@@ -128,7 +134,7 @@ async function main(): Promise<void> {
   while (running) {
     const start = Date.now();
     let wait = IDLE_MS;
-    writeHeartbeat(db, start);
+    runHeartbeatStep(db, start, housekeeping);   // ★失敗しても投げない(連続失敗は sidecar-spawn.log へ)
     if (inPollWindow(start)) {
       try {
         // 価格の主経路(monitor priceLoop と同一): 全 4 銘柄を公開 HTTP から(~4s 間引き)。
@@ -184,10 +190,8 @@ async function main(): Promise<void> {
     //   長期保管は別ファイル(ticks_archive.db)の役目で、そちらには prune を置かない。
     //   共有DBを太らせると trade2 の 30分ごとの `VACUUM INTO`(実測 102MB で約1.3秒の同期ブロック)が
     //   重くなり、実取引のフィード/発注/約定検知を止めてしまう。
-    if (Date.now() - lastPrune > 60_000) {
-      pruneTicks(db, Date.now() - 3 * 24 * 60 * 60 * 1000);
-      lastPrune = Date.now();
-    }
+    //   ★失敗しても投げない(連続失敗は sidecar-spawn.log へ)。周期・保持期間は collector/housekeeping.ts。
+    runPruneStep(db, Date.now(), housekeeping);
     // ★確定済みの過去日を1日1ファイルで同期フォルダへ書き出す(append-only・冪等・既存ファイルは触らない)。
     //   1時間に1回で十分(1日1回しか対象が増えない)。失敗しても収集は止めない。
     if (archiveDb && tickExportDir && Date.now() - lastTickExport > TICK_EXPORT_CHECK_MS) {

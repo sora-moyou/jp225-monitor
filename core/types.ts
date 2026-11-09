@@ -187,7 +187,13 @@ export interface LevelsResult {
   down: Level[];
   swing: { high: number; low: number; leg: 'up' | 'down' } | null;
   reversalSatisfied: boolean;
+  /** 計算した時刻(= levelsLoop が回った時刻)。★価格の時刻ではない(下の latestTickAt を見ること)。 */
   asOf: number;
+  /** ★計算に使った最新ティック(ticks 表の NIY=F)の時刻[epoch ms]。任意(古いペイロード互換)。
+   *  asOf は「いつ計算したか」で、collector が止まってティックが古いままでも levelsLoop は毎回 asOf を進める。
+   *  重要価格が **何時点の価格から** 作られたかはこちらでしか分からない
+   *  (2026-10-28〜11-10: ティックが 10/28 05:59 で止まったまま、64,395 基準の重要価格が AI チャットへ渡っていた)。 */
+  latestTickAt?: number;
   // 高安関係の全水準(クラスタ/上位N選抜・スコア合計によらず全件)。ダブルトップ/ボトム検知用に露出。
   hlLevels?: { price: number; label: string }[];
   /** ★表示専用の隙間埋め行(各 Level は filler:true・tier 0)。選抜窓内で、現値と表示行の隣接差が上限

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -183,11 +185,182 @@ fn write_instance_lock(path: &std::path::Path, variant: &str, pid: u32) {
     }
 }
 
+// ── collector の自動再起動 ──────────────────────────────────────────────────────────
+//
+// ★なぜ要るか(2026-10-27/28 の実事故): collector は起動時に1回 spawn するだけで、終了を誰も見ていなかった。
+//   08:05 に `database is locked` で exit code=1 になったあと **13日間** 再起動されず、ticks が止まった
+//   (monitor の collectorWatch は DEAD を記録していたが、何もしなかった)。
+//
+// ★再起動するのは **終了コードが 0 以外のときだけ**:
+//   ・PID ロックを別インスタンス(前回のアプリが上げて生き残っている collector)に取られているときは、
+//     抜けずに **60秒ごとに再判定して待つ**(collector/lock.ts waitForCollectorLock)。保持者が消えたら
+//     ロックを取って収集を始める = 生き残りの collector が落ちても、この監視下の子が引き継ぐ。
+//   ・待機者は1人だけ: より新しい待機者(次のアプリ起動の子)が来たら、古い待機者は **exit 0** で身を引く。
+//     それを再起動すると待機者が積み上がる/取り合いになるので、0 は再起動しない。
+//   ・SIGINT/SIGTERM で while を抜けた通常停止も 0。
+//   ・unhandledRejection / uncaughtException は server/processLog.ts が記録してから exit(1)。
+// ★「完全終了」(stop_collector = taskkill /F)は Windows では exit code 1 に見える。
+//   そのまま再起動すると止めたものが10秒後に生き返るので、停止要求フラグを先に立てて区別する。
+// ★間隔は 10秒から倍々で上限5分。10分以上動いてから落ちたら「安定していた」とみなして 10秒に戻す
+//   (一度だけの事故は早く戻し、起動直後に落ち続ける場合はログと CPU を食い潰さない)。
+static COLLECTOR_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// 配布版で走る collector のイメージ名(インストーラの `taskkill /IM "jp225-collector.exe"` と同じ)。
+const COLLECTOR_IMAGE: &str = "jp225-collector.exe";
+const COLLECTOR_RESTART_MIN: Duration = Duration::from_secs(10);
+const COLLECTOR_RESTART_MAX: Duration = Duration::from_secs(300);
+const COLLECTOR_STABLE_RUN: Duration = Duration::from_secs(600);
+/// 再起動時の spawn そのものが連続でこの回数失敗したら諦める(実行ファイルが無い等。ログを埋め尽くさない)。
+const COLLECTOR_MAX_SPAWN_FAILURES: u32 = 5;
+
+// 終了したら再起動するか(純関数=テストできる)。
+fn should_restart_collector(code: Option<i32>, stop_requested: bool) -> bool {
+    if stop_requested {
+        return false;
+    }
+    // code=None はシグナル終了(Windows では来ない)= 正常終了ではないので再起動する。
+    code != Some(0)
+}
+
+// 今回の待ち時間と、次回の待ち時間(純関数)。
+fn collector_restart_delay(current: Duration, ran_for: Duration) -> (Duration, Duration) {
+    let delay = if ran_for >= COLLECTOR_STABLE_RUN { COLLECTOR_RESTART_MIN } else { current };
+    let delay = delay.min(COLLECTOR_RESTART_MAX);
+    let next = (delay * 2).min(COLLECTOR_RESTART_MAX);
+    (delay, next)
+}
+
+// tokio を依存に足さずに眠る(Cargo.toml を触らない)。async ランタイムのワーカーは塞がない。
+async fn sleep_async(d: Duration) {
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(d)).await;
+}
+
+// collector を spawn し、異常終了したら再起動し続ける監視タスク。
+// ★「アプリを閉じても生き続ける」は従来どおり: 子は SidecarState に入れず drop する(=Exit で kill しない)。
+//   アプリが終了すれば監視タスクも消えるだけで、collector 本体には触らない。
+fn supervise_collector(app: tauri::AppHandle, variant: &'static str) {
+    tauri::async_runtime::spawn(async move {
+        let mut backoff = COLLECTOR_RESTART_MIN;
+        let mut generation: u32 = 0;      // 0 = アプリ起動時の初回 spawn
+        let mut spawn_failures: u32 = 0;
+        loop {
+            let spawned = match app.shell().sidecar("jp225-collector") {
+                Ok(cmd) => cmd.env("MONITOR_VARIANT", variant).spawn().map_err(|e| e.to_string()),
+                Err(e) => {
+                    // 実行ファイルの解決ができないのは再試行しても直らない(従来どおり記録して終わる)。
+                    log_spawn(&format!("[collector] sidecar resolve failed: {e}"));
+                    return;
+                }
+            };
+            let (mut crx, cchild) = match spawned {
+                Ok(v) => v,
+                Err(e) => {
+                    log_spawn(&format!("[collector] spawn failed: {e}"));
+                    if generation == 0 {
+                        return;   // 初回の spawn 失敗は従来どおり(記録して終わる)
+                    }
+                    spawn_failures += 1;
+                    if spawn_failures >= COLLECTOR_MAX_SPAWN_FAILURES {
+                        log_spawn(&format!("[collector] ★再起動を断念: spawn が {spawn_failures} 回連続で失敗"));
+                        return;
+                    }
+                    let (delay, next) = collector_restart_delay(backoff, Duration::ZERO);
+                    backoff = next;
+                    log_spawn(&format!("[collector] {}秒後に再起動を再試行します", delay.as_secs()));
+                    sleep_async(delay).await;
+                    continue;
+                }
+            };
+            spawn_failures = 0;
+            let started = Instant::now();
+            if generation == 0 {
+                log_spawn(&format!("[collector] spawned pid={}", cchild.pid()));
+            } else {
+                log_spawn(&format!("[collector] spawned pid={} (再起動 {generation} 回目)", cchild.pid()));
+            }
+            // kill せず drop に任せる(=生存)。イベント(stderr・終了)は rx で引き続き届く。
+            drop(cchild);
+            let mut exit: Option<Option<i32>> = None;
+            while let Some(event) = crx.recv().await {
+                match event {
+                    CommandEvent::Stderr(line) => {
+                        eprintln!("[collector:err] {}", String::from_utf8_lossy(&line).trim_end());
+                    }
+                    CommandEvent::Terminated(payload) => {
+                        exit = Some(payload.code);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let ran_for = started.elapsed();
+            let Some(code) = exit else {
+                // 終了を見ないままチャネルが閉じた(通常は起きない)。判断材料が無いので再起動しない。
+                log_spawn("[collector] event channel closed without Terminated - not restarting");
+                return;
+            };
+            let stop_requested = COLLECTOR_STOP_REQUESTED.load(Ordering::SeqCst);
+            log_spawn(&format!(
+                "[collector] terminated code={:?} after {}s{}",
+                code,
+                ran_for.as_secs(),
+                if stop_requested { " (stop requested)" } else { "" }
+            ));
+            if !should_restart_collector(code, stop_requested) {
+                if code == Some(0) && !stop_requested {
+                    // ロックが他インスタンスにある(=既に誰かが収集している)/ 通常停止。
+                    log_spawn("[collector] exit code 0 - not restarting (superseded by a newer waiter, or normal stop)");
+                } else {
+                    log_spawn("[collector] stop requested - not restarting");
+                }
+                return;
+            }
+            let (delay, next) = collector_restart_delay(backoff, ran_for);
+            backoff = next;
+            generation += 1;
+            log_spawn(&format!(
+                "[collector] ★異常終了 code={:?} - {}秒後に再起動します(再起動 {generation} 回目)",
+                code,
+                delay.as_secs()
+            ));
+            sleep_async(delay).await;
+            if COLLECTOR_STOP_REQUESTED.load(Ordering::SeqCst) {
+                log_spawn("[collector] stop requested during backoff - not restarting");
+                return;
+            }
+        }
+    });
+}
+
 // 完全終了用。collector の PID ファイル(%APPDATA%/jp225-monitor/collector.pid)を読み taskkill。
 // 通常終了では呼ばれない(collector はデタッチ起動で生存し続ける)。
+// ★taskkill /F は exit code 1 に見えるので、先に停止要求を立てて自動再起動を止める。
 #[tauri::command]
 fn stop_collector() -> Result<(), String> {
+    COLLECTOR_STOP_REQUESTED.store(true, Ordering::SeqCst);
     let appdata = std::env::var("APPDATA").map_err(|e| e.to_string())?;
+    // ★ロック待ちの collector(collector.wait.pid)を **先に** 止める。保持者だけ止めると、
+    //   待機者が次の再判定でロックを取って収集を再開してしまう(=完全終了にならない)。
+    //   pid 再利用の誤 kill を防ぐため、イメージ名が collector のときだけ kill する。
+    //   ★TS 側の生存判定(collector/lock.ts isCollectorAlive)は node.exe も collector とみなすが、ここは
+    //     **jp225-collector.exe だけ** にしている(意図的な非対称)。生存判定の誤りは「奪わない=待つ」に倒れる
+    //     だけだが、kill の誤りは無関係のプロセスを殺す。node.exe は他の開発ツールでも常駐しうるので、
+    //     stale な wait.pid が再利用された node.exe を指していたら殺してしまう。開発版(tsx)の待機者は
+    //     このアプリの子ではないので、止めるのは開発者の手で行う。
+    //   ★注意: 待機者が jp225-collector.exe の SEA 名は配布版での実名(インストーラの taskkill /IM と同じ)。
+    let wait_path = std::path::Path::new(&appdata)
+        .join("jp225-monitor")
+        .join("collector.wait.pid");
+    if let Ok(w) = std::fs::read_to_string(&wait_path) {
+        if let Ok(wpid) = w.trim().parse::<u32>() {
+            if is_alive_with_image(wpid, COLLECTOR_IMAGE) {
+                log_spawn(&format!("[collector] stop: kill waiter pid={wpid}"));
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &wpid.to_string(), "/F", "/T"])
+                    .output();
+            }
+        }
+        let _ = std::fs::remove_file(&wait_path);
+    }
     let pid_path = std::path::Path::new(&appdata)
         .join("jp225-monitor")
         .join("collector.pid");
@@ -295,6 +468,31 @@ mod tests {
             apply_window_suppression(&mut windows, decision);
             assert!(windows[0].create, "{decision:?} で窓を消してはいけない");
         }
+    }
+
+    // ★collector の再起動判定: 0 は再起動しない(PID ロックを他インスタンスが持つと 0 で抜ける=無限ループ防止)。
+    #[test]
+    fn collector_restarts_only_on_nonzero_exit() {
+        assert!(!should_restart_collector(Some(0), false), "ロック競合/通常停止(0)は再起動しない");
+        assert!(should_restart_collector(Some(1), false), "unhandledRejection 等(1)は再起動する");
+        assert!(should_restart_collector(None, false), "シグナル終了は正常終了ではない");
+        assert!(!should_restart_collector(Some(1), true), "完全終了(taskkill=1)は再起動しない");
+    }
+
+    #[test]
+    fn collector_backoff_doubles_to_cap_and_resets_after_stable_run() {
+        let short = Duration::from_secs(1);
+        let (d1, n1) = collector_restart_delay(COLLECTOR_RESTART_MIN, short);
+        assert_eq!(d1, Duration::from_secs(10));
+        let (d2, n2) = collector_restart_delay(n1, short);
+        assert_eq!(d2, Duration::from_secs(20));
+        let (_, mut next) = collector_restart_delay(n2, short);
+        for _ in 0..10 {
+            next = collector_restart_delay(next, short).1;
+        }
+        assert_eq!(next, COLLECTOR_RESTART_MAX, "上限5分で止まる");
+        let (d, _) = collector_restart_delay(COLLECTOR_RESTART_MAX, COLLECTOR_STABLE_RUN);
+        assert_eq!(d, COLLECTOR_RESTART_MIN, "10分以上動いた後の終了は10秒に戻す");
     }
 
     // 窓が1枚も無い config でも落ちない(将来 windows を空にしても壊れない)。
@@ -478,24 +676,8 @@ pub fn run() {
             // ★collector にも variant を渡す(サイドカーと同じ環境変数)。渡さないと collector は
             //   自分が公開版(lite)か monitor2(full)かを判別できず、分析専用のティック長期保管を
             //   公開版でも回してしまう(ディスクを永久に食う)。
-            match app.shell().sidecar("jp225-collector") {
-                Ok(cmd) => match cmd.env("MONITOR_VARIANT", variant).spawn() {
-                    Ok((mut crx, cchild)) => {
-                        log_spawn(&format!("[collector] spawned pid={}", cchild.pid()));
-                        // kill せず drop に任せる(=生存)。stderr のみログ。
-                        drop(cchild);
-                        tauri::async_runtime::spawn(async move {
-                            while let Some(event) = crx.recv().await {
-                                if let CommandEvent::Stderr(line) = event {
-                                    eprintln!("[collector:err] {}", String::from_utf8_lossy(&line).trim_end());
-                                }
-                            }
-                        });
-                    }
-                    Err(e) => log_spawn(&format!("[collector] spawn failed: {e}")),
-                },
-                Err(e) => log_spawn(&format!("[collector] sidecar resolve failed: {e}")),
-            }
+            // ★異常終了(code≠0)したら自動で再起動する(supervise_collector 参照・2026-10 の13日停止の再発防止)。
+            supervise_collector(app.handle().clone(), variant);
 
             // 提案生成器(分析用)をデタッチ起動。collector と同じ流儀(SidecarState に入れない=
             // Exit で kill しない)。monitor 本体の起動を遅らせないよう、spawn するだけで待たない。

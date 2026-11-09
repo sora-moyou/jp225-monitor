@@ -49,7 +49,8 @@ export async function chatHandler(req: Request, res: Response): Promise<void> {
       prices,
       news: getNews(),
       // v0.3.36: バー蓄積中でも現在価格から節目メドを出せるよう fallbackPrice を渡す。
-      technical: buildNikkeiTechnical(undefined, niyPrice),
+      // ★立会中なのにティックが古い(collector 停止)ときは重要価格/フィボの数値を渡さない(server/chatContext.ts)。
+      technical: buildNikkeiTechnical(undefined, niyPrice, { guardStaleLevels: true }),
       correlate: topCorrelate(),
     });
     res.json({ reply });

@@ -124,11 +124,14 @@ describe('monitor data tools', () => {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('buildMonitorContext: 直近アラートと本日OHLCの行を含む', () => {
+  it('buildMonitorContext: 直近アラートと直近セッションOHLCの行を含む', () => {
     const ctx = buildMonitorContext(now);
     expect(ctx).toContain('■ 直近アラート(60分以内):');
     expect(ctx).toContain('暴落');
-    expect(ctx).toContain('■ 本日の日経');
+    // ★足は 2026-06-24 Day で now(=実行時刻)のセッションではない → 「本日」と書かず日付を明記する
+    //   (以前は無条件に「■ 本日の日経」と書いていた。実例: 11/10 に 11/6 Night を本日として出した)。
+    expect(ctx).toContain('■ 直近セッションの日経(2026-06-24 Day・現在のセッションではない)');
+    expect(ctx).not.toContain('■ 本日の日経');
     expect(ctx).toContain('高値');
     expect(ctx).toContain('38,500');
   });

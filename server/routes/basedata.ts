@@ -75,7 +75,7 @@ export async function importBasedataFromRelease(): Promise<BasedataImportResult 
   if (bars.length === 0) return null;   // no valid rows
   const db = openDb(resolveDbPath());
   try {
-    const r = importBars(db, bars);
+    const r = await importBars(db, bars);
     if (meta?.generatedAt) setMeta(db, META_KEY, meta.generatedAt);
     return {
       applied: r.inserted, skipped: r.skipped, total: r.total,
@@ -174,7 +174,7 @@ export async function runBasedataPublish(): Promise<BasedataPublishResult> {
     }
     const db = openDb(resolveDbPath());
     try {
-      importBars(db, bars);
+      await importBars(db, bars);
       setMeta(db, META_KEY, meta.generatedAt);
     } finally { db.close(); }
     return {

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { initSchema, getDailyCloses } from './db/store.js';
+import { initSchema, getDailyCloses, openDb } from './db/store.js';
 import { rowToBar, parseNdjsonLine, importBars } from './basedata.js';
 
 describe('rowToBar (xlsx A=セッション日付 → 実時刻 epoch)', () => {
@@ -45,7 +48,7 @@ describe('parseNdjsonLine', () => {
 });
 
 describe('importBars', () => {
-  it('session を付与し upsert、既存の別時刻データは削除しない', () => {
+  it('session を付与し upsert、既存の別時刻データは削除しない', async () => {
     const db = new DatabaseSync(':memory:'); initSchema(db);
     db.prepare('INSERT INTO bars_1m(symbol,session_date,session,t,o,h,l,c) VALUES(?,?,?,?,?,?,?,?)')
       .run('NIY=F', '2026-06-01', 'Day', 9_999_999_999_000, 1, 1, 1, 1);
@@ -54,7 +57,7 @@ describe('importBars', () => {
       { t: t10, o: 100, h: 110, l: 90, c: 105, v: 5 },
       { t: t10 + 60_000, o: 105, h: 115, l: 95, c: 110, v: 6 },
     ];
-    const r = importBars(db, bars);
+    const r = await importBars(db, bars);
     expect(r.inserted + r.updated).toBe(2);
     const cnt = (db.prepare('SELECT COUNT(*) n FROM bars_1m').get() as any).n;
     expect(cnt).toBe(3);
@@ -63,25 +66,25 @@ describe('importBars', () => {
     db.close();
   });
 
-  it('休場/場外(session=null)のバーはスキップ', () => {
+  it('休場/場外(session=null)のバーはスキップ', async () => {
     const db = new DatabaseSync(':memory:'); initSchema(db);
     const tHoliday = Date.UTC(2026, 0, 1, 1, 0); // 2026-01-01 10:00 JST (元日 休場)
-    const r = importBars(db, [{ t: tHoliday, o: 1, h: 1, l: 1, c: 1, v: 1 }]);
+    const r = await importBars(db, [{ t: tHoliday, o: 1, h: 1, l: 1, c: 1, v: 1 }]);
     expect(r.inserted + r.updated).toBe(0);
     db.close();
   });
 
-  it('未来日時のバーは DB に入れない(黙殺せずドロップ)', () => {
+  it('未来日時のバーは DB に入れない(黙殺せずドロップ)', async () => {
     const db = new DatabaseSync(':memory:'); initSchema(db);
     const future = Date.now() + 24 * 3600_000;   // 1日先
-    const r = importBars(db, [{ t: future, o: 1, h: 1, l: 1, c: 1, v: 1 }]);
+    const r = await importBars(db, [{ t: future, o: 1, h: 1, l: 1, c: 1, v: 1 }]);
     expect(r.inserted + r.updated).toBe(0);
     const cnt = (db.prepare('SELECT COUNT(*) n FROM bars_1m').get() as any).n;
     expect(cnt).toBe(0);
     db.close();
   });
 
-  it('取り込み時に各取引日(Dayセッション)終値を daily_closes に保存する(15:45欠損時は最終bar代替)', () => {
+  it('取り込み時に各取引日(Dayセッション)終値を daily_closes に保存する(15:45欠損時は最終bar代替)', async () => {
     const db = new DatabaseSync(':memory:'); initSchema(db);
     const J = (day: number, jh: number, jm = 0): number => Date.UTC(2026, 5, day, jh - 9, jm);
     const bar = (t: number, c: number) => ({ t, o: c, h: c, l: c, c, v: 1 });
@@ -93,12 +96,55 @@ describe('importBars', () => {
       // 夜間 bar は Day 終値に使わない(session=Night)
       bar(J(1, 17, 0), 37900),
     ];
-    importBars(db, bars);
+    await importBars(db, bars);
     const rows = getDailyCloses(db, 'NIY=F', 10);
     expect(rows.map(r => [r.session_date, r.close])).toEqual([
       ['2026-06-01', 38150],
       ['2026-06-02', 38250],
     ]);
     db.close();
+  });
+
+  // ★2026-10-27/28 の実事故の再発防止: 1つの BEGIN..COMMIT で全件を書くと、その間 **別の接続(collector)が
+  //   書けない**(busy_timeout 5秒を超えて database is locked で落ちた)。分割して間で譲れば、取り込みの
+  //   途中でも別の接続が書ける。
+  //   ★「取り込み中に」書けたことを件数で確かめる: 書けた瞬間の bars_1m 件数が全件より少ない =
+  //     取り込みが終わる前にロックが空いていた。全件を1トランザクションで書く実装(=変更前)に戻すと、
+  //     取り込みは await の前に同期で終わってしまうので、最初に書けた時点で全件そろっている → 赤。
+  it('★分割コミット: 取り込みの途中で別の接続が(待たずに)書ける', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jp225-import-'));
+    const path = join(dir, 'jp225.db');
+    const db = openDb(path);
+    const other = new DatabaseSync(path);
+    other.exec('PRAGMA busy_timeout = 0');   // 待たない=ロック中なら即 SQLITE_BUSY
+    try {
+      // 2026-06-01(月) 09:00 JST から Day セッション内の連続 1 分足 360 本。
+      const t0 = Date.UTC(2026, 5, 1, 0, 0);
+      const bars = Array.from({ length: 360 }, (_, i) => ({ t: t0 + i * 60_000, o: 1, h: 1, l: 1, c: 1, v: 1 }));
+      const holds: number[] = [];
+      let done = false;
+      const p = importBars(db, bars, { chunkRows: 50, yieldMs: 5, onTxn: ms => holds.push(ms) })
+        .finally(() => { done = true; });
+      let countAtFirstWrite: number | null = null;
+      while (!done && countAtFirstWrite === null) {
+        try {
+          other.prepare("INSERT INTO meta(key,value) VALUES('probe','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+          countAtFirstWrite = (other.prepare('SELECT COUNT(*) n FROM bars_1m').get() as any).n;
+        } catch { /* ロック中 */ }
+        await new Promise(r => setTimeout(r, 1));
+      }
+      const r = await p;
+      expect(r.inserted).toBe(360);
+      expect(countAtFirstWrite).not.toBeNull();
+      expect(countAtFirstWrite!).toBeLessThan(360);
+      // 360 本 / 50 = 8 トランザクション + daily_closes の 1 回。
+      expect(holds.length).toBe(9);
+      // 全件反映・daily_closes も従来どおり(Day の最終 bar = 360 本目)。
+      expect((db.prepare('SELECT COUNT(*) n FROM bars_1m').get() as any).n).toBe(360);
+      expect(getDailyCloses(db, 'NIY=F', 10).map(x => x.session_date)).toEqual(['2026-06-01']);
+    } finally {
+      other.close(); db.close();
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 });

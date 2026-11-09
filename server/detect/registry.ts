@@ -397,6 +397,9 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
   const tCompute = Date.now();
   const result = computeLevels(sessions, latest.price, now, cs, extra, state.reactionLevels, state.volumeLevels, state.congestionLevels, state.trendlineLevels, state.nwaveLevels, dailyPivots);
   const computeMs = Date.now() - tCompute;
+  // ★何時点の価格から作った重要価格かを結果に載せる(asOf は計算時刻=ティックが止まっても進む)。
+  //   読み手(server/chatContext.ts)が「立会中なのにティックが古い」を判定して、古い重要価格を AI に渡さないため。
+  result.latestTickAt = latest.t;
   return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, nwave: state.nwave, dbMs, computeMs };
 }
 

@@ -224,7 +224,8 @@ export async function buildLabContext(newsQuery: string, opts: BuildOpts = {}): 
       '直近の足': text.includes('直近の足'),
       'テクニカル指標': text.includes('RSI'),
       '直近アラート': text.includes('■ 直近アラート'),
-      '本日の日経': text.includes('■ 本日の日経'),
+      // ★「本日」と書けないとき(現在のセッションではない)は「直近セッションの日経」になる(server/llm/dataTools.ts formatSessionOhlcLine)。
+      '本日の日経': text.includes('■ 本日の日経') || text.includes('■ 直近セッションの日経'),
       // ★本番の見出しは「紙トレード成績」(語彙は本番のまま。ユーザー語では仮想取引の成績)。
       '仮想取引の成績': text.includes('トレード成績'),
       '関連ニュース': !text.includes('(ニュースなし)'),

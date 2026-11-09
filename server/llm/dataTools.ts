@@ -1,7 +1,8 @@
 import type { NewsItem, Price } from '../types.js';
 import { INSTRUMENTS } from '../config.js';
 import { bigrams } from '../../core/textBigrams.js';
-import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow } from '../db/store.js';
+import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getRecentBars, type AlertRow, type SessionOHLC } from '../db/store.js';
+import { classifySession } from '../../core/session.js';
 import { rowKind, summarize } from '../alertHistory.js';
 import { isDirectionalKind } from '../../core/detectionKinds.js';
 import { crashDrawdown } from '../crash.js';
@@ -178,6 +179,40 @@ export function formatAlertLine(a: AlertRow): string {
   return arrow === null ? `${head} ${price}` : `${head} ${arrow} ${price}`;
 }
 
+/** 現在のセッションの足がこれより古ければ「以降の足なし」と書く。足は collector が毎ティック upsert するので、
+ *  健全なら最終足の t(分の頭)は 60秒+数秒以内に収まる。90秒(DETECT_FRESH_MS)+1分足の幅で 3分。 */
+export const SESSION_BAR_STALE_MS = 3 * 60_000;
+
+function mmddJst(t: number): string {
+  const d = new Date(t + 9 * 3600_000);
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+/** 「■ 本日の日経」行(純関数)。**この文字列は AI が読む**(チャット system prompt / 仮想取引の計画の旧経路)。
+ *
+ *  ★以前は直近の1セッションを **常に「本日」** と書いていた。collector が止まると bars_1m の最新が古いセッションの
+ *    まま残り、実例では 11/10 に 11/6 Night を「本日の日経 … 現値 64,xxx」として出していた。
+ *  ・そのセッションが **いま立会中のセッション** で、足も新しい → 従来と1バイトも変えない。
+ *  ・いま立会中のセッションだが足が古い → 見出しは本日のまま、「現値」を「最終値(最終足の時刻・以降の足なし)」にする。
+ *  ・いまのセッションではない(時間外・週末・収集停止で古いセッションが残っている)→ セッション日付を明記し
+ *    「本日」とも「現値」とも書かない。
+ *  @param lastBarT bars_1m の NIY=F の最新足の時刻(無ければ null)。 */
+export function formatSessionOhlcLine(s: SessionOHLC, now: number, lastBarT: number | null): string {
+  const n = (v: number): string => Math.round(v).toLocaleString('ja-JP');
+  const hl = `高値 ${n(s.high)}(${hhmm(s.highT)}) / 安値 ${n(s.low)}(${hhmm(s.lowT)})`;
+  const cs = classifySession(now);
+  const isCurrent = cs !== null && cs.sessionDate === s.sessionDate && cs.session === s.session;
+  if (isCurrent) {
+    if (lastBarT === null || now - lastBarT <= SESSION_BAR_STALE_MS) {
+      return `■ 本日の日経(${s.session}): ${hl} / 現値 ${n(s.close)}`;
+    }
+    return `■ 本日の日経(${s.session}): ${hl} / 最終値 ${n(s.close)}(最終足 ${mmddJst(lastBarT)} JST・以降の足なし)`;
+  }
+  const tail = lastBarT !== null ? `(最終足 ${mmddJst(lastBarT)} JST)` : '';
+  return `■ 直近セッションの日経(${s.sessionDate} ${s.session}・現在のセッションではない): ${hl} / 終値 ${n(s.close)}${tail}`;
+}
+
 /** チャット system prompt に常時注入する monitor データ要約(直近アラート + 本日OHLC)。
  *  DB 不在/データ無しでも例外を投げず、出せるブロックだけ返す(空なら '')。 */
 export function buildMonitorContext(now = Date.now()): string {
@@ -197,8 +232,8 @@ export function buildMonitorContext(now = Date.now()): string {
     try {
       const s = getSessionOHLC(db, NIKKEI_SYMBOL, 1)[0];
       if (s) {
-        blocks.push(`■ 本日の日経(${s.session}): 高値 ${Math.round(s.high).toLocaleString('ja-JP')}(${hhmm(s.highT)}) / `
-          + `安値 ${Math.round(s.low).toLocaleString('ja-JP')}(${hhmm(s.lowT)}) / 現値 ${Math.round(s.close).toLocaleString('ja-JP')}`);
+        const lastBarT = (db.prepare('SELECT MAX(t) AS m FROM bars_1m WHERE symbol = ?').get(NIKKEI_SYMBOL) as { m: number | null }).m;
+        blocks.push(formatSessionOhlcLine(s, now, lastBarT));
       }
     } catch { /* OHLC は欠落許容 */ }
   } catch { /* DB 不在は無視(注入なし) */ }
