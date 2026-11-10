@@ -21,6 +21,8 @@ import { openDb, resolveDbPath, insertSignalTrade, insertSignalExitStop, insertS
 import { collectRecentBars } from '../barsSource.js';
 import { inPollWindow, inTradingSession } from '../../core/session.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
+// ★古い重要価格(立会中なのにティックが古い=collector 停止)は「重要価格が無い」と同じ扱いにする(判定はチャットと同じ)。
+import { freshLevelsOrNull, staleLevelsTickAt } from '../contextFreshness.js';
 import { shouldRearmOnLevel, rearmBounds } from './levelGate.js';
 import { resolveScalpCooldownDirective, resolveScalpDotenEnabled, resolveScalpRangeReevalEnabled,
   resolveScalpTpEnabled, resolveScalpTpWidthDirective, type SignalProfile } from '../configStore.js';
@@ -388,11 +390,11 @@ export class SignalEngine {
     //   getState() は価格未取得(フィード断・起動直後)でも呼ばれる。読めていなければ節目の判定はできない。
     const priceKnown = price != null && Number.isFinite(price);
     const levelRearmReady = anchor !== null && priceKnown
-      ? shouldRearmOnLevel(anchor, price!, getLevelsSnapshot())
+      ? shouldRearmOnLevel(anchor, price!, freshLevelsOrNull(getLevelsSnapshot(), now))
       : false;
     // ★2026-08-25(ユーザー指示): 「○円以上、または○円以下になるまで待機」を出すための境界。
     //   ★shouldRearmOnLevel と **同じ関数・同じ引数** から取る(判定と表示で別の数を作らない)。
-    const bounds = anchor !== null ? rearmBounds(anchor, getLevelsSnapshot()) : null;
+    const bounds = anchor !== null ? rearmBounds(anchor, freshLevelsOrNull(getLevelsSnapshot(), now)) : null;
     return computeWaitReason({
       phase: this.state.phase,
       planning: this.planning,
@@ -553,12 +555,16 @@ export class SignalEngine {
 
     // 見送り抑止ゲート: アンカーが在れば、節目クロス or 安全弁時間まで再計画を抑止する。
     if (this.planSuppressedAnchor !== null) {
-      const levels = getLevelsSnapshot();
+      // ★古い重要価格は「重要価格が無い」と同じ扱い(rearmBounds の既存の ±50 フォールバック)。新しい挙動は作らない。
+      //   新しいときは同じ参照をそのまま渡す(判定は1バイトも変わらない)。
+      const levelsRaw = getLevelsSnapshot();
+      const levels = freshLevelsOrNull(levelsRaw, now);
       if (shouldRearmOnLevel(this.planSuppressedAnchor, price, levels)) {
         const b = rearmBounds(this.planSuppressedAnchor, levels);
         console.log(`${this.logTag} plan-rearm 節目クロス anchor=${Math.round(this.planSuppressedAnchor)} `
           + `price=${Math.round(price)} bounds=[${b.lower ?? '±'},${b.upper ?? '±'}]`
-          + `${b.usedFallback ? ' (±50fallback)' : ''}`);
+          + `${b.usedFallback ? ' (±50fallback)' : ''}`
+          + `${levels === null && levelsRaw ? ` (★重要価格が古いため無しとして判定: 最終ティック=${new Date(staleLevelsTickAt(levelsRaw, now)!).toISOString()})` : ''}`);
         this.planSuppressedAnchor = null;   // 再武装(=以降は通常の間隔判定へ)。
       } else if (now - this.lastPlanAt >= SUPPRESS_SAFETY_MS) {
         console.log(`${this.logTag} plan-rearm 安全弁(${Math.round(SUPPRESS_SAFETY_MS / 60_000)}分経過) `

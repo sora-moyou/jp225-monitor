@@ -128,12 +128,22 @@ describe('monitor data tools', () => {
     const ctx = buildMonitorContext(now);
     expect(ctx).toContain('■ 直近アラート(60分以内):');
     expect(ctx).toContain('暴落');
-    // ★足は 2026-06-24 Day で now(=実行時刻)のセッションではない → 「本日」と書かず日付を明記する
-    //   (以前は無条件に「■ 本日の日経」と書いていた。実例: 11/10 に 11/6 Night を本日として出した)。
-    expect(ctx).toContain('■ 直近セッションの日経(2026-06-24 Day・現在のセッションではない)');
-    expect(ctx).not.toContain('■ 本日の日経');
     expect(ctx).toContain('高値');
     expect(ctx).toContain('38,500');
+  });
+
+  it('buildMonitorContext: 6/24 のセッションを、それ以降の日に「本日」と書かない(時刻固定: 立会中・立会外)', () => {
+    // 足は 2026-06-24 Day(13:00〜13:04)。★時刻を固定する(実行時刻で結果が変わらないように)。
+    for (const fixed of [
+      Date.UTC(2026, 5, 26, 2, 0),    // 2026-06-26(金) 11:00 JST = 立会中
+      Date.UTC(2026, 5, 27, 3, 0),    // 2026-06-27(土) 12:00 JST = 週末(立会外)
+      Date.UTC(2026, 5, 24, 7, 0),    // 2026-06-24(水) 16:00 JST = 当日の引け後だが、足は 13:04 で止まっている
+    ]) {
+      const ctx = buildMonitorContext(fixed);
+      expect(ctx).toContain('■ 直近セッションの日経(2026-06-24 Day・現在のセッションではない)');
+      expect(ctx).not.toContain('■ 本日の日経');
+      expect(ctx).toContain('38,500');
+    }
   });
 
   it('buildMonitorContext: DB 空でも例外なく空文字(or 該当ブロック無し)', () => {

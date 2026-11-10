@@ -362,6 +362,17 @@ describe('computeLevelAnalytics — latestTickAt に最新ティックの時刻�
     expect(a).not.toBeNull();
     expect(a.result.asOf).toBe(now);
     expect(a.result.latestTickAt).toBe(tickAt);
+    // 心拍が meta に無ければ null(=寄りの猶予を認めない側)
+    expect(a.result.collectorHeartbeatAt).toBeNull();
+  });
+
+  it('★collector の心拍(meta collector_heartbeat)を同じ断面で載せる', () => {
+    const db = memDb();
+    const tickAt = Date.UTC(2026, 9, 26, 20, 59);
+    db.prepare('INSERT INTO ticks (symbol, t, price) VALUES (?, ?, ?)').run(NIY, tickAt, 64_395);
+    db.prepare("INSERT INTO meta(key, value) VALUES('collector_heartbeat', ?)").run(String(tickAt + 1_234));
+    const a = computeLevelAnalytics(db, tickAt + 5_000, createLevelDetectState())!;
+    expect(a.result.collectorHeartbeatAt).toBe(tickAt + 1_234);
   });
 });
 

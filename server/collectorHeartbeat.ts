@@ -21,8 +21,14 @@ export function writeHeartbeat(db: DatabaseSync, now: number = Date.now()): void
 export function isCollectorAlive(db: DatabaseSync, now: number = Date.now()): boolean {
   const raw = getMeta(db, HEARTBEAT_KEY);
   if (!raw) return false;
-  const ts = Number(raw);
-  return Number.isFinite(ts) && now - ts < HEARTBEAT_FRESH_MS;
+  return isHeartbeatFresh(Number(raw), now);
+}
+
+/** ★isCollectorAlive と **同じ判定**(HEARTBEAT_FRESH_MS=45秒)を、心拍の時刻だけで行う純関数。
+ *  null/undefined/非数(読めない)は false。新しい閾値は作らない(判定を2つにしない)。
+ *  用途: 寄り直後の「前のセッションの最後の価格」を正当とみなしてよいか(server/contextFreshness.ts)。 */
+export function isHeartbeatFresh(at: number | null | undefined, now: number): boolean {
+  return typeof at === 'number' && Number.isFinite(at) && now - at < HEARTBEAT_FRESH_MS;
 }
 
 /** 最後の心拍の時刻[epoch ms]。無い/壊れていれば null。

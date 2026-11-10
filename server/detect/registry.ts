@@ -30,6 +30,7 @@ import { computeCongestionProfile } from '../congestionProfile.js';
 import { computeTrendLines } from '../trendLines.js';
 import { computeLevels, type LevelsResult } from '../levels.js';
 import { buildDailyPivotCache, updateDailyPivotCache, dailyPivotsOf, latestConfirmedTradingDate, type DailyPivotCache } from '../dailyPivots.js';
+import { readHeartbeatAt } from '../collectorHeartbeat.js';
 import { classifySession, type SessionInfo } from '../../core/session.js';
 import { getForecastSnapshot } from '../loops/forecastLoop.js';
 import { detectLevelBreak, type BreakSignal } from '../levelBreak.js';
@@ -400,6 +401,9 @@ export function computeLevelAnalytics(db: DatabaseSync, now: number, state: Leve
   // ★何時点の価格から作った重要価格かを結果に載せる(asOf は計算時刻=ティックが止まっても進む)。
   //   読み手(server/chatContext.ts)が「立会中なのにティックが古い」を判定して、古い重要価格を AI に渡さないため。
   result.latestTickAt = latest.t;
+  // ★collector の心拍も同じ断面で載せる(寄りの猶予=「collector が生きていて新しいティックがこれから届く」の判定用)。
+  //   読めなければ null(=猶予を認めない側)。
+  try { result.collectorHeartbeatAt = readHeartbeatAt(db); } catch { result.collectorHeartbeatAt = null; }
   return { result, latest, sessions, cs, dailyBandLevels, dailyMaLevels, nwave: state.nwave, dbMs, computeMs };
 }
 

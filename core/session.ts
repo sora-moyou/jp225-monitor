@@ -205,6 +205,34 @@ export function minutesFromOpen(epochMs: number): number | null {
   return (24 * 60 - NIGHT_OPEN) + mod;                       // 早朝継続 = 420 + mod (寄付から十分離れる)
 }
 
+/** 立会中なら、そのセッションの寄付(開始)時刻[epoch ms]。立会外は null。
+ *  ★minutesFromOpen から作る(セッション時刻をここ以外に書かない)。JST は分単位で UTC とずれないので、
+ *    「分の頭 − 寄りからの分数」がそのまま寄付の時刻になる。
+ *  用途: 寄り直後(新しいティックがまだ届いていない数秒)を「収集停止」と取り違えない(server/contextFreshness.ts)。 */
+export function sessionOpenMs(epochMs: number): number | null {
+  const off = minutesFromOpen(epochMs);
+  if (off === null) return null;
+  return Math.floor(epochMs / 60_000) * 60_000 - off * 60_000;
+}
+
+/** epochMs 以前で **最後に引けた立会セッション** の引け時刻[epoch ms](半開区間の終端: 06:00 / 15:45)。
+ *  ★休場日・週末は classifySession の分類に従って飛ばす(引けの直前の瞬間がどのセッションにも属さない候補は捨てる)。
+ *    例: 月曜 08:45 → 土曜 06:00(金曜夜間の引け)/ 祝日明けの寄り → 祝前日の引け。
+ *  ★epochMs がちょうど引けの瞬間なら、その引けを返す。見つからなければ(14日遡っても無い)null。
+ *  用途: 寄り直後に「最後のティック/足が直前のセッションの終わり際まで届いているか」を判定する
+ *  (server/contextFreshness.ts。収集停止のまま寄りを迎えたのと、正常に寄りを待っているのを区別する)。 */
+export function prevSessionCloseMs(epochMs: number): number | null {
+  const dayStart = Math.floor((epochMs + JST_OFFSET) / DAY_MS) * DAY_MS - JST_OFFSET;
+  for (let d = 0; d <= 14; d++) {
+    const base = dayStart - d * DAY_MS;
+    for (const close of [base + DAY_CLOSE * 60_000, base + NIGHT_MORN_CLOSE * 60_000]) {
+      if (close > epochMs) continue;
+      if (classifySession(close - 1) !== null) return close;
+    }
+  }
+  return null;
+}
+
 /** 寄りから OPEN_GUARD_BARS 本以内か(=最初の3分。trueなら全アラート抑制)。 */
 export function isWithinOpenGuard(epochMs: number, nBars: number = OPEN_GUARD_BARS): boolean {
   const off = minutesFromOpen(epochMs);

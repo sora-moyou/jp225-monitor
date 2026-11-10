@@ -4,8 +4,7 @@ import type { Bar } from './correlation.js';
 import { getLevelsSnapshot } from './loops/levelsLoop.js';
 import { getForecastSnapshot } from './loops/forecastLoop.js';
 import type { LevelsResult, Level } from './levels.js';
-import { inTradingSession } from '../core/session.js';
-import { DETECT_FRESH_MS } from './detect/registry.js';
+import { staleLevelsTickAt, staleLevelsNote } from './contextFreshness.js';
 
 const NIKKEI = 'NIY=F';
 const GRID = 250; // 節目(round number)グリッド(円)
@@ -30,36 +29,13 @@ function gridOnly(cur: number): string {
     `下落目途候補(節目): ${fp(dn1)}円 / ${fp(dn2)}円`;
 }
 
-/** MM/DD HH:MM(JST)。止まった時刻を AI と人に読ませる用。 */
-function fmtJstMinute(t: number): string {
-  const d = new Date(t + 9 * 3600_000);
-  const p = (n: number): string => String(n).padStart(2, '0');
-  return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-}
-
-/** ★重要価格が「古いティックから作られている」か(純関数)。古ければ最終ティックの時刻、そうでなければ null。
- *
- *  ■ 判定
- *   ・**立会中(inTradingSession)** なのに、計算に使った最新ティック(LevelsResult.latestTickAt)が
- *     DETECT_FRESH_MS(検知側が「stale な価格で誤発火させない」に使っている閾値と同じ)より古い。
- *   ・時間外は従来どおり(引け後・週末はティックが来ないのが正常なので、古くて当たり前)。
- *   ・latestTickAt が無い(古いペイロード/未計算)は判定できないので従来どおり。
- *
- *  ■ ★inPollWindow ではなく inTradingSession を使う理由
- *   ticks 表は collector/record.ts が classifySession で **場外ティックを捨てて** 書く。
- *   inPollWindow は寄り5分前〜引け10分後まで true なので、その帯では collector が健全でも
- *   ティックは書かれず「古い」と判定してしまう(=引け後10分間「収集停止中」と誤報する)。
- *   ティックが書かれるはずの時間帯 = classifySession が非 null = inTradingSession で判定する。 */
-export function staleLevelsTickAt(r: LevelsResult, now: number): number | null {
-  if (r.latestTickAt === undefined) return null;
-  if (!inTradingSession(now)) return null;
-  return now - r.latestTickAt > DETECT_FRESH_MS ? r.latestTickAt : null;
-}
+// ★鮮度の判定は server/contextFreshness.ts が唯一の置き場所(取引系も同じものを使う)。ここは再 export のみ。
+export { staleLevelsTickAt } from './contextFreshness.js';
 
 export interface NikkeiTechnicalOptions {
-  /** ★true のとき、立会中なのにティックが古い重要価格を **渡さない**(AI チャット用・server/routes/chat.ts)。
-   *  既定 false = 従来と1バイトも変えない(scalpPlanRunner / labtest も同じ関数を使っているが、
-   *  取引系の文脈を変えるかはこの変更の範囲外なので既定では触らない)。 */
+  /** ★true のとき、立会中なのにティックが古い重要価格を **渡さない**
+   *  (AI チャット=server/routes/chat.ts / 仮想取引の計画=server/llm/scalpPlanRunner.ts)。
+   *  既定 false = 従来と1バイトも変えない(labtest)。 */
   guardStaleLevels?: boolean;
   /** 判定に使う現在時刻(テスト用。既定 Date.now())。 */
   now?: number;
@@ -86,7 +62,7 @@ export function buildNikkeiTechnical(
     const staleAt = opts.guardStaleLevels ? staleLevelsTickAt(snapshot, opts.now ?? Date.now()) : null;
     if (staleAt !== null) {
       return `■ 日経225先物 (NIY=F) テクニカル:\n${head}`
-        + `重要価格: 収集停止中のため算出できません(最終ティック ${fmtJstMinute(staleAt)} JST)${fc ? `\n${fc}` : ''}`;
+        + `重要価格: ${staleLevelsNote(staleAt)}${fc ? `\n${fc}` : ''}`;
     }
     return `■ 日経225先物 (NIY=F) テクニカル(セッションH/L・フィボ):\n${head}${lv}${fc ? `\n${fc}` : ''}`;
   }

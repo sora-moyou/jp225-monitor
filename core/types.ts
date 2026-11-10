@@ -194,6 +194,10 @@ export interface LevelsResult {
    *  重要価格が **何時点の価格から** 作られたかはこちらでしか分からない
    *  (2026-10-28〜11-10: ティックが 10/28 05:59 で止まったまま、64,395 基準の重要価格が AI チャットへ渡っていた)。 */
   latestTickAt?: number;
+  /** ★計算した時点で読んだ collector の心拍(meta collector_heartbeat)の時刻[epoch ms]。null=読めなかった。
+   *  任意(古いペイロード互換。undefined も「読めない」扱い)。寄りの猶予を認めるか(=collector が生きていて
+   *  新しいティックがこれから届くはずか)の判定だけに使う(server/contextFreshness.ts)。 */
+  collectorHeartbeatAt?: number | null;
   // 高安関係の全水準(クラスタ/上位N選抜・スコア合計によらず全件)。ダブルトップ/ボトム検知用に露出。
   hlLevels?: { price: number; label: string }[];
   /** ★表示専用の隙間埋め行(各 Level は filler:true・tier 0)。選抜窓内で、現値と表示行の隣接差が上限

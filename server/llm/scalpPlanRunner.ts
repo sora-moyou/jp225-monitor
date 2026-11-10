@@ -14,6 +14,9 @@ import { computeRegime, formatMomentumLine, formatMomentumLineForTrend, type Reg
 import { openDb, resolveDbPath, getRecentAlerts, getSessionOHLC, getSignalTrades, getDailyCloses } from '../db/store.js';
 import { collectRecentBars } from '../barsSource.js';
 import { getLevelsSnapshot } from '../loops/levelsLoop.js';
+// ★鮮度の判定はチャットと同じもの(唯一の置き場所)。古い重要価格・古い本日高安を AI 文脈と5円ずらしに入れない。
+import { staleLevelsTickAt, sessionFreshness } from '../contextFreshness.js';
+import { readHeartbeatAt } from '../collectorHeartbeat.js';
 import { buildScalpMarketData, buildScalpTradeHistory } from './scalpContext.js';
 // ★v0.9.98: 基礎データ(日足)ブロック。純関数 + 既存の取得だけ(新しい計算・新しい閾値は無し)。
 import { buildBasedataContext, type DailyBar } from './basedataContext.js';
@@ -131,6 +134,29 @@ function resolveSqueezeForPlan(): SqueezeForPlan {
   catch { return { state: null, unavailable: 'no_snapshot' }; }
 }
 
+/** ★古いと判定して落とした文脈の記録(signal_plans.context_presence_json の stale に載る。新しい列は作らない)。 */
+export interface StaleContextRecord {
+  /** 落としたもの: 'levels'(主要節目)/ 'sessionHighLow'(本日高安・当日始値比)/ 'baseTechLevels'(上値/下値メド・フィボ)
+   *  / 'pivotNudge'(5円ずらし)。 */
+  dropped: string[];
+  levelsTickAt?: number;
+  sessionLastBarAt?: number | null;
+}
+
+function staleContextRecord(
+  levelsStaleAt: number | null, sessionStaleLastBarAt: number | null | undefined,
+): StaleContextRecord | undefined {
+  const dropped: string[] = [];
+  if (levelsStaleAt !== null) dropped.push('levels');
+  if (sessionStaleLastBarAt !== undefined) dropped.push('sessionHighLow');
+  if (dropped.length === 0) return undefined;
+  return {
+    dropped,
+    ...(levelsStaleAt !== null ? { levelsTickAt: levelsStaleAt } : {}),
+    ...(sessionStaleLastBarAt !== undefined ? { sessionLastBarAt: sessionStaleLastBarAt } : {}),
+  };
+}
+
 /** 構造化データ(数値主軸)＋自分の仮想取引成績を組み立てる(DB 読み・欠損は各ブロック省略)。
  *  DB/足/levels 不在(取引時間外など)は '' を返し、scalp-plan は従来どおり動く(壊さない)。
  *  ★caller!=='default'(分析用)のときだけ仮想取引の成績ブロックを外す(理由は GENERATOR_OMITTED_CONTEXT)。
@@ -147,7 +173,7 @@ export function buildRichScalpContext(
  *  bandwalk: Bandwalk=成立中 / null=非成立 / undefined=判定していない(機能OFF・目線なし・足不足)。 */
 export function buildRichScalpContextResult(
   symbol: string, currentPrice: number, now: number, profile?: SignalProfile, caller: LlmCaller = DEFAULT_CALLER,
-): { text: string; trendText?: string; bandwalk?: Bandwalk | null } {
+): { text: string; trendText?: string; bandwalk?: Bandwalk | null; staleContext?: StaleContextRecord } {
   if (!(typeof currentPrice === 'number' && currentPrice > 0)) return { text: '' };
   // ★DB が開けなくても止めない: メモリ内ライブ足だけで足/ボラ/スイング/テクニカルは組める。
   //   indicatorsLoop(DB無しでも継続)と挙動を揃える=DB 一発で AI 文脈をゼロにしない。
@@ -161,9 +187,29 @@ export function buildRichScalpContextResult(
     // ★足は「DBの bars_1m ∪ メモリ内のライブ足」= collectRecentBars。DB だけを見ていたため
     //   collector 未稼働の環境では窓内0本→ブロックA/C/D/G(テクニカル)がまるごと消えていた(修正)。
     const bars = collectRecentBars(db, symbol, now - RICH_BARS_WINDOW_MS);
-    const levels = getLevelsSnapshot();
+    const levelsRaw = getLevelsSnapshot();
+    // ★立会中なのにティックが古い(collector 停止)重要価格は渡さない(数値を一切出さず、止まっている事実を1行)。
+    //   新しいときは **同じ参照** をそのまま渡す(通常時の文字列を1バイトも変えない)。
+    const levelsStaleAt = staleLevelsTickAt(levelsRaw, now);
+    const levels = levelsStaleAt === null ? levelsRaw : null;
     const alerts = db ? getRecentAlerts(db, 8) : [];
-    const session = db ? (getSessionOHLC(db, symbol, 1)[0] ?? null) : null;
+    const sessionRaw = db ? (getSessionOHLC(db, symbol, 1)[0] ?? null) : null;
+    // ★本日高安: 立会中・寄りの猶予後なのに、いまのセッションでない/足が古いセッション OHLC は「本日高安」として渡さない
+    //   (立会外・寄りの猶予内は従来どおり。判定は sessionFreshness)
+    //   (チャットの formatSessionOhlcLine と同じ判定 sessionFreshness)。足からの近似にも落とさない。
+    let sessionStaleLastBarAt: number | null | undefined;
+    if (sessionRaw && db) {
+      const lastBarT = (db.prepare('SELECT MAX(t) AS m FROM bars_1m WHERE symbol = ?').get(symbol) as { m: number | null }).m;
+      // ★心拍は寄りの猶予の判定だけに使う(読めなければ null=猶予なし)。
+      let hb: number | null = null;
+      try { hb = readHeartbeatAt(db); } catch { hb = null; }
+      if (sessionFreshness(sessionRaw, now, lastBarT, hb) !== 'asIs') sessionStaleLastBarAt = lastBarT;
+    }
+    const session = sessionStaleLastBarAt === undefined ? sessionRaw : null;
+    const staleExtra = {
+      ...(levelsStaleAt !== null ? { levelsStaleAt } : {}),
+      ...(sessionStaleLastBarAt !== undefined ? { sessionStaleLastBarAt } : {}),
+    };
     // ★v0.9.98(基礎データ): 日足MA/バンド/長期高安/日足OHLC。★出所は **アラートが読むのと同じ**
     //   daily_closes(基礎データ import が歴史を埋め、ライブが確定日を追記する)と bars_1m のセッション集計。
     //   ■ 古い値が残らない: ここで **毎回 DB から読み直す**。モジュール側にキャッシュを置いていないので、
@@ -209,7 +255,7 @@ export function buildRichScalpContextResult(
       console.warn('[scalp-plan] bandwalk 判定失敗(省略):', e instanceof Error ? e.message : String(e));
     }
     // ★テクニカル指標(ブロックG)は indicatorsEnabled=false のとき省略(AIへ供給しない)。
-    const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: indicatorsOn, bandwalk });
+    const marketData = buildScalpMarketData({ bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: indicatorsOn, bandwalk, ...staleExtra });
     // 外した回は buildScalpTradeHistory を呼ばない(空配列で呼んで '' を得るのと結果は同じだが、
     // 「読んでいない」ことをコード上でも一意にする)。
     const history = omitHistory ? '' : buildScalpTradeHistory(trades, now);
@@ -219,14 +265,26 @@ export function buildRichScalpContextResult(
     //   ★同じ材料(bars/levels/alerts/日足)から作るので、A と B は **同じ断面** を見る。
     const trendText = isPlanSplitEnabled()
       ? buildTrendContext({
-        market: { bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: indicatorsOn, bandwalk },
+        // ★A は節目を出さない(buildTrendContext が levels:null にする)ので、節目の停止行も渡さない。本日高安の停止は渡す。
+        market: {
+          bars, levels, alerts, now, currentPrice, session, indicatorsEnabled: indicatorsOn, bandwalk,
+          ...(sessionStaleLastBarAt !== undefined ? { sessionStaleLastBarAt } : {}),
+        },
         basedata: { dailyCloses, dailyBars, currentPrice },
       })
       : undefined;
+    const staleContext = staleContextRecord(levelsStaleAt, sessionStaleLastBarAt);
+    if (staleContext) {
+      console.warn(`[scalp-plan] ★古い文脈を落としました: ${staleContext.dropped.join(',')}`
+        + (staleContext.levelsTickAt !== undefined ? ` 最終ティック=${new Date(staleContext.levelsTickAt).toISOString()}` : '')
+        + (staleContext.sessionLastBarAt !== undefined
+          ? ` 最終足=${staleContext.sessionLastBarAt === null ? 'なし' : new Date(staleContext.sessionLastBarAt).toISOString()}` : ''));
+    }
     return {
       text: [marketData, basedata, history].filter(Boolean).join('\n\n'),
       ...(trendText === undefined ? {} : { trendText }),
       bandwalk,
+      ...(staleContext ? { staleContext } : {}),
     };
   } catch (e) {
     console.warn('[scalp-plan] rich context 構築失敗(省略):', e instanceof Error ? e.message : String(e));
@@ -403,7 +461,10 @@ async function runScalpPlanWithChartInner(
   //   ※runner は rangeEnabled の override を渡さないので buildScalpPlan 側と完全に同値になる。
   const rangeEnabled = resolveEffectiveRangeEnabled(overrides.profile);
   // 技術文脈の末尾に勢い1行を追記(バー不足でも算出可・null は「—」表示)。buildNikkeiTechnical が null でも注入する。
-  const baseTech = buildNikkeiTechnical(undefined, price);
+  // ★立会中なのにティックが古い重要価格は渡さない(上値/下値メド・フィボを出さない)。判定はチャットと同じ。
+  const baseTechNow = Date.now();
+  const baseTech = buildNikkeiTechnical(undefined, price, { guardStaleLevels: true, now: baseTechNow });
+  const baseTechStaleAt = staleLevelsTickAt(getLevelsSnapshot(), baseTechNow);
   // v0.7.54: 構造化データ(数値の足/節目/ボラ/スイング/アラート結果)＋自分の仮想取引成績を末尾に追記。
   //   DB/足/levels 欠損は '' で省略され、既存挙動(勢い1行+画像)を壊さない。★v0.8.2: 自系統(A/B)の履歴のみ。
   //   ★caller を渡す: 分析用では仮想取引の成績の履歴ブロックを外す(母集団の独立性)。default は不変。
@@ -418,7 +479,7 @@ async function runScalpPlanWithChartInner(
   const newsItems = getNews();
   // ★段5続き(RECORD-ONLY): 文脈の各ブロックが実際に入ったか(旧経路でも無条件に計算する=
   //   buildRichScalpContextResult 自体が分割の有無に関係なく必ず呼ばれるため)。
-  const contextPresence = detectContextPresence(rich, newsItems.length);
+  let contextPresence: ContextPresence = detectContextPresence(rich, newsItems.length);
   if (caller !== DEFAULT_CALLER) {
     // 外したことは server.log にも残す(台帳が読めない状況でも「いつから外したか」が追える)。
     console.log(`[scalp-plan] ${caller}: 文脈から除外=${GENERATOR_OMITTED_CONTEXT.join(',')}(母集団の独立性・両腕とも同一)`);
@@ -437,7 +498,13 @@ async function runScalpPlanWithChartInner(
   const squeeze = resolveSqueezeForPlan();
   // ★2026-08-26: 5円ずらしの照合に使う節目(上下まとめて price/kinds だけ)。
   //   ★engine の再武装ゲートと **同じ getLevelsSnapshot** を読む(別の出所を作らない)。
-  const lvSnap = getLevelsSnapshot();
+  //   ★古い重要価格では **ずらさない**(取れない回と同じ扱い=建値をそのまま使う)。判定はチャットと同じ。
+  const lvSnapRaw = getLevelsSnapshot();
+  const nudgeStaleAt = staleLevelsTickAt(lvSnapRaw, contextAt);
+  const lvSnap = nudgeStaleAt === null ? lvSnapRaw : null;
+  // ★古いと判定して落とした回は、その事実を同じ記録(context_presence_json)に載せる。通常時は付けない=JSON は不変。
+  const staleCtx = mergeStaleRecord(richResult.staleContext, baseTechStaleAt, nudgeStaleAt);
+  if (staleCtx) contextPresence = { ...contextPresence, stale: staleCtx };
   const levelsForNudge = lvSnap
     ? [...lvSnap.up, ...lvSnap.down].map(l => ({ price: l.price, kinds: l.kinds }))
     : null;
@@ -530,6 +597,22 @@ function attachSplitRecord(
  *  ■ NULL の意味: この関数を持たない旧版(今回のリリース前)で記録された行だけが NULL になる。
  *    「入った」false と「その版に無い」NULL を混同させないため、ここでは常に値を持つ
  *    ContextPresence オブジェクトを渡す(全部 false の値を返すことはあっても、呼ばないことは無い)。 */
+/** 文脈の落とし(rich)と、baseTech/5円ずらしの落としを1つの記録にまとめる。どれも無ければ undefined。 */
+function mergeStaleRecord(
+  rich: StaleContextRecord | undefined, baseTechStaleAt: number | null, nudgeStaleAt: number | null,
+): StaleContextRecord | undefined {
+  const dropped = [...(rich?.dropped ?? [])];
+  if (baseTechStaleAt !== null) dropped.push('baseTechLevels');
+  if (nudgeStaleAt !== null) dropped.push('pivotNudge');
+  if (dropped.length === 0) return undefined;
+  const levelsTickAt = rich?.levelsTickAt ?? baseTechStaleAt ?? nudgeStaleAt ?? undefined;
+  return {
+    dropped,
+    ...(levelsTickAt !== undefined ? { levelsTickAt } : {}),
+    ...(rich && rich.sessionLastBarAt !== undefined ? { sessionLastBarAt: rich.sessionLastBarAt } : {}),
+  };
+}
+
 function attachContextPresence(result: ScalpPlanResult, presence: ContextPresence): ScalpPlanResult {
   return { ...result, contextPresence: presence };
 }

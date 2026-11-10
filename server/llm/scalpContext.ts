@@ -18,6 +18,7 @@ import { computeIndicators } from '../indicators.js';
 import { BB_BAND_LABEL } from '../../core/indicatorSpec.js';
 import { describeBandwalk, type Bandwalk } from '../bandwalk.js';
 import { selectPromptLevels } from './scalpLevelSelect.js';
+import { staleLevelsNote, fmtJstMinute } from '../contextFreshness.js';
 
 const MIN = 60_000;
 
@@ -115,6 +116,14 @@ export interface ScalpMarketDataInput {
    *  Bandwalk=成立中 / null=非成立(その旨を1行書く)/ **undefined=行そのものを出さない**
    *  (機能OFF・目線なし等で「判定していない」ときに、成立/非成立の嘘を書かないための3値)。 */
   bandwalk?: Bandwalk | null;
+  /** ★重要価格が古いティックから作られていた(収集停止)ときの最終ティック時刻。
+   *  指定時は levels を null にして渡すこと。節目ブロックの代わりに止まっている事実を1行だけ書く
+   *  (判定は server/contextFreshness.ts の staleLevelsTickAt。未指定=従来どおり)。 */
+  levelsStaleAt?: number;
+  /** ★本日高安を出さないとき(セッション OHLC が現在のセッションでない/足が古い)の最終足の時刻(無ければ null)。
+   *  指定時は session を null にして渡すこと。足からの近似にも **落とさない**(近似は「本日高安」と名乗れない)。
+   *  未指定=従来どおり。 */
+  sessionStaleLastBarAt?: number | null;
 }
 
 /** 構造化された市場データ(数値主軸)ブロックをコンパクトな日本語で組み立てる純関数。
@@ -175,6 +184,11 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
   //    まったく効かず、中距離(±600〜1000円)の★★が半数近く落ちていた(実データ計測は scalpLevelSelect.ts の
   //    先頭コメント)。上下の最低本数保証 + tier>=2 の別枠 で「引きつけ先の強い節目」を必ず見せる。
   //    1行フォーマット/距離順は従来のまま(AI が読む形は変えない)。
+  //    ★重要価格が古いティックから作られていたら(収集停止)、数値を一切出さず止まっている事実を1行だけ書く。
+  //      見出しは「主要節目(」にしない(contextPresence.levels は「節目が入った」の印なので false のままにする)。
+  if (input.levelsStaleAt !== undefined) {
+    blocks.push(`主要節目: ${staleLevelsNote(input.levelsStaleAt)}`);
+  }
   try {
     const near = selectPromptLevels(levels, currentPrice);
     if (near.length > 0) {
@@ -191,14 +205,23 @@ export function buildScalpMarketData(input: ScalpMarketDataInput): string {
   try {
     const atr = computeAtr14(bars);
     const sess = input.session ?? null;
+    // ★本日高安を出さない回(セッション OHLC が古い): 足からの近似にも落とさない(近似は「本日高安」と名乗れない)。
+    const sessionStale = input.sessionStaleLastBarAt !== undefined;
     let hi: number | null = sess ? sess.high : null;
     let lo: number | null = sess ? sess.low : null;
-    if ((hi === null || lo === null) && bars.length > 0) {
+    if (!sessionStale && (hi === null || lo === null) && bars.length > 0) {
       hi = Math.max(...bars.map(b => b.h));
       lo = Math.min(...bars.map(b => b.l));
     }
     const parts: string[] = [];
     if (atr !== null) parts.push(`ATR14(1分)≈${R(atr)}円`);
+    if (sessionStale) {
+      // 見出しは「本日高安 」(空白)にしない(contextPresence.sessionHighLow は「本日高安が入った」の印)。
+      const at = input.sessionStaleLastBarAt;
+      parts.push(at != null
+        ? `本日高安=収集停止中のため算出できません(最終足 ${fmtJstMinute(at)} JST)`
+        : '本日高安=収集停止中のため算出できません(現在のセッションの足がありません)');
+    }
     if (hi !== null && lo !== null && hi > lo && currentPrice > 0) {
       const pos = ((currentPrice - lo) / (hi - lo)) * 100;
       parts.push(`本日高安 ${R(hi)}〜${R(lo)}(レンジ内位置${R(pos)}%)`);

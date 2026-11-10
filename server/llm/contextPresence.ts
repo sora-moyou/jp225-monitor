@@ -54,6 +54,11 @@ export interface ContextPresence {
   basedata: boolean;
   /** ★ニュースが**存在した**か(「渡った」かではない。上のコメント参照)。 */
   news: boolean;
+  /** ★古いと判定して **落とした** 文脈(collector 停止で重要価格/本日高安が古かった回だけ付く)。
+   *  通常時は付けない = context_presence_json は従来と1バイトも変わらない。新しい列は作らない。
+   *  dropped: 'levels'(主要節目)/ 'sessionHighLow'(本日高安・当日始値比)/ 'baseTechLevels'(上値/下値メド・フィボ)
+   *  / 'pivotNudge'(5円ずらし)。時刻は epoch ms(sessionLastBarAt=null は「足が無い」)。 */
+  stale?: { dropped: string[]; levelsTickAt?: number; sessionLastBarAt?: number | null };
 }
 
 /** 「文脈の各ブロックが実際に入ったか」を、組み上がった文字列から検出する純関数。
