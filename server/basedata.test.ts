@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { initSchema, getDailyCloses, openDb } from './db/store.js';
-import { rowToBar, parseNdjsonLine, importBars } from './basedata.js';
+import { rowToBar, rowsToBars, parseNdjsonLine, importBars, type BaseRow } from './basedata.js';
 
 describe('rowToBar (xlsx A=セッション日付 → 実時刻 epoch)', () => {
   // A列=セッション日付(夜間=翌営業日ラベル)。実時刻へ逆変換: 夕方→前営業日 / 早朝→前営業日+1暦日 / 日中→D。
@@ -34,6 +34,76 @@ describe('rowToBar (xlsx A=セッション日付 → 実時刻 epoch)', () => {
     const mon = toSerial(2026, 6, 8); // 月06-08
     expect(jstHHMM(rowToBar(mon, 17 / 24, 1, 2, 0.5, 1.5, 10).t)).toBe('2026-06-05T17:00'); // 金 夕方
     expect(jstHHMM(rowToBar(mon, 2 / 24, 1, 2, 0.5, 1.5, 10).t)).toBe('2026-06-06T02:00');  // 土 未明
+  });
+});
+
+describe('rowsToBars (夜間の実日付 = データ内で1つ前に現れるラベル)', () => {
+  const toSerial = (y: number, m: number, d: number) => Math.round(Date.UTC(y, m - 1, d) / 86400_000) + 25569;
+  const jstHHMM = (t: number) => new Date(t + 9 * 3600_000).toISOString().slice(0, 16);
+  // ラベル(y,m,d)の1取引日ぶん: 夕方17:00・早朝02:00(=夜間・前の取引日の夜)+ 日中10:00。
+  const day = (y: number, m: number, d: number, withDay = true): BaseRow[] => {
+    const s = toSerial(y, m, d);
+    const r = (tf: number): BaseRow => ({ serialDate: s, timeFrac: tf, o: 1, h: 2, l: 0.5, c: 1.5, v: 10 });
+    return withDay ? [r(17 / 24), r(2 / 24), r(10 / 24)] : [r(17 / 24), r(2 / 24)];
+  };
+  const times = (rows: BaseRow[]) => rowsToBars(rows).bars.map(b => jstHHMM(b.t));
+
+  it('休業祝日の前夜: 2026-11-20(金)夜はラベル 11-24(11/23 は BCP テストで休業) → 実 11-20 夕方 / 11-21 未明', () => {
+    // 実ファイル N225minif_2026.xlsx で確認した形(11-24 ラベルは夜間だけでファイル末尾)。
+    expect(times([...day(2026, 11, 19), ...day(2026, 11, 20), ...day(2026, 11, 24, false)])).toEqual([
+      '2026-11-18T17:00', '2026-11-19T02:00', '2026-11-19T10:00',   // 先頭ラベル(近似フォールバック)
+      '2026-11-19T17:00', '2026-11-20T02:00', '2026-11-20T10:00',
+      '2026-11-20T17:00', '2026-11-21T02:00',                       // ★11-23 夜ではない
+    ]);
+  });
+
+  it('休業祝日の前夜(将来): 2027-09-17(金)夜はラベル 09-21(09-20 は休業予定) → 実 09-17 夕方 / 09-18 未明', () => {
+    const t = times([...day(2027, 9, 17), ...day(2027, 9, 21)]);
+    expect(t.slice(3)).toEqual(['2027-09-17T17:00', '2027-09-18T02:00', '2027-09-21T10:00']);
+  });
+
+  it('年末年始: 2026-01-05 ラベルの夜間は 2025-12-30(大納会)の夜 → 実 12-30 夕方 / 12-31 未明', () => {
+    const t = times([...day(2025, 12, 30), ...day(2026, 1, 5)]);
+    expect(t.slice(3)).toEqual(['2025-12-30T17:00', '2025-12-31T02:00', '2026-01-05T10:00']);
+  });
+
+  it('週末: 月曜ラベルの夜間は金曜の夜(従来と同じ)', () => {
+    const t = times([...day(2026, 6, 5), ...day(2026, 6, 8)]);
+    expect(t.slice(3)).toEqual(['2026-06-05T17:00', '2026-06-06T02:00', '2026-06-08T10:00']);
+  });
+
+  it('通常の平日: 木曜ラベルの夜間は水曜の夜(従来と同じ)。祝日取引日(11-03)もラベルがあればその夜', () => {
+    expect(times([...day(2026, 6, 10), ...day(2026, 6, 11)]).slice(3))
+      .toEqual(['2026-06-10T17:00', '2026-06-11T02:00', '2026-06-11T10:00']);
+    expect(times([...day(2026, 11, 2), ...day(2026, 11, 3), ...day(2026, 11, 4)]).slice(6))
+      .toEqual(['2026-11-03T17:00', '2026-11-04T02:00', '2026-11-04T10:00']);
+  });
+
+  it('ファイル先頭のラベルの夜間は前ラベルが無い → 土日近似にフォールバックし、件数と警告を返す', () => {
+    const r = rowsToBars([...day(2026, 1, 5), ...day(2026, 1, 6)]);
+    // 近似 = 土日だけ飛ばす前営業日(01-02 金)。祝日を知らないので実際(12-30 の夜)とは違う=だから警告する。
+    expect(r.bars.slice(0, 2).map(b => jstHHMM(b.t))).toEqual(['2026-01-02T17:00', '2026-01-03T02:00']);
+    expect(r.fallbackRows).toBe(2);              // 夜間の2行だけ(日中行は数えない)
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toMatch(/先頭ラベル 2026-01-05/);
+  });
+
+  it('複数ファイルを連結すれば年初の夜間も前年ファイルのラベルから決まる(フォールバック無し=先頭だけ)', () => {
+    const r = rowsToBars([...day(2025, 12, 29), ...day(2025, 12, 30), ...day(2026, 1, 5)]);
+    expect(jstHHMM(r.bars[6]!.t)).toBe('2025-12-30T17:00');
+    expect(r.fallbackRows).toBe(2);              // 先頭(12-29)の夜間だけ
+  });
+
+  it('行の並び順に依存しない(ラベル列は値の昇順で作る)', () => {
+    const rows = [...day(2026, 11, 19), ...day(2026, 11, 20), ...day(2026, 11, 24, false)];
+    const fwd = rowsToBars(rows).bars.map(b => b.t).sort((a, b) => a - b);
+    const rev = rowsToBars([...rows].reverse()).bars.map(b => b.t).sort((a, b) => a - b);
+    expect(rev).toEqual(fwd);
+  });
+
+  it('ラベル間隔が14日を超えたらデータ欠落の疑いとして警告する', () => {
+    const r = rowsToBars([...day(2026, 6, 1), ...day(2026, 6, 22)]);
+    expect(r.warnings.some(w => /間隔が 21 日/.test(w))).toBe(true);
   });
 });
 

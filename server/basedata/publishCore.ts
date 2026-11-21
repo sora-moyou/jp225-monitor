@@ -1,12 +1,12 @@
 // 基礎データ publish の共有コア。scripts/basedata-publish.mts(CLI)と
 // server/routes/basedata.ts(ワンボタン公開)が同一実装を共有する(SSOT)。
-// 日付変換は server/basedataDate.ts:rowToBar が唯一の正準実装(取り込み側と共有)。
+// 日付変換は server/basedataDate.ts:rowsToBars が唯一の正準実装(取り込み側と共有)。
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { execSync } from 'node:child_process';
 import { unzipSync } from 'fflate';
 import XLSX from 'xlsx';
-import { rowToBar, type BaseBar } from '../basedataDate.js';
+import { rowsToBars, sheetAoaToRows, type BaseBar } from '../basedataDate.js';
 
 const JST = 9 * 3600_000;
 
@@ -40,19 +40,16 @@ export function extractXlsxFromZip(buf: Buffer): Buffer {
   throw new Error('基礎データの取得に失敗(ZIP 内に xlsx が見つかりません)');
 }
 
-/** xlsx バッファ('1min' シート) → BaseBar[]。rowToBar でマッピング→ソート。
- *  未来バー検出時 throw(=日付バグを顕在化)。空データも throw。 */
-export function xlsxBufferToBars(buf: Buffer): BaseBar[] {
+/** xlsx バッファ('1min' シート) → BaseBar[]。rowsToBars でマッピング(夜間の日付はファイル内の
+ *  1つ前のラベルから決める)→ソート。未来バー検出時 throw(=日付バグを顕在化)。空データも throw。
+ *  先頭ラベルの夜間など近似にフォールバックした行は onWarn で知らせる(既定 console.warn)。 */
+export function xlsxBufferToBars(buf: Buffer, onWarn: (msg: string) => void = m => console.warn(`[basedata] ${m}`)): BaseBar[] {
   const wb = XLSX.read(buf, { type: 'buffer', cellDates: false });
   const ws = wb.Sheets['1min'];
   if (!ws) throw new Error('sheet "1min" not found');
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false }) as unknown[][];
-  const bars: BaseBar[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const [d, tm, o, h, l, c, v] = rows[i] as (number | undefined)[];
-    if (typeof d !== 'number' || typeof tm !== 'number' || typeof o !== 'number') continue;
-    bars.push(rowToBar(d, tm, o, h!, l!, c!, typeof v === 'number' ? v : null));
-  }
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false }) as unknown[][];
+  const { bars, warnings } = rowsToBars(sheetAoaToRows(aoa));
+  for (const w of warnings) onWarn(w);
   bars.sort((a, b) => a.t - b.t);
   if (bars.length === 0) throw new Error('no data rows parsed');
 

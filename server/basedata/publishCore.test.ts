@@ -30,6 +30,21 @@ describe('xlsxBufferToBars', () => {
     expect(bars[0]).toMatchObject({ o: 50450, h: 50465, l: 50415, c: 50420, v: 2086 });
   });
 
+  it('休業祝日の前夜(11-20 金夜→ラベル 11-24)をファイル内の前ラベルから 11-20 夜に置く・先頭夜間は警告', () => {
+    const jst = (t: number) => new Date(t + 9 * 3600_000).toISOString().slice(0, 16);
+    const buf = buildXlsx([
+      [toSerial(2026, 11, 20), 17 / 24, 1, 2, 0.5, 1.5, 10],   // 先頭ラベルの夜間(=11-19 夜・近似)
+      [toSerial(2026, 11, 20), 10 / 24, 1, 2, 0.5, 1.5, 10],   // 11-20 日中
+      [toSerial(2026, 11, 24), 17 / 24, 1, 2, 0.5, 1.5, 10],   // 11-20 夜(ラベル 11-24)
+      [toSerial(2026, 11, 24), 6 / 24, 54545, 54545, 54545, 54545, 874],  // 11-21 06:00
+    ]);
+    const warns: string[] = [];
+    const bars = xlsxBufferToBars(buf, w => warns.push(w));
+    expect(bars.map(b => jst(b.t))).toEqual(['2026-11-19T17:00', '2026-11-20T10:00', '2026-11-20T17:00', '2026-11-21T06:00']);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toMatch(/先頭ラベル 2026-11-20/);
+  });
+
   it('未来日時のバーが混入したら throw する', () => {
     const buf = buildXlsx([
       [toSerial(2025, 12, 30), 10 / 24, 50450, 50465, 50415, 50420, 2086],

@@ -1,23 +1,27 @@
 // Build a multi-year backtest DB from the 4 NIY=F 1-min xlsx files.
-// Parses each xlsx '1min' sheet via the canonical rowToBar (server/basedataDate.ts),
+// Parses each xlsx '1min' sheet, CONCATENATES the rows of all files, then maps them via the
+// canonical rowsToBars (server/basedataDate.ts). Rows must be concatenated first: the night
+// session's real date is derived from the previous label present in the data, and for the
+// first night of a year that label lives in the previous year's file.
+// ★This script DELETES and rebuilds the output DB.
+//   Run: npx tsx scripts/build-backtest-db.mts [--out <db path>] [xlsx ...]
+//   (defaults: DEFAULT_DB_PATH / DEFAULT_XLSX_FILES below).
 // inserts all bars as NIY=F into a FRESH sqlite DB using the SAME schema + upsertBar
 // path the monitor uses, so jp225-Trade's ReplayFeed reads it identically.
-//
-// Run: npx tsx scripts/build-backtest-db.mts
 //
 // Date convention / future-bar handling matches scripts/basedata-publish.mts and
 // server/basedata.ts:importBars — out-of-session bars (classifySession==null) are skipped,
 // future-dated bars ABORT the build (= date-mapping bug).
 import { existsSync, rmSync } from 'node:fs';
 import XLSX from 'xlsx';
-import { rowToBar, type BaseBar } from '../server/basedataDate.js';
+import { rowsToBars, sheetAoaToRows, type BaseRow } from '../server/basedataDate.js';
 import { openDb, upsertBar } from '../server/db/store.js';
 import { classifySession } from '../core/session.js';
 
 const JST = 9 * 3600_000;
 const SYMBOL = 'NIY=F';
-const DB_PATH = 'C:\\Users\\user\\Desktop\\backtest-multiyear.db';
-const XLSX_FILES = [
+const DEFAULT_DB_PATH = 'C:\\Users\\user\\Desktop\\backtest-multiyear.db';
+const DEFAULT_XLSX_FILES = [
   'C:\\Users\\user\\Downloads\\N225minif_2018.xlsx',
   'C:\\Users\\user\\Downloads\\N225minif_2019.xlsx',
   'C:\\Users\\user\\Downloads\\N225minif_2020.xlsx',
@@ -29,29 +33,33 @@ const XLSX_FILES = [
   'C:\\Users\\user\\Downloads\\N225minif_2026\\N225minif_2026.xlsx',
 ];
 
-function parseXlsx(path: string): BaseBar[] {
+const argv = process.argv.slice(2);
+const outIdx = argv.indexOf('--out');
+if (outIdx >= 0 && !argv[outIdx + 1]) { console.error('--out needs a path'); process.exit(1); }
+const DB_PATH = outIdx >= 0 ? argv[outIdx + 1]! : DEFAULT_DB_PATH;
+const positional = argv.filter((a, i) => !a.startsWith('--') && !(outIdx >= 0 && i === outIdx + 1));
+const XLSX_FILES = positional.length > 0 ? positional : DEFAULT_XLSX_FILES;
+
+function parseXlsx(path: string): BaseRow[] {
   console.log('reading', path);
   const wb = XLSX.readFile(path, { cellDates: false });
   const ws = wb.Sheets['1min'];
   if (!ws) { console.error(`sheet "1min" not found in ${path}`); process.exit(1); }
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false }) as any[][];
-  const bars: BaseBar[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const [d, tm, o, h, l, c, v] = rows[i];
-    if (typeof d !== 'number' || typeof tm !== 'number' || typeof o !== 'number') continue;
-    bars.push(rowToBar(d, tm, o, h, l, c, typeof v === 'number' ? v : null));
-  }
-  console.log(`  parsed ${bars.length} numeric rows`);
-  return bars;
+  const rows = sheetAoaToRows(XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false }) as unknown[][]);
+  console.log(`  parsed ${rows.length} numeric rows`);
+  return rows;
 }
 
 function jstStr(t: number): string {
   return new Date(t + JST).toISOString().replace('T', ' ').slice(0, 16);
 }
 
-// ── parse all files, merge, sort by t ───────────────────────────────────────
-let all: BaseBar[] = [];
-for (const f of XLSX_FILES) all = all.concat(parseXlsx(f));
+// ── parse all files, CONCATENATE rows, then map (labels span files), sort by t ──
+let allRows: BaseRow[] = [];
+for (const f of XLSX_FILES) allRows = allRows.concat(parseXlsx(f));
+const mapped = rowsToBars(allRows);
+for (const w of mapped.warnings) console.warn(`[backtest-db] WARN: ${w}`);
+const all = mapped.bars;
 all.sort((a, b) => a.t - b.t);
 if (all.length === 0) { console.error('no data rows parsed across all files'); process.exit(1); }
 

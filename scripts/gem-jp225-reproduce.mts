@@ -17,7 +17,7 @@
 // tsc-clean. NOT committed.
 
 import XLSX from 'xlsx';
-import { rowToBar } from '../server/basedataDate.js';
+import { rowsToBars, sheetAoaToRows, type BaseRow } from '../server/basedataDate.js';
 import { classifySession } from '../core/session.js';
 
 // ============================================================================
@@ -81,26 +81,28 @@ function dtstr(t: number) { return `${ymd(t)} ${hm(t)}`; }
 
 // ============ load NATIVE bars from xlsx sheets ============
 // Intraday sheets: 日付(excel serial) 時間(fraction) 始値 高値 安値 終値 出来高 (header row 0).
-// rowToBar() maps (serial, frac) -> real epoch (same canonical mapping as the 1min import).
+// rowsToBars() maps (serial, frac) -> real epoch (same canonical mapping as the 1min import).
+// Rows of BOTH books are concatenated first: the night's real date comes from the previous
+// label present in the data, which for the year's first night lives in the previous book.
 // classifySession() tags session/sessionDate identically to the DB import path.
 // Bars outside any session (weekend/holiday/off-session) are skipped (importBars convention).
 function loadIntraday(sheet: string): Bar[] {
   const out: Bar[] = [];
   const seen = new Set<number>();           // dedupe overlapping bars across the 2 books
+  let rows: BaseRow[] = [];
   for (const f of XLSX_FILES) {
     const wb = XLSX.readFile(f, { cellDates: false });
     const ws = wb.Sheets[sheet];
     if (!ws) { console.error(`sheet "${sheet}" not found in ${f}`); process.exit(1); }
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false }) as any[][];
-    for (let i = 1; i < rows.length; i++) {
-      const [d, tm, o, h, l, c] = rows[i];
-      if (typeof d !== 'number' || typeof tm !== 'number' || typeof o !== 'number') continue;
-      const bb = rowToBar(d, tm, o, h, l, c, null);
-      if (seen.has(bb.t)) continue; seen.add(bb.t);
-      const s = classifySession(bb.t);
-      if (!s) continue;                       // off-session / weekend / holiday
-      out.push({ t: bb.t, o: bb.o, h: bb.h, l: bb.l, c: bb.c, session: s.session, sdate: s.sessionDate, mins: [] });
-    }
+    rows = rows.concat(sheetAoaToRows(XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false }) as unknown[][]));
+  }
+  const mapped = rowsToBars(rows);
+  for (const w of mapped.warnings) console.warn(`[${sheet}] WARN: ${w}`);
+  for (const bb of mapped.bars) {
+    if (seen.has(bb.t)) continue; seen.add(bb.t);
+    const s = classifySession(bb.t);
+    if (!s) continue;                         // off-session / weekend / holiday
+    out.push({ t: bb.t, o: bb.o, h: bb.h, l: bb.l, c: bb.c, session: s.session, sdate: s.sessionDate, mins: [] });
   }
   out.sort((a, b) => a.t - b.t);
   return out;

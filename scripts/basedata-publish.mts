@@ -2,7 +2,7 @@
 // 使い方: npm run basedata:publish -- "C:\path\to\N225minif_2026.xlsx" [--dry]
 //   --dry: gz/meta を dist に書くだけで GitHub へはアップロードしない(検証用)。
 // パース/gz/公開ロジックは server/basedata/publishCore.ts が唯一の正準実装(サーバのワンボタン公開と共有・SSOT)。
-// 日付変換は server/basedataDate.ts:rowToBar が唯一の正準実装(取り込み側と共有・SSOT)。
+// 日付変換は server/basedataDate.ts:rowsToBars が唯一の正準実装(取り込み側と共有・SSOT)。
 import { readFileSync } from 'node:fs';
 import { xlsxBufferToBars, barsToGzMeta, writeGzMeta, ghPublish, BASEDATA_REPO } from '../server/basedata/publishCore.js';
 

@@ -3,10 +3,10 @@ import { upsertBar, upsertDailyClose } from './db/store.js';
 import { classifySession } from '../core/session.js';
 import type { BaseBar } from './basedataDate.js';
 
-// xlsx の日付マッピング(rowToBar / 日付規約)は server/basedataDate.ts が唯一の正準実装(SSOT)。
+// xlsx の日付マッピング(rowsToBars・rowToBar / 日付規約)は server/basedataDate.ts が唯一の正準実装(SSOT)。
 // publish スクリプトと共有する。ここでは再エクスポートのみ(取り込みは publish 済み NDJSON の t を直接使う)。
-export { rowToBar } from './basedataDate.js';
-export type { BaseBar } from './basedataDate.js';
+export { rowToBar, rowsToBars } from './basedataDate.js';
+export type { BaseBar, BaseRow } from './basedataDate.js';
 
 const SYMBOL = 'NIY=F';
 
